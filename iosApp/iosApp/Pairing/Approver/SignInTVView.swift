@@ -12,11 +12,12 @@ import SwiftUI
 struct SignInTVView: View {
     var initialCode: String = ""
     var initialServerId: String? = nil
-    /// "Not you?" on the card: the caller closes this view, signs out of the
-    /// server and signs in again with the TV's code kept. The flag is the
-    /// card's `offersAccountChoice`: whether the provider is asked to let
-    /// the person choose an account.
-    var onSwitchAccount: ((ServerEntry, DeviceApprovalLink, Bool) -> Void)? = nil
+    /// "Not you?" › "Sign in with another account" on the card: the caller
+    /// closes this view and adds an account on the server, keeping the TV's
+    /// code and every account already saved. The flag is the card's
+    /// `offersAccountChoice`: whether the provider is asked to let the person
+    /// choose an account.
+    var onAddAccount: ((ServerEntry, DeviceApprovalLink, Bool) -> Void)? = nil
     var onClose: () -> Void
 
     @State private var code = ""
@@ -24,6 +25,10 @@ struct SignInTVView: View {
     @State private var selectedServerId: String?
     @State private var model: TVApprovalModel?
     @State private var loadedServers = false
+    /// The account each server's requests use, which approves unless the
+    /// person picks another one under "Not you?".
+    @State private var accountInUse: [String: String] = [:]
+    @State private var directory = AccountDirectory.shared
     @FocusState private var codeFocused: Bool
 
     var body: some View {
@@ -44,11 +49,15 @@ struct SignInTVView: View {
                                 code = ""
                                 codeFocused = true
                             },
-                            onSwitchAccount: onSwitchAccount.map { switchAccount in
+                            otherAccounts: otherAccounts(than: model),
+                            onUseAccount: { account in
+                                lookUp(on: model.server, account: account.localAccountId)
+                            },
+                            onAddAccount: onAddAccount.map { addAccount in
                                 {
                                     model.stop()
-                                    switchAccount(model.server, DeviceApprovalLink(server: model.server, code: model.code),
-                                                  model.offersAccountChoice)
+                                    addAccount(model.server, DeviceApprovalLink(server: model.server, code: model.code),
+                                               model.offersAccountChoice)
                                 }
                             },
                             onClose: onClose
@@ -59,11 +68,11 @@ struct SignInTVView: View {
                     entryForm
                 }
             }
-            .navigationTitle("Sign in a TV")
+            .navigationTitle(.signInTvTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button(.commonCancel) {
                         model?.stop()
                         onClose()
                     }
@@ -84,31 +93,31 @@ struct SignInTVView: View {
                     .font(.system(size: 34, weight: .semibold, design: .monospaced))
                     .multilineTextAlignment(.center)
                     .focused($codeFocused)
-                    .accessibilityLabel("TV code")
+                    .accessibilityLabel(.tvPairEntryCodeLabel)
             } header: {
-                Text("Code")
+                Text(.tvPairDetailCode)
             } footer: {
-                Text("Enter the code on your TV's sign-in screen.")
+                Text(.signInTvSubtitle)
             }
 
             if servers.count > 1 {
                 Section {
-                    Picker("Server", selection: $selectedServerId) {
+                    Picker(.signInTvServerLabel, selection: $selectedServerId) {
                         ForEach(servers) { server in
                             Text(server.displayName).tag(Optional(server.id))
                         }
                     }
                 } footer: {
-                    Text("Choose the server named at the top of the TV's screen.")
+                    Text(.tvPairEntryServerFooter)
                 }
             } else if loadedServers && servers.isEmpty {
                 Section {
-                    Text("Sign in to a server on this device first.").foregroundStyle(.secondary)
+                    Text(.tvPairEntryNoServers).foregroundStyle(.secondary)
                 }
             }
 
             Section {
-                Button("Continue") {
+                Button(.signInTvContinue) {
                     guard let server = servers.first(where: { $0.id == selectedServerId }) else { return }
                     lookUp(on: server)
                 }
@@ -125,6 +134,10 @@ struct SignInTVView: View {
     private func loadServers() async {
         guard !loadedServers else { return }
         servers = await CompanionPairingCoordinator.serversWithTokens()
+        directory.reload()
+        for server in servers {
+            accountInUse[server.id] = await TokenStore.shared.requestAccountId(onServer: server.id)
+        }
         loadedServers = true
         let preferred = initialServerId.flatMap { id in servers.first { $0.id == id } }
         selectedServerId = preferred?.id ?? servers.first?.id
@@ -136,11 +149,20 @@ struct SignInTVView: View {
         }
     }
 
-    private func lookUp(on server: ServerEntry) {
+    /// `account` approves; nil is the account the server's requests use.
+    private func lookUp(on server: ServerEntry, account: String? = nil) {
         model?.stop()
-        let next = TVApprovalModel(server: server, code: code.isEmpty ? initialCode : code)
+        let next = TVApprovalModel(server: server, code: code.isEmpty ? initialCode : code,
+                                   localAccountId: account ?? accountInUse[server.id])
         model = next
         Task { await next.lookUp() }
+    }
+
+    /// The signed-in accounts on the card's server besides the one approving.
+    private func otherAccounts(than model: TVApprovalModel) -> [SavedAccountSummary] {
+        directory.accounts(onServer: model.server.id).filter {
+            !$0.needsSignIn && $0.localAccountId != model.localAccountId
+        }
     }
 }
 
@@ -148,14 +170,15 @@ struct SignInTVView: View {
 /// finds the saved server with that verified identity, or offers to add it
 /// from the link's address, then shows the approval card.
 struct DeviceLinkApprovalView: View {
+    @Environment(\.locale) private var locale
     let link: DeviceApprovalLink
     /// Add the server (prefilled) and come back to the link after signing in.
     var onAddServer: (String) -> Void
     /// Sign in to a saved server this device is signed out of, and come back
     /// to the link after signing in.
     var onSignIn: (ServerEntry, DeviceApprovalLink) -> Void
-    /// "Not you?" on the card (see `SignInTVView.onSwitchAccount`).
-    var onSwitchAccount: (ServerEntry, DeviceApprovalLink, Bool) -> Void
+    /// "Not you?" on the card (see `SignInTVView.onAddAccount`).
+    var onAddAccount: (ServerEntry, DeviceApprovalLink, Bool) -> Void
     var onClose: () -> Void
 
     private enum Resolution: Equatable {
@@ -173,24 +196,24 @@ struct DeviceLinkApprovalView: View {
             switch resolution {
             case .resolving:
                 NavigationStack {
-                    ProgressView("Finding the TV's server…")
+                    ProgressView(.tvPairLinkResolving)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onClose) } }
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button(.commonCancel, action: onClose) } }
                 }
             case .saved(let server):
-                SignInTVView(initialCode: link.code, initialServerId: server.id, onSwitchAccount: onSwitchAccount,
+                SignInTVView(initialCode: link.code, initialServerId: server.id, onAddAccount: onAddAccount,
                              onClose: onClose)
             case .signedOut(let server):
                 NavigationStack {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Sign in to \(server.displayName)").font(.siloTitle)
-                        Text("The TV's code belongs to \(server.displayName), and this device isn't signed in to it. Sign in, then approve the TV.")
+                        Text(.tvSignInTitle(server.displayName)).font(.siloTitle)
+                        Text(.tvPairLinkSignedOutBody(server.displayName))
                             .font(.siloBody)
                             .fixedSize(horizontal: false, vertical: true)
                         Button {
                             onSignIn(server, DeviceApprovalLink(server: server, code: link.code))
                         } label: {
-                            Text("Sign in").font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
+                            Text(.signInTvSignInFirst).font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.siloOnSurface)
@@ -198,19 +221,19 @@ struct DeviceLinkApprovalView: View {
                         Spacer()
                     }
                     .padding(20)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onClose) } }
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button(.commonCancel, action: onClose) } }
                 }
             case .addServer(let url):
                 NavigationStack {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Add this server?").font(.siloTitle)
-                        Text("The TV's code belongs to \(TVSignInPresentation.host(of: url)), which isn't on this device yet. Add it and sign in, then approve the TV.")
+                        Text(.tvPairLinkAddServerTitle).font(.siloTitle)
+                        Text(.tvPairLinkAddServerBody(TVSignInPresentation.host(of: url)))
                             .font(.siloBody)
                             .fixedSize(horizontal: false, vertical: true)
                         Button {
                             onAddServer(url)
                         } label: {
-                            Text("Add server").font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
+                            Text(.companionUnknownServerAdd).font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.siloOnSurface)
@@ -218,7 +241,7 @@ struct DeviceLinkApprovalView: View {
                         Spacer()
                     }
                     .padding(20)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onClose) } }
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button(.commonCancel, action: onClose) } }
                 }
             case .failed(let message):
                 NavigationStack {
@@ -227,7 +250,7 @@ struct DeviceLinkApprovalView: View {
                         Text(message).font(.siloBody).multilineTextAlignment(.center)
                     }
                     .padding(24)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close", action: onClose) } }
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button(.companionClose, action: onClose) } }
                 }
             }
         }
@@ -245,19 +268,25 @@ struct DeviceLinkApprovalView: View {
             if let learnedIdentity {
                 ServerRegistry.shared.updateVerifiedServerId(for: server.id, verifiedServerId: learnedIdentity)
             }
-            return .saved(server)
+            return .saved(Self.saved(server, identity: learnedIdentity))
         case .savedSignedOut(let server, let learnedIdentity):
             if let learnedIdentity {
                 ServerRegistry.shared.updateVerifiedServerId(for: server.id, verifiedServerId: learnedIdentity)
             }
-            return .signedOut(server)
+            return .signedOut(Self.saved(server, identity: learnedIdentity))
         case .addServer(let url):
             return .addServer(url: url)
         case .unreachable(let url):
-            return .failed("Couldn't reach \(TVSignInPresentation.host(of: url)). Check this device's connection and open the link again.")
+            return .failed(AppLanguage.string(.tvPairLinkUnreachable(TVSignInPresentation.host(of: url))))
         case .mismatch:
-            return .failed("That link names a server this device can't confirm. Enter the TV's code in Settings > Sign in a TV instead.")
+            return .failed(AppLanguage.string(.tvPairLinkMismatch))
         }
+    }
+
+    /// `server` as saved now: learning its identity can merge it into
+    /// another saved address of the same server (`ServerRegistry.mergeDuplicateServers`).
+    private static func saved(_ server: ServerEntry, identity: String?) -> ServerEntry {
+        ServerRegistry.shared.entry(with: server.id) ?? ServerRegistry.shared.entry(verifiedServerId: identity) ?? server
     }
 }
 #endif

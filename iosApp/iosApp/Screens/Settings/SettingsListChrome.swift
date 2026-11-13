@@ -15,7 +15,7 @@ private struct MacSettingsToggleStyle: ToggleStyle {
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(.isToggle)
-            .accessibilityValue(configuration.isOn ? "On" : "Off")
+            .accessibilityValue(Text(configuration.isOn ? LocalizedStringResource.settingsOn : .settingsOff))
         } label: {
             configuration.label
         }
@@ -53,7 +53,29 @@ private struct MacSettingsSwitch: View {
             .animation(reduceMotion ? nil : .easeOut(duration: SiloTheme.fastDuration), value: isOn)
     }
 }
+
+/// Keeps ``MacSettingsToggleStyle`` out of menus. A menu builds the options
+/// of a picker inside it as toggles, and a custom toggle style cannot become
+/// a menu item: each item keeps its checkmark but loses its title, and the
+/// menu opens blank.
+private struct MacSettingsMenuStyle: MenuStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Menu(configuration)
+            .toggleStyle(.automatic)
+    }
+}
 #endif
+
+/// Rebuilds a list when the layout direction changes. After a live switch
+/// from a right-to-left language back to a left-to-right one, a list that
+/// was shown right to left keeps its rows mirrored until it is made again.
+private struct RebuiltOnDirectionChange: ViewModifier {
+    @Environment(\.layoutDirection) private var layoutDirection
+
+    func body(content: Content) -> some View {
+        content.id(layoutDirection)
+    }
+}
 
 extension View {
     func settingsListChrome() -> some View {
@@ -67,6 +89,7 @@ extension View {
         siloGroupedListStyle()
             .formStyle(.grouped)
             .toggleStyle(MacSettingsToggleStyle())
+            .menuStyle(MacSettingsMenuStyle())
             .siloScrollContentBackgroundHidden()
             .frame(maxWidth: SiloTheme.macSettingsColumnWidth)
             .frame(maxWidth: .infinity)
@@ -75,6 +98,7 @@ extension View {
         siloGroupedListStyle()
             .siloScrollContentBackgroundHidden()
             .background(SettingsBackdrop())
+            .modifier(RebuiltOnDirectionChange())
         #endif
     }
 

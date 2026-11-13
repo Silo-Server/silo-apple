@@ -100,10 +100,12 @@ extension APIv2Client {
     }
 
     /// `listAccountIdentities`: the provider identities linked to the
-    /// account, and whether one can be disconnected now.
+    /// account, and whether one can be disconnected now. Sent as the active
+    /// profile, because the server answers `can_unlink` for the profile that
+    /// asks; the list is readable before a profile is chosen.
     func accountIdentities(expectedAccount: RefreshAccountIdentity) async throws -> APIv2AccountIdentities {
         try await accountJSON(method: "GET", path: Self.accountIdentitiesPath,
-            status: 200, expectedAccount: expectedAccount)
+            status: 200, expectedAccount: expectedAccount, sendsProfile: true)
     }
 
     /// `createAccountIdentityLinkTicket`: re-enters the local password for a
@@ -155,33 +157,40 @@ extension APIv2Client {
             expectedAccount: expectedAccount)
     }
 
-    /// `deleteAccountIdentity`. The server refuses the account's last way to
-    /// sign in with 409 `last_sign_in_method`.
+    /// `deleteAccountIdentity`. Sent as the active profile, because a server
+    /// may let only the account's primary profile disconnect and answer 403
+    /// to any other. The server refuses the account's last way to sign in
+    /// with 409 `last_sign_in_method`.
     func deleteAccountIdentity(id: String, expectedAccount: RefreshAccountIdentity) async throws {
         let segment = try catalogPathSegment(id)
         let response = try await accountRequest(method: "DELETE", path: "\(Self.accountIdentitiesPath)/\(segment)",
-            expectedAccount: expectedAccount)
+            expectedAccount: expectedAccount, sendsProfile: true)
         guard response.statusCode == 204 else { throw APIv2Error.incompleteAuthResponse }
     }
 
     // MARK: Internals
 
-    /// An account-scoped request: the bearer only, never `X-Profile-Id`, and
-    /// refused when the active account changed while it ran.
-    private func accountRequest(method: String, path: String, body: Data? = nil,
-                                expectedAccount: RefreshAccountIdentity) async throws -> HTTPRawResponse {
+    /// An account-scoped request, refused when the active account changed
+    /// while it ran. It sends the bearer alone, without `X-Profile-Id`, unless
+    /// `sendsProfile` is set (the identity list and disconnect). Shared with
+    /// the account password operations (`APIv2Client+AccountPassword.swift`).
+    func accountRequest(method: String, path: String, body: Data? = nil,
+                                expectedAccount: RefreshAccountIdentity,
+                                sendsProfile: Bool = false) async throws -> HTTPRawResponse {
         try await gate()
         let response = try await mapErrors {
             try await http.requestData(method: method, path: path, body: body,
-                expectedAccount: expectedAccount, sendsProfile: false)
+                expectedAccount: expectedAccount, sendsProfile: sendsProfile)
         }
         guard await tokenStore.refreshAccountIdentity() == expectedAccount else { throw HTTPError.requestIdentityChanged }
         return response
     }
 
-    private func accountJSON<T: Decodable>(method: String, path: String, body: Data? = nil, status: Int,
-                                           expectedAccount: RefreshAccountIdentity) async throws -> T {
-        let response = try await accountRequest(method: method, path: path, body: body, expectedAccount: expectedAccount)
+    func accountJSON<T: Decodable>(method: String, path: String, body: Data? = nil, status: Int,
+                                           expectedAccount: RefreshAccountIdentity,
+                                           sendsProfile: Bool = false) async throws -> T {
+        let response = try await accountRequest(method: method, path: path, body: body,
+            expectedAccount: expectedAccount, sendsProfile: sendsProfile)
         guard response.statusCode == status else { throw APIv2Error.incompleteAuthResponse }
         return try HTTPClient.makeJSONDecoder().decode(T.self, from: response.data)
     }

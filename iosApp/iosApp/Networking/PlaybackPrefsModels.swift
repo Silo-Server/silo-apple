@@ -51,7 +51,7 @@ struct SubtitleTrackSignature: Codable, Hashable, Sendable {
 /// Audio counterpart to `SubtitleTrackSignature`. Layout + channels let
 /// the server prefer "5.1 English Atmos" over "stereo English commentary"
 /// across episodes.
-struct AudioTrackSignature: Encodable, Hashable, Sendable {
+struct AudioTrackSignature: Codable, Hashable, Sendable {
     let language: String?
     let title: String?
     let embeddedTitle: String?
@@ -78,15 +78,42 @@ struct AudioTrackSignature: Encodable, Hashable, Sendable {
         self.isDefault = isDefault
     }
 
+    // The v2 coders convert `embeddedTitle` to and from `embedded_title`.
     enum CodingKeys: String, CodingKey {
-        case language, title
-        case embeddedTitle = "embedded_title"
-        case codec, layout, channels
+        case language, title, embeddedTitle, codec, layout, channels
         case isDefault = "default"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        language = try c.decodeIfPresent(String.self, forKey: .language)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        embeddedTitle = try c.decodeIfPresent(String.self, forKey: .embeddedTitle)
+        codec = try c.decodeIfPresent(String.self, forKey: .codec)
+        layout = try c.decodeIfPresent(String.self, forKey: .layout)
+        channels = try c.decodeIfPresent(Int.self, forKey: .channels)
+        isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
     }
 }
 
 // MARK: - Settings UI constants
+
+extension SettingPresentationMetadata {
+    /// A setting's "not set" label from the manifest, in the language on
+    /// screen (`settingsManifest.<key>.unsetLabel`), else the manifest's
+    /// English, else `fallback` for a manifest without one.
+    static func unsetLabel(
+        for key: SettingKey,
+        fallback: String,
+        language: String = AppLanguage.displayedLanguage
+    ) -> String {
+        AppLanguage.serverText(
+            definitions[key]?.unsetLabel ?? fallback,
+            key: "settingsManifest.\(key.rawValue).unsetLabel",
+            language: language
+        )
+    }
+}
 
 /// Sentinel used by the library-prefs editor to mean "no override —
 /// fall through to the profile / global default". Mirrors the web
@@ -101,14 +128,15 @@ enum PlaybackPrefSentinel {
 
 /// One language row in a settings picker. Values come from the generated
 /// contract catalog, deployment-observed suggestions, and the current stored
-/// value. Labels are localized by Foundation rather than shipped as a second
-/// English-only registry.
+/// value. Labels are localized by Foundation, in the app's language, rather
+/// than shipped as a second English-only registry.
 struct PlaybackLanguageOption: Identifiable, Hashable {
     let code: String
     let label: String
     var id: String { code }
 
-    static let all = options(for: .playbackSubtitleLanguage)
+    /// Built on each read, so the labels follow the app's language.
+    static var all: [PlaybackLanguageOption] { options(for: .playbackSubtitleLanguage) }
 
     /// ISO 639-2/B spellings whose terminology form differs. Foundation
     /// canonicalizes most of these through CLDR, but not every supported
@@ -155,12 +183,13 @@ struct PlaybackLanguageOption: Identifiable, Hashable {
         return values.map { .init(code: $0, label: label(forCode: $0)) }
     }
 
-    static func label(forCode code: String) -> String {
+    static func label(forCode code: String, locale: Locale = AppLanguage.formattingLocale) -> String {
         if code.caseInsensitiveCompare(PlaybackPrefSentinel.originalLanguage) == .orderedSame
             || code.caseInsensitiveCompare("original") == .orderedSame { return "Original Language" }
         let identifier = code.replacingOccurrences(of: "_", with: "-")
-        return Locale.current.localizedString(forIdentifier: identifier)?.capitalized
-            ?? Locale.current.localizedString(forLanguageCode: identifier.split(separator: "-").first.map(String.init) ?? identifier)?.capitalized
+        let primary = identifier.split(separator: "-").first.map(String.init) ?? identifier
+        return (locale.localizedString(forIdentifier: identifier) ?? locale.localizedString(forLanguageCode: primary))
+            .map { LocaleFormat.capitalizedName($0, locale: locale) }
             ?? code.uppercased()
     }
 
@@ -202,14 +231,29 @@ enum SubtitleMode: String, CaseIterable, Codable, Hashable {
 
 /// Which per-series track preference a v2 write targets. The raw value is
 /// the path prefix: `/api/v2/{kind}-prefs/{series_id}`.
-enum TrackPreferenceKind: String, Sendable {
+enum TrackPreferenceKind: String, Codable, Sendable {
     case audio
     case subtitle
 }
 
+/// A per-series preference document: the PUT body, and the members a GET
+/// returns besides `profile_id`, `series_id` and `updated_at`.
+protocol TrackPrefBody: Codable, Hashable, Sendable {
+    static var kind: TrackPreferenceKind { get }
+
+    /// The row the server stores when this body is written over `stored`.
+    func applied(over stored: Self?) -> Self
+}
+
+extension TrackPrefBody {
+    func applied(over stored: Self?) -> Self { self }
+}
+
 // MARK: - Per-series subtitle pref
 
-struct SubtitlePrefRequest: Encodable, Sendable {
+struct SubtitlePrefRequest: TrackPrefBody {
+    static let kind = TrackPreferenceKind.subtitle
+
     let subtitleLanguage: String
     let subtitleTrackIndex: Int
     let externalSubtitlePath: String
@@ -221,10 +265,47 @@ struct SubtitlePrefRequest: Encodable, Sendable {
     var showForcedSubtitles: Bool? = nil
 }
 
+extension SubtitlePrefRequest {
+    /// An omitted `show_forced_subtitles` keeps the stored override.
+    func applied(over stored: SubtitlePrefRequest?) -> SubtitlePrefRequest {
+        guard showForcedSubtitles == nil, let kept = stored?.showForcedSubtitles else { return self }
+        return SubtitlePrefRequest(subtitleLanguage: subtitleLanguage, subtitleTrackIndex: subtitleTrackIndex,
+                                   externalSubtitlePath: externalSubtitlePath, subtitleMode: subtitleMode,
+                                   trackSignature: trackSignature, showForcedSubtitles: kept)
+    }
+
+    /// A GET omits an empty `external_subtitle_path`.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        subtitleLanguage = try c.decodeIfPresent(String.self, forKey: .subtitleLanguage) ?? ""
+        subtitleTrackIndex = try c.decode(Int.self, forKey: .subtitleTrackIndex)
+        externalSubtitlePath = try c.decodeIfPresent(String.self, forKey: .externalSubtitlePath) ?? ""
+        subtitleMode = try c.decodeIfPresent(String.self, forKey: .subtitleMode) ?? ""
+        trackSignature = try c.decodeIfPresent(SubtitleTrackSignature.self, forKey: .trackSignature)
+        showForcedSubtitles = try c.decodeIfPresent(Bool.self, forKey: .showForcedSubtitles)
+    }
+}
+
 // MARK: - Per-series audio pref
 
-struct AudioPrefRequest: Encodable, Sendable {
+struct AudioPrefRequest: TrackPrefBody {
+    static let kind = TrackPreferenceKind.audio
+
     let audioTrackIndex: Int
     let audioLanguage: String
     let trackSignature: AudioTrackSignature?
+}
+
+/// A stored per-series preference as `GET /api/v2/{kind}-prefs/{series_id}`
+/// returns it.
+struct TrackPrefRow<Body: TrackPrefBody>: Decodable, Sendable {
+    let body: Body
+    let updatedAt: Date
+
+    private enum CodingKeys: String, CodingKey { case updatedAt }
+
+    init(from decoder: Decoder) throws {
+        body = try Body(from: decoder)
+        updatedAt = try decoder.container(keyedBy: CodingKeys.self).decode(Date.self, forKey: .updatedAt)
+    }
 }

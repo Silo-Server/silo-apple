@@ -34,6 +34,13 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     /// `downloaded` source), as opposed to a sidecar next to the media. Such a
     /// track is also `isExternal`.
     var isDownloaded = false
+    /// An embedded row the server's inventory lists with no codec: its probe
+    /// didn't recognize the format, so the server refuses to deliver it. The
+    /// picker shows it disabled and automatic selection skips it.
+    var hasUnsupportedFormat = false
+
+    /// The picker's secondary line for a row that can't be chosen.
+    static var unsupportedFormatLabel: String { AppLanguage.string(.detailTrackUnsupported) }
 
     var id: String { "\(kind.rawValue)-\(trackId)" }
 
@@ -60,11 +67,16 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
             return TrackLabels.name(
                 language: normalizedLanguageCode,
                 meaningfulTitle: meaningfulTitle,
-                fallback: format ?? "Track \(trackId)"
+                fallback: format ?? fallbackName
             )
         case .video, .unknown:
-            return normalizedTitle ?? TrackLabels.languageName(normalizedLanguageCode) ?? "Track \(trackId)"
+            return normalizedTitle ?? TrackLabels.languageName(normalizedLanguageCode) ?? fallbackName
         }
+    }
+
+    /// "Track N", for a row with nothing better to show.
+    private var fallbackName: String {
+        AppLanguage.string(.detailTrack(LocaleFormat.integer(trackId)))
     }
 
     /// The track's own title when it says something the name, codec, and
@@ -120,8 +132,8 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
             let joined = format.compactMap { $0 }.joined(separator: " ")
             if !joined.isEmpty { qualifiers.append(joined) }
         }
-        if showsForced { qualifiers.append("Forced") }
-        if showsHearingImpaired { qualifiers.append("SDH") }
+        if showsForced { qualifiers.append(AppLanguage.string(.detailTrackForced)) }
+        if showsHearingImpaired { qualifiers.append(AppLanguage.string(.detailTrackSdh)) }
         guard !qualifiers.isEmpty else { return primaryLabel }
         return "\(primaryLabel) (\(qualifiers.joined(separator: ", ")))"
     }
@@ -140,16 +152,16 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
             if let codec = Self.normalizedText(codec) { parts.append(codec.uppercased()) }
         }
         if isDefault {
-            parts.append("Default")
+            parts.append(AppLanguage.string(.detailTrackDefault))
         }
         if showsForced {
-            parts.append("Forced")
+            parts.append(AppLanguage.string(.detailTrackForced))
         }
         if showsHearingImpaired {
-            parts.append("SDH")
+            parts.append(AppLanguage.string(.detailTrackSdh))
         }
         if isExternal {
-            parts.append("External")
+            parts.append(AppLanguage.string(.detailTrackExternal))
         }
         return parts
     }

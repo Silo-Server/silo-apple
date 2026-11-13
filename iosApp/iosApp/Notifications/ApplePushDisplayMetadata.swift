@@ -362,6 +362,7 @@ final class ApplePushDisplayClient {
             request.setValue(state.profileToken, forHTTPHeaderField: "X-Profile-Token")
         }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        ApplePushDisplayLanguage.apply(to: &request)
 
         sending(state.credentialKind)
         let (data, response) = try await data(for: request, before: deadline)
@@ -435,7 +436,9 @@ final class ApplePushDisplayClient {
         // The banner waits for the extension, so a missing route fails fast
         // and the retry backoff decides how long to keep trying.
         configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration,
+                          delegate: InsecureRedirectRefusingDelegate.shared,
+                          delegateQueue: nil)
     }
 }
 
@@ -624,4 +627,19 @@ enum ApplePushDisplayOutcomeLog {
         return names.filter { $0.hasSuffix(".json") }.sorted().map { directory.appendingPathComponent($0) }
     }
 }
+
+/// The extension can't reach `AppLanguage`, so it reads the language the app
+/// last showed from the shared defaults the app stores it in, and names it on
+/// the display request like every other Silo request.
+enum ApplePushDisplayLanguage {
+    /// `AppLanguage.displayedTagKey`.
+    static let displayedTagKey = "appLanguage.displayed.v1"
+
+    static func apply(to request: inout URLRequest, defaults: UserDefaults = SharedStorage.suite) {
+        if let tag = defaults.string(forKey: displayedTagKey) {
+            request.setValue(tag, forHTTPHeaderField: "Accept-Language")
+        }
+    }
+}
+
 #endif

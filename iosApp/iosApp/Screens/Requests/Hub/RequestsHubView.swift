@@ -4,7 +4,8 @@ import SwiftUI
 /// interaction), a status summary and the user's own requests one glance
 /// down, then the discover carousels — with the same large-title chrome,
 /// section headers, and card grammar as the library pages. On tvOS the hub
-/// is a Skyline page (`TVRequestsPage`) in the top bar. Entry points are
+/// is a Skyline page (`TVRequestsPage`) that the profile menu opens under the
+/// top bar (`TVMainTabView`). Entry points are
 /// hidden unless the server reports `requests_enabled`.
 struct RequestsHubView: View {
     var body: some View {
@@ -18,6 +19,7 @@ struct RequestsHubView: View {
 
 #if !os(tvOS)
 private struct PhoneRequestsHubView: View {
+    @Environment(\.locale) private var locale
     @State private var viewModel = RequestsHubViewModel()
     @Environment(AppRouter.self) private var router
 
@@ -32,10 +34,10 @@ private struct PhoneRequestsHubView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .siloPageBackground()
-        .navigationTitle("Requests")
+        .navigationTitle(.requestsTitle)
         .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()
-        .siloSearchable(text: $viewModel.query, prompt: "Search movies & series")
+        .siloSearchable(text: $viewModel.query, prompt: AppLanguage.string(.requestsSearchPlaceholder))
         .task {
             await viewModel.load()
         }
@@ -55,6 +57,13 @@ private struct PhoneRequestsHubView: View {
                 viewModel.applyTitleState(update)
             }
         }
+        .onChange(of: RequestsEventBus.shared.lastRemoval) { _, removed in
+            guard let removed else { return }
+            viewModel.applyRemoval(removed)
+            // Cards may show the removed request's state; the read is the
+            // only source for what the title shows now.
+            Task { await viewModel.load() }
+        }
     }
 
     // MARK: - Content
@@ -67,13 +76,13 @@ private struct PhoneRequestsHubView: View {
             ErrorView(state: error, onRetry: { Task { await viewModel.load() } })
                 .padding(.top, 60)
         } else if viewModel.isLoading {
-            RequestRailSkeleton(title: "Your requests", cardCount: 4)
+            RequestRailSkeleton(title: AppLanguage.string(.requestsYourRequests), cardCount: 4)
             RequestRailSkeleton(cardCount: 4)
         } else if viewModel.myRequests.isEmpty && viewModel.carousels.isEmpty {
             EmptyStateView(
                 icon: "sparkles",
-                title: "Nothing here yet",
-                subtitle: "Search for a movie or series to request it"
+                title: AppLanguage.string(.requestsEmpty),
+                subtitle: AppLanguage.string(.requestsHubEmptyBody)
             )
             .padding(.top, 80)
         } else {
@@ -98,13 +107,13 @@ private struct PhoneRequestsHubView: View {
         } else if viewModel.hasSearched && viewModel.searchResults.isEmpty {
             EmptyStateView(
                 icon: "magnifyingglass",
-                title: "No matches",
-                subtitle: "Nothing on TMDB matched that search"
+                title: AppLanguage.string(.requestsSearchEmptyTitle),
+                subtitle: AppLanguage.string(.requestsSearchEmptyBody)
             )
             .padding(.top, 80)
         } else {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
-                Text("\(viewModel.searchTotal) result\(viewModel.searchTotal == 1 ? "" : "s")")
+                Text(.requestsSearchResultCount(count: viewModel.searchTotal, LocaleFormat.integer(viewModel.searchTotal)))
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
                 searchGrid(placeholderCount: 0)
@@ -131,16 +140,22 @@ private struct PhoneRequestsHubView: View {
 
     private var summaryTitle: String {
         let count = viewModel.statusCounts.inProgress
-        if count == 0 { return "Your requests need you" }
-        return count == 1 ? "1 request in progress" : "\(count) requests in progress"
+        if count == 0 { return AppLanguage.string(.requestsSummaryNeedYouTitle) }
+        return AppLanguage.string(.requestsSummaryInProgress(count: count, LocaleFormat.integer(count)))
     }
 
     private var summaryParts: [(RequestStatusTint, String)] {
         let counts = viewModel.statusCounts
         var parts: [(RequestStatusTint, String)] = []
-        if counts.onTheWay > 0 { parts.append((.sky, "\(counts.onTheWay) on the way")) }
-        if counts.pending > 0 { parts.append((.amber, "\(counts.pending) pending")) }
-        if counts.needsAttention > 0 { parts.append((.rose, "\(counts.needsAttention) need you")) }
+        if counts.onTheWay > 0 {
+            parts.append((.sky, AppLanguage.string(.requestsSummaryOnTheWay(count: counts.onTheWay, LocaleFormat.integer(counts.onTheWay)))))
+        }
+        if counts.pending > 0 {
+            parts.append((.amber, AppLanguage.string(.requestsSummaryPending(count: counts.pending, LocaleFormat.integer(counts.pending)))))
+        }
+        if counts.needsAttention > 0 {
+            parts.append((.rose, AppLanguage.string(.requestsSummaryNeedYou(count: counts.needsAttention, LocaleFormat.integer(counts.needsAttention)))))
+        }
         return parts
     }
 
@@ -165,7 +180,7 @@ private struct PhoneRequestsHubView: View {
                     }
                 }
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.forward")
                     .font(.footnote.weight(.semibold))
                     .foregroundColor(.siloSecondaryText)
             }
@@ -187,7 +202,7 @@ private struct PhoneRequestsHubView: View {
 
     private var yourRequestsStrip: some View {
         VStack(alignment: .leading, spacing: RequestsUI.headerSpacing) {
-            RequestsSectionHeader(title: "Your requests", trailing: "See all") {
+            RequestsSectionHeader(title: AppLanguage.string(.requestsYourRequests), trailing: AppLanguage.string(.requestsSeeAll)) {
                 router.navigate(to: .myRequests)
             }
 
@@ -202,9 +217,9 @@ private struct PhoneRequestsHubView: View {
             // Only the server's own rows page; the merged carousels an older
             // server gets have no single row behind them.
             RequestsSectionHeader(
-                label: isFirst ? "Discover" : nil,
+                label: isFirst ? AppLanguage.string(.requestsHubDiscover) : nil,
                 title: carousel.title,
-                trailing: carousel.seeAll ? "See all" : nil
+                trailing: carousel.seeAll ? AppLanguage.string(.requestsSeeAll) : nil
             ) {
                 router.navigate(to: .requestDiscoverRow(key: carousel.id, title: carousel.title))
             }

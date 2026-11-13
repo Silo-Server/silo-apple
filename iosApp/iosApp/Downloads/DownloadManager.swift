@@ -20,17 +20,17 @@ enum DownloadError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unavailable: return "Downloads aren't available for this profile."
-        case .fileURLUnavailable: return "Could not resolve the download URL."
-        case .emptyRegistrationResponse: return "The server didn't create a download."
-        case .registrationAlreadyInFlight: return "This download is already being prepared."
-        case .scopeChangedDuringRegistration: return "The active profile changed before the download could start."
-        case .registryChanged: return "This download changed on the server. Try again."
-        case .registrationUncertain: return "Silo couldn't confirm the download started. It will appear in Downloads if the server created it."
-        case .monitoringScopeChanged: return "The active profile changed before monitoring could be saved."
-        case .monitorChanged: return "Monitoring for this series changed on the server. Try again."
-        case .monitorRemoved: return "This series is no longer monitored."
-        case .monitoringUncertain: return "Silo couldn't confirm the monitoring change. Check this series again once you're back online."
+        case .unavailable: return AppLanguage.string(.downloadsErrorUnavailable)
+        case .fileURLUnavailable: return AppLanguage.string(.downloadsErrorFileUrlUnavailable)
+        case .emptyRegistrationResponse: return AppLanguage.string(.downloadsErrorNotCreated)
+        case .registrationAlreadyInFlight: return AppLanguage.string(.downloadsErrorAlreadyPreparing)
+        case .scopeChangedDuringRegistration: return AppLanguage.string(.downloadsErrorProfileChangedDownload)
+        case .registryChanged: return AppLanguage.string(.downloadsErrorChangedOnServer)
+        case .registrationUncertain: return AppLanguage.string(.downloadsErrorRegistrationUncertain)
+        case .monitoringScopeChanged: return AppLanguage.string(.downloadsErrorProfileChangedMonitoring)
+        case .monitorChanged: return AppLanguage.string(.downloadsErrorMonitorChanged)
+        case .monitorRemoved: return AppLanguage.string(.downloadsErrorMonitorRemoved)
+        case .monitoringUncertain: return AppLanguage.string(.downloadsErrorMonitoringUncertain)
         }
     }
 }
@@ -62,19 +62,27 @@ final class DownloadManager {
     private(set) var file: DownloadStoreFile = .empty {
         didSet {
             rebuildDownloadedIndex()
-            let enabled = file.capability?.isUsable == true
+            let access = file.capability?.access
+            let enabled = access == .usable
             if enabled != downloadsEnabled { downloadsEnabled = enabled }
+            let restricted = access == .restricted
+            if restricted != downloadsRestricted { downloadsRestricted = restricted }
             syncLiveActivity()
         }
     }
 
     private(set) var scopeServerId: String = ""
+    /// The active scope's account (`Account.localAccountId`). Profile IDs
+    /// repeat across accounts on one server, so every scope comparison
+    /// includes it.
+    private(set) var scopeAccountId: String = ""
     private(set) var scopeProfileId: String = ""
     /// The scope `file` was loaded for. While a scope switch waits on its
-    /// load, `scopeServerId`/`scopeProfileId` already name the new scope but
-    /// `file` still holds the old one, so saves and registry owners go by
-    /// this instead.
+    /// load, `scopeServerId`/`scopeAccountId`/`scopeProfileId` already name
+    /// the new scope but `file` still holds the old one, so saves and
+    /// registry owners go by this instead.
     private var fileServerId = ""
+    private var fileAccountId = ""
     private var fileProfileId = ""
 
     /// Coalesces the several legitimate app-lifecycle callers that can all ask
@@ -83,6 +91,7 @@ final class DownloadManager {
     private var scopeLoadTask: Task<DownloadStoreLoad, Never>?
     private var scopeLoadToken: UUID?
     private var scopeLoadServerId = ""
+    private var scopeLoadAccountId = ""
     private var scopeLoadProfileId = ""
 
     private let sessionDelegate = DownloadSessionDelegate()
@@ -148,6 +157,8 @@ final class DownloadManager {
     /// Offline progress entries a running flush has sent and is still
     /// waiting on. Dispatched entries outside this set are held.
     private var progressUploadsInFlight: Set<UUID> = []
+    /// The running pass over the queued track-preference picks, if any.
+    private var trackPrefFlush: Task<Void, Never>?
     /// The last complete watch-state read applied in the active scope, and
     /// the items it covered. See `refreshWatchState()`.
     private var lastWatchStateRead: (scope: ScopeKey, at: Date, itemIds: Set<String>)?
@@ -238,6 +249,7 @@ final class DownloadManager {
             }
         }
         observeConnectivity()
+        observeServerReachability()
     }
 
     /// Starts the queue again whenever the device regains a network path.
@@ -252,6 +264,17 @@ final class DownloadManager {
         if online { processQueue() }
     }
 
+    /// Sends queued track-preference picks whenever the server can be
+    /// reached again.
+    private func observeServerReachability() {
+        let reachable = withObservationTracking {
+            ConnectionMonitor.shared.isServerReachable
+        } onChange: {
+            Task { @MainActor in self.observeServerReachability() }
+        }
+        if reachable { flushTrackPrefs() }
+    }
+
     // MARK: - Observable surface
 
     var capability: DownloadCapability? { file.capability }
@@ -260,6 +283,10 @@ final class DownloadManager {
     /// whole `file` blob — reassigned on every transfer progress tick — as
     /// their observed state.
     private(set) var downloadsEnabled: Bool = false
+    /// Stored mirror of `capability?.access == .restricted`, kept the same
+    /// way: the server offers downloads and this account's policy denies
+    /// them, so title pages show Download as unavailable.
+    private(set) var downloadsRestricted: Bool = false
     /// Leaf ids currently waiting for POST /downloads to return. This belongs
     /// to the manager (rather than one button) so a detail rebuild cannot make
     /// the preparing indicator disappear during registration. Each pending id
@@ -419,6 +446,7 @@ final class DownloadManager {
         guard !fileServerId.isEmpty else { return nil }
         return DownloadFilePaths.fileURL(
             serverId: fileServerId,
+            localAccountId: fileAccountId,
             profileId: fileProfileId,
             downloadId: recordId,
             filename: filename
@@ -430,6 +458,7 @@ final class DownloadManager {
         guard !fileServerId.isEmpty else { return nil }
         return DownloadFilePaths.fileURLForWriting(
             serverId: fileServerId,
+            localAccountId: fileAccountId,
             profileId: fileProfileId,
             downloadId: recordId,
             filename: filename
@@ -440,6 +469,7 @@ final class DownloadManager {
         guard !fileServerId.isEmpty else { return }
         DownloadFilePaths.removeDownloadDirectory(
             serverId: fileServerId,
+            localAccountId: fileAccountId,
             profileId: fileProfileId,
             downloadId: recordId
         )
@@ -666,22 +696,42 @@ final class DownloadManager {
 
     // MARK: - Lifecycle
 
-    /// Re-point the manager at the active `(server, profile)` scope,
-    /// loading that scope's persisted blob. Returns false when there is no
-    /// signed-in scope.
+    /// Re-point the manager at the active `(server, account, profile)`
+    /// scope, loading that scope's persisted blob. Returns false when no
+    /// account and profile are selected on the active server.
+    ///
+    /// The scope comes from the selection mirrors (`AccountScope.current`),
+    /// not from a signed-in session, and needs no network: the selected
+    /// account's downloads stay playable offline, and while the account
+    /// waits to sign in again. Requests check the session itself
+    /// (`captureScopeOwner`).
     @discardableResult
     func activateScopeIfNeeded() async -> Bool {
         await removeLegacyDownloadsIfNeeded()
         await drainLegacySessionIfNeeded()
         let serverId = ServerRegistry.shared.activeServerId ?? ""
-        let profileId = await TokenStore.shared.getProfileId() ?? ""
-        guard !serverId.isEmpty, !profileId.isEmpty else {
+        var selected = AccountScope.current
+        if !serverId.isEmpty, selected?.serverId != serverId {
+            // Nothing has selected an account on this server yet in this
+            // install (the first launch after accounts arrived, or a cold
+            // background wake): loading the token store's account selects
+            // one, from the keychain alone.
+            _ = await TokenStore.shared.refreshAccountIdentity()
+            selected = AccountScope.current
+        }
+        let onServer = selected?.serverId == serverId ? selected : nil
+        let accountId = onServer?.localAccountId ?? ""
+        let profileId = onServer?.profileId ?? ""
+        // An account whose downloads were deleted stays unloaded while its
+        // sign-out finishes; `deleteAllDownloads` resets a load in flight.
+        guard !serverId.isEmpty, !accountId.isEmpty, !profileId.isEmpty,
+              !removedAccounts.contains(Self.accountKey(serverId, accountId)) else {
             deactivate()
             releaseHeldSessionEvents()
             return false
         }
-        if serverId == scopeServerId, profileId == scopeProfileId,
-           fileServerId == serverId, fileProfileId == profileId,
+        if serverId == scopeServerId, accountId == scopeAccountId, profileId == scopeProfileId,
+           fileServerId == serverId, fileAccountId == accountId, fileProfileId == profileId,
            !file.records.isEmpty || file.capability != nil {
             releaseHeldSessionEvents()
             // A switch away and back before the other store loaded keeps
@@ -692,9 +742,10 @@ final class DownloadManager {
             await awaitParkedSettle()
             return true
         }
-        if serverId != scopeServerId || profileId != scopeProfileId {
+        if serverId != scopeServerId || accountId != scopeAccountId || profileId != scopeProfileId {
             invalidatePendingRegistrations()
             scopeServerId = serverId
+            scopeAccountId = accountId
             scopeProfileId = profileId
         }
 
@@ -702,6 +753,7 @@ final class DownloadManager {
         let loadToken: UUID
         if let existing = scopeLoadTask,
            scopeLoadServerId == serverId,
+           scopeLoadAccountId == accountId,
            scopeLoadProfileId == profileId,
            let existingToken = scopeLoadToken {
             loadTask = existing
@@ -709,35 +761,45 @@ final class DownloadManager {
         } else {
             scopeLoadTask?.cancel()
             let token = UUID()
+            // Saves for the previous scope land first, including those queued
+            // while this waits: the load may move this server's downloads
+            // from before accounts, and nothing may write them meanwhile.
             let task = Task {
-                await DownloadStore.shared.loadScope(serverId: serverId, profileId: profileId)
+                await self.waitForQueuedSaves()
+                return await DownloadStore.shared.loadScope(
+                    serverId: serverId, localAccountId: accountId, profileId: profileId
+                )
             }
             scopeLoadTask = task
             scopeLoadToken = token
             scopeLoadServerId = serverId
+            scopeLoadAccountId = accountId
             scopeLoadProfileId = profileId
             loadTask = task
             loadToken = token
         }
 
         let loaded = await loadTask.value
-        guard scopeServerId == serverId, scopeProfileId == profileId else { return false }
+        guard scopeServerId == serverId, scopeAccountId == accountId, scopeProfileId == profileId else { return false }
         if scopeLoadToken == loadToken {
             // Exactly one waiter installs this snapshot. Later waiters observe
             // the already-hydrated `file` instead of assigning it a second time.
             file = loaded.file
             fileServerId = serverId
+            fileAccountId = accountId
             fileProfileId = profileId
             adoptLegacySessionTasksIfNeeded()
             requeueOrphanedRecords()
             startParkedSettle(reclaimingUntracked: loaded.tracksScopeStorage)
-            if let released = releasedProgressClaims.removeValue(forKey: Self.progressClaimKey(serverId, profileId)),
-               OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
+            if let released = releasedProgressClaims.removeValue(
+                forKey: Self.progressClaimKey(serverId, accountId, profileId)
+            ), OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
                 persist()
             }
             scopeLoadTask = nil
             scopeLoadToken = nil
             scopeLoadServerId = ""
+            scopeLoadAccountId = ""
             scopeLoadProfileId = ""
         }
         releaseHeldSessionEvents()
@@ -843,7 +905,7 @@ final class DownloadManager {
         parkedSettle = (scope, Task { @MainActor [weak self] in
             // A later install of this scope has started its own settle.
             guard let self, self.loadedScope == scope else { return }
-            await self.settleParkedTransfers(serverId: scope.serverId, profileId: scope.profileId)
+            await self.settleParkedTransfers(scope)
             if reclaimingUntracked { await self.reclaimUntrackedDirectories(in: scope) }
         })
     }
@@ -860,10 +922,12 @@ final class DownloadManager {
     /// running). A record that accepts its file completes; any other parked
     /// file is removed, and so is a download directory with a parked file
     /// but no record. Directories without a parked file are never touched.
-    private func settleParkedTransfers(serverId: String, profileId: String) async {
-        guard let scope = loadedScope, scope.serverId == serverId, scope.profileId == profileId else { return }
+    private func settleParkedTransfers(_ scope: ScopeKey) async {
+        guard loadedScope == scope else { return }
         let parked = await Task.detached(priority: .utility) {
-            DownloadFilePaths.finishedTransfers(serverId: serverId, profileId: profileId)
+            DownloadFilePaths.finishedTransfers(
+                serverId: scope.serverId, localAccountId: scope.localAccountId, profileId: scope.profileId
+            )
         }.value
         guard !parked.isEmpty, loadedScope == scope else { return }
         // Directory names are sanitized download ids.
@@ -874,12 +938,14 @@ final class DownloadManager {
         let fm = FileManager.default
         for (directoryName, url) in parked {
             let recordId = recordIds[directoryName]
-            let tag = DownloadTaskTag(serverId: serverId, profileId: profileId, downloadId: recordId ?? directoryName)
+            let tag = DownloadTaskTag(serverId: scope.serverId, localAccountId: scope.localAccountId,
+                                      profileId: scope.profileId, downloadId: recordId ?? directoryName)
             // Evaluated against the current `file`: a live finish may have
             // completed the record since the scan.
             let disposition = Self.finishedTransferDisposition(
                 tag: tag,
                 loadedServerId: scope.serverId,
+                loadedAccountId: scope.localAccountId,
                 loadedProfileId: scope.profileId,
                 record: recordId.flatMap { file.records[$0] }
             )
@@ -909,7 +975,9 @@ final class DownloadManager {
     /// runs afterwards off the main actor.
     private func reclaimUntrackedDirectories(in scope: ScopeKey) async {
         let root = DownloadFilePaths.rootDirectory()
-        let scopeDirectory = DownloadFilePaths.scopeDirectory(serverId: scope.serverId, profileId: scope.profileId, root: root)
+        let scopeDirectory = DownloadFilePaths.scopeDirectory(
+            serverId: scope.serverId, localAccountId: scope.localAccountId, profileId: scope.profileId, root: root
+        )
         let candidates = await Task.detached(priority: .utility) {
             DownloadStorageReclaim.sweepCandidates(inScope: scopeDirectory)
         }.value
@@ -940,9 +1008,11 @@ final class DownloadManager {
     /// A scope's folder names. Callers pass `loadedScope`, which is nil while
     /// a scope switch is still loading its store, when nothing outside the
     /// active scope may be listed or removed.
-    private func scopeFolders(_ scope: ScopeKey?) -> (server: String, profile: String)? {
+    private func scopeFolders(_ scope: ScopeKey?) -> (server: String, account: String, profile: String)? {
         guard let scope else { return nil }
-        return DownloadFilePaths.scopeFolderNames(serverId: scope.serverId, profileId: scope.profileId)
+        return DownloadFilePaths.scopeFolderNames(
+            serverId: scope.serverId, localAccountId: scope.localAccountId, profileId: scope.profileId
+        )
     }
 
     func refreshOtherDownloadStorage() async {
@@ -956,7 +1026,7 @@ final class DownloadManager {
         let root = DownloadFilePaths.rootDirectory()
         let groups = await Task.detached(priority: .utility) {
             DownloadStorageReclaim.otherStorage(root: root, activeServerFolder: active.server,
-                activeProfileFolder: active.profile)
+                activeAccountFolder: active.account, activeProfileFolder: active.profile)
         }.value
         // A scan of the scope before a switch would list the new one as
         // other data.
@@ -982,7 +1052,8 @@ final class DownloadManager {
         // Set aside synchronously, against the scope active right now.
         DownloadStorageReclaim.setAside(
             DownloadStorageReclaim.removalTargets(folderName: group.folderName, root: root,
-                activeServerFolder: active.server, activeProfileFolder: active.profile),
+                activeServerFolder: active.server, activeAccountFolder: active.account,
+                activeProfileFolder: active.profile),
             root: root
         )
         let freed = await deleteSetAsideStorage(root: root)
@@ -1049,6 +1120,59 @@ final class DownloadManager {
         deactivate()
     }
 
+    // MARK: - Whole accounts
+
+    /// Accounts whose downloads were deleted in this process, keyed by
+    /// `accountKey`. A transfer of theirs that finishes afterwards is dropped.
+    private var removedAccounts: Set<String> = []
+
+    private static func accountKey(_ serverId: String, _ localAccountId: String) -> String {
+        serverId + "\n" + localAccountId
+    }
+
+    /// How many downloads an account has on this device, across all its
+    /// profiles and in any state, and the bytes they use. For the sign-out
+    /// confirmation. Needs no network.
+    func downloadSummary(forAccount localAccountId: String, serverId: String) async -> DownloadAccountSummary {
+        // The loaded scope's latest records are on disk once queued saves land.
+        await waitForQueuedSaves()
+        return await DownloadStore.shared.accountSummary(serverId: serverId, localAccountId: localAccountId)
+    }
+
+    /// Deletes every download of one account on this device: cancels its
+    /// transfers, then removes its files, stores, and queued offline
+    /// progress, on every profile. Other accounts, including others on the
+    /// same server, are untouched. When the account is the active scope,
+    /// the manager deactivates first.
+    ///
+    /// Call it before `AccountStore.signOut` removes the account: while the
+    /// account is still its server's legacy data owner, its transfers and
+    /// downloads from before accounts are found and deleted too. Returns
+    /// the bytes freed.
+    @discardableResult
+    func deleteAllDownloads(forAccount localAccountId: String, serverId: String) async -> Int64 {
+        guard !localAccountId.isEmpty, !serverId.isEmpty else { return 0 }
+        let key = Self.accountKey(serverId, localAccountId)
+        removedAccounts.insert(key)
+        if (scopeServerId == serverId && scopeAccountId == localAccountId)
+            || (fileServerId == serverId && fileAccountId == localAccountId) {
+            deactivate()
+        }
+        releasedProgressClaims = releasedProgressClaims.filter { !$0.key.hasPrefix(key + "\n") }
+        // Stopped first, so no transfer of the account lands after the delete.
+        let cancelled = await sessionDelegate.cancelTasks(
+            ofAccount: localAccountId, onServer: serverId, servers: attributionServers
+        )
+        for task in cancelled {
+            intentionalCancels.insert(IntentionalCancel(taskId: task.taskId, owner: task.owner))
+        }
+        // A save queued for the account before this would write its store back.
+        await waitForQueuedSaves()
+        let freed = await DownloadStore.shared.removeAccount(serverId: serverId, localAccountId: localAccountId)
+        if loadedScope != nil { await refreshOtherDownloadStorage() }
+        return freed
+    }
+
     private func deactivate() {
         pollTask?.cancel()
         pollTask = nil
@@ -1063,11 +1187,14 @@ final class DownloadManager {
         scopeLoadTask = nil
         scopeLoadToken = nil
         scopeLoadServerId = ""
+        scopeLoadAccountId = ""
         scopeLoadProfileId = ""
         scopeServerId = ""
+        scopeAccountId = ""
         scopeProfileId = ""
         file = .empty
         fileServerId = ""
+        fileAccountId = ""
         fileProfileId = ""
         parkedSettle = nil
         rateSamples.removeAll()
@@ -1131,11 +1258,16 @@ final class DownloadManager {
         )
     }
 
+    /// `seasonNumber` and `episodeNumber` let the row show its season and
+    /// episode in the app language before the manifest arrives;
+    /// `displaySubtitle` is stored as is.
     func downloadEpisode(
         seriesId: String,
         episodeId: String,
         displayTitle: String?,
         displaySubtitle: String?,
+        seasonNumber: Int? = nil,
+        episodeNumber: Int? = nil,
         posterThumbhash: String?,
         fileId: Int? = nil,
         quality: String? = nil
@@ -1149,17 +1281,20 @@ final class DownloadManager {
             seriesId: seriesId,
             displayTitle: displayTitle,
             displaySubtitle: displaySubtitle,
+            displayNumbers: (seasonNumber, episodeNumber),
             posterThumbhash: posterThumbhash
         )
     }
 
-    func downloadSeason(seriesId: String, seasonNumber: Int, quality: String? = nil) async throws {
-        try await requestDownload(contentId: seriesId, quality: quality, series: true, seasonNumber: seasonNumber,
-            seriesId: seriesId)
+    /// `fileId` is the version each episode should match, on a server that
+    /// supports it.
+    func downloadSeason(seriesId: String, seasonNumber: Int, fileId: Int? = nil, quality: String? = nil) async throws {
+        try await requestDownload(contentId: seriesId, fileId: fileId, quality: quality, series: true,
+            seasonNumber: seasonNumber, seriesId: seriesId)
     }
 
-    func downloadSeries(seriesId: String, quality: String? = nil) async throws {
-        try await requestDownload(contentId: seriesId, quality: quality, series: true, seriesId: seriesId)
+    func downloadSeries(seriesId: String, fileId: Int? = nil, quality: String? = nil) async throws {
+        try await requestDownload(contentId: seriesId, fileId: fileId, quality: quality, series: true, seriesId: seriesId)
     }
 
     private func requestDownload(
@@ -1173,6 +1308,7 @@ final class DownloadManager {
         seriesId: String? = nil,
         displayTitle: String? = nil,
         displaySubtitle: String? = nil,
+        displayNumbers: (season: Int?, episode: Int?) = (nil, nil),
         posterThumbhash: String? = nil
     ) async throws {
         guard downloadsEnabled else { throw DownloadError.unavailable }
@@ -1201,8 +1337,25 @@ final class DownloadManager {
         let isBatch = series || seasonNumber != nil
         do {
             if isBatch {
-                try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
-                    quality: batchQuality(requestedQuality), owner: owner)
+                let version = batchVersion(fileId)
+                var pagesStored = 0
+                do {
+                    try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
+                        quality: batchQuality(requestedQuality), versionFileId: version, owner: owner,
+                        pagesStored: &pagesStored)
+                } catch where version != nil && pagesStored == 0
+                    && APIv2Client.downloadRegistryFailure(error) == .rejected {
+                    // A cached `batchVersion` can outlive a server downgrade,
+                    // and such a server refuses the template on the first page,
+                    // before it registers anything. Read the capability again
+                    // and, when it no longer offers versions, send the batch
+                    // without one. A refusal after a stored page is shown as is.
+                    await refreshCapability()
+                    guard isCurrent(owner), batchVersion(fileId) == nil else { throw error }
+                    try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
+                        quality: batchQuality(requestedQuality), versionFileId: nil, owner: owner,
+                        pagesStored: &pagesStored)
+                }
             } else {
                 let request = APIv2DownloadCreateRequest.single(
                     contentId: contentId,
@@ -1218,6 +1371,7 @@ final class DownloadManager {
                     created.items,
                     displayTitle: displayTitle,
                     displaySubtitle: displaySubtitle,
+                    displayNumbers: displayNumbers,
                     type: type,
                     seriesId: seriesId,
                     posterThumbhash: posterThumbhash
@@ -1235,13 +1389,15 @@ final class DownloadManager {
     /// repeats the same client-chosen batch id, and each page's entries are
     /// stored as soon as it arrives.
     private func createSeriesPages(seriesId: String, seasonNumber: Int?, quality: String,
-                                   owner: ScopeOwner) async throws {
+                                   versionFileId: String?, owner: ScopeOwner,
+                                   pagesStored: inout Int) async throws {
         let request = APIv2DownloadCreateRequest.seriesPage(
             seriesId: seriesId,
             seasonNumber: seasonNumber,
             batchId: UUID().uuidString.lowercased(),
             caps: DownloadCaps.current(),
-            quality: quality
+            quality: quality,
+            mediaFileId: versionFileId
         )
         var cursor: String?
         var cursors: Set<String> = []
@@ -1251,6 +1407,7 @@ final class DownloadManager {
             guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
             applyCreatedEntries(page.items, displayTitle: nil, displaySubtitle: nil, type: nil,
                 seriesId: seriesId, posterThumbhash: nil)
+            pagesStored += 1
             registered += page.items.count
             guard page.page.hasMore else {
                 if registered == 0 { throw DownloadError.emptyRegistrationResponse }
@@ -1276,6 +1433,7 @@ final class DownloadManager {
         _ entries: [APIv2DownloadEntry],
         displayTitle: String?,
         displaySubtitle: String?,
+        displayNumbers: (season: Int?, episode: Int?) = (nil, nil),
         type: String?,
         seriesId: String?,
         posterThumbhash: String?
@@ -1294,6 +1452,7 @@ final class DownloadManager {
                 into: &records,
                 displayTitle: entries.count == 1 ? displayTitle : nil,
                 displaySubtitle: entries.count == 1 ? displaySubtitle : nil,
+                displayNumbers: entries.count == 1 ? displayNumbers : (nil, nil),
                 type: type,
                 seriesId: seriesId,
                 posterThumbhash: entries.count == 1 ? posterThumbhash : nil
@@ -1363,6 +1522,12 @@ final class DownloadManager {
         canChooseBatchQuality ? resolvedDownloadQuality(requestedQuality) : DownloadFormat.original.rawValue
     }
 
+    /// A batch's version template. A server without `batchVersion` rejects
+    /// one, so the server picks each episode's version there.
+    private func batchVersion(_ fileId: Int?) -> String? {
+        capability?.batchVersion == true ? fileId.map(String.init) : nil
+    }
+
     /// The quality a monitor write sends, or nil for a server without
     /// `monitorQuality`, which would not accept the field.
     private func monitorQuality(_ requestedQuality: String?) -> String? {
@@ -1415,7 +1580,7 @@ final class DownloadManager {
     /// unreadable, or was never produced.
     func resumeDownload(id: String) {
         guard var record = file.records[id], record.localStatus == .paused else { return }
-        beginContinuedProcessing(title: record.title)
+        beginContinuedProcessing(title: record.shownTitle())
         // The pause's resume-data capture is still in flight — flag the
         // intent and let `finishPause` re-queue with the data instead of
         // discarding the partial transfer.
@@ -1470,7 +1635,7 @@ final class DownloadManager {
 
     func retryDownload(id: String) {
         guard var record = file.records[id], record.localStatus == .failed else { return }
-        beginContinuedProcessing(title: record.title)
+        beginContinuedProcessing(title: record.shownTitle())
         record.localStatus = .queued
         record.retryCount = 0
         record.lastError = nil
@@ -1669,7 +1834,8 @@ final class DownloadManager {
             auth: auth,
             allowsCellular: !DownloadSettings.shared.wifiOnly
         )
-        let tag = DownloadTaskTag(serverId: owner.scope.serverId, profileId: owner.scope.profileId, downloadId: recordId)
+        let tag = DownloadTaskTag(serverId: owner.scope.serverId, localAccountId: owner.scope.localAccountId,
+                                  profileId: owner.scope.profileId, downloadId: recordId)
         let taskId = sessionDelegate.start(request: request, tag: tag)
         record.taskIdentifier = taskId
         record.localStatus = .downloading
@@ -1704,6 +1870,7 @@ final class DownloadManager {
         record.episodeNumber = record.episodeNumber ?? manifest.episodeNumber
         if record.subtitle == nil {
             if manifest.type == "episode" {
+                // Stored English (D44); rows show `displaySubtitle(locale:)`.
                 let season = manifest.seasonNumber.map { "S\($0)" }
                 let episode = manifest.episodeNumber.map { "E\($0)" }
                 record.subtitle = [season, episode].compactMap { $0 }.joined(separator: " · ")
@@ -2001,7 +2168,8 @@ final class DownloadManager {
             return false
         } else {
             record.localStatus = .failed
-            record.lastError = error.localizedDescription
+            // Stored, so English (D44); failureReason shows it in the app's language.
+            record.lastError = AppLanguage.inEnglish { error.localizedDescription }
         }
         file.records[recordId] = record
         persist()
@@ -2081,7 +2249,7 @@ final class DownloadManager {
     func currentWaitingReason() -> String? {
         if let wait = networkWait() { return wait.label }
         if activeRecords.contains(where: { $0.localStatus == .preparing || $0.localStatus == .registering }) {
-            return "Preparing on server"
+            return AppLanguage.string(.downloadsProgressPreparingOnServer)
         }
         return nil
     }
@@ -2099,7 +2267,7 @@ final class DownloadManager {
     /// only from the user's tap.
     func showProgressOnLockScreen() {
         let headline = DownloadLiveActivityController.headline(of: activeRecords)
-        DownloadContinuedProcessing.shared.begin(title: headline?.title ?? "Downloads")
+        DownloadContinuedProcessing.shared.begin(title: headline?.title ?? AppLanguage.string(.downloadsProgressTitle))
         syncLiveActivity()
     }
     #endif
@@ -2125,9 +2293,9 @@ final class DownloadManager {
 
         var label: String {
             switch self {
-            case .connection: return "Waiting for a connection"
-            case .wifi: return "Waiting for Wi-Fi"
-            case .storageLimit: return "Series storage limit reached"
+            case .connection: return AppLanguage.string(.downloadsWaitConnection)
+            case .wifi: return AppLanguage.string(.downloadsWaitWifi)
+            case .storageLimit: return AppLanguage.string(.downloadsWaitStorageLimit)
             }
         }
     }
@@ -2155,7 +2323,7 @@ final class DownloadManager {
     /// just started (iOS 26 and later). Call only from the user's action.
     private func beginContinuedProcessing(title: String?) {
         #if os(iOS)
-        DownloadContinuedProcessing.shared.begin(title: title ?? "Downloads")
+        DownloadContinuedProcessing.shared.begin(title: title ?? AppLanguage.string(.downloadsProgressTitle))
         #endif
     }
 
@@ -2257,12 +2425,18 @@ final class DownloadManager {
         // waits on its load, `scopeServerId` already names the new scope but
         // `file` still holds the old one.
         let scope = loadedScope
-        let disposition = Self.finishedTransferDisposition(
+        var disposition = Self.finishedTransferDisposition(
             tag: tag,
             loadedServerId: scope?.serverId ?? "",
+            loadedAccountId: scope?.localAccountId ?? "",
             loadedProfileId: scope?.profileId ?? "",
             record: loadedRecord(for: tag)
         )
+        // A transfer that finished as its account's downloads were deleted
+        // has no store left to land in.
+        if disposition == .keepForOwner, let tag, removedAccounts.contains(Self.accountKey(tag.serverId, tag.localAccountId)) {
+            disposition = .discardFile
+        }
         let fm = FileManager.default
         switch disposition {
         case .complete:
@@ -2274,9 +2448,8 @@ final class DownloadManager {
             // from staging.
             let parked = DownloadFilePaths.finishedTransferURL(for: tag)
             guard fileURL.standardizedFileURL.path != parked.standardizedFileURL.path else { return }
-            try? fm.removeItem(at: parked)
             do {
-                try fm.moveItem(at: fileURL, to: parked)
+                try DownloadFilePaths.park(fileURL, at: parked)
             } catch {
                 Self.logger.error("Failed to park finished download: \(String(describing: error), privacy: .private)")
                 try? fm.removeItem(at: fileURL)
@@ -2288,6 +2461,7 @@ final class DownloadManager {
             try? fm.removeItem(at: fileURL)
             DownloadFilePaths.removeDownloadDirectory(
                 serverId: tag.serverId,
+                localAccountId: tag.localAccountId,
                 profileId: tag.profileId,
                 downloadId: tag.downloadId
             )
@@ -2309,18 +2483,21 @@ final class DownloadManager {
         case discardDirectory
     }
 
-    /// `loadedServerId`/`loadedProfileId` name the loaded scope (empty when
-    /// none is), and `record` is that scope's record for the tag's download
-    /// id, looked up only when the tag names the loaded scope.
+    /// `loadedServerId`/`loadedAccountId`/`loadedProfileId` name the loaded
+    /// scope (empty when none is), and `record` is that scope's record for
+    /// the tag's download id, looked up only when the tag names the loaded
+    /// scope.
     nonisolated static func finishedTransferDisposition(
         tag: DownloadTaskTag?,
         loadedServerId: String,
+        loadedAccountId: String,
         loadedProfileId: String,
         record: DownloadRecord?
     ) -> FinishedTransferDisposition {
         guard let tag else { return .discardFile }
-        guard !loadedServerId.isEmpty, !loadedProfileId.isEmpty,
-              tag.isOwned(byServerId: loadedServerId, profileId: loadedProfileId) else { return .keepForOwner }
+        guard !loadedServerId.isEmpty, !loadedAccountId.isEmpty, !loadedProfileId.isEmpty,
+              tag.isOwned(byServerId: loadedServerId, localAccountId: loadedAccountId, profileId: loadedProfileId)
+        else { return .keepForOwner }
         guard let record else { return .discardDirectory }
         // A finish that races a pause still completes the record.
         switch record.localStatus {
@@ -2952,8 +3129,9 @@ final class DownloadManager {
 
     /// One activation of a download scope. The generation advances on every
     /// scope change, so a switch away and back gives a different key.
-    private struct ScopeKey: Equatable {
+    fileprivate struct ScopeKey: Equatable, Sendable {
         let serverId: String
+        let localAccountId: String
         let profileId: String
         let generation: UInt64
     }
@@ -2961,19 +3139,24 @@ final class DownloadManager {
     /// The active scope, or nil when there is none or its store has not
     /// loaded into `file` yet.
     private var loadedScope: ScopeKey? {
-        guard !scopeServerId.isEmpty, !scopeProfileId.isEmpty,
-              fileServerId == scopeServerId, fileProfileId == scopeProfileId else { return nil }
-        return ScopeKey(serverId: scopeServerId, profileId: scopeProfileId, generation: registrationScopeGeneration)
+        guard !scopeServerId.isEmpty, !scopeAccountId.isEmpty, !scopeProfileId.isEmpty,
+              fileServerId == scopeServerId, fileAccountId == scopeAccountId,
+              fileProfileId == scopeProfileId else { return nil }
+        return ScopeKey(serverId: scopeServerId, localAccountId: scopeAccountId, profileId: scopeProfileId,
+                        generation: registrationScopeGeneration)
     }
 
     /// Captures the request owner of `expected`, or of the active scope when
     /// nil. Background work passes the scope it was started under, captured
     /// synchronously, so it never pairs a newer scope's auth with a store
-    /// it did not read.
+    /// it did not read. Nil while the scope's account is not the one
+    /// requests sign in as (for example, it needs to sign in again).
     private func captureScopeOwner(expecting expected: ScopeKey? = nil) async -> ScopeOwner? {
         guard let scope = loadedScope, expected == nil || expected == scope,
               let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
-              auth.account.serverId == scope.serverId, auth.profileId == scope.profileId else { return nil }
+              auth.account.serverId == scope.serverId,
+              auth.account.localAccountId == scope.localAccountId,
+              auth.profileId == scope.profileId else { return nil }
         let owner = ScopeOwner(scope: scope, auth: auth)
         return isCurrent(owner) ? owner : nil
     }
@@ -3157,6 +3340,7 @@ final class DownloadManager {
         // that record.
         let live = Self.liveTaskIds(
             loadedServerId: scope.serverId,
+            loadedAccountId: scope.localAccountId,
             loadedProfileId: scope.profileId,
             tasks: current.map { ($0.taskId, resolveTag($0)) }
         )
@@ -3227,13 +3411,16 @@ final class DownloadManager {
     /// one record has several live tasks, the newest (highest id) wins.
     nonisolated static func liveTaskIds(
         loadedServerId: String,
+        loadedAccountId: String,
         loadedProfileId: String,
         tasks: [(taskId: Int, tag: DownloadTaskTag?)]
     ) -> [String: Int] {
-        guard !loadedServerId.isEmpty, !loadedProfileId.isEmpty else { return [:] }
+        guard !loadedServerId.isEmpty, !loadedAccountId.isEmpty, !loadedProfileId.isEmpty else { return [:] }
         var live: [String: Int] = [:]
         for task in tasks {
-            guard let tag = task.tag, tag.isOwned(byServerId: loadedServerId, profileId: loadedProfileId) else {
+            guard let tag = task.tag,
+                  tag.isOwned(byServerId: loadedServerId, localAccountId: loadedAccountId, profileId: loadedProfileId)
+            else {
                 continue
             }
             live[tag.downloadId] = max(live[tag.downloadId] ?? task.taskId, task.taskId)
@@ -3627,6 +3814,7 @@ final class DownloadManager {
             registered = await syncSubscriptions(owner: owner)
         }
         await flushProgressQueue()
+        await flushTrackPrefs()?.value
         let watchStateOwner = await refreshWatchState()
         await reconcileWithServer(triggerPipeline: true)
         notifyMonitoringBatch(registered: registered, priorRecordIds: priorRecordIds)
@@ -3770,7 +3958,7 @@ final class DownloadManager {
                 // reached the server (refused before dispatch, or deferred)
                 // goes back to pending there.
                 if OfflineProgressQueue.releasesClaims(outcome) {
-                    releaseProgressClaims(ids, serverId: owner.scope.serverId, profileId: owner.scope.profileId)
+                    releaseProgressClaims(ids, in: owner.scope)
                 }
                 return
             }
@@ -3788,22 +3976,228 @@ final class DownloadManager {
     /// Returns claimed entries of an inactive (or not yet reinstalled) scope
     /// to pending: in memory when that scope is installed again, and in its
     /// store file, ordered after every save already queued.
-    private func releaseProgressClaims(_ ids: Set<UUID>, serverId: String, profileId: String) {
-        if serverId == scopeServerId, profileId == scopeProfileId, scopeLoadTask == nil {
+    private func releaseProgressClaims(_ ids: Set<UUID>, in scope: ScopeKey) {
+        let (serverId, accountId, profileId) = (scope.serverId, scope.localAccountId, scope.profileId)
+        if serverId == scopeServerId, accountId == scopeAccountId, profileId == scopeProfileId, scopeLoadTask == nil {
             // Switched away and back: the scope's store is installed again.
             if OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: ids) { persist() }
             return
         }
-        releasedProgressClaims[Self.progressClaimKey(serverId, profileId), default: []].formUnion(ids)
+        releasedProgressClaims[Self.progressClaimKey(serverId, accountId, profileId), default: []].formUnion(ids)
         let previous = saveChain
         saveChain = Task { @MainActor in
             await previous?.value
-            await DownloadStore.shared.releaseProgressClaims(ids, serverId: serverId, profileId: profileId)
+            await DownloadStore.shared.releaseProgressClaims(
+                ids, serverId: serverId, localAccountId: accountId, profileId: profileId
+            )
         }
     }
 
-    private static func progressClaimKey(_ serverId: String, _ profileId: String) -> String {
-        serverId + "\n" + profileId
+    private static func progressClaimKey(_ serverId: String, _ accountId: String, _ profileId: String) -> String {
+        [serverId, accountId, profileId].joined(separator: "\n")
+    }
+
+    // MARK: - Track preferences
+
+    /// The local file and scope a downloaded playback opened. A pick made in
+    /// it is recorded only while both are still current, so it never lands
+    /// in another profile's store or describes a replaced file.
+    struct OfflinePlaybackOwner: Sendable {
+        fileprivate let scope: ScopeKey
+        fileprivate let opened: DownloadRecord
+    }
+
+    func offlinePlaybackOwner(for record: DownloadRecord) -> OfflinePlaybackOwner? {
+        guard let scope = loadedScope, let current = file.records[record.id],
+              Self.holdsSameLocalFile(current, as: record) else { return nil }
+        return OfflinePlaybackOwner(scope: scope, opened: record)
+    }
+
+    func isCurrentOfflinePlayback(_ owner: OfflinePlaybackOwner) -> Bool {
+        guard owner.scope == loadedScope, let current = file.records[owner.opened.id] else { return false }
+        return Self.holdsSameLocalFile(current, as: owner.opened)
+    }
+
+    /// Whether `current` still holds the playable file `opened` described.
+    /// A sync stamps a revision on a download saved before revisions existed
+    /// without replacing its file, so a nil revision matches any.
+    static func holdsSameLocalFile(_ current: DownloadRecord, as opened: DownloadRecord) -> Bool {
+        opened.isPlayableOffline && current.isPlayableOffline
+            && current.mediaFileId == opened.mediaFileId
+            && current.format == opened.format
+            && current.mediaFilename == opened.mediaFilename
+            && (opened.revision == nil || current.revision == opened.revision)
+    }
+
+    var trackPrefs: TrackPrefsStore { file.trackPrefs ?? TrackPrefsStore() }
+
+    /// Records a pick made during downloaded playback, then sends it when
+    /// the server can be reached. A nil body clears the series row.
+    func recordTrackPref<Body: TrackPrefBody>(_ body: Body?, key: String,
+                                              in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
+                                              owner: OfflinePlaybackOwner) {
+        guard isCurrentOfflinePlayback(owner) else { return }
+        updateTrackPrefs { $0.record(body, key: key, in: ledger, at: Date()) }
+        flushTrackPrefs()
+    }
+
+    /// Records the outcome of a write sent at `sentAt` while streaming or
+    /// from a detail page, for a key this scope has downloads of. A write
+    /// sent for another server, account or profile than the active scope's is not
+    /// this store's. `serverDate` is the response's `Date` header.
+    func noteTrackPrefWrite<Body: TrackPrefBody>(_ body: Body?, key: String,
+                                                 in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
+                                                 auth: CapturedOrdinaryRequestAuth, sentAt: Date,
+                                                 stored: Bool, serverDate: Date?) {
+        guard let scope = loadedScope, auth.account.serverId == scope.serverId,
+              auth.account.localAccountId == scope.localAccountId, auth.profileId == scope.profileId,
+              hasDownload(forPrefKey: key) else { return }
+        updateTrackPrefs {
+            $0.wrote(body, key: key, in: ledger, sentAt: sentAt, stored: stored, serverDate: serverDate)
+        }
+    }
+
+    /// Keeps the subtitle cascade a streamed item resolved to, for its
+    /// downloads to start with offline.
+    func noteEffectiveSubtitlePrefs(_ detail: WatchDetail) {
+        guard let key = TrackSelectionPersistence.prefKey(seriesId: detail.seriesId, contentId: detail.contentId),
+              hasDownload(forPrefKey: key) else { return }
+        let prefs = EffectiveSubtitlePrefs(detail)
+        guard trackPrefs.effectiveSubtitle[key] != prefs else { return }
+        updateTrackPrefs { $0.effectiveSubtitle[key] = prefs }
+    }
+
+    /// Reads both series rows for `key` into the store, giving up after
+    /// `limit` so a slow server doesn't hold up playback.
+    ///
+    /// The reads run unstructured: a token refresh they wait on ignores
+    /// cancellation, so a task group would outlast `limit`. A read that
+    /// lands later still updates the store, fenced by its scope owner and
+    /// dropped if the key changed while it ran.
+    func refreshTrackPrefs(key: String, owner: OfflinePlaybackOwner, limit: Duration) async {
+        guard ConnectionMonitor.shared.isServerReachable,
+              let scopeOwner = await captureScopeOwner(expecting: owner.scope) else { return }
+        let (done, finish) = AsyncStream<Void>.makeStream()
+        Task {
+            async let audio: Void = self.refreshTrackPref(key: key, in: \.audio, owner: scopeOwner)
+            async let subtitle: Void = self.refreshTrackPref(key: key, in: \.subtitle, owner: scopeOwner)
+            _ = await (audio, subtitle)
+            finish.finish()
+        }
+        let deadline = Task {
+            try? await Task.sleep(for: limit)
+            finish.finish()
+        }
+        for await _ in done {}
+        deadline.cancel()
+    }
+
+    private func refreshTrackPref<Body: TrackPrefBody>(key: String,
+                                                       in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
+                                                       owner: ScopeOwner) async {
+        let revision = trackPrefs[keyPath: ledger].revision(key)
+        guard let read = try? await SiloAPI.shared.apiV2Client.readTrackPreference(Body.self, seriesId: key, auth: owner.auth),
+              isCurrent(owner), trackPrefs[keyPath: ledger].observed[key] != ObservedTrackPref(read.row) else { return }
+        updateTrackPrefs { $0.observe(read.row, key: key, in: ledger, since: revision) }
+    }
+
+    /// Sends the queued picks, one at a time and in the same per-key order
+    /// as every other preference write. A pass stops at the first pick that
+    /// could not be sent, or when the scope changes; picks recorded during
+    /// the pass are sent in it. A pass the scope changed under starts one
+    /// for the new scope as it ends.
+    @discardableResult
+    func flushTrackPrefs() -> Task<Void, Never>? {
+        guard trackPrefFlush == nil, trackPrefs.hasPending, ConnectionMonitor.shared.isServerReachable else {
+            return trackPrefFlush
+        }
+        let scope = loadedScope
+        let task = Task {
+            if let owner = await self.captureScopeOwner() {
+                var tried: Set<UUID> = []
+                while self.isCurrent(owner) {
+                    var sent = await self.sendNextTrackPref(in: \.audio, owner: owner, tried: &tried)
+                    if sent == nil { sent = await self.sendNextTrackPref(in: \.subtitle, owner: owner, tried: &tried) }
+                    guard sent == true else { break }
+                }
+            }
+            self.trackPrefFlush = nil
+            if self.loadedScope != scope { self.flushTrackPrefs() }
+        }
+        trackPrefFlush = task
+        return task
+    }
+
+    /// Sends the next pick of a kind not tried in this pass: nil when there
+    /// is none, false when it stayed queued.
+    private func sendNextTrackPref<Body: TrackPrefBody>(in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
+                                                        owner: ScopeOwner, tried: inout Set<UUID>) async -> Bool? {
+        guard let next = trackPrefs[keyPath: ledger].pending.first(where: { !tried.contains($0.value.id) }) else {
+            return nil
+        }
+        let (key, pick) = (next.key, next.value)
+        tried.insert(pick.id)
+        await TrackSelectionPersistence.ordered(kind: Body.kind, prefKey: key, owner: owner.auth) {
+            await self.sendTrackPref(pick.id, key: key, in: ledger, owner: owner)
+        }.value
+        return trackPrefs[keyPath: ledger].pending[key]?.id != pick.id
+    }
+
+    /// Sends the queued pick `id`, read when its turn comes: a write that
+    /// stored while it waited may have rebased it.
+    private func sendTrackPref<Body: TrackPrefBody>(_ id: UUID, key: String,
+                                                    in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
+                                                    owner: ScopeOwner) async -> Bool {
+        guard isCurrent(owner), let pick = trackPrefs[keyPath: ledger].pending[key], pick.id == id else { return false }
+        let client = SiloAPI.shared.apiV2Client
+        // Only a refused write ends a pick; a failed read says nothing about it.
+        var writing = false
+        do {
+            let revision = trackPrefs[keyPath: ledger].revision(key)
+            let read = try await client.readTrackPreference(Body.self, seriesId: key, auth: owner.auth)
+            let readAt = Date()
+            guard isCurrent(owner) else { return false }
+            guard TrackPrefLedger.shouldSend(pick, over: read.row, serverDate: read.serverDate, readAt: readAt) else {
+                updateTrackPrefs {
+                    $0.observe(read.row, key: key, in: ledger, since: revision)
+                    $0[keyPath: ledger].discard(pick, key: key)
+                }
+                return false
+            }
+            let serverDate: Date?
+            writing = true
+            if let body = pick.body {
+                serverDate = try await client.writeTrackPreference(kind: Body.kind, seriesId: key, body: body, auth: owner.auth)
+            } else {
+                serverDate = try await client.deleteTrackPreference(kind: Body.kind, seriesId: key, auth: owner.auth)
+            }
+            guard isCurrent(owner) else { return true }
+            updateTrackPrefs {
+                // The write omits members the server keeps (the forced
+                // override), so it lands on the row just read, not the
+                // cached one.
+                $0.observe(read.row, key: key, in: ledger, since: revision)
+                $0.acknowledge(pick, key: key, in: ledger, serverDate: serverDate)
+            }
+            return true
+        } catch {
+            Self.logger.warning("track pref send failed key=\(key, privacy: .public): \(String(describing: error), privacy: .public)")
+            if writing, OfflineTrackPrefs.isRefusedForGood(error), isCurrent(owner) {
+                updateTrackPrefs { $0[keyPath: ledger].discard(pick, key: key) }
+            }
+            return false
+        }
+    }
+
+    private func hasDownload(forPrefKey key: String) -> Bool {
+        loadedScope != nil && file.records.values.contains { $0.seriesId == key || $0.contentId == key }
+    }
+
+    private func updateTrackPrefs(_ change: (inout TrackPrefsStore) -> Void) {
+        var prefs = trackPrefs
+        change(&prefs)
+        file.trackPrefs = prefs
+        persist()
     }
 
     // MARK: - Watch state
@@ -3935,6 +4329,7 @@ final class DownloadManager {
         into records: inout [String: DownloadRecord],
         displayTitle: String?,
         displaySubtitle: String?,
+        displayNumbers: (season: Int?, episode: Int?),
         type: String?,
         seriesId: String?,
         posterThumbhash: String?
@@ -3952,6 +4347,8 @@ final class DownloadManager {
         var record = makeRecord(from: row, type: type)
         record.title = displayTitle
         record.subtitle = displaySubtitle
+        record.requestSeasonNumber = displayNumbers.season
+        record.requestEpisodeNumber = displayNumbers.episode
         record.seriesId = seriesId ?? record.seriesId
         record.posterThumbhash = posterThumbhash
         records[row.id] = record
@@ -4149,14 +4546,18 @@ final class DownloadManager {
     /// The owner tag of a record in `file`: the scope `file` was loaded for
     /// and the record id. Nil when no store is loaded.
     private func ownedTag(recordId: String) -> DownloadTaskTag? {
-        guard !fileServerId.isEmpty, !fileProfileId.isEmpty else { return nil }
-        return DownloadTaskTag(serverId: fileServerId, profileId: fileProfileId, downloadId: recordId)
+        guard !fileServerId.isEmpty, !fileAccountId.isEmpty, !fileProfileId.isEmpty else { return nil }
+        return DownloadTaskTag(serverId: fileServerId, localAccountId: fileAccountId, profileId: fileProfileId,
+                               downloadId: recordId)
     }
 
     /// The owner of the task an event came from: its tag, or for a task an
-    /// earlier build started without one, the owner its request names.
+    /// earlier build started without one, the owner its request names. A
+    /// tag from before accounts is resolved again: its server's legacy data
+    /// owner may be known by now even if it wasn't when the delegate saw
+    /// the event.
     private func resolveTag(_ ref: DownloadTaskRef) -> DownloadTaskTag? {
-        ref.tag ?? DownloadTaskTag.attributing(
+        ref.tag ?? DownloadTaskTag(taskDescription: ref.taskDescription) ?? DownloadTaskTag.attributing(
             requestURL: ref.requestURL,
             profileId: ref.requestProfileId,
             servers: attributionServers
@@ -4175,7 +4576,8 @@ final class DownloadManager {
     /// no loaded scope, or the tag names another scope.
     private func loadedRecord(for tag: DownloadTaskTag?) -> DownloadRecord? {
         guard let tag, let scope = loadedScope,
-              tag.isOwned(byServerId: scope.serverId, profileId: scope.profileId) else { return nil }
+              tag.isOwned(byServerId: scope.serverId, localAccountId: scope.localAccountId, profileId: scope.profileId)
+        else { return nil }
         return file.records[tag.downloadId]
     }
 
@@ -4187,34 +4589,45 @@ final class DownloadManager {
     /// Saves `file` to the store of the scope it was loaded for, which lags
     /// the active scope while a switch waits on its load.
     private func persist() {
-        guard !fileServerId.isEmpty, !fileProfileId.isEmpty else { return }
+        guard !fileServerId.isEmpty, !fileAccountId.isEmpty, !fileProfileId.isEmpty else { return }
         lastProgressPersist = Date()
         let snapshot = file
         let serverId = fileServerId
+        let accountId = fileAccountId
         let profileId = fileProfileId
         // Chain each save after the previous so writes land in call order.
         let previous = saveChain
         saveChain = Task { @MainActor in
             await previous?.value
-            await DownloadStore.shared.save(snapshot, serverId: serverId, profileId: profileId)
+            await DownloadStore.shared.save(snapshot, serverId: serverId, localAccountId: accountId, profileId: profileId)
+        }
+    }
+
+    /// Returns once every queued save has landed, including saves queued
+    /// while it waits.
+    private func waitForQueuedSaves() async {
+        while let chain = saveChain {
+            await chain.value
+            if saveChain == chain { return }
         }
     }
 
     /// Recompute scope storage usage off the MainActor and publish it.
     private func refreshStorageUsage() {
         let serverId = scopeServerId
+        let accountId = scopeAccountId
         let profileId = scopeProfileId
-        guard !serverId.isEmpty, !profileId.isEmpty else {
+        guard !serverId.isEmpty, !accountId.isEmpty, !profileId.isEmpty else {
             totalBytesUsed = 0
             return
         }
         Task {
             let bytes = await Task.detached(priority: .utility) {
-                DownloadFilePaths.bytesUsed(serverId: serverId, profileId: profileId)
+                DownloadFilePaths.bytesUsed(serverId: serverId, localAccountId: accountId, profileId: profileId)
             }.value
             // A slower walk of a scope switched away from must not overwrite
             // the new scope's number.
-            guard serverId == scopeServerId, profileId == scopeProfileId else { return }
+            guard serverId == scopeServerId, accountId == scopeAccountId, profileId == scopeProfileId else { return }
             totalBytesUsed = bytes
         }
     }

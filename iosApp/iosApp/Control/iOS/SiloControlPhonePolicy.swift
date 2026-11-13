@@ -35,17 +35,22 @@ enum SiloControlClosePolicy {
 struct SiloControlPendingReplace: Equatable {
     let request: SiloControlPlaybackRequest
     let nowPlaying: SiloControlNowPlayingSummary?
-    let tvName: String
+    /// Nil when the phone no longer knows which TV it is talking to.
+    let tvName: String?
     /// The TV's own wording, used when it sent no summary.
     let fallbackMessage: String
 
     var message: String {
         guard let nowPlaying else { return fallbackMessage }
-        let who = nowPlaying.profileName ?? "Someone"
         let what = [nowPlaying.subtitle, nowPlaying.title]
             .compactMap { $0?.isEmpty == false ? $0 : nil }
             .joined(separator: " · ")
-        return "\(who) is watching \(what) on \(tvName). Play yours instead?"
+        switch (nowPlaying.profileName, tvName) {
+        case let (who?, tv?): return AppLanguage.string(.castReplaceProfileWatching(who, what, tv))
+        case let (nil, tv?): return AppLanguage.string(.castReplaceSomeoneWatching(what, tv))
+        case let (who?, nil): return AppLanguage.string(.remoteReplaceProfileWatchingTheTv(who, what))
+        case (nil, nil): return AppLanguage.string(.remoteReplaceSomeoneWatchingTheTv(what))
+        }
     }
 }
 

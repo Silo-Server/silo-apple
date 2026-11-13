@@ -3007,7 +3007,6 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             id: serverRegistryID,
             url: serverURL,
             fetchedName: "Self-hosted diagnostics test",
-            profileId: nil,
             lastUsedAt: Date()
         ))
         await registry.switchTo(serverId: serverRegistryID)

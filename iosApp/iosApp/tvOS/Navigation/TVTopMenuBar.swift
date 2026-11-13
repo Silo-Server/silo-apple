@@ -24,6 +24,17 @@ struct TVTopMenuAnchorKey: PreferenceKey {
     }
 }
 
+/// True while the page shows a panel that owns focus, such as the library
+/// Sort panel. The shell disables the bar meanwhile, so a move past the
+/// panel's edge can't land on a tab behind it.
+struct TVPagePanelOpenKey: PreferenceKey {
+    static let defaultValue = false
+
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
 /// A library content type that can surface as a root tab (Skyline §3.1).
 /// Tabs represent types, not server libraries — a type's tab appears only
 /// if the profile can see at least one library of that type.
@@ -33,12 +44,25 @@ enum TVLibraryTabType: String, CaseIterable, Hashable {
     case music
     case audiobooks
 
-    var title: String {
+    /// The tab's label in the top bar.
+    var label: LocalizedStringResource {
         switch self {
-        case .movies: return "Movies"
-        case .series: return "Series"
-        case .music: return "Music"
-        case .audiobooks: return "Audiobooks"
+        case .movies: return .topBarMovies
+        case .series: return .topBarSeries
+        case .music: return .topBarMusic
+        case .audiobooks: return .topBarAudiobooks
+        }
+    }
+
+    var title: String { AppLanguage.string(label) }
+
+    /// What VoiceOver reads for the tab's list of libraries.
+    var librariesSpoken: LocalizedStringResource {
+        switch self {
+        case .movies: return .menuLibrariesMoviesSpoken
+        case .series: return .menuLibrariesSeriesSpoken
+        case .music: return .menuLibrariesMusicSpoken
+        case .audiobooks: return .menuLibrariesAudiobooksSpoken
         }
     }
 
@@ -56,12 +80,12 @@ enum TVLibraryTabType: String, CaseIterable, Hashable {
 
     /// Mono section header for the cascade level-1 panel (§5.3), e.g.
     /// `MOVIE LIBRARIES`.
-    var librariesHeader: String {
+    var librariesHeader: LocalizedStringResource {
         switch self {
-        case .movies: return "MOVIE LIBRARIES"
-        case .series: return "SERIES LIBRARIES"
-        case .music: return "MUSIC LIBRARIES"
-        case .audiobooks: return "AUDIOBOOK LIBRARIES"
+        case .movies: return .menuLibrariesMovies
+        case .series: return .menuLibrariesSeries
+        case .music: return .menuLibrariesMusic
+        case .audiobooks: return .menuLibrariesAudiobooks
         }
     }
 
@@ -82,63 +106,41 @@ enum TVRootDestination: Hashable {
     case home
     case recommendations
     case libraryType(TVLibraryTabType)
-    case libraryShortcut(libraryId: Int, label: String)
     case calendar
-    /// Media requests; present only while the server has requests enabled.
-    case requests
 
-    static func == (lhs: TVRootDestination, rhs: TVRootDestination) -> Bool {
-        switch (lhs, rhs) {
-        case (.home, .home), (.recommendations, .recommendations), (.calendar, .calendar),
-             (.requests, .requests):
-            return true
-        case (.libraryType(let lhsType), .libraryType(let rhsType)):
-            return lhsType == rhsType
-        case (.libraryShortcut(let lhsId, _), .libraryShortcut(let rhsId, _)):
-            return lhsId == rhsId
-        default:
-            return false
+    var title: LocalizedStringResource {
+        switch self {
+        case .home: return .topBarHome
+        case .recommendations: return .topBarForYou
+        case .libraryType(let type): return type.label
+        case .calendar: return .topBarCalendar
         }
     }
 
-    func hash(into hasher: inout Hasher) {
-        switch self {
-        case .home:
-            hasher.combine(0)
-        case .recommendations:
-            hasher.combine(1)
-        case .libraryType(let type):
-            hasher.combine(2)
-            hasher.combine(type)
-        case .libraryShortcut(let libraryId, _):
-            hasher.combine(3)
-            hasher.combine(libraryId)
-        case .calendar:
-            hasher.combine(4)
-        case .requests:
-            hasher.combine(5)
+    /// The fixed Apple TV bar, matching Android TV and Roku: Home, a tab per
+    /// library type the profile can see, For You, Calendar. Audiobooks is
+    /// opt-in. Search and the profile avatar sit outside this list.
+    static func visibleRoots(
+        libraries: [Library],
+        showAudiobooks: Bool
+    ) -> [TVRootDestination] {
+        let types = TVLibraryTabType.allCases.filter { type in
+            (type != .audiobooks || showAudiobooks)
+                && libraries.contains(where: { type.matches($0) })
         }
-    }
-
-    var title: String {
-        switch self {
-        case .home: return "Home"
-        case .recommendations: return "For You"
-        case .libraryType(let type): return type.title
-        case .libraryShortcut(_, let label): return label
-        case .calendar: return "Calendar"
-        case .requests: return "Requests"
-        }
+        return [.home] + types.map(TVRootDestination.libraryType) + [.recommendations, .calendar]
     }
 }
 
-/// Skyline top bar: wordmark left, search + the synced root tabs centered
+/// Skyline top bar: wordmark left, search + the root tabs centered
 /// (search sits left of the first root; the tabs stay screen-centered), profile
 /// avatar right (§5.1). The bar is custom on purpose — the system
 /// `TabView` sidebar steals leftward focus — and draws no background band;
 /// it floats over each page's own scrim and dims to 70% while focus is
 /// down in the content zone.
 struct TVTopMenuBar: View {
+    /// Search leads the bar, so the press toward the tabs swaps in RTL.
+    @Environment(\.layoutDirection) private var layoutDirection
     let roots: [TVRootDestination]
     let selectedRoot: TVRootDestination
     let currentProfile: UserProfile?
@@ -220,6 +222,9 @@ struct TVTopMenuBar: View {
     @State private var dwellSuppressedElement: TVTopMenuFocus?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Tab spoken labels and hints resolve through `AppLanguage.string`;
+    /// reading the locale redraws them when the app language changes.
+    @Environment(\.locale) private var locale
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVFocus"
@@ -486,20 +491,16 @@ struct TVTopMenuBar: View {
         #if DEBUG
         .background(TVFocusDebugTabFramePublisher(isSelected: selectedRoot == root))
         #endif
-        .accessibilityLabel("\(root.title), tab, \(index + 1) of \(count)")
+        .accessibilityLabel(.topBarTabSpoken(AppLanguage.string(root.title), index + 1, count))
         .accessibilityHint(rootPanelHint(for: root))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func rootPanel(_ root: TVRootDestination) -> TVTopMenuPanel? {
         switch root {
-        case .libraryType:
-            return TVLibraryMenuRootKind.category.hasSectionCascade ? .root(root) : nil
-        case .libraryShortcut:
-            return TVLibraryMenuRootKind.directShortcut.hasSectionCascade ? .root(root) : nil
-        case .recommendations:
+        case .libraryType, .recommendations:
             return .root(root)
-        case .home, .calendar, .requests:
+        case .home, .calendar:
             return nil
         }
     }
@@ -507,12 +508,10 @@ struct TVTopMenuBar: View {
     private func rootPanelHint(for root: TVRootDestination) -> String {
         switch root {
         case .libraryType:
-            return "Rest to choose a library"
-        case .libraryShortcut:
-            return "Rest to choose a section"
+            return AppLanguage.string(.topBarHintLibraries)
         case .recommendations:
-            return "Rest to choose Watchlist, Favorites, or Recommendations"
-        case .home, .calendar, .requests:
+            return AppLanguage.string(.topBarHintForYou)
+        case .home, .calendar:
             return ""
         }
     }
@@ -587,7 +586,7 @@ struct TVTopMenuBar: View {
         // in the centered layout the native focus graph resolves this first.
         // Down hands focus to the page's first item, matching the tabs.
         .onMoveCommand { direction in
-            switch direction {
+            switch direction.inLayout(layoutDirection) {
             case .right:
                 guard let firstRoot = roots.first else { return }
                 focusedItem = .root(firstRoot)
@@ -597,7 +596,7 @@ struct TVTopMenuBar: View {
                 break
             }
         }
-        .accessibilityLabel("Search")
+        .accessibilityLabel(.topBarSearch)
     }
 
     // MARK: - Profile
@@ -637,8 +636,8 @@ struct TVTopMenuBar: View {
             onDownToContent: onEnterContent
         ))
         .modifier(TVTopMenuAnchorPublisher(panel: .profile))
-        .accessibilityLabel("Profile")
-        .accessibilityHint("Rest or press to open the profile menu")
+        .accessibilityLabel(.topBarProfileButton)
+        .accessibilityHint(.topBarHintProfile)
     }
 
     private var shouldCaptureExitPress: Bool {
@@ -885,12 +884,13 @@ private struct TVTopMenuDownHandler: ViewModifier {
 private struct TVTopMenuLeadingBoundaryHandler: ViewModifier {
     let isLeading: Bool
     let onMoveLeft: () -> Void
+    @Environment(\.layoutDirection) private var layoutDirection
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if isLeading {
             content.onMoveCommand { direction in
-                if direction == .left { onMoveLeft() }
+                if direction.inLayout(layoutDirection) == .left { onMoveLeft() }
             }
         } else {
             content
@@ -1042,10 +1042,10 @@ struct TVForYouDropdown: View {
         VStack(alignment: .leading, spacing: 10) {
             panelHeader
 
-            actionButton("Watchlist", systemImage: "bookmark.fill", id: .watchlist, action: onWatchlist)
+            actionButton(.menuWatchlist, systemImage: "bookmark.fill", id: .watchlist, action: onWatchlist)
                 .modifier(TVDropdownBoundaryMoveHandler(onMoveUp: onClose, onMoveDown: nil))
-            actionButton("Favorites", systemImage: "heart.fill", id: .favorites, action: onFavorites)
-            actionButton("Recommendations", systemImage: "sparkles", id: .recommendations, action: onRecommendations)
+            actionButton(.menuFavorites, systemImage: "heart.fill", id: .favorites, action: onFavorites)
+            actionButton(.forYouRecommendations, systemImage: "sparkles", id: .recommendations, action: onRecommendations)
                 .modifier(TVDropdownBoundaryMoveHandler(onMoveUp: nil, onMoveDown: onExitToContent))
         }
         .padding(SiloTheme.Skyline.dropdownPadding)
@@ -1053,17 +1053,17 @@ struct TVForYouDropdown: View {
         .modifier(TVSkylinePanelChrome())
         .focusSection()
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("For You menu")
+        .accessibilityLabel(.menuForYouSpoken)
     }
 
     private var panelHeader: some View {
-        TVSkylinePanelHeader(text: "FOR YOU", bottomPadding: 2)
+        TVSkylinePanelHeader(text: AppLanguage.string(.menuForYouHeader), bottomPadding: 2)
             .accessibilityHidden(true)
     }
 
     @ViewBuilder
     private func actionButton(
-        _ title: String,
+        _ title: LocalizedStringResource,
         systemImage: String,
         id: TVForYouAction,
         action: @escaping () -> Void
@@ -1116,13 +1116,13 @@ private struct TVDropdownBoundaryMoveHandler: ViewModifier {
 // MARK: - Profile dropdown
 
 private enum TVProfileAction: Hashable {
-    case switchProfile
-    case watchlist
-    case favorites
     case history
+    case requests
     case watchParty
     case settings
-    case switchServer
+    /// Switch Profile or Add Profile (`ProfileMenuRow`).
+    case profileRow
+    case changeAccount
     case signOut
 }
 
@@ -1137,22 +1137,31 @@ struct TVProfileDropdown: View {
     /// raw `avatar` ref when present.
     var avatarImageUrl: String? = nil
     /// Display name of the active server, shown under the profile name in
-    /// the §5.8 mono header style.
+    /// the §5.8 mono header style, with the username when the server has
+    /// more than one saved account.
     let serverHost: String?
     /// Whether focus has entered the panel.
     let entersPanel: Bool
-    /// Bumped by the host when focus should enter — lands on the first row.
+    /// Bumped by the host when focus should enter — lands on the first row,
+    /// History.
     let focusEntryGeneration: Int
     /// Reports whether any row currently holds focus, so the host can drop
     /// the avatar's focus ring once focus descends (§5.8).
     let onPanelFocusChanged: (Bool) -> Void
+    /// Whether the server offers Requests (`RequestsFeatureStore`).
+    let showsRequests: Bool
+    /// Whether Watch Party is on and the server supports it (`WatchPartyEntry`).
+    let showsWatchParty: Bool
+    /// Switch Profile, Add Profile, or no row, by the open account's profile
+    /// count and limit.
+    let profileRow: ProfileMenuRow?
     let onSwitchProfile: () -> Void
-    let onWatchlist: () -> Void
-    let onFavorites: () -> Void
+    let onAddProfile: () -> Void
     let onHistory: () -> Void
+    let onRequests: () -> Void
     let onWatchParty: () -> Void
     let onSettings: () -> Void
-    let onSwitchServer: () -> Void
+    let onChangeAccount: () -> Void
     let onSignOut: () -> Void
 
     @FocusState private var focusedAction: TVProfileAction?
@@ -1181,36 +1190,46 @@ struct TVProfileDropdown: View {
               generation > 0,
               generation != lastAppliedEntryGeneration else { return }
         lastAppliedEntryGeneration = generation
-        focusedAction = .switchProfile
+        focusedAction = .history
     }
 
     private var panel: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
 
-            actionButton("Switch Profile", systemImage: "person.2.fill", id: .switchProfile, action: onSwitchProfile)
-            actionButton("Watchlist", systemImage: "bookmark.fill", id: .watchlist, action: onWatchlist)
-            actionButton("Favorites", systemImage: "heart.fill", id: .favorites, action: onFavorites)
-            actionButton("History", systemImage: "clock.fill", id: .history, action: onHistory)
-            if WatchPartyEntry.isAvailable {
-                actionButton(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3", id: .watchParty, action: onWatchParty)
+            // Watchlist and Favorites live under For You, not here.
+            actionButton(.menuHistory, systemImage: "clock.fill", id: .history, action: onHistory)
+            if showsRequests {
+                actionButton(.menuRequests, systemImage: "paperplane.fill", id: .requests, action: onRequests)
+            }
+            if showsWatchParty {
+                actionButton(WatchPartySession.shared.isEngaged ? LocalizedStringResource.watchPartyMenuReturn : .watchPartyMenuOpen, systemImage: "person.3", id: .watchParty, action: onWatchParty)
             }
 
             divider
 
-            actionButton("Settings", systemImage: "gearshape.fill", id: .settings, action: onSettings)
-            // The guide marks Switch Server as Android-only (§5.8), but tvOS
-            // already ships multi-server switching — dropping it here would
-            // regress existing users.
-            actionButton("Switch Server", systemImage: "server.rack", id: .switchServer, action: onSwitchServer)
-            actionButton("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", id: .signOut, isDestructive: true, action: onSignOut)
+            actionButton(.menuSettings, systemImage: "gearshape.fill", id: .settings, action: onSettings)
+            // Who is watching sits together, in the phones' order: the open
+            // account's profiles, then Change Account, which in Switch
+            // Server's place lists every saved account by server (spec §4.3).
+            // Servers are managed in Settings › Accounts.
+            if let profileRow {
+                actionButton(
+                    profileRow.title,
+                    systemImage: profileRow.systemImage,
+                    id: .profileRow,
+                    action: profileRow == .addProfile ? onAddProfile : onSwitchProfile
+                )
+            }
+            actionButton(.menuChangeAccount, systemImage: "person.crop.circle.badge.checkmark", id: .changeAccount, action: onChangeAccount)
+            actionButton(.menuSignOut, systemImage: "rectangle.portrait.and.arrow.forward", id: .signOut, isDestructive: true, action: onSignOut)
         }
         .padding(SiloTheme.Skyline.dropdownPadding)
         .frame(width: SiloTheme.Skyline.dropdownWidth, alignment: .leading)
         .modifier(TVSkylinePanelChrome())
         .focusSection()
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Profile menu")
+        .accessibilityLabel(.menuProfileMenuLabel)
     }
 
     private var header: some View {
@@ -1252,7 +1271,7 @@ struct TVProfileDropdown: View {
 
     @ViewBuilder
     private func actionButton(
-        _ title: String,
+        _ title: LocalizedStringResource,
         systemImage: String,
         id: TVProfileAction,
         isDestructive: Bool = false,

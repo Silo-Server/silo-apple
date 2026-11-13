@@ -18,6 +18,9 @@ enum Route: Hashable {
     case personDetail(personId: String)
     /// A Home or library row opened as a full page.
     case sectionCatalog(SectionCatalogTarget)
+    /// A movie box set: one TMDB collection's movies in one library. On
+    /// iPhone and iPad it opens in the same bottom card as a title.
+    case boxSet(id: String, libraryId: Int)
     /// `prefersLastUsedVersion` is the Continue Watching resume intent: pick
     /// the server's last-used file before the profile-wide quality
     /// preference. Audio and subtitle memory ride on the server's
@@ -47,6 +50,10 @@ enum Route: Hashable {
     case collectionDetail(collectionId: String)
     case settings
     case serverList
+    /// Settings › Accounts: saved servers and their accounts (spec §4.5).
+    case accounts
+    /// Change Account: every saved account, grouped by server (spec §4.1).
+    case changeAccount
 
     /// The active party or the create/join hub.
     case watchParty
@@ -97,11 +104,22 @@ struct SectionCatalogTarget: Hashable {
     let title: String
     /// A mixed library's Movies or Series view keeps that type on the page.
     var mediaScope: LibraryVideoScope? = nil
+    /// The section's title key, so the page shows its title in the language
+    /// on screen when it appears and after a switch.
+    var titleKey: String? = nil
+    var titleArgs: [String: String]? = nil
+
+    func displayTitle(in locale: Locale) -> String {
+        AppLanguage.serverText(title, key: titleKey, args: titleArgs, language: AppLanguage.language(of: locale))
+    }
 }
 
 extension SectionCatalogTarget {
     init(_ section: ResolvedSection, scope: Scope, mediaScope: LibraryVideoScope? = nil) {
-        self.init(scope: scope, sectionId: section.id, title: section.title, mediaScope: mediaScope)
+        self.init(
+            scope: scope, sectionId: section.id, title: section.title, mediaScope: mediaScope,
+            titleKey: section.titleKey, titleArgs: section.titleArgs
+        )
     }
 }
 
@@ -226,6 +244,12 @@ extension Route {
             contentId: resolvedID, tvSeed: seed, libraryId: libraryId,
             seriesContext: entryContext
         )
+    }
+
+    /// The box set page, or nil when the server named a library the app
+    /// cannot address.
+    static func boxSet(_ boxSet: CatalogBoxSet) -> Route? {
+        boxSet.appLibraryId.map { .boxSet(id: boxSet.id, libraryId: $0) }
     }
 
     /// Builds the platform-appropriate route from a catalog card. The seed is

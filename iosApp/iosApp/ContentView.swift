@@ -71,7 +71,12 @@ struct ContentView: View {
     /// to sign-in; re-keying there would flash a fresh, empty setup screen
     /// between the two.
     private var authContentIdentity: String? {
-        router.authState == .needsServerSetup ? "serverSetup" : serverRegistry.activeServerId
+        if router.authState == .needsServerSetup { return "serverSetup" }
+        // Change Account switches server and account underneath the profile
+        // flow; the flow's root is rebuilt for the account that opens
+        // (`profileFlowRoot`) rather than the whole stack mid-switch.
+        if router.authState == .needsProfile { return "profileSelection" }
+        return serverRegistry.activeServerId
     }
 
     private var presentedContent: some View {
@@ -120,14 +125,16 @@ struct ContentView: View {
         #endif
         .environmentObject(overlayPrefs)
         .preferredColorScheme(.dark)
-        .alert("Account Update", isPresented: Binding(
+        .alert(.accountAlertTitle, isPresented: Binding(
             get: { router.accountActionError != nil },
             set: { if !$0 { router.accountActionError = nil } }
         )) {
-            Button("OK", role: .cancel) { router.accountActionError = nil }
+            Button(.shellNoticeOk, role: .cancel) { router.accountActionError = nil }
         } message: {
             Text(router.accountActionError ?? "")
         }
+        .modifier(AccountRemovalConfirmationModifier(router: router))
+        .modifier(AddProfileFromMenuModifier(router: router))
         #if !os(tvOS)
         .alert(LegacyDownloadStorage.noticeMessage, isPresented: Binding(
             get: {
@@ -135,7 +142,7 @@ struct ContentView: View {
             },
             set: { if !$0 { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() } }
         )) {
-            Button("OK", role: .cancel) { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() }
+            Button(.shellNoticeOk, role: .cancel) { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() }
         }
         #endif
         #if os(tvOS) && DEBUG
@@ -157,9 +164,9 @@ struct ContentView: View {
                 // Sign in to that saved server again, then come back here.
                 deviceApprovalLink = nil
                 router.signIn(forTVApproval: pending, on: server)
-            }, onSwitchAccount: { server, pending, choosingAccount in
+            }, onAddAccount: { server, pending, choosingAccount in
                 deviceApprovalLink = nil
-                router.switchAccount(forTVApproval: pending, on: server, choosingAccount: choosingAccount)
+                router.addAccount(forTVApproval: pending, on: server, choosingAccount: choosingAccount)
             }, onClose: { deviceApprovalLink = nil })
         }
         #endif
@@ -220,9 +227,8 @@ struct ContentView: View {
                 guard await TokenStore.shared.shouldConsumeSessionExpiryEvent(event) else { return }
                 audioStore.dismissFullPlayer()
                 Task { await audioStore.player.close() }
-                #if !os(tvOS)
-                DownloadManager.shared.clearForSignOut()
-                #endif
+                // Not a sign-out: the account stays saved, waiting to sign in
+                // again, and its downloads stay (spec §4.4).
                 router.expiredSession()
             }
         }
@@ -242,19 +248,25 @@ struct ContentView: View {
             router.presentedPlayer = nil
             audioStore.dismissFullPlayer()
             Task { await audioStore.player.close() }
+            // The picker stays up even with one profile left. Opening that
+            // profile at once would move the person to it unasked, and
+            // returns to Home fast enough that the previous profile's
+            // screens are kept.
+            router.pickerRequestedByPerson = true
             router.showProfileSelection()
         }
         .onChange(of: serverRegistry.activeServerId) { previousServerID, activeServerID in
             guard previousServerID != activeServerID,
                   router.authState == .needsServerSetup,
+                  !router.isReceivingCompanionSetup,
                   shouldPresentProfileSelectionAfterRecovery(
                       isLoggedIn: AuthService.shared.isLoggedIn,
                       activeProfileID: AuthService.shared.profileId
                   ) else { return }
-            // Companion setup adds the server and account atomically. The
-            // active-server change intentionally re-keys `authContent`, which
-            // otherwise replaces the receiver's success screen with a fresh
-            // setup view before its delayed navigation can run.
+            // A server and account were added on the setup screen outside a
+            // phone's session. During one, a phone may push several sign-ins
+            // and the setup screen routes on when it ends (contract §B.7);
+            // leaving it at the first would end the session.
             router.skipsSingleProfilePicker = true
             router.showProfileSelection()
         }
@@ -352,7 +364,7 @@ struct ContentView: View {
             #if os(iOS)
             if router.authState == .authenticated || router.authState == .needsProfile {
                 // A TV approval that waited for this sign-in ("Sign in",
-                // "Not you? Switch account", or a newly added server).
+                // "Not you?" › another account, or a newly added server).
                 // Approval is account-level, so it reopens before a profile
                 // is picked; other links still wait for one.
                 if let link = router.takePendingDeviceApproval() {
@@ -448,6 +460,7 @@ struct ContentView: View {
                 // answer meanwhile, so it need not hold up overlay hydration.
                 Task { await TitleArtPreferences.shared.refresh() }
                 Task { await ThemeMusicPreferences.shared.refresh() }
+                Task { await AppLanguagePreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 await EpisodeSpoilerPreferences.shared.refresh()
@@ -478,6 +491,7 @@ struct ContentView: View {
             if router.authState == .authenticated {
                 Task { await TitleArtPreferences.shared.refresh() }
                 Task { await ThemeMusicPreferences.shared.refresh() }
+                Task { await AppLanguagePreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 await EpisodeSpoilerPreferences.shared.refresh()
@@ -645,8 +659,9 @@ struct ContentView: View {
         async let titleArt: Void = TitleArtPreferences.shared.refresh()
         async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
         async let themeMusic: Void = ThemeMusicPreferences.shared.refresh()
+        async let appLanguage: Void = AppLanguagePreferences.shared.refresh()
         _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, sectionItemLimit, profile, customization, seek,
-                   titleArt, spoilers, themeMusic)
+                   titleArt, spoilers, themeMusic, appLanguage)
     }
 
     @MainActor
@@ -733,7 +748,8 @@ struct ContentView: View {
 
     /// Turn an expired away interval into the same durable identity boundary
     /// as an explicit profile switch. The account and remembered-profile hint
-    /// remain available to Who's Watching.
+    /// remain available to Who's Watching, or to Change Account, which shows
+    /// in its place when several accounts are saved.
     @MainActor
     private func applyProfileReturnPolicy() async {
         guard !isApplyingProfileReturnPolicy,
@@ -784,7 +800,7 @@ struct ContentView: View {
         }
         #endif
         guard deactivated else { return }
-        router.showProfileSelection()
+        router.showProfileSelectionAfterReturn()
     }
 
     #if os(iOS) || os(tvOS)
@@ -837,14 +853,18 @@ struct ContentView: View {
             }
             .environment(router)
 
+        case .needsPasswordChange:
+            #if os(tvOS)
+            // Apple TV never hands off to the password change
+            // (`ProfileSelectionViewModel.handsOffToPasswordChange`); its picker
+            // shows the error instead.
+            profileSelection
+            #else
+            PasswordChangeView(router: router)
+            #endif
+
         case .needsProfile:
-            NavigationStack(path: $router.path) {
-                ProfileSelectionView(router: router)
-                    .navigationDestination(for: Route.self) { route in
-                        profileFlowDestination(for: route)
-                    }
-            }
-            .environment(router)
+            profileSelection
 
         case .authenticated:
             #if os(tvOS)
@@ -854,6 +874,33 @@ struct ContentView: View {
             MainTabView(router: router)
                 .onboardingTourGate(router: router)
             #endif
+        }
+    }
+
+    private var profileSelection: some View {
+        NavigationStack(path: $router.path) {
+            profileFlowRoot
+                .navigationDestination(for: Route.self) { route in
+                    profileFlowDestination(for: route)
+                }
+        }
+        .environment(router)
+    }
+
+    /// The open account's "Who's watching?", or Change Account while no
+    /// account is open and another can be chosen (spec §4.1), or while the
+    /// person chooses the account first (spec §4.2).
+    @ViewBuilder
+    private var profileFlowRoot: some View {
+        if router.authState == .needsProfile, router.showsChangeAccountRoot {
+            #if os(tvOS)
+            TVChangeAccountView()
+            #else
+            ChangeAccountView()
+            #endif
+        } else {
+            ProfileSelectionView(router: router)
+                .id(router.profileFlowRevision)
         }
     }
 
@@ -1164,6 +1211,7 @@ struct ContentView: View {
     /// validation is cancelled and the local route stands, which keeps an
     /// offline launch from waiting on the network.
     private func checkInitialState() async {
+        await AccountSessions.removeServersWithoutAccounts()
         let local = await RestoredSessionAuthResolver.resolveLocal()
         guard !Task.isCancelled, router.authState == .loading else { return }
         commitInitialState(local.state)
@@ -1192,7 +1240,7 @@ struct ContentView: View {
         LaunchTimeline.recordInitialStateResolved(state: state.diagnosticsState)
         #endif
         StartupContentPrefetcher.prefetchForInitialRoute(state)
-        router.authState = state
+        router.commitLaunchRoute(state)
     }
 
     /// Saved servers' push registrations still need renewing while no
@@ -1242,6 +1290,10 @@ struct ContentView: View {
         // instead of every foreground paying for a request.
         AdvisoryAgePreferenceStore.shared.markStale()
         Task { await refreshSessionStores(overlayPhase: "foreground_refresh") }
+        // The account's profiles and profile limit, which the profile menu
+        // draws its profile row from; a cold launch reads them in
+        // `StartupContentPrefetcher.prefetchForInitialRoute`.
+        StartupContentPrefetcher.prefetchProfiles()
         #if os(iOS)
         Task {
             await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
@@ -1376,7 +1428,7 @@ struct ContentView: View {
         }
         await diagnosticsModel.handleForeground()
         await diagnosticsModel.createAndSendManualReport()
-        print("[DebugDiagnostics] \(diagnosticsModel.notice?.message ?? "No upload result.")")
+        print("[DebugDiagnostics] \(diagnosticsModel.notice?.text(in: Locale(identifier: "en")) ?? "No upload result.")")
     }
     #endif
 
@@ -1481,7 +1533,7 @@ struct ContentView: View {
             // auth-state change clears `router.path` first, so reaching this
             // is a bug.
             let _ = assertionFailure("No signed-out destination for \(route)")
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+            EmptyStateView(icon: "questionmark.circle", title: AppLanguage.string(.shellRouteUnknown), subtitle: nil)
                 .siloPageBackground()
         }
     }
@@ -1497,6 +1549,18 @@ struct ContentView: View {
         switch route {
         case .serverList:
             ServerListView()
+        case .accounts:
+            #if os(tvOS)
+            TVAccountsSettingsView()
+            #else
+            AccountsSettingsView()
+            #endif
+        case .changeAccount:
+            #if os(tvOS)
+            TVChangeAccountView()
+            #else
+            ChangeAccountView()
+            #endif
         case .serverSetup:
             #if os(tvOS)
             TVServerSetupView(router: router)
@@ -1510,7 +1574,7 @@ struct ContentView: View {
             ServerNeedsSetupView(router: router)
             #endif
         default:
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+            EmptyStateView(icon: "questionmark.circle", title: AppLanguage.string(.shellRouteUnknown), subtitle: nil)
                 .siloPageBackground()
         }
     }
@@ -2104,12 +2168,13 @@ private struct RemotePlaybackRoutingModifier: ViewModifier {
                     return (
                         title: state.title,
                         contentId: contentId,
-                        targetName: siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "the TV"
+                        targetName: siloControl.activeTarget?.name ?? siloControl.lastTarget?.name
+                            ?? AppLanguage.string(.shellRemotePlaybackFallbackTarget)
                     )
                 }
             }
             .confirmationDialog(
-                "Replace what's playing?",
+                Text(.remoteReplaceTitle),
                 isPresented: Binding(
                     get: { router.pendingReplaceRemotePlayback != nil },
                     set: { if !$0 { router.pendingReplaceRemotePlayback = nil } }
@@ -2117,28 +2182,29 @@ private struct RemotePlaybackRoutingModifier: ViewModifier {
                 titleVisibility: .visible,
                 presenting: router.pendingReplaceRemotePlayback
             ) { choice in
-                Button("Play on \(choice.targetName)") { router.confirmReplaceRemotePlayback() }
-                Button("Cancel", role: .cancel) { router.pendingReplaceRemotePlayback = nil }
+                Button(.shellRemotePlaybackPlayOn(choice.targetName)) { router.confirmReplaceRemotePlayback() }
+                Button(.commonCancel, role: .cancel) { router.pendingReplaceRemotePlayback = nil }
             } message: { choice in
-                Text("\(choice.targetName) is playing \(choice.currentTitle). Playing this will stop it.")
+                Text(.shellRemotePlaybackReplaceMessage(choice.targetName, choice.currentTitle))
             }
             .confirmationDialog(
-                "A TV is connected",
+                Text(.shellRemotePlaybackTvConnected),
                 isPresented: Binding(
                     get: { router.pendingOfflinePlayChoice != nil },
                     set: { if !$0 { router.pendingOfflinePlayChoice = nil } }
                 ),
                 titleVisibility: .visible
             ) {
-                Button("Play on \(siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "TV")") {
+                Button((siloControl.activeTarget?.name ?? siloControl.lastTarget?.name)
+                    .map { LocalizedStringResource.shellRemotePlaybackPlayOn($0) } ?? .shellRemotePlaybackPlayOnTv) {
                     router.sendPendingOfflinePlayToTV()
                 }
-                Button("Play on this \(UIDevice.current.model)") {
+                Button(.shellRemotePlaybackPlayOnThisDevice(UIDevice.current.model)) {
                     router.confirmOfflinePlayHere()
                 }
-                Button("Cancel", role: .cancel) { router.pendingOfflinePlayChoice = nil }
+                Button(.commonCancel, role: .cancel) { router.pendingOfflinePlayChoice = nil }
             } message: {
-                Text("Downloads only play on this device. The TV can stream the same title from your server.")
+                Text(.shellRemotePlaybackDownloadsPlayHere)
             }
 
     }
@@ -2211,7 +2277,7 @@ private struct MacRootPageTopInset: ViewModifier {
 
 enum MainTabDestinationID: Hashable {
     case app(AppTab)
-    case libraryCategory(PrimaryMenuBuiltin)
+    /// A Mac sidebar library row.
     case library(Int)
 }
 
@@ -2222,7 +2288,7 @@ struct MainTabDestination: Identifiable, Equatable {
     let selectedIcon: String
 
     static func app(_ tab: AppTab) -> MainTabDestination {
-        .init(id: .app(tab), title: tab.rawValue, icon: tab.icon, selectedIcon: tab.selectedIcon)
+        .init(id: .app(tab), title: tab.title, icon: tab.icon, selectedIcon: tab.selectedIcon)
     }
 
     static func library(
@@ -2238,130 +2304,12 @@ struct MainTabDestination: Identifiable, Equatable {
             selectedIcon: selectedIcon
         )
     }
-
-    static func libraryCategory(_ category: PrimaryMenuBuiltin) -> MainTabDestination {
-        return .init(
-            id: .libraryCategory(category),
-            title: category.title,
-            icon: category.navigationIcon,
-            selectedIcon: category.navigationIcon
-        )
-    }
 }
 
-private struct MainTabSidebarDestination: Identifiable {
-    let destination: MainTabDestination
-    let isNestedLibrary: Bool
-
-    var id: MainTabDestinationID { destination.id }
-}
-
-/// Projects the cross-client menu into roots this Apple shell can navigate
-/// without discarding destination identity. Sections and collections remain
-/// stored in the synced document, but stay hidden until this shell has a
-/// destination-specific root for them.
-func projectedMainTabDestinations(
-    primaryMenu: PrimaryMenuPreference?,
-    availableLibraries: [Library] = [],
-    showAudiobooks: Bool = true
-) -> [MainTabDestination] {
-    guard let primaryMenu else {
-        return AppTab.visibleCases.map(MainTabDestination.app)
-    }
-
-    let menuItems = primaryMenu.items.count == 1 && primaryMenu.items[0].isHome
-        ? appleDefaultPrimaryMenuItems()
-        : primaryMenu.items
-    var destinations: [MainTabDestination] = []
-    for item in menuItems {
-        guard mainTabSupportsDestination(
-            item,
-            availableLibraries: availableLibraries,
-            showAudiobooks: showAudiobooks
-        ) else {
-            continue
-        }
-        let destination: MainTabDestination?
-        switch item {
-        case .builtin(.home): destination = .app(.home)
-        case .builtin(.movies): destination = .libraryCategory(.movies)
-        case .builtin(.series): destination = .libraryCategory(.series)
-        case .builtin(.audiobooks): destination = .libraryCategory(.audiobooks)
-        case .builtin(.music): destination = nil
-        case .builtin(.forYou): destination = .app(.recommendations)
-        case .builtin(.calendar): destination = .app(.calendar)
-        case .library(let libraryId, let label):
-            let library = availableLibraries.first(where: { $0.id == libraryId })
-            destination = .library(
-                id: libraryId,
-                label: library?.name ?? label,
-                icon: library?.navigationIcon ?? "rectangle.stack",
-                selectedIcon: library?.selectedNavigationIcon ?? "rectangle.stack.fill"
-            )
-        case .section, .collection:
-            destination = nil
-        }
-        if let destination,
-           !destinations.contains(where: { $0.id == destination.id }) {
-            destinations.append(destination)
-        }
-    }
-    if !destinations.contains(where: { $0.id == .app(.home) }) {
-        destinations.insert(.app(.home), at: 0)
-    }
-    if destinations.count == 1, destinations[0].id == .app(.home) {
-        var defaults: [MainTabDestination] = [.app(.home)]
-        if availableLibraries.contains(where: {
-            libraryMatchesPrimaryMenuCategory($0, category: .movies)
-        }) {
-            defaults.append(.libraryCategory(.movies))
-        }
-        if availableLibraries.contains(where: {
-            libraryMatchesPrimaryMenuCategory($0, category: .series)
-        }) {
-            defaults.append(.libraryCategory(.series))
-        }
-        defaults.append(contentsOf: [
-            .app(.recommendations),
-            .app(.calendar),
-        ])
-        return defaults
-    }
-    return destinations
-}
-
-/// Runtime/editor capability gate for the non-tvOS Apple main shell. The
-/// synced document remains untouched; roots that the active profile cannot
-/// currently open simply stay out of the rendered navigation and editor.
-func mainTabSupportsDestination(
-    _ item: PrimaryMenuItem,
-    availableLibraries: [Library],
-    showAudiobooks: Bool = true
-) -> Bool {
-    switch item {
-    case .builtin(.movies):
-        return availableLibraries.contains {
-            libraryMatchesPrimaryMenuCategory($0, category: .movies)
-        }
-    case .builtin(.series):
-        return availableLibraries.contains {
-            libraryMatchesPrimaryMenuCategory($0, category: .series)
-        }
-    case .builtin(.audiobooks):
-        return showAudiobooks && availableLibraries.contains {
-            libraryMatchesPrimaryMenuCategory($0, category: .audiobooks)
-        }
-    case .builtin(.music):
-        return false
-    case .builtin(.home), .builtin(.forYou), .builtin(.calendar):
-        return true
-    case .library(let libraryId, _):
-        return availableLibraries.contains {
-            $0.id == libraryId && (showAudiobooks || !$0.isAudiobookLibrary)
-        }
-    case .section, .collection:
-        return false
-    }
+/// The iPhone, iPad and Mac roots, in a fixed order that matches the Android
+/// phone bar. Search, Requests and Profile live in each page's header.
+func mainTabDestinations(downloadsEnabled: Bool) -> [MainTabDestination] {
+    AppTab.visibleCases.map(MainTabDestination.app) + (downloadsEnabled ? [.app(.downloads)] : [])
 }
 
 func resolvedVisibleMainTabDestination(
@@ -2379,15 +2327,11 @@ func resolvedRequestedMainTabDestination(
 ) -> MainTabDestinationID {
     if requestedTab == .libraries,
        !visibleDestinations.contains(where: { $0.id == .app(.libraries) }),
-       let authoredLibraryRoot = visibleDestinations.first(where: {
-           switch $0.id {
-           case .libraryCategory, .library:
-               return true
-           case .app:
-               return false
-           }
+       let libraryRoot = visibleDestinations.first(where: {
+           if case .library = $0.id { return true }
+           return false
        }) {
-        return authoredLibraryRoot.id
+        return libraryRoot.id
     }
     return resolvedVisibleMainTabDestination(
         .app(requestedTab),
@@ -2438,9 +2382,11 @@ struct MainTabLibrarySnapshot: Equatable {
 struct MainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedDestinationID: MainTabDestinationID = .app(.home)
-    @State private var uiCustomization = UICustomizationPreferences.shared
-    /// The local audiobook opt-in is a final visibility gate even when a
-    /// synced/custom menu contains an Audiobooks destination.
+    #if os(iOS)
+    /// Passes the iPhone library page's dock to the tab bar's accessory slot.
+    @State private var libraryDockHost = LibraryDockHost()
+    #endif
+    /// The local audiobook opt-in; it hides audiobook libraries.
     @State private var navPrefs = AppNavPreferences.shared
     @State private var serverRegistry = ServerRegistry.shared
     /// Tagged with the server/profile that authorized the library list. A
@@ -2456,6 +2402,9 @@ struct MainTabView: View {
     @State private var iPadColumnVisibility: NavigationSplitViewVisibility = .detailOnly
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.scenePhase) private var scenePhase
+    /// Tab and sidebar labels resolve through `AppLanguage.string`; reading
+    /// the locale redraws them when the app language changes.
+    @Environment(\.locale) private var locale
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
     /// For You is normally constructed lazily by TabView. Own its model at the
@@ -2580,12 +2529,6 @@ struct MainTabView: View {
         }
         .task { openRequestedSearch() }
         #endif
-        .onChange(of: uiCustomization.primaryMenu) { _, _ in
-            selectedDestinationID = resolvedVisibleMainTabDestination(
-                selectedDestinationID,
-                visibleDestinations: visibleDestinations
-            )
-        }
         .onChange(of: navPrefs.showAudiobooks) { _, _ in
             selectedDestinationID = resolvedVisibleMainTabDestination(
                 selectedDestinationID,
@@ -2776,7 +2719,7 @@ struct MainTabView: View {
 
     #if os(macOS)
     /// The Mac sidebar's groups. Every library the profile can open gets its
-    /// own row; the synced menu only orders the other destinations.
+    /// own row.
     private var macSidebarSectionList: [MacSidebarSection] {
         macSidebarSections(
             destinations: projectedDestinations,
@@ -2788,18 +2731,7 @@ struct MainTabView: View {
     #endif
 
     private var projectedDestinations: [MainTabDestination] {
-        var destinations = projectedMainTabDestinations(
-            primaryMenu: uiCustomization.primaryMenu,
-            availableLibraries: librarySnapshot.availableLibraries(
-                for: currentLibraryAuthority
-            ),
-            showAudiobooks: navPrefs.showAudiobooks
-        )
-        if DownloadManager.shared.downloadsEnabled,
-           !destinations.contains(where: { $0.id == .app(.downloads) }) {
-            destinations.append(.app(.downloads))
-        }
-        return destinations
+        mainTabDestinations(downloadsEnabled: DownloadManager.shared.downloadsEnabled)
     }
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
@@ -2860,6 +2792,8 @@ struct MainTabView: View {
             .environment(\.statusColumn, statusColumn)
             .siloTabBarMinimizeOnScroll()
             .modifier(NowPlayingShelfAttachment(showsCard: statusColumn != nil))
+            // Outside the attachment, so the slot and every tab read it.
+            .environment(libraryDockHost)
             // Outside the shelf's bottom inset, which would otherwise shorten
             // the column and push its actions up into the system status.
             .overlay {
@@ -2886,7 +2820,6 @@ struct MainTabView: View {
                     onOpenSettings: { router.navigate(to: .settings) },
                     onOpenRequests: { router.navigate(to: .requestsHub) },
                     onSwitchProfile: { router.switchProfile() },
-                    onSwitchServer: { router.navigate(to: .serverList) },
                     onSignOut: { router.signOutAndReset() },
                     axis: .vertical
                 )
@@ -2936,10 +2869,7 @@ struct MainTabView: View {
 
     private var iPadSidebarLayout: some View {
         NavigationSplitView(columnVisibility: $iPadColumnVisibility) {
-            sidebarList(
-                dismissAfterSelection: true,
-                nestsPinnedLibraries: true
-            )
+            sidebarList(dismissAfterSelection: true)
                 .navigationSplitViewColumnWidth(
                     min: iPadSidebarWidth,
                     ideal: iPadSidebarWidth,
@@ -2985,7 +2915,7 @@ struct MainTabView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
 
             Button(action: dismissSidebar) {
-                Image(systemName: "arrow.left")
+                Image(systemName: "arrow.backward")
                     .font(.body.weight(.semibold))
                     .frame(
                         width: SiloTheme.topBarIconHitSize,
@@ -2994,7 +2924,7 @@ struct MainTabView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Close sidebar")
+            .accessibilityLabel(.shellSidebarClose)
         }
         .padding(.horizontal, 20)
         .padding(.top, 24)
@@ -3097,8 +3027,7 @@ struct MainTabView: View {
     }
 
     private func sidebarList(
-        dismissAfterSelection: Bool,
-        nestsPinnedLibraries: Bool
+        dismissAfterSelection: Bool
     ) -> some View {
         List(selection: Binding<MainTabDestinationID?>(
             get: { selectedDestinationID },
@@ -3110,8 +3039,7 @@ struct MainTabView: View {
                 }
             }
         )) {
-            ForEach(sidebarDestinations(nestingPinnedLibraries: nestsPinnedLibraries)) { item in
-                let destination = item.destination
+            ForEach(visibleDestinations) { destination in
                 let isSelected = selectedDestinationID == destination.id
                 Label {
                     Text(destination.title)
@@ -3123,7 +3051,6 @@ struct MainTabView: View {
                         .foregroundStyle(isSelected ? .primary : .secondary)
                         #endif
                 }
-                .padding(.leading, item.isNestedLibrary ? 24 : 0)
                 .tag(destination.id)
             }
         }
@@ -3135,39 +3062,6 @@ struct MainTabView: View {
         // system's white text, so the selected row gets a graphite fill.
         .tint(Color.siloIconTile)
         #endif
-    }
-
-    private func sidebarDestinations(
-        nestingPinnedLibraries: Bool
-    ) -> [MainTabSidebarDestination] {
-        guard nestingPinnedLibraries else {
-            return visibleDestinations.map {
-                MainTabSidebarDestination(destination: $0, isNestedLibrary: false)
-            }
-        }
-
-        let availableLibraries = librarySnapshot.availableLibraries(
-            for: currentLibraryAuthority
-        )
-        return groupPinnedLibrariesUnderMediaTypes(
-            visibleDestinations,
-            libraries: availableLibraries,
-            libraryID: { destination in
-                guard case .library(let libraryID) = destination.id else { return nil }
-                return libraryID
-            },
-            mediaTypeCategory: { destination in
-                guard case .libraryCategory(let category) = destination.id else {
-                    return nil
-                }
-                return category
-            }
-        ).map {
-            MainTabSidebarDestination(
-                destination: $0.element,
-                isNestedLibrary: $0.isNestedLibrary
-            )
-        }
     }
 
     /// Collapses or re-expands the sidebar without moving the detail content.
@@ -3220,12 +3114,6 @@ struct MainTabView: View {
         switch destination.id {
         case .app(let tab):
             tabContent(for: tab)
-        case .libraryCategory(let category):
-            LibrariesTabView(
-                category: category,
-                libraryAuthority: currentLibraryAuthority,
-                onLibrariesLoaded: acceptLoadedLibraries
-            )
         case .library(let libraryId):
             LibrariesTabView(
                 fixedLibraryId: libraryId,
@@ -3304,6 +3192,8 @@ struct MainTabView: View {
             PersonDetailView(personId: personId)
         case .sectionCatalog(let target):
             SectionCatalogView(target: target)
+        case .boxSet(let id, let libraryId):
+            BoxSetDetailView(id: id, libraryId: libraryId)
         case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion, let libraryId):
             #if os(macOS)
             PlayerView(
@@ -3377,6 +3267,18 @@ struct MainTabView: View {
             SettingsView()
         case .serverList:
             ServerListView()
+        case .accounts:
+            #if os(tvOS)
+            TVAccountsSettingsView()
+            #else
+            AccountsSettingsView()
+            #endif
+        case .changeAccount:
+            #if os(tvOS)
+            TVChangeAccountView()
+            #else
+            ChangeAccountView()
+            #endif
         case .offlinePlayer(let downloadId, let contentId, let startFromBeginning, let resumePosition):
             #if os(macOS)
             PlayerView(
@@ -3397,7 +3299,7 @@ struct MainTabView: View {
         case .autoDownloads:
             AutoDownloadsView()
         default:
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+            EmptyStateView(icon: "questionmark.circle", title: AppLanguage.string(.shellRouteUnknown), subtitle: nil)
                 .siloPageBackground()
         }
     }
@@ -3475,6 +3377,8 @@ private struct ItemDetailSheet: View {
             )
         } else if let section = presentation.section {
             SectionCatalogView(target: section, onClose: router.dismissItemDetail)
+        } else if let boxSet = presentation.boxSet {
+            BoxSetDetailView(id: boxSet.id, libraryId: boxSet.libraryId, onClose: router.dismissItemDetail)
         } else {
             ItemDetailView(
                 contentId: presentation.contentId,
@@ -3495,6 +3399,8 @@ private struct ItemDetailSheet: View {
             ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
+        case .boxSet(let id, let libraryId):
+            BoxSetDetailView(id: id, libraryId: libraryId)
         case .requestDetail(let mediaType, let tmdbId):
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         case .sectionCatalog(let target):

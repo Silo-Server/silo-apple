@@ -11,6 +11,7 @@ struct OfflineSeriesBrowseView: View {
 
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     private var manager: DownloadManager { DownloadManager.shared }
 
     @State private var selectedSeasonNumber: Int?
@@ -26,13 +27,13 @@ struct OfflineSeriesBrowseView: View {
             } else {
                 EmptyStateView(
                     icon: "tv",
-                    title: "No Downloads",
-                    subtitle: "This series has no downloaded episodes."
+                    title: AppLanguage.string(.downloadsManagerEmptyTitle, locale: locale),
+                    subtitle: AppLanguage.string(.downloadsOfflineSeriesNoEpisodes, locale: locale)
                 )
             }
         }
         .siloPageBackground()
-        .navigationTitle(group?.title ?? "Series")
+        .navigationTitle(group.map { Text(verbatim: $0.title) } ?? Text(.downloadsEntrySeriesFallback))
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -43,7 +44,7 @@ struct OfflineSeriesBrowseView: View {
                         Button(role: .destructive) {
                             confirmingDeleteAll = true
                         } label: {
-                            Label("Delete All Episodes", systemImage: "trash")
+                            Label(.downloadsManagerDeleteAllEpisodes, systemImage: "trash")
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -52,20 +53,22 @@ struct OfflineSeriesBrowseView: View {
             }
         }
         .alert(
-            "Delete downloaded files?",
+            Text(.downloadsBulkTitle),
             isPresented: $confirmingDeleteAll,
             presenting: group
         ) { group in
             let count = group.episodeCount
-            Button(count == 1 ? "Delete Download" : "Delete \(count) Downloads", role: .destructive) {
+            Button(role: .destructive) {
                 // Only what was confirmed and is still in the series: records
                 // can finish, be removed, or be replaced while the alert is up.
                 let confirmed = Set(group.allRecords.map(\.id))
                 let current = manager.seriesGroup(forSeriesId: seriesId)?.allRecords ?? []
                 manager.deleteDownloads(ids: current.map(\.id).filter(confirmed.contains))
                 dismiss()
+            } label: {
+                Text(.downloadsBulkConfirm(count: count, LocaleFormat.integer(count)))
             }
-            Button("Keep", role: .cancel) {}
+            Button(role: .cancel) {} label: { Text(.downloadsManagerKeep) }
         }
         .siloToolbarColorSchemeDark()
     }
@@ -79,7 +82,9 @@ struct OfflineSeriesBrowseView: View {
                     eyebrow: heroEyebrow(group),
                     posterThumbhash: group.posterThumbhash,
                     posterFileURL: manager.seriesPosterImageURL(for: group),
-                    availability: "Downloaded · \(group.episodeCount) episode\(group.episodeCount == 1 ? "" : "s") · \(DownloadFormatting.bytes(group.totalBytes))",
+                    availability: AppLanguage.string(.downloadsOfflineSeriesAvailability(count: 
+                        group.episodeCount, LocaleFormat.integer(group.episodeCount, locale: locale), DownloadFormatting.bytes(group.totalBytes)
+                    ), locale: locale),
                     isMonitored: group.isMonitored,
                     playTitle: playTitle(season),
                     onPlay: { if let record = playTarget(season) { router.playOffline(record) } }
@@ -99,7 +104,7 @@ struct OfflineSeriesBrowseView: View {
                             Button(role: .destructive) {
                                 manager.deleteDownload(id: record.id)
                             } label: {
-                                Label("Delete Download", systemImage: "trash")
+                                Label(.downloadsManagerDeleteDownload, systemImage: "trash")
                             }
                         }
                     }
@@ -118,7 +123,7 @@ struct OfflineSeriesBrowseView: View {
                     Button {
                         selectedSeasonNumber = season.seasonNumber
                     } label: {
-                        Text(season.isSpecials ? "Specials" : "Season \(season.seasonNumber)")
+                        Text(season.isSpecials ? .detailSpecials : LocalizedStringResource.downloadsEntrySeason(LocaleFormat.integer(season.seasonNumber)))
                             .font(.system(size: 13.5, weight: .semibold))
                             .foregroundColor(isSelected ? .siloOnSurface : .siloSecondaryText)
                             .padding(.horizontal, 14)
@@ -138,17 +143,20 @@ struct OfflineSeriesBrowseView: View {
                 }
             }
             .padding(.horizontal, 18)
+            .mouseDragScrolling()
         }
         .padding(.top, 14)
     }
 
     private func seasonHeaderRow(_ season: DownloadSeasonGroup) -> some View {
         HStack {
-            Text("Episodes")
+            Text(.downloadsOfflineSeriesEpisodes)
                 .font(.system(size: 16, weight: .bold))
                 .foregroundColor(.siloOnSurface)
             Spacer()
-            Text("\(season.episodeCount) on this device · \(DownloadFormatting.bytes(season.totalBytes))")
+            Text(.downloadsOfflineSeriesSeasonOnDevice(count: 
+                season.episodeCount, LocaleFormat.integer(season.episodeCount), DownloadFormatting.bytes(season.totalBytes)
+            ))
                 .font(.system(size: 11.5))
                 .foregroundColor(.siloOnSurface.opacity(0.38))
         }
@@ -167,7 +175,9 @@ struct OfflineSeriesBrowseView: View {
 
     private func heroEyebrow(_ group: DownloadSeriesGroup) -> String {
         let seasons = group.seasonCount
-        return seasons > 1 ? "Series · \(seasons) seasons" : "Series"
+        let series = AppLanguage.string(.downloadsOfflineSeriesEyebrow, locale: locale)
+        guard seasons > 1 else { return series }
+        return [series, AppLanguage.string(.downloadsSeriesRowSeasons(seasons), locale: locale)].joined(separator: " · ")
     }
 
     private func playTarget(_ season: DownloadSeasonGroup?) -> DownloadRecord? {
@@ -176,17 +186,23 @@ struct OfflineSeriesBrowseView: View {
     }
 
     private func playTitle(_ season: DownloadSeasonGroup?) -> String {
-        guard let record = playTarget(season) else { return "Play" }
-        if manager.localProgress(forMediaItemId: record.leafMediaItemId)?.position ?? 0 > 30 {
-            return "Resume\(episodeTag(record))"
+        guard let record = playTarget(season) else { return AppLanguage.string(.commonPlay, locale: locale) }
+        let resumes = manager.localProgress(forMediaItemId: record.leafMediaItemId)?.position ?? 0 > 30
+        let resource: LocalizedStringResource
+        if let tag = episodeTag(record) {
+            resource = resumes ? .downloadsOfflinePlayResumeEpisode(tag) : .downloadsOfflinePlayPlayEpisode(tag)
+        } else {
+            resource = resumes ? .downloadsOfflinePlayResume : .commonPlay
         }
-        return "Play\(episodeTag(record))"
+        return AppLanguage.string(resource, locale: locale)
     }
 
-    private func episodeTag(_ record: DownloadRecord) -> String {
-        guard let episode = record.episodeNumber else { return "" }
-        if let season = record.seasonNumber, season > 0 { return " S\(season)·E\(episode)" }
-        return " E\(episode)"
+    private func episodeTag(_ record: DownloadRecord) -> String? {
+        guard let episode = record.episodeNumber.map({ LocaleFormat.codeNumber($0) }) else { return nil }
+        if let season = record.seasonNumber, season > 0 {
+            return AppLanguage.string(.detailEpisodeCode(LocaleFormat.codeNumber(season), episode), locale: locale)
+        }
+        return AppLanguage.string(.calendarEpisodeShort(episode), locale: locale)
     }
 }
 
@@ -201,6 +217,7 @@ struct OfflineDownloadDetailView: View {
 
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     private var manager: DownloadManager { DownloadManager.shared }
 
     @State private var manifest: OfflineManifest?
@@ -213,7 +230,11 @@ struct OfflineDownloadDetailView: View {
             if let record {
                 content(record)
             } else {
-                EmptyStateView(icon: "arrow.down.circle", title: "Download Removed", subtitle: nil)
+                EmptyStateView(
+                    icon: "arrow.down.circle",
+                    title: AppLanguage.string(.downloadsOfflineDetailRemoved, locale: locale),
+                    subtitle: nil
+                )
                     .siloPageBackground()
             }
         }
@@ -247,20 +268,22 @@ struct OfflineDownloadDetailView: View {
             .ignoresSafeArea(edges: .top)
             .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
         }
-        .alert("Delete this download?", isPresented: $confirmingDelete) {
-            Button("Delete", role: .destructive) {
+        .alert(Text(.downloadsOfflineDetailDeleteTitle), isPresented: $confirmingDelete) {
+            Button(role: .destructive) {
                 manager.deleteDownload(id: record.id)
                 dismiss()
+            } label: {
+                Text(.downloadsOfflineDetailDelete)
             }
-            Button("Cancel", role: .cancel) {}
+            Button(role: .cancel) {} label: { Text(.commonCancel) }
         } message: {
-            Text("This frees \(DownloadFormatting.bytes(record.fileSize)) on this device.")
+            Text(.downloadsOfflineDetailDeleteMessage(DownloadFormatting.bytes(record.fileSize)))
         }
     }
 
     private func hero(_ record: DownloadRecord, backdrop: String?, poster: String?) -> some View {
         PhoneDetailHero(
-            title: record.title ?? record.contentId,
+            title: record.displayTitle(locale: locale),
             // A series logo would misname an episode, so only movies use one.
             logoUrl: record.type == "episode" ? nil : manager.logoImageURL(for: record)?.absoluteString,
             posterUrl: poster,
@@ -292,11 +315,11 @@ struct OfflineDownloadDetailView: View {
 
             PhoneLabeledActionRow {
                 if resumeFraction(record) != nil {
-                    PhoneLabeledAction(icon: "gobackward", label: "Start Over", isToggle: false) {
+                    PhoneLabeledAction(icon: "gobackward", label: AppLanguage.string(.detailStartOver, locale: locale), isToggle: false) {
                         router.playOffline(record, fromStart: true)
                     }
                 }
-                PhoneLabeledAction(icon: "trash", label: "Delete", isToggle: false) {
+                PhoneLabeledAction(icon: "trash", label: AppLanguage.string(.downloadsOfflineDetailDelete, locale: locale), isToggle: false) {
                     confirmingDelete = true
                 }
             }
@@ -308,7 +331,7 @@ struct OfflineDownloadDetailView: View {
     /// Details layout.
     private func downloadSection(_ record: DownloadRecord) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Download")
+            PhoneSectionHeader(title: AppLanguage.string(.downloadsOfflineDetailSection, locale: locale))
             VStack(spacing: 0) {
                 ForEach(Array(factRows(record).enumerated()), id: \.element.0) { index, row in
                     if index > 0 {
@@ -340,15 +363,14 @@ struct OfflineDownloadDetailView: View {
     private func factsLine(_ record: DownloadRecord) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
         if record.type == "episode" {
-            let tag = [record.seasonNumber.map { "S\($0)" }, record.episodeNumber.map { "E\($0)" }]
-                .compactMap { $0 }
-                .joined(separator: " ")
-            if !tag.isEmpty { tokens.append(.text(tag)) }
+            if let tag = record.episodeTag(locale: locale, both: { .homeSeasonEpisode($0, $1) }) {
+                tokens.append(.text(tag))
+            }
             if let series = record.seriesTitle ?? manifest?.seriesTitle, !series.isEmpty {
                 tokens.append(.text(series))
             }
         }
-        if let year = manifest?.year, year > 0 { tokens.append(.text(String(year))) }
+        if let year = manifest?.year, year > 0 { tokens.append(.text(LocaleFormat.integer(year, locale: locale))) }
         if let runtime = MediaTextFormatting.runtime(minutes: manifest?.runtime) {
             tokens.append(.text(runtime))
         }
@@ -371,13 +393,17 @@ struct OfflineDownloadDetailView: View {
     // MARK: - Derived text
 
     private func factRows(_ record: DownloadRecord) -> [(String, String)] {
-        var rows: [(String, String)] = [("Size", DownloadFormatting.bytes(record.fileSize))]
+        func text(_ resource: LocalizedStringResource) -> String { AppLanguage.string(resource, locale: locale) }
+        var rows: [(String, String)] = [(text(.downloadsOfflineDetailFactSize), DownloadFormatting.bytes(record.fileSize))]
         if let audio = manifest?.codecAudio, !audio.isEmpty {
-            rows.append(("Audio", audio.uppercased()))
+            rows.append((text(.downloadsOfflineDetailFactAudio), audio.uppercased()))
         }
         if let subtitles = manifest?.subtitles, !subtitles.isEmpty {
             let langs = subtitles.compactMap { $0.language }.joined(separator: ", ")
-            rows.append(("Subtitles", langs.isEmpty ? "\(subtitles.count) track\(subtitles.count == 1 ? "" : "s")" : langs))
+            rows.append((
+                text(.downloadsOfflineDetailFactSubtitles),
+                langs.isEmpty ? text(.downloadsOfflineDetailSubtitleTracks(count: subtitles.count, LocaleFormat.integer(subtitles.count))) : langs
+            ))
         }
         var quality: [String] = []
         if let resolution = manifest?.resolution, !resolution.isEmpty { quality.append(resolution) }
@@ -390,25 +416,25 @@ struct OfflineDownloadDetailView: View {
            !delivery.isEmpty {
             quality.append(deliveryDisplayName(delivery))
         }
-        if !quality.isEmpty { rows.append(("Quality", quality.joined(separator: " · "))) }
+        if !quality.isEmpty { rows.append((text(.downloadsSettingsQuality), quality.joined(separator: " · "))) }
         if let date = record.downloadedAt {
-            rows.append(("Downloaded", date.formatted(date: .abbreviated, time: .omitted)))
+            rows.append((text(.downloadsOfflineDetailFactDownloaded), date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, locale: AppLanguage.formattingLocale))))
         }
         return rows
     }
 
     private func deliveryDisplayName(_ raw: String) -> String {
         switch raw {
-        case "remux": return "Remux"
-        case "transcode": return "Transcode"
+        case "remux": return AppLanguage.string(.downloadsOfflineDetailDeliveryRemux, locale: locale)
+        case "transcode": return AppLanguage.string(.downloadsOfflineDetailDeliveryTranscode, locale: locale)
         default: return raw.capitalized
         }
     }
 
     private func playLabel(_ record: DownloadRecord) -> String {
         guard let progress = manager.localProgress(forMediaItemId: record.leafMediaItemId),
-              progress.position > 30 else { return "Play" }
-        return "Resume \(PlayerTimeFormatter.formatHMS(progress.position))"
+              progress.position > 30 else { return AppLanguage.string(.commonPlay, locale: locale) }
+        return AppLanguage.string(.downloadsOfflinePlayResumeAt(PlayerTimeFormatter.formatHMS(progress.position)), locale: locale)
     }
 
     private func resumeFraction(_ record: DownloadRecord) -> Double? {

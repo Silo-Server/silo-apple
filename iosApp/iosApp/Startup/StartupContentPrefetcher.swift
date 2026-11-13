@@ -168,6 +168,12 @@ enum StartupContentPrefetcher {
                 await AuthService.shared.recoverFromInvalidProfile(
                     expectedProfileID: requestProfileID
                 )
+            } else if requestProfileID != nil, Self.indicatesNotFound(error) {
+                // A deleted profile is a plain `not_found` too. The account's
+                // profile list tells them apart, and `fetchProfiles`
+                // reconciles the active profile against it. Awaited, so the
+                // return to Who's Watching comes before Home sees the error.
+                _ = try? await fetchProfiles()
             }
             throw error
         }
@@ -179,6 +185,11 @@ enum StartupContentPrefetcher {
         // apart from any other missing resource.
         guard case .problem(let problem) = error as? APIv2Error else { return false }
         return problem.identifier == "profile_verification_required"
+    }
+
+    private static func indicatesNotFound(_ error: Error) -> Bool {
+        guard case .problem(let problem) = error as? APIv2Error else { return false }
+        return problem.status == 404 && problem.identifier == "not_found"
     }
 
     #if os(iOS) || os(tvOS)
@@ -612,7 +623,7 @@ enum StartupContentPrefetcher {
             prefetchProfiles()
         case .needsProfile:
             prefetchProfiles()
-        case .loading, .needsServerSetup, .needsLogin, .serverRecovery:
+        case .loading, .needsServerSetup, .needsLogin, .serverRecovery, .needsPasswordChange:
             break
         }
     }
@@ -642,24 +653,13 @@ enum StartupContentPrefetcher {
                 }
             }
             #else
-            let registry = ServerRegistry.shared
-            let authority = MainTabLibraryAuthority(
-                serverId: registry.activeServerId,
-                profileId: registry.activeProfileId
-            )
-            for category in [PrimaryMenuBuiltin.movies, .series] {
-                let storageKey = librarySelectionStorageKey(
-                    category: category,
-                    fixedLibraryId: nil,
-                    authority: authority
-                )
-                guard let libraryId = resolvedLibraryIdForRoot(
-                    response.libraries,
-                    category: category,
-                    fixedLibraryId: nil,
-                    showAudiobooks: AppNavPreferences.shared.showAudiobooks,
-                    storedLibraryId: storedLibrarySelectionId(for: storageKey)
-                ) else { continue }
+            let storageKey = librarySelectionStorageKey(fixedLibraryId: nil)
+            if let libraryId = resolvedLibraryIdForRoot(
+                response.libraries,
+                fixedLibraryId: nil,
+                showAudiobooks: AppNavPreferences.shared.showAudiobooks,
+                storedLibraryId: storedLibrarySelectionId(for: storageKey)
+            ) {
                 prefetchLibraryLanding(libraryId: libraryId)
             }
             #endif

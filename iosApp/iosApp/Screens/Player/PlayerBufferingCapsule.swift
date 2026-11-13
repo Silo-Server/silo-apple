@@ -5,7 +5,7 @@ import SwiftUI
 /// that has a reason worth naming (a Watch Party sync). Plain loading uses
 /// `PlayerLoadingSpinner`.
 struct PlayerBufferingCapsule: View {
-    let message: LocalizedStringKey
+    let message: LocalizedStringResource
     @State private var isVisible = false
 
     var body: some View {
@@ -30,7 +30,7 @@ struct PlayerBufferingCapsule: View {
         .transition(.opacity)
         .opacity(isVisible ? 1 : 0)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(message)
+        .accessibilityLabel(Text(message))
         .accessibilityHidden(!isVisible)
         .task {
             isVisible = false

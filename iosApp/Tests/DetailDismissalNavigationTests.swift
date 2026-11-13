@@ -93,7 +93,8 @@ final class DetailDismissalNavigationTests: XCTestCase {
 
         let card = try XCTUnwrap(router.presentedItemDetail)
         XCTAssertEqual(card.section, target)
-        XCTAssertFalse(card.fillsWindow)
+        // Fills the open iPhone Duo instead of a capped centered card.
+        XCTAssertTrue(card.fillsWindow)
         XCTAssertTrue(router.path.isEmpty)
 
         router.presentItemDetail(contentId: "movie", libraryId: 4)
@@ -103,6 +104,57 @@ final class DetailDismissalNavigationTests: XCTestCase {
             .itemDetail(contentId: "movie", libraryId: 4, seriesContext: nil),
         ])
         XCTAssertTrue(router.path.isEmpty)
+    }
+
+    func testRequestDetailStaysASheetWhenTheWindowWouldSplit() throws {
+        let router = AppRouter()
+        router.presentsItemDetailFullWindow = true
+        router.navigate(to: .requestDetail(mediaType: .movie, tmdbId: 603))
+        XCTAssertFalse(try XCTUnwrap(router.presentedItemDetail).fillsWindow)
+    }
+
+    func testMoreLikeThisHopsReplaceEachOtherSoBackLeavesInTwoSteps() {
+        let router = AppRouter()
+        router.presentItemDetail(contentId: "a")
+        for contentId in ["b", "c", "d"] {
+            router.openRelatedTitle(contentId: contentId)
+        }
+        XCTAssertEqual(router.visibleItemDetailRoutes, [.itemDetail(contentId: "a"), .itemDetail(contentId: "d")])
+
+        // A second tap on the card just opened opens nothing.
+        router.openRelatedTitle(contentId: "d")
+        XCTAssertEqual(router.visibleItemDetailRoutes, [.itemDetail(contentId: "a"), .itemDetail(contentId: "d")])
+
+        // Picking the title the chain started from goes back to it, and a
+        // second tap there opens no copy.
+        router.openRelatedTitle(contentId: "a")
+        router.openRelatedTitle(contentId: "a")
+        XCTAssertEqual(router.visibleItemDetailRoutes, [.itemDetail(contentId: "a")])
+    }
+
+    func testTitlesOpenedAnotherWayKeepTheirPageUnderMoreLikeThis() {
+        let router = AppRouter()
+        router.presentItemDetail(contentId: "a")
+        router.navigate(to: .personDetail(personId: "p"))
+        // A title from the person's filmography, or from a link, is where
+        // the viewer chose to go; the first recommendation pushes over it.
+        router.presentItemDetail(contentId: "b")
+        router.openRelatedTitle(contentId: "c")
+        router.openRelatedTitle(contentId: "d")
+        XCTAssertEqual(router.visibleItemDetailRoutes, [
+            .itemDetail(contentId: "a"),
+            .personDetail(personId: "p"),
+            .itemDetail(contentId: "b"),
+            .itemDetail(contentId: "d"),
+        ])
+
+        // Back from a person page reached from a recommendation returns to
+        // that recommendation, which the next hop still replaces.
+        router.navigate(to: .personDetail(personId: "q"))
+        router.itemDetailPath.removeLast()
+        router.openRelatedTitle(contentId: "e")
+        XCTAssertEqual(router.visibleItemDetailRoutes.last, .itemDetail(contentId: "e"))
+        XCTAssertEqual(router.visibleItemDetailRoutes.count, 4)
     }
 
     func testPartyWaitsForPickerDismissalAndCannotReopenAfterTermination() {
@@ -154,6 +206,8 @@ final class DetailDismissalNavigationTests: XCTestCase {
     func testCloseButtonWaitsForTapInEveryPhase() async throws {
         let model = PlayerViewModel()
         defer { model.cleanup() }
+        // Each phase taps twice in a row and expects the second tap to hide.
+        model.controlsTapGrace = .zero
         for phase in ["loading", "playing", "next-up", "error"] {
             model.isLoading = phase == "loading"
             model.showNextUpScreen = phase == "next-up"

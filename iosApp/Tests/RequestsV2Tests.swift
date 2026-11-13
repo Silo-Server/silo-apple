@@ -25,6 +25,8 @@ final class RequestsV2Tests: XCTestCase {
             defaults: SharedDefaults(suite: suite, standard: suite))
         await tokens.switchActiveServer(serverId: "test-server")
         await tokens.setServerUrl("https://requests.example")
+        // A profile proof belongs to a signed-in account.
+        _ = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
         if let profile { await tokens.setProfileId(profile) }
         return tokens
     }
@@ -239,6 +241,77 @@ final class RequestsV2Tests: XCTestCase {
         XCTAssertEqual(components.percentEncodedPath, "/api/v2/requests/a%2Fb%3Fc/cancel")
         XCTAssertNil(components.query)
         XCTAssertEqual(request.bodyString, "{}")
+    }
+
+    func testRemoveFailedDeletesTheEncodedIdAndRequiresNoContent() async throws {
+        let (api, _) = try await client()
+        stub.reply(.response(StubURLProtocol.Response(status: 204, headers: [:], body: Data())))
+        try await api.removeFailedRequest(id: "a/b?c")
+        let request = try XCTUnwrap(stub.requests.first)
+        XCTAssertEqual(request.method, "DELETE")
+        let url = try XCTUnwrap(request.url)
+        let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(components.percentEncodedPath, "/api/v2/requests/a%2Fb%3Fc")
+        XCTAssertEqual(request.header("X-Profile-Id"), "profile-one")
+
+        stub.reset()
+        stub.reply(409, Self.problem("conflict", 409, "The request is not in a state that allows this action."))
+        do {
+            try await api.removeFailedRequest(id: "request-one")
+            XCTFail("a request that is no longer failed is refused")
+        } catch {
+            XCTAssertFalse(RequestMutationFailure.isUncertain(error), "\(error)")
+            XCTAssertTrue(RequestMutationFailure.isRemoveConflict(error))
+        }
+    }
+
+    /// Remove shows only on a server that advertises it, and only while the
+    /// viewer may use requests at all.
+    @MainActor
+    func testRemoveIsSupportedOnlyWhenTheServerAdvertisesIt() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let store = RequestsFeatureStore(api: api)
+        let cases: [(String, Bool)] = [
+            (#"{"requests_enabled":true,"rating_restrictions_enforced":false,"revision":"r","state":"available","allowed":true,"remove_failed_supported":true}"#, true),
+            // An older server omits the flag.
+            (#"{"requests_enabled":true,"rating_restrictions_enforced":false,"revision":"r","state":"available","allowed":true}"#, false),
+            (#"{"requests_enabled":true,"rating_restrictions_enforced":false,"revision":"r","state":"available","allowed":false,"remove_failed_supported":true}"#, false),
+        ]
+        for (body, expected) in cases {
+            stub.reply(path: "/api/v2/requests/status", 200, body)
+            await store.refresh()
+            XCTAssertEqual(store.removeFailedSupported, expected, body)
+        }
+        store.reset()
+        XCTAssertFalse(store.removeFailedSupported)
+    }
+
+    /// The server's rule: a failed request that delivered nothing. One that
+    /// delivered a quality before failing is the record of that copy.
+    func testOnlyAFailureThatDeliveredNothingIsRemovable() throws {
+        func record(status: String = "approved", outcome: String, targets: [String]) throws -> MediaRequest {
+            let json = Self.record
+                .replacingOccurrences(of: #""status":"pending","outcome":"active""#,
+                    with: #""status":"\#(status)","outcome":"\#(outcome)""#)
+                .replacingOccurrences(of: #""targets":[]"#,
+                    with: #""targets":[\#(targets.map { #"{"quality":"1080p","status":"\#($0)"}"# }.joined(separator: ","))]"#)
+            return try HTTPClient.makeJSONDecoder().decode(MediaRequest.self, from: Data(json.utf8))
+        }
+        XCTAssertTrue(try record(outcome: "failed", targets: ["failed"]).isRemovable)
+        XCTAssertTrue(try record(outcome: "failed", targets: []).isRemovable)
+        XCTAssertFalse(try record(outcome: "failed", targets: ["completed", "failed"]).isRemovable,
+                       "HD arrived before 4K failed")
+        XCTAssertFalse(try record(status: "pending", outcome: "active", targets: []).isRemovable)
+        XCTAssertFalse(try record(outcome: "declined", targets: []).isRemovable)
+        XCTAssertFalse(try record(outcome: "cancelled", targets: []).isRemovable)
+    }
+
+    func testRemoveFailed401IsNotRefreshedOrReplayed() async throws {
+        let (api, tokens) = try await client()
+        try await assertSentOnceAfter401(tokens, path: "/api/v2/requests/request-one") {
+            try await api.removeFailedRequest(id: "request-one")
+        }
     }
 
     func testFailuresSplitIntoDefiniteAndUncertainWithoutResending() async throws {
@@ -488,6 +561,298 @@ final class RequestsV2Tests: XCTestCase {
         XCTAssertEqual(model.actionErrorMessage, RequestErrorCopy.unconfirmedCancelMessage)
         await model.cancel()
         XCTAssertEqual(stub.requests.filter { $0.method == "POST" }.count, 1, "held cancel is never resent")
+    }
+
+    // MARK: Remove in My Requests
+
+    private static let failedRecord = record
+        .replacingOccurrences(of: #""status":"pending","outcome":"active""#, with: #""status":"approved","outcome":"failed""#)
+        .replacingOccurrences(of: #""targets":[]"#, with: #""targets":[{"quality":"1080p","status":"failed"}]"#)
+    private static let noContent = APIv2TestStub.Reply.response(StubURLProtocol.Response(status: 204, headers: [:], body: Data()))
+
+    /// The list reads and removes, without the detail prefetch a list read
+    /// starts.
+    private static func listAndRemoveCalls(_ stub: APIv2TestStub) -> [String] {
+        stub.requests.compactMap { request in
+            guard !request.path.contains("/detail/") else { return nil }
+            return "\(request.method) \(request.path.split(separator: "/").last ?? "")"
+        }
+    }
+
+    @MainActor
+    private func myRequestsModel() async throws -> MyRequestsViewModel {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        return MyRequestsViewModel(api: api)
+    }
+
+    @MainActor
+    func testRemovingAFailedRequestDropsItsRowAndSaysSo() async throws {
+        let model = try await myRequestsModel()
+        stub.sequence(path: "/api/v2/requests/mine", [
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+            .json(200, #"{"items":[]}"#),
+        ])
+        stub.sequence(path: "/api/v2/requests/request-one", [Self.noContent])
+        await model.load()
+        let failed = try XCTUnwrap(model.buckets.first?.requests.first)
+
+        await model.remove(failed)
+
+        XCTAssertTrue(model.buckets.isEmpty, "the list is read again and the row is gone")
+        XCTAssertEqual(model.notice, "Request removed")
+        XCTAssertNil(model.actionErrorMessage)
+        XCTAssertEqual(Self.listAndRemoveCalls(stub), ["GET mine", "DELETE request-one", "GET mine"])
+    }
+
+    /// The server answered, so the row goes even when the read after it
+    /// fails; a 404 means it was already removed elsewhere.
+    @MainActor
+    func testAnAnsweredRemoveDropsTheRowWithoutAFreshRead() async throws {
+        for answer in [Self.noContent, .json(404, Self.problem("not_found", 404, "The request was not found."))] {
+            stub.reset()
+            let model = try await myRequestsModel()
+            stub.sequence(path: "/api/v2/requests/mine", [
+                .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+                .failure(URLError(.notConnectedToInternet)),
+            ])
+            stub.sequence(path: "/api/v2/requests/request-one", [answer])
+            await model.load()
+            let failed = try XCTUnwrap(model.buckets.first?.requests.first)
+
+            await model.remove(failed)
+
+            XCTAssertTrue(model.buckets.isEmpty, "\(answer)")
+            XCTAssertEqual(model.notice, "Request removed", "\(answer)")
+            XCTAssertNil(model.actionErrorMessage, "\(answer)")
+        }
+    }
+
+    /// A list read that started before the remove answers after it: its
+    /// older answer must not bring the removed row back.
+    @MainActor
+    func testAnOlderListReadCannotBringBackARemovedRow() async throws {
+        let model = try await myRequestsModel()
+        stub.sequence(path: "/api/v2/requests/mine", [
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+            // The pull-to-refresh read, answered before the delete.
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+            .json(200, #"{"items":[]}"#),
+        ])
+        stub.sequence(path: "/api/v2/requests/request-one", [Self.noContent])
+        await model.load()
+        let failed = try XCTUnwrap(model.buckets.first?.requests.first)
+
+        stub.hold(path: "/api/v2/requests/mine")
+        let olderRead = Task { await model.load() }
+        await stub.waitUntilHeld()
+        await model.remove(failed)
+        XCTAssertTrue(model.buckets.isEmpty)
+        stub.release()
+        await olderRead.value
+
+        XCTAssertTrue(model.buckets.isEmpty, "the older read's answer is dropped")
+    }
+
+    /// The hub's rail too: a read that started before a removal still lists
+    /// the request, and the row stays out.
+    @MainActor
+    func testAnOlderHubReadCannotBringBackARemovedRow() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let hub = RequestsHubViewModel(api: api)
+        stub.reply(path: "/api/v2/requests/discover", 200, #"{"items":[]}"#)
+        stub.reply(path: "/api/v2/requests/mine", 200, #"{"items":[\#(Self.failedRecord)]}"#)
+        await hub.load()
+        let failed = try XCTUnwrap(hub.myRequests.first)
+
+        stub.hold(path: "/api/v2/requests/mine")
+        let olderRead = Task { await hub.load() }
+        await stub.waitUntilHeld()
+        hub.applyRemoval(failed)
+        stub.release()
+        let installed = await olderRead.value
+
+        XCTAssertTrue(installed, "a removal does not overtake the hub's read")
+        XCTAssertTrue(hub.myRequests.isEmpty, "the older read does not bring the row back")
+        XCTAssertNil(RequestDetailCache.shared.ownRecord(.init(mediaType: failed.mediaType, tmdbId: failed.tmdbId)),
+                     "nor does it cache the removed record for the title's page")
+
+        // A late mutation answer for the removed request doesn't either.
+        let late = try HTTPClient.makeJSONDecoder().decode(MediaRequest.self, from: Data(Self.record.utf8))
+        XCTAssertEqual(late.id, failed.id)
+        hub.applyRequestUpdate(late)
+        XCTAssertTrue(hub.myRequests.isEmpty, "a late update does not bring the row back")
+    }
+
+    /// On the tvOS hub, holds belong to the action model; a later successful
+    /// hub read, not only the action's own re-read, settles them.
+    @MainActor
+    func testALaterHubReadSettlesAHeldHubAction() async throws {
+        let model = try await myRequestsModel()
+        stub.sequence(path: "/api/v2/requests/request-one", [.failure(URLError(.networkConnectionLost))])
+        let failed = try HTTPClient.makeJSONDecoder().decode(MediaRequest.self, from: Data(Self.failedRecord.utf8))
+
+        await model.remove(failed, refresh: { false })
+        XCTAssertTrue(model.isActionUnconfirmed(failed), "the action's own read failed")
+
+        await model.settleHolds { true }
+        XCTAssertFalse(model.isActionUnconfirmed(failed))
+        XCTAssertNil(model.actionErrorMessage)
+    }
+
+    /// Another mounted list (a second window) drops the row a removal
+    /// elsewhere deleted, and a read it started earlier can't bring it back.
+    @MainActor
+    func testARemovalElsewhereDropsTheRowFromThisList() async throws {
+        let model = try await myRequestsModel()
+        stub.sequence(path: "/api/v2/requests/mine", [
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+        ])
+        await model.load()
+        let failed = try XCTUnwrap(model.buckets.first?.requests.first)
+
+        stub.hold(path: "/api/v2/requests/mine")
+        let olderRead = Task { await model.load() }
+        await stub.waitUntilHeld()
+        model.applyRemoval(failed)
+        stub.release()
+        await olderRead.value
+
+        XCTAssertTrue(model.buckets.isEmpty)
+    }
+
+    /// A lost remove gives up its slot before its re-read. If a fresh read
+    /// settles the hold and the user removes again meanwhile, the first
+    /// remove finishing must not free the second one's slot while its DELETE
+    /// is still out.
+    @MainActor
+    func testAFinishedActionLeavesALaterClaimOnTheSameRequestBusy() async throws {
+        let model = try await myRequestsModel()
+        stub.sequence(path: "/api/v2/requests/mine", [
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+        ])
+        stub.sequence(path: "/api/v2/requests/request-one", [.failure(URLError(.networkConnectionLost)), Self.noContent])
+        await model.load()
+        let failed = try XCTUnwrap(model.buckets.first?.requests.first)
+
+        let (signal, answer) = AsyncStream<Void>.makeStream()
+        let firstRemove = Task {
+            await model.remove(failed, refresh: {
+                for await _ in signal { break }
+                return false
+            })
+        }
+        for _ in 0..<500 where !model.isActionUnconfirmed(failed) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await model.load()
+        XCTAssertFalse(model.isActionUnconfirmed(failed), "a fresh read settles the hold")
+
+        stub.hold(path: "/api/v2/requests/request-one")
+        let secondRemove = Task { await model.remove(failed, refresh: { true }) }
+        await stub.waitUntilHeld()
+        XCTAssertTrue(model.isBusy(failed))
+
+        answer.yield()
+        await firstRemove.value
+        XCTAssertTrue(model.isBusy(failed), "the second remove still holds its slot")
+
+        stub.release()
+        await secondRemove.value
+        XCTAssertFalse(model.isBusy(failed))
+    }
+
+    /// A re-read releases only the holds it can speak for: one that became
+    /// uncertain while the read was running stays held.
+    @MainActor
+    func testAReadReleasesOnlyHoldsOlderThanIt() async throws {
+        let model = try await myRequestsModel()
+        let other = Self.failedRecord
+            .replacingOccurrences(of: #""id":"request-one""#, with: #""id":"request-two""#)
+            .replacingOccurrences(of: #""tmdb_id":949"#, with: #""tmdb_id":500"#)
+        stub.sequence(path: "/api/v2/requests/mine", [.json(200, #"{"items":[\#(Self.failedRecord),\#(other)]}"#)])
+        stub.sequence(path: "/api/v2/requests/request-one", [.failure(URLError(.networkConnectionLost))])
+        stub.sequence(path: "/api/v2/requests/request-two", [.failure(URLError(.networkConnectionLost))])
+        await model.load()
+        let rows = try XCTUnwrap(model.buckets.first?.requests)
+        let first = try XCTUnwrap(rows.first { $0.id == "request-one" })
+        let second = try XCTUnwrap(rows.first { $0.id == "request-two" })
+
+        let (signal, answer) = AsyncStream<Void>.makeStream()
+        let firstRemove = Task {
+            await model.remove(first, refresh: {
+                for await _ in signal { break }
+                return true
+            })
+        }
+        for _ in 0..<500 where !model.isActionUnconfirmed(first) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(model.isActionUnconfirmed(first))
+        // The second remove is lost too, and its own read fails.
+        await model.remove(second, refresh: { false })
+        XCTAssertTrue(model.isActionUnconfirmed(second))
+
+        answer.yield()
+        await firstRemove.value
+
+        XCTAssertFalse(model.isActionUnconfirmed(first), "the read settles the hold it started after")
+        XCTAssertTrue(model.isActionUnconfirmed(second), "it says nothing about a later hold")
+        XCTAssertEqual(stub.requests.filter { $0.method == "DELETE" }.count, 2)
+    }
+
+    /// An admin retried the request after the list loaded: the server refuses
+    /// the remove, and the list shows the request on its way again.
+    @MainActor
+    func testARefusedRemoveReReadsTheListAndSaysWhatHappened() async throws {
+        let model = try await myRequestsModel()
+        let retried = Self.record.replacingOccurrences(of: #""status":"pending""#, with: #""status":"approved""#)
+        stub.sequence(path: "/api/v2/requests/mine", [
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+            .json(200, #"{"items":[\#(retried)]}"#),
+        ])
+        stub.sequence(path: "/api/v2/requests/request-one", [
+            .json(409, Self.problem("conflict", 409, "The request is not in a state that allows this action.")),
+        ])
+        await model.load()
+        let failed = try XCTUnwrap(model.buckets.first?.requests.first)
+
+        await model.remove(failed)
+
+        let row = try XCTUnwrap(model.buckets.first?.requests.first)
+        XCTAssertEqual(row.outcome, .active)
+        XCTAssertFalse(row.isRemovable)
+        XCTAssertEqual(model.actionErrorMessage, "This request changed since the list loaded, so it wasn't removed.")
+        XCTAssertNil(model.notice)
+    }
+
+    /// Remove is `non_retryable`: a lost answer holds the row's action until
+    /// a fresh list read shows what the server did, and is never resent.
+    @MainActor
+    func testAnUncertainRemoveHoldsUntilAFreshReadAndIsNeverResent() async throws {
+        let model = try await myRequestsModel()
+        stub.sequence(path: "/api/v2/requests/mine", [
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+            // The read after the lost answer fails too.
+            .failure(URLError(.notConnectedToInternet)),
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+        ])
+        stub.sequence(path: "/api/v2/requests/request-one", [.failure(URLError(.networkConnectionLost))])
+        await model.load()
+        let failed = try XCTUnwrap(model.buckets.first?.requests.first)
+
+        await model.remove(failed)
+        XCTAssertTrue(model.isActionUnconfirmed(failed))
+        XCTAssertEqual(model.actionErrorMessage, "We couldn't confirm the removal. Reopen My Requests to check it.")
+        await model.remove(failed)
+        XCTAssertEqual(stub.requests.filter { $0.method == "DELETE" }.count, 1, "a held remove is never resent")
+
+        await model.load()
+        XCTAssertFalse(model.isActionUnconfirmed(failed), "the fresh read settles it")
+        XCTAssertNil(model.actionErrorMessage)
     }
 
     @MainActor

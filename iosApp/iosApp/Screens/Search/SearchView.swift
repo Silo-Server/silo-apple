@@ -2,10 +2,11 @@ import SwiftUI
 
 /// Full-screen search with debounced query and grid results — Plezy style.
 struct SearchView: View {
-    @State private var viewModel = SearchViewModel(includesPeople: true, includesEpisodes: true)
+    @State private var viewModel = SearchViewModel(includesPeople: true, includesEpisodes: true, includesBoxSets: true)
     @State private var requestsViewModel = RequestSearchSectionViewModel()
     @State private var navPrefs = AppNavPreferences.shared
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
     #if os(iOS)
     @FocusState private var isSearchFieldFocused: Bool
     #endif
@@ -61,8 +62,13 @@ struct SearchView: View {
         .siloPageBackground()
         #if os(tvOS)
         .safeAreaPadding(.horizontal, tvSearchSafeHorizontalPadding)
+        // Search opens with no navigation bar, but popping a title or box
+        // set off the stack brings the bar back with a "Search" title that
+        // sits over the field and stays put while the results scroll.
+        // Hiding the bar keeps the page as it first opened.
+        .toolbar(.hidden, for: .navigationBar)
         #endif
-        .navigationTitle("Search")
+        .navigationTitle(Text(.searchTitle))
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
         .siloNavigationBarSurfaceBackground()
@@ -124,9 +130,10 @@ struct SearchView: View {
     }
 
     private var searchPrompt: String {
-        audiobooksAvailable
-            ? "Search movies, series, audiobooks..."
-            : "Search movies and series..."
+        AppLanguage.string(
+            audiobooksAvailable ? .searchFieldPromptAudiobooks : .searchFieldPromptVideo,
+            locale: locale
+        )
     }
 
     private func refreshAudiobookAvailability(applySearch: Bool = false) {
@@ -158,8 +165,8 @@ struct SearchView: View {
                 Spacer(minLength: 80)
                 EmptyStateView(
                     icon: "magnifyingglass",
-                    title: "No results",
-                    subtitle: "Try a different search term"
+                    title: AppLanguage.string(.searchEmpty, locale: locale),
+                    subtitle: AppLanguage.string(.searchEmptyBody, locale: locale)
                 )
             }
         case .prompt:
@@ -167,12 +174,17 @@ struct SearchView: View {
                 Spacer(minLength: 80)
                 EmptyStateView(
                     icon: "magnifyingglass",
-                    title: "Search Silo",
-                    subtitle: "Find movies, series, and people"
+                    title: AppLanguage.string(.searchInitial, locale: locale),
+                    subtitle: AppLanguage.string(.searchInitialBodyPeople, locale: locale)
                 )
             }
         case .results:
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
+                // A matching box set leads, ahead of people and its movies.
+                if !viewModel.boxSets.isEmpty {
+                    boxSetSection
+                }
+
                 if !viewModel.people.isEmpty {
                     peopleSection
                 }
@@ -198,11 +210,36 @@ struct SearchView: View {
             Spacer()
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Searching")
+        .accessibilityLabel(Text(.searchSearchingAccessibility))
         #else
         CatalogGrid(items: [], isLoading: true, hasMore: false, onItemTap: { _ in }, onLoadMore: {})
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Searching")
+            .accessibilityLabel(Text(.searchSearchingAccessibility))
+        #endif
+    }
+
+    /// Matching box sets, drawn as cards in the title grid's columns. Each
+    /// opens its box set page.
+    private var boxSetSection: some View {
+        let cards = viewModel.boxSets.map(BrowseItem.init(boxSet:))
+        #if os(tvOS)
+        return VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
+            TVSectionHeader(title: AppLanguage.string(.boxSetsSearchHeading, locale: locale))
+            TVCatalogGrid(
+                items: cards,
+                isLoading: false,
+                hasMore: false,
+                onItemTap: { _ in },
+                onNearEnd: { _ in },
+                columnCount: 6,
+                cardWidth: 220
+            )
+        }
+        #else
+        return VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: AppLanguage.string(.boxSetsSearchHeading, locale: locale))
+            CatalogGrid(items: cards, isLoading: false, hasMore: false, onItemTap: { _ in }, onLoadMore: {})
+        }
         #endif
     }
 
@@ -213,12 +250,12 @@ struct SearchView: View {
         let openPerson: (String) -> Void = { router.navigate(to: .personDetail(personId: $0)) }
         #if os(tvOS)
         return VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
-            TVSectionHeader(title: "People")
+            TVSectionHeader(title: AppLanguage.string(.searchPeople, locale: locale))
             TVDetailCastRail(cast: people, onTap: openPerson)
         }
         #else
         return VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "People")
+            PhoneSectionHeader(title: AppLanguage.string(.searchPeople, locale: locale))
             PhoneCastRail(cast: people, onTap: openPerson)
                 // The rail insets its own cards, so let it scroll edge to edge.
                 .padding(.horizontal, -SiloTheme.padding)
@@ -228,7 +265,7 @@ struct SearchView: View {
 
     private var titleResults: some View {
         VStack(alignment: .leading, spacing: SiloTheme.padding) {
-            Text("\(viewModel.total) result\(viewModel.total == 1 ? "" : "s")")
+            Text(.searchResultCount(count: viewModel.total, LocaleFormat.integer(viewModel.total)))
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
 
@@ -280,11 +317,13 @@ struct SearchView: View {
     }
 
     private var mediaTypePicker: some View {
-        Picker("Media Type", selection: $viewModel.selectedMediaType) {
+        Picker(selection: $viewModel.selectedMediaType) {
             ForEach(viewModel.availableMediaTypes) { mediaType in
                 Text(mediaType.title)
                     .tag(mediaType)
             }
+        } label: {
+            Text(.searchMediaTypePicker)
         }
         .pickerStyle(.segmented)
 #if os(tvOS)

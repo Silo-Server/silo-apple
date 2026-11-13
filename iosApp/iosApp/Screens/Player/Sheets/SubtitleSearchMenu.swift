@@ -43,6 +43,7 @@ struct SubtitleSearchMenu: View {
     /// The profile's preferred subtitle language, used to pre-select and
     /// float its row. Observed so a late hydration refreshes the default.
     @ObservedObject private var profilePrefs = ProfilePrefsStore.shared
+    @Environment(\.locale) private var locale
 
     private enum Phase: Equatable {
         /// Language list shown, no search yet (or user backed out of results).
@@ -120,11 +121,9 @@ struct SubtitleSearchMenu: View {
 
     // MARK: - Shared copy
 
-    private var title: String { "Search Subtitles" }
+    private var title: LocalizedStringResource { .subtitleSearchTitle }
 
-    private var explainer: String {
-        "Pick a language and Silo searches its subtitle providers for this video."
-    }
+    private var explainer: LocalizedStringResource { .subtitleSearchPickLanguageNote }
 
     // MARK: - Languages
 
@@ -151,7 +150,8 @@ struct SubtitleSearchMenu: View {
     /// playback session went away under an open sheet), which nils the reason
     /// while leaving search just as unrunnable.
     private var unavailableMessage: String {
-        viewModel.subtitleSearchUnavailableReason ?? "Subtitle search isn't available right now."
+        viewModel.subtitleSearchUnavailableReason
+            ?? AppLanguage.string(.subtitleSearchUnavailable, locale: locale)
     }
 
     /// Show the unavailable state if the server has since told us it has no
@@ -275,17 +275,18 @@ struct SubtitleSearchMenu: View {
             parts.append(displayName(result.language))
         }
         if result.downloads > 0 {
-            parts.append("\(result.downloads) downloads")
+            parts.append(AppLanguage.string(
+                .subtitleSearchDownloadCount(count: result.downloads, LocaleFormat.integer(result.downloads, locale: locale)), locale: locale))
         }
         if result.hearingImpaired {
-            parts.append("HI")
+            parts.append(AppLanguage.string(.subtitleSearchHearingImpaired, locale: locale))
         }
         return parts.joined(separator: " • ")
     }
 
-    private var emptyResultsText: String {
-        let language = searchedLanguage.map(displayName) ?? "that language"
-        return "No subtitles found for \(language)."
+    private var emptyResultsText: LocalizedStringResource {
+        guard let language = searchedLanguage.map(displayName) else { return .subtitleSearchNoResultsAnyLanguage }
+        return .subtitleSearchNoResults(language)
     }
 
     // MARK: - tvOS
@@ -313,11 +314,12 @@ struct SubtitleSearchMenu: View {
 
     private var tvOSPanel: some View {
         TVSubtitleDialog(
-            title: title,
-            subtitle: tvSubtitle,
-            backHint: tvBackHint,
-            statusHint: downloadingId != nil ? "Adding subtitle…"
-                : phase == .results && !results.isEmpty ? "Select a subtitle to download and use it" : "",
+            title: AppLanguage.string(title, locale: locale),
+            subtitle: AppLanguage.string(tvSubtitle, locale: locale),
+            backHint: AppLanguage.string(tvBackHint, locale: locale),
+            statusHint: downloadingId != nil ? AppLanguage.string(.subtitleSearchAdding, locale: locale)
+                : phase == .results && !results.isEmpty
+                    ? AppLanguage.string(.subtitleSearchSelectHint, locale: locale) : "",
             onDismiss: { if downloadingId == nil { onDismiss() } }
         ) {
             switch phase {
@@ -370,33 +372,35 @@ struct SubtitleSearchMenu: View {
         .onChange(of: profilePrefs.preferredSubtitleLanguage) { _, _ in seedSelectedLanguage() }
     }
 
-    private var tvSubtitle: String {
+    private var tvSubtitle: LocalizedStringResource {
         switch phase {
         case .picking:
-            return "Choose a language to find subtitles for this video."
+            return .subtitleSearchExplainer
         case .searching:
-            return "Finding subtitles in \(searchedLanguage.map(displayName) ?? "your language")"
+            guard let language = searchedLanguage.map(displayName) else { return .subtitleSearchSearchingInYourLanguage }
+            return .subtitleSearchSearchingIn(language)
         case .results:
-            let language = searchedLanguage.map(displayName) ?? "Subtitles"
-            return "\(language) · \(results.count) \(results.count == 1 ? "result" : "results")"
+            let language = searchedLanguage.map(displayName)
+                ?? AppLanguage.string(.playerTracksSubtitles, locale: locale)
+            return .subtitleSearchResultCount(language, results.count)
         case .failed:
-            return "Subtitle search could not finish"
+            return .subtitleSearchFailedTitle
         }
     }
 
-    private var tvBackHint: String {
-        if downloadingId != nil { return "Please wait for the download to finish" }
-        return phase == .picking ? "Back to Subtitles" : "Back to languages"
+    private var tvBackHint: LocalizedStringResource {
+        if downloadingId != nil { return .subtitleSearchWaitForDownload }
+        return phase == .picking ? .playerTracksBackToSubtitles : .subtitleSearchBackToLanguages
     }
 
     @ViewBuilder
     private var tvLanguageRows: some View {
         let choices = languageChoices
         if !choices.suggested.isEmpty {
-            sectionHeader("Preferred language")
+            sectionHeader(.subtitleSearchPreferredHeader)
             ForEach(choices.suggested) { tvLanguageRow($0) }
         }
-        sectionHeader(choices.suggested.isEmpty ? "Language" : "All Languages")
+        sectionHeader(choices.suggested.isEmpty ? .subtitleSearchLanguageHeader : .subtitleSearchAllLanguagesHeader)
         ForEach(choices.other) { tvLanguageRow($0) }
     }
 
@@ -407,7 +411,7 @@ struct SubtitleSearchMenu: View {
             focusedID: $focusedRowID,
             action: { search(language: choice.code) }
         ) {
-            Image(systemName: choice.hint == "Preferred" ? "star.fill" : "globe")
+            Image(systemName: choice.hint == .preferred ? "star.fill" : "globe")
                 .font(.system(size: 22, weight: .regular))
                 .opacity(0.8)
                 .frame(width: 34)
@@ -416,14 +420,14 @@ struct SubtitleSearchMenu: View {
                     .font(.system(size: 24, weight: .medium))
                     .lineLimit(1)
                 if let hint = choice.hint {
-                    Text(hint)
+                    Text(hint.label)
                         .font(.system(size: 18))
                         .opacity(0.65)
                         .lineLimit(1)
                 }
             }
             Spacer(minLength: 8)
-            Image(systemName: "chevron.right")
+            Image(systemName: "chevron.forward")
                 .font(.system(size: 18, weight: .semibold))
                 .opacity(0.55)
         }
@@ -460,7 +464,7 @@ struct SubtitleSearchMenu: View {
                     .font(.system(size: 20, weight: .semibold))
                     .opacity(0.8)
                     .frame(width: 34)
-                Text("Choose another language")
+                Text(.subtitleSearchChooseAnother)
                     .font(.system(size: 22, weight: .medium))
                 Spacer(minLength: 8)
             }
@@ -483,13 +487,13 @@ struct SubtitleSearchMenu: View {
         ) {
             VStack(spacing: 6) {
                 scoreBadge(result.score, fontSize: 18)
-                Text("Match")
+                Text(.subtitleSearchMatchLabel)
                     .font(.system(size: 14))
                     .opacity(0.65)
             }
             .frame(width: 64)
             VStack(alignment: .leading, spacing: 4) {
-                Text(result.releaseName.isEmpty ? "Untitled release" : result.releaseName)
+                releaseNameText(result)
                     .font(.system(size: 24, weight: .medium))
                     .lineLimit(2)
                 Text(resultDetail(result))
@@ -529,14 +533,14 @@ struct SubtitleSearchMenu: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 14) {
                 ProgressView()
-                Text("Searching providers…")
+                Text(.subtitleSearchSearching)
                     .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(.white)
             }
-            Text("This can take up to half a minute.")
+            Text(.subtitleSearchSearchingNote)
                 .font(.system(size: 17))
                 .foregroundStyle(.white.opacity(0.5))
-            Button("Cancel") { backToLanguages() }
+            Button { backToLanguages() } label: { Text(.commonCancel) }
                 .buttonStyle(.bordered)
                 .focused($focusedRowID, equals: "cancel-search")
         }
@@ -554,11 +558,11 @@ struct SubtitleSearchMenu: View {
                 .foregroundStyle(.white.opacity(0.7))
             HStack(spacing: 12) {
                 if let language = searchedLanguage {
-                    Button("Try Again") { search(language: language) }
+                    Button { search(language: language) } label: { Text(.subtitleSearchTryAgain) }
                         .buttonStyle(.bordered)
                         .focused($focusedRowID, equals: "retry-search")
                 }
-                Button("Back") { backToLanguages() }
+                Button { backToLanguages() } label: { Text(.commonBack) }
                     .buttonStyle(.bordered)
                     .focused($focusedRowID, equals: "search-back")
             }
@@ -570,8 +574,9 @@ struct SubtitleSearchMenu: View {
     }
 
     @ViewBuilder
-    private func sectionHeader(_ text: String) -> some View {
-        Text(text.uppercased())
+    private func sectionHeader(_ text: LocalizedStringResource) -> some View {
+        Text(text)
+            .textCase(.uppercase)
             .font(.system(size: 14, weight: .semibold))
             .tracking(1.2)
             .foregroundStyle(.white.opacity(0.45))
@@ -590,12 +595,12 @@ struct SubtitleSearchMenu: View {
                 case .searching:
                     VStack(spacing: 12) {
                         ProgressView()
-                        Text("Searching providers…")
+                        Text(.subtitleSearchSearching)
                             .font(.headline)
-                        Text("This can take up to half a minute.")
+                        Text(.subtitleSearchSearchingNote)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                        Button("Cancel") { backToLanguages() }
+                        Button { backToLanguages() } label: { Text(.commonCancel) }
                             .buttonStyle(.bordered)
                             .padding(.top, 4)
                     }
@@ -606,10 +611,10 @@ struct SubtitleSearchMenu: View {
                             .foregroundStyle(.secondary)
                         HStack(spacing: 12) {
                             if let language = searchedLanguage {
-                                Button("Try Again") { search(language: language) }
+                                Button { search(language: language) } label: { Text(.subtitleSearchTryAgain) }
                                     .buttonStyle(.bordered)
                             }
-                            Button("Back") { backToLanguages() }
+                            Button { backToLanguages() } label: { Text(.commonBack) }
                                 .buttonStyle(.bordered)
                         }
                     }
@@ -621,18 +626,18 @@ struct SubtitleSearchMenu: View {
                     resultsList
                 }
             }
-            .navigationTitle(phase == .results ? "Results" : title)
+            .navigationTitle(Text(phase == .results ? LocalizedStringResource.subtitleSearchResults : title))
             .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     // Leaving is blocked while a download is in flight, as on
                     // tvOS (backdrop and Menu are inert then).
-                    Button("Done") { onDismiss() }
+                    Button { onDismiss() } label: { Text(.commonDone) }
                         .disabled(downloadingId != nil)
                 }
                 if phase == .results {
                     ToolbarItem(placement: .primaryAction) {
-                        Button("Language") { backToLanguages() }
+                        Button { backToLanguages() } label: { Text(.subtitleSearchLanguageButton) }
                             .disabled(downloadingId != nil)
                     }
                 }
@@ -648,14 +653,18 @@ struct SubtitleSearchMenu: View {
         let choices = languageChoices
         return List {
             if !choices.suggested.isEmpty {
-                Section("Suggested") {
+                Section {
                     ForEach(choices.suggested) { languageRow($0) }
+                } header: {
+                    Text(.subtitleSearchSuggestedHeader)
                 }
             }
             Section {
                 ForEach(choices.other) { languageRow($0) }
             } header: {
-                Text(choices.suggested.isEmpty ? "Language" : "All Languages")
+                Text(choices.suggested.isEmpty
+                     ? LocalizedStringResource.subtitleSearchLanguageHeader
+                     : .subtitleSearchAllLanguagesHeader)
             } footer: {
                 Text(explainer)
             }
@@ -669,14 +678,14 @@ struct SubtitleSearchMenu: View {
             search(language: choice.code)
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: choice.hint == "Preferred" ? "star.fill" : "globe")
+                Image(systemName: choice.hint == .preferred ? "star.fill" : "globe")
                     .foregroundStyle(.tint)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(choice.label)
                         .foregroundStyle(.primary)
                     if let hint = choice.hint {
-                        Text(hint)
+                        Text(hint.label)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -701,12 +710,18 @@ struct SubtitleSearchMenu: View {
                 Section {
                     Text(emptyResultsText)
                         .foregroundStyle(.secondary)
-                    Button("Choose another language") { backToLanguages() }
+                    Button { backToLanguages() } label: { Text(.subtitleSearchChooseAnother) }
                 }
             } else {
-                Section(searchedLanguage.map { displayName($0) } ?? "Results") {
+                Section {
                     ForEach(results, id: \.uniqueKey) { result in
                         resultRow(result)
+                    }
+                } header: {
+                    if let language = searchedLanguage {
+                        Text(displayName(language))
+                    } else {
+                        Text(.subtitleSearchResults)
                     }
                 }
             }
@@ -723,7 +738,7 @@ struct SubtitleSearchMenu: View {
             HStack(spacing: 12) {
                 scoreBadge(result.score, fontSize: 13)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(result.releaseName.isEmpty ? "Untitled release" : result.releaseName)
+                    releaseNameText(result)
                         .foregroundStyle(.primary)
                         .lineLimit(2)
                     Text(resultDetail(result))
@@ -745,10 +760,15 @@ struct SubtitleSearchMenu: View {
 
     // MARK: - Shared badges
 
+    /// The provider's release name, or a placeholder when it sent none.
+    private func releaseNameText(_ result: SubtitleSearchResult) -> Text {
+        result.releaseName.isEmpty ? Text(.subtitleSearchUntitled) : Text(result.releaseName)
+    }
+
     /// Rounded score chip, tier-colored (≥70 green / ≥40 amber / else red).
     @ViewBuilder
     private func scoreBadge(_ score: Double, fontSize: CGFloat) -> some View {
-        Text("\(Int(score.rounded()))")
+        Text(verbatim: LocaleFormat.integer(Int(score.rounded())))
             .font(.system(size: fontSize, weight: .bold, design: .rounded))
             .foregroundStyle(.white)
             .padding(.horizontal, 8)
@@ -782,10 +802,22 @@ struct SubtitleLanguageChoices {
     struct Choice: Identifiable {
         let code: String
         let label: String
-        /// Provenance tag ("Preferred" / "Original language") on suggested
-        /// rows; nil on the full list.
-        let hint: String?
+        /// Provenance tag on suggested rows; nil on the full list.
+        let hint: Hint?
         var id: String { code }
+    }
+
+    /// Why a row is suggested. Compared by case, never by its shown text.
+    enum Hint: Equatable {
+        case preferred, original, detectedFromAudio
+
+        var label: LocalizedStringResource {
+            switch self {
+            case .preferred: .subtitleSearchPreferred
+            case .original: .subtitleSearchOriginalLanguage
+            case .detectedFromAudio: .playerAiTranslateDetectedFromAudio
+            }
+        }
     }
 
     let suggested: [Choice]
@@ -796,30 +828,33 @@ struct SubtitleLanguageChoices {
 
     /// Blank codes and codes naming an already-listed language are skipped,
     /// and the full list leaves out any suggested language.
-    init(preferred: String?, original: String? = nil) {
+    init(preferred: String?, original: String? = nil, locale: Locale = AppLanguage.formattingLocale) {
         var seen = Set<String>()
         var suggested: [Choice] = []
-        for (rawCode, hint) in [(preferred, "Preferred"), (original, "Original language")] {
+        for (rawCode, hint) in [(preferred, Hint.preferred), (original, Hint.original)] {
             guard let code = rawCode?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !code.isEmpty,
                   seen.insert(PlaybackLanguageOption.languageIdentity(code)).inserted else { continue }
-            suggested.append(Choice(code: code, label: Self.displayName(code), hint: hint))
+            suggested.append(Choice(code: code, label: Self.displayName(code, locale: locale), hint: hint))
         }
         self.suggested = suggested
-        self.other = Self.sortedCatalog
+        self.other = Self.sortedCatalog(locale: locale)
             .filter { !seen.contains($0.identity) }
             .map { $0.choice }
     }
 
-    /// Display name for a language code, preferring the catalog label.
-    static func displayName(_ code: String) -> String {
-        catalogLabels[code.lowercased()]
-            ?? englishLocale.localizedString(forLanguageCode: code)?.capitalized
+    /// Display name for a language code in the app's language, preferring
+    /// the catalog label.
+    static func displayName(_ code: String, locale: Locale = AppLanguage.formattingLocale) -> String {
+        if catalogCodes.contains(code.lowercased()) {
+            return PlaybackLanguageOption.label(forCode: code, locale: locale)
+        }
+        return locale.localizedString(forLanguageCode: code).map { LocaleFormat.capitalizedName($0, locale: locale) }
             ?? code.uppercased()
     }
 
     /// The first catalog language in catalog (not display) order.
-    static var firstCatalogCode: String? { catalog.first?.choice.code }
+    static var firstCatalogCode: String? { catalog.first?.code }
 
     #if os(tvOS)
     /// Centers `target` in the list, animated unless the list is appearing.
@@ -837,33 +872,33 @@ struct SubtitleLanguageChoices {
 
     private typealias Entry = (identity: String, choice: Choice)
 
-    private static let englishLocale = Locale(identifier: "en")
-
-    private static let catalogLabels: [String: String] = Dictionary(
-        PlaybackLanguageOption.all.map { ($0.code.lowercased(), $0.label) },
-        uniquingKeysWith: { first, _ in first }
-    )
-
-    /// The catalog, deduped by language identity. Built once because
-    /// `PlaybackLanguageOption.all` is fixed for the process.
-    private static let catalog: [Entry] = {
+    /// The catalog's codes, deduped by language identity. Built once: the
+    /// codes don't depend on the language; their labels do.
+    private static let catalog: [(identity: String, code: String)] = {
         var seen = Set<String>()
-        var entries: [Entry] = []
+        var entries: [(identity: String, code: String)] = []
         for option in PlaybackLanguageOption.all {
             let code = option.code.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !code.isEmpty else { continue }
             let identity = PlaybackLanguageOption.languageIdentity(code)
             guard seen.insert(identity).inserted else { continue }
-            entries.append((
-                identity: identity,
-                choice: Choice(code: code, label: SubtitleLanguageChoices.displayName(code), hint: nil)
-            ))
+            entries.append((identity: identity, code: code))
         }
         return entries
     }()
 
-    private static let sortedCatalog: [Entry] = catalog.sorted {
-        $0.choice.label.localizedCaseInsensitiveCompare($1.choice.label) == .orderedAscending
+    private static let catalogCodes = Set(PlaybackLanguageOption.all.map { $0.code.lowercased() })
+
+    /// The catalog labelled in `locale`'s language, sorted by label. Kept
+    /// per language: menus rebuild their choices on every render.
+    private static func sortedCatalog(locale: Locale) -> [Entry] {
+        sortedCatalogs.value(for: locale.identifier) {
+            catalog
+                .map { (identity: $0.identity, choice: Choice(code: $0.code, label: displayName($0.code, locale: locale), hint: nil)) }
+                .sorted { $0.choice.label.compare($1.choice.label, options: .caseInsensitive, locale: locale) == .orderedAscending }
+        }
     }
+
+    private static let sortedCatalogs = LocaleKeyedCache<[Entry]>()
 }
 #endif

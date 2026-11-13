@@ -36,25 +36,25 @@ enum SubtitleTrackCandidates {
                 trackId = Int64(index)
             }
 
-            return (
-                ordinal,
-                PlayerTrack(
-                    trackId: trackId,
-                    kind: .sub,
-                    title: track.title ?? track.embeddedTitle,
-                    lang: track.language,
-                    codec: track.codec,
-                    audioChannelCount: nil,
-                    bitrate: nil,
-                    isDefault: track.isDefault ?? false,
-                    isForced: track.forced ?? false,
-                    isHearingImpaired: track.hearingImpaired ?? false,
-                    isExternal: isExternal,
-                    isSelected: false,
-                    ffIndex: isExternal ? nil : track.selectionIndex,
-                    srcId: sourceIndex
-                )
+            var candidate = PlayerTrack(
+                trackId: trackId,
+                kind: .sub,
+                title: track.title ?? track.embeddedTitle,
+                lang: track.language,
+                codec: track.codec,
+                audioChannelCount: nil,
+                bitrate: nil,
+                isDefault: track.isDefault ?? false,
+                isForced: track.forced ?? false,
+                isHearingImpaired: track.hearingImpaired ?? false,
+                isExternal: isExternal,
+                isSelected: false,
+                ffIndex: isExternal ? nil : track.selectionIndex,
+                srcId: sourceIndex
             )
+            // The auto resolver never picks it, and a default fallback skips it.
+            candidate.hasUnsupportedFormat = track.hasUnsupportedFormat
+            return (ordinal, candidate)
         }
     }
 

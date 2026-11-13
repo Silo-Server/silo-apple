@@ -10,10 +10,10 @@ enum RequestStep: Int, CaseIterable {
 
     var title: String {
         switch self {
-        case .requested: "Requested"
-        case .approval: "Approved"
-        case .download: "Downloading"
-        case .library: "In your library"
+        case .requested: AppLanguage.string(.requestsStageRequested)
+        case .approval: AppLanguage.string(.requestsStageApproved)
+        case .download: AppLanguage.string(.requestsStageDownloading)
+        case .library: AppLanguage.string(.requestsStageLibrary)
         }
     }
 }
@@ -67,8 +67,8 @@ struct RequestProgress: Equatable {
         case .pending:
             completedSteps = 1
             currentStep = .approval
-            shortLabel = "Pending"
-            longLabel = "Waiting for approval"
+            shortLabel = AppLanguage.string(.requestsShortPending)
+            longLabel = AppLanguage.string(.requestsLongPending)
         case .onTheWay:
             let phase = Self.inFlightPhase(state: state, status: status)
             completedSteps = phase.step.rawValue
@@ -78,18 +78,18 @@ struct RequestProgress: Equatable {
         case .inLibrary:
             completedSteps = RequestStep.allCases.count
             currentStep = nil
-            shortLabel = "In library"
-            longLabel = "In your library"
+            shortLabel = AppLanguage.string(.requestsShortInLibrary)
+            longLabel = AppLanguage.string(.requestsLongInLibrary)
         case .needsAttention(.declined, _):
             completedSteps = 1
             currentStep = .approval
-            shortLabel = "Declined"
-            longLabel = "Declined"
+            shortLabel = AppLanguage.string(.requestsShortDeclined)
+            longLabel = AppLanguage.string(.requestsLongDeclined)
         case .needsAttention(.failed, _):
             completedSteps = 2
             currentStep = .download
-            shortLabel = "Failed"
-            longLabel = "Request failed"
+            shortLabel = AppLanguage.string(.requestsShortFailed)
+            longLabel = AppLanguage.string(.requestsLongFailed)
         case .unavailable:
             completedSteps = 0
             currentStep = nil
@@ -106,17 +106,17 @@ struct RequestProgress: Equatable {
         status: RequestStatus?
     ) -> (step: RequestStep, short: String, long: String) {
         if state == .partiallyAvailable {
-            return (.library, "Partly in library", "Partly in your library")
+            return (.library, AppLanguage.string(.requestsShortPartly), AppLanguage.string(.requestsLongPartly))
         }
         switch status {
         case .downloading:
-            return (.download, "Downloading", "Downloading")
+            return (.download, AppLanguage.string(.requestsShortDownloading), AppLanguage.string(.requestsLongDownloading))
         case .completed:
-            return (.library, "Adding to library", "Adding to your library")
+            return (.library, AppLanguage.string(.requestsShortAdding), AppLanguage.string(.requestsLongAdding))
         case .approved, .queued:
-            return (.download, "Queued", "Queued for download")
+            return (.download, AppLanguage.string(.requestsShortQueued), AppLanguage.string(.requestsLongQueued))
         case .pending, .failed, .unknown, nil:
-            return (.download, "On the way", "On the way")
+            return (.download, AppLanguage.string(.requestsShortOnTheWay), AppLanguage.string(.requestsLongOnTheWay))
         }
     }
 }
@@ -131,16 +131,15 @@ enum RequestTargetSummary {
         guard let targets, targets.count > 1 else { return nil }
         let parts = targets.compactMap { target -> String? in
             guard let quality = target.quality, !quality.isEmpty else { return nil }
-            let word: String
+            // `quality` is the server's label, such as 1080p or 4K.
             switch target.status {
-            case .completed: word = "done"
-            case .downloading: word = "downloading"
-            case .queued, .approved: word = "queued"
-            case .pending: word = "pending"
-            case .failed: word = "failed"
+            case .completed: return AppLanguage.string(.requestsTargetDone(quality))
+            case .downloading: return AppLanguage.string(.requestsTargetDownloading(quality))
+            case .queued, .approved: return AppLanguage.string(.requestsTargetQueued(quality))
+            case .pending: return AppLanguage.string(.requestsTargetPending(quality))
+            case .failed: return AppLanguage.string(.requestsTargetFailed(quality))
             case .unknown: return nil
             }
-            return "\(quality) \(word)"
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }

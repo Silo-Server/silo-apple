@@ -266,6 +266,31 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertNil(counter.advance([:]))
     }
 
+    /// Opening a plan's source: the same 45 s, held by an outage, cancelling
+    /// the step in flight and any step begun once it has run out.
+    @MainActor
+    func testTheOpeningBudgetCancelsTheStepInFlightOutsideOutages() {
+        let budget = PlaybackOpeningBudget()
+        var cancelled: [String] = []
+        budget.stepBegan { cancelled.append("probe") }
+        XCTAssertFalse(budget.tick(outage: false, atMs: 0))
+        budget.stepEnded()
+        budget.stepBegan { cancelled.append("load") }
+        XCTAssertFalse(budget.tick(outage: true, atMs: 10_000))
+        XCTAssertFalse(budget.tick(outage: true, atMs: 600_000), "a ten-minute outage spends nothing")
+        XCTAssertFalse(budget.tick(outage: false, atMs: 600_000))
+        XCTAssertFalse(budget.tick(outage: false, atMs: 634_999))
+        XCTAssertEqual(cancelled, [])
+        XCTAssertTrue(budget.tick(outage: false, sourceAnswered: true, atMs: 635_000), "35 s left after the outage")
+        XCTAssertEqual(budget.sourceAnsweredWhenRunOut, true)
+        XCTAssertEqual(cancelled, ["load"])
+        XCTAssertFalse(budget.tick(outage: false, atMs: 636_000), "runs out once")
+        budget.stepEnded()
+        budget.stepBegan { cancelled.append("retry") }
+        XCTAssertEqual(cancelled, ["load", "retry"])
+        XCTAssertTrue(budget.hasRunOut)
+    }
+
     /// Direct play's start deadline: 45 s from the plan's adoption of the
     /// viewer wanting to play outside an outage, however pauses and outages
     /// split the time.

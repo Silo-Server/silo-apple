@@ -138,7 +138,7 @@ final class WatchPartySession {
                 supportsPlayback = false
                 supportsFallback = false
             }
-            errorMessage = "Could not check Watch Party support. \(error.localizedDescription)"
+            errorMessage = AppLanguage.string(.watchPartyErrorSupportCheck(error.localizedDescription))
             return false
         }
     }
@@ -163,7 +163,7 @@ final class WatchPartySession {
     @discardableResult
     func join(code: String) async -> Bool {
         let code = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !code.isEmpty else { errorMessage = "Enter a party code or invitation link."; return false }
+        guard !code.isEmpty else { errorMessage = AppLanguage.string(.watchPartyErrorCodeRequired); return false }
         return await enter { try await self.api.joinWatchPartyRoom(code: code, auth: $0) }
     }
 
@@ -172,7 +172,7 @@ final class WatchPartySession {
         let value = invitation.trimmingCharacters(in: .whitespacesAndNewlines)
         guard value.contains("://") else { return await join(code: value) }
         guard let url = URL(string: value), let parsed = WatchPartyInvitation(url: url) else {
-            errorMessage = "This Watch Party invitation is invalid."
+            errorMessage = AppLanguage.string(.watchPartyErrorInvalidInvitation)
             return false
         }
         return await join(joinToken: parsed.joinToken, serverURL: parsed.serverURL)
@@ -188,7 +188,7 @@ final class WatchPartySession {
         guard let recentRoom, let recentAuth,
               await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: recentAuth) != nil else {
             forgetRecentRoomInMemory()
-            errorMessage = "This recent party belongs to a different server, account, or profile."
+            errorMessage = AppLanguage.string(.watchPartyErrorRecentElsewhere)
             return false
         }
         return await enter(expectedRoomID: recentRoom.roomId, expectedAuth: recentAuth) {
@@ -201,7 +201,7 @@ final class WatchPartySession {
                        _ operation: (CapturedOrdinaryRequestAuth) async throws -> WatchPartyRoomResponse) async -> Bool {
         guard !isBusy else { return false }
         guard !isEngaged else {
-            errorMessage = "You're already in a party. Leave it to join a different one."
+            errorMessage = AppLanguage.string(.watchPartyErrorAlreadyInParty)
             return false
         }
         let owner = engagement
@@ -212,22 +212,22 @@ final class WatchPartySession {
         defer { if owner == engagement { isBusy = false } }
         guard let captured = await tokenStore.captureOrdinaryRequestAuth(), captured.profileId != nil,
               owner == engagement else {
-            if owner == engagement { errorMessage = "Select a server and profile before joining a party." }
+            if owner == engagement { errorMessage = AppLanguage.string(.watchPartyErrorNoProfile) }
             return false
         }
         if let expectedAuth, !expectedAuth.sameCredentialIdentity(as: captured) {
             forgetRecentRoomInMemory()
-            errorMessage = "This recent party belongs to a different server, account, or profile."
+            errorMessage = AppLanguage.string(.watchPartyErrorRecentElsewhere)
             return false
         }
         if let invitationServer, !WatchPartyLobbyPolicy.sameServer(invitationServer, captured.account.serverURL) {
-            errorMessage = "This invitation is for another server. Select that server and open the invitation again."
+            errorMessage = AppLanguage.string(.watchPartyErrorOtherServer)
             return false
         }
         if let recentAuth, !recentAuth.sameCredentialIdentity(as: captured) { forgetRecentRoomInMemory() }
         guard await loadCapabilities(auth: captured, owner: owner), owner == engagement else { return false }
         guard supportsSynchronizedParty else {
-            errorMessage = "This server needs an update to support synchronized Watch Party playback safely on this profile."
+            errorMessage = AppLanguage.string(.watchPartyErrorUnavailable)
             return false
         }
         do {
@@ -467,11 +467,11 @@ final class WatchPartySession {
                     // The room read and ticket refuse an ended room with 409.
                     // Only members with a live socket receive room_closed.
                     if Self.isConflict(error) {
-                        self.terminate("This party has ended.", canRejoin: false)
+                        self.terminate(AppLanguage.string(.watchPartyEndedEnded), canRejoin: false)
                         return
                     }
                     if self.isTerminalError(error) {
-                        self.terminate("The party connection expired or is no longer available. Join again to continue.")
+                        self.terminate(AppLanguage.string(.watchPartyEndedExpired))
                         return
                     }
                 }
@@ -539,12 +539,12 @@ final class WatchPartySession {
             if clock.record(clientSent: client, serverReceived: received, serverSent: sent, clientReceived: receivedAt) {
                 connectionSamples += 1
             }
-        case .closed: terminate("This party has ended.", canRejoin: false)
+        case .closed: terminate(AppLanguage.string(.watchPartyEndedEnded), canRejoin: false)
         case .connectionReplaced:
-            terminate("This profile joined the party on another device. Rejoin here to take over playback.", replaced: true)
+            terminate(AppLanguage.string(.watchPartyEndedReplaced), replaced: true)
         case .error(let code, let message):
             if code == "connection_replaced" {
-                terminate("This profile joined the party on another device. Rejoin here to take over playback.", replaced: true)
+                terminate(AppLanguage.string(.watchPartyEndedReplaced), replaced: true)
             }
             else if code == "bad_request" {
                 // Before the attach is confirmed, a `bad_request` most likely
@@ -562,7 +562,7 @@ final class WatchPartySession {
         let old = room
         guard state.accept(incoming, requestReceipt: requestReceipt) else { return }
         roomReceivedAt = Date()
-        if incoming.phase == .ended { terminate("This party has ended.", canRejoin: false); return }
+        if incoming.phase == .ended { terminate(AppLanguage.string(.watchPartyEndedEnded), canRejoin: false); return }
         if let auth {
             recentAuth = auth
             recentRoom = WatchPartyRecentRoom(roomId: incoming.roomId, code: incoming.code,
@@ -729,7 +729,7 @@ final class WatchPartySession {
                 self.lastCommandCompleted = Date()
             } catch is CancellationError {
             } catch {
-                if owner == self.engagement { self.errorMessage = "Waiting for the player to synchronize." }
+                if owner == self.engagement { self.errorMessage = AppLanguage.string(.watchPartyErrorWaitingForPlayer) }
             }
         }
     }
@@ -935,7 +935,7 @@ final class WatchPartySession {
         do {
             try await api.closeWatchPartyRoom(roomId: room.roomId, token: roomToken, auth: auth)
             guard await ownsCurrentIdentity(), owner == engagement else { return }
-            terminate("This party has ended.", canRejoin: false)
+            terminate(AppLanguage.string(.watchPartyEndedEnded), canRejoin: false)
         } catch { if owner == engagement { errorMessage = error.localizedDescription } }
     }
 
@@ -1016,7 +1016,7 @@ final class WatchPartySession {
         do {
             try await loadSuggestions(roomId: room.roomId, auth: auth, owner: owner)
         } catch {
-            if owner == engagement { errorMessage = "Your change was saved, but the suggestions could not be refreshed. \(error.localizedDescription)" }
+            if owner == engagement { errorMessage = AppLanguage.string(.watchPartyErrorSuggestionsSaved(error.localizedDescription)) }
         }
         return owner == engagement && isEngaged
     }
@@ -1034,7 +1034,7 @@ final class WatchPartySession {
                 try await self.loadSuggestions(roomId: room.roomId, auth: auth, owner: owner)
             } catch is CancellationError {
             } catch {
-                if owner == self.engagement { self.errorMessage = "Could not refresh suggestions. \(error.localizedDescription)" }
+                if owner == self.engagement { self.errorMessage = AppLanguage.string(.watchPartyErrorSuggestionsRefresh(error.localizedDescription)) }
             }
         }
     }
@@ -1075,7 +1075,7 @@ final class WatchPartySession {
         } catch is CancellationError {
         } catch {
             if owner == engagement, pickerRequestID == requestID, !Task.isCancelled {
-                errorMessage = "Could not load party picks. \(error.localizedDescription)"
+                errorMessage = AppLanguage.string(.watchPartyErrorPickerLoad(error.localizedDescription))
             }
         }
     }
@@ -1098,7 +1098,7 @@ final class WatchPartySession {
         } catch is CancellationError {
         } catch {
             if owner == engagement, memberStateRequestID == requestID, !Task.isCancelled {
-                errorMessage = "Could not load member watch history. \(error.localizedDescription)"
+                errorMessage = AppLanguage.string(.watchPartyWhoSeenError(error.localizedDescription))
             }
         }
     }
@@ -1184,10 +1184,8 @@ final class WatchPartySession {
         }
     }
 
-    private static let unavailableMessage = "This title isn't available to your profile, so it can't play on this device."
-
     private func handlePlaybackFailure(reason: String?, message: String, context: WatchPartyPlaybackContext) {
-        errorMessage = selectedItemUnavailable ? Self.unavailableMessage : message
+        errorMessage = selectedItemUnavailable ? AppLanguage.string(.watchPartyErrorTitleUnavailable) : message
         guard supportsFallback, let reason, let fallback = WatchPartySourceFallbackReason(rawValue: reason),
               let auth, let room, room.selectionRevision == context.selectionRevision else { return }
         let owner = engagement

@@ -6,13 +6,25 @@ import OSLog
 /// task by (see `DownloadTaskTag.attributing`).
 struct DownloadTaskRef: Sendable, Equatable {
     let taskId: Int
+    /// Nil for an untagged task, and for a tag from before accounts whose
+    /// server had no legacy data owner yet when the event was read.
     let tag: DownloadTaskTag?
+    /// The raw tag, so the manager can resolve one from before accounts
+    /// again once the legacy data owner is known.
+    let taskDescription: String?
     let requestURL: URL?
     let requestProfileId: String?
 
-    init(taskId: Int, tag: DownloadTaskTag?, requestURL: URL?, requestProfileId: String?) {
+    init(
+        taskId: Int,
+        tag: DownloadTaskTag?,
+        taskDescription: String? = nil,
+        requestURL: URL?,
+        requestProfileId: String?
+    ) {
         self.taskId = taskId
         self.tag = tag
+        self.taskDescription = taskDescription ?? tag?.taskDescription
         self.requestURL = requestURL
         self.requestProfileId = requestProfileId
     }
@@ -24,6 +36,7 @@ struct DownloadTaskRef: Sendable, Equatable {
         self.init(
             taskId: task.taskIdentifier,
             tag: DownloadTaskTag(taskDescription: task.taskDescription),
+            taskDescription: task.taskDescription,
             requestURL: request?.url,
             requestProfileId: request?.value(forHTTPHeaderField: "X-Profile-Id")
         )
@@ -196,6 +209,24 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         }
     }
 
+    /// Cancels every task owned by one account, on any of its profiles.
+    /// `servers` attributes an untagged task; see `isOwned`. Returns the
+    /// owners of the tasks it cancelled, once the cancels are issued.
+    func cancelTasks(
+        ofAccount localAccountId: String, onServer serverId: String, servers: [(id: String, url: String)]
+    ) async -> [(taskId: Int, owner: DownloadTaskTag)] {
+        var cancelled: [(taskId: Int, owner: DownloadTaskTag)] = []
+        for task in await session.allTasks {
+            let ref = DownloadTaskRef(task)
+            guard let owner = ref.tag ?? DownloadTaskTag.attributing(
+                requestURL: ref.requestURL, profileId: ref.requestProfileId, servers: servers
+            ), owner.isOwned(byAccount: localAccountId, onServer: serverId) else { continue }
+            task.cancel()
+            cancelled.append((task.taskIdentifier, owner))
+        }
+        return cancelled
+    }
+
     /// Cancel every task in the session, including ones an earlier app
     /// version started that the system reattached on launch. Returns once
     /// the cancels are issued; their final events still arrive later.
@@ -317,7 +348,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
                 ref,
                 statusCode: statusCode,
                 resumeData: nil,
-                message: "HTTP \(statusCode)",
+                message: "HTTP \(statusCode)", // i18n-ignore: English data: logged or sent to the server (D44)
                 cause: .other
             ))
             return
@@ -326,12 +357,14 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         // The temp file is only valid during this callback — move it
         // synchronously, then hand off the path. A tagged task's file goes
         // straight into its owner's download directory, so it survives
-        // whichever scope is loaded and the process itself.
+        // whichever scope is loaded and the process itself. A transfer
+        // started before accounts parks under its server's legacy data
+        // owner, which takes over the rest of those downloads on its next
+        // load; with no owner known yet it is staged like an untagged one.
         let destination = ref.tag.map(DownloadFilePaths.finishedTransferURL(for:))
             ?? DownloadFilePaths.stagingFileURL(taskIdentifier: taskId)
-        try? FileManager.default.removeItem(at: destination)
         do {
-            try FileManager.default.moveItem(at: location, to: destination)
+            try DownloadFilePaths.park(location, at: destination)
             // The move keeps the temp file's date; the stale-staging sweep
             // must see when it was staged.
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: destination.path)
@@ -342,7 +375,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
                 ref,
                 statusCode: statusCode,
                 resumeData: nil,
-                message: "stage_failed",
+                message: "stage_failed", // i18n-ignore: English data: logged or sent to the server (D44)
                 cause: Self.isOutOfSpace(error) ? .storageFull : .other
             ))
         }

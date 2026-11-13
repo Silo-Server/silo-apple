@@ -3,6 +3,8 @@ import XCTest
 
 final class OnboardingInvitationTests: XCTestCase {
     private var server = OnboardingServerStub()
+    /// The account the last `makeAPI` signed in.
+    private var localAccountId: String?
 
     override func setUp() {
         super.setUp()
@@ -93,10 +95,12 @@ final class OnboardingInvitationTests: XCTestCase {
         // The retry marker keeps the empty tour closed until the gate
         // confirms the completion.
         XCTAssertEqual(
-            UnrenderableOnboardingTourSuppression.pendingTourId(serverId: "onboarding-server", profileId: "profile-1"),
+            UnrenderableOnboardingTourSuppression.pendingTourId(
+                serverId: "onboarding-server", localAccountId: localAccountId, profileId: "profile-1"),
             server.tourId
         )
-        UnrenderableOnboardingTourSuppression.clear(serverId: "onboarding-server", profileId: "profile-1", tourId: server.tourId)
+        UnrenderableOnboardingTourSuppression.clear(
+            serverId: "onboarding-server", localAccountId: localAccountId, profileId: "profile-1", tourId: server.tourId)
     }
 
     @MainActor
@@ -371,36 +375,38 @@ final class OnboardingInvitationTests: XCTestCase {
     @MainActor
     func testGateRetryOfAnUnrenderableTourReadsTheStateBeforeWriting() async throws {
         let serverId = "onboarding-gate-\(UUID().uuidString)"
-        UnrenderableOnboardingTourSuppression.set(serverId: serverId, profileId: "profile-1", tourId: server.tourId)
+        let accountId = UUID().uuidString
+        UnrenderableOnboardingTourSuppression.set(serverId: serverId, localAccountId: accountId, profileId: "profile-1", tourId: server.tourId)
         addTeardownBlock {
-            UnrenderableOnboardingTourSuppression.clear(serverId: serverId, profileId: "profile-1", tourId: "tour")
+            UnrenderableOnboardingTourSuppression.clear(serverId: serverId, localAccountId: accountId, profileId: "profile-1", tourId: "tour")
         }
         // The earlier completion landed even though its reply was lost.
         server.setState(lastStep: nil, done: true)
-        let gate = try await makeGate(serverId: serverId)
+        let gate = try await makeGate(serverId: serverId, localAccountId: accountId)
 
         await gate.check(profileId: "profile-1")
 
         XCTAssertFalse(gate.showTour)
         XCTAssertEqual(server.requestLines, ["GET /api/v2/onboarding/state"])
-        XCTAssertNil(UnrenderableOnboardingTourSuppression.pendingTourId(serverId: serverId, profileId: "profile-1"))
+        XCTAssertNil(UnrenderableOnboardingTourSuppression.pendingTourId(serverId: serverId, localAccountId: accountId, profileId: "profile-1"))
     }
 
     @MainActor
     func testGateRetryCompletesAnUnfinishedUnrenderableTourUnderTheReadTag() async throws {
         let serverId = "onboarding-gate-\(UUID().uuidString)"
-        UnrenderableOnboardingTourSuppression.set(serverId: serverId, profileId: "profile-1", tourId: server.tourId)
+        let accountId = UUID().uuidString
+        UnrenderableOnboardingTourSuppression.set(serverId: serverId, localAccountId: accountId, profileId: "profile-1", tourId: server.tourId)
         addTeardownBlock {
-            UnrenderableOnboardingTourSuppression.clear(serverId: serverId, profileId: "profile-1", tourId: "tour")
+            UnrenderableOnboardingTourSuppression.clear(serverId: serverId, localAccountId: accountId, profileId: "profile-1", tourId: "tour")
         }
-        let gate = try await makeGate(serverId: serverId)
+        let gate = try await makeGate(serverId: serverId, localAccountId: accountId)
 
         await gate.check(profileId: "profile-1")
 
         XCTAssertFalse(gate.showTour)
         XCTAssertEqual(server.events, ["progress:none:completed"])
         XCTAssertEqual(server.requests.last?.header("if-match"), #""r1""#)
-        XCTAssertNil(UnrenderableOnboardingTourSuppression.pendingTourId(serverId: serverId, profileId: "profile-1"))
+        XCTAssertNil(UnrenderableOnboardingTourSuppression.pendingTourId(serverId: serverId, localAccountId: accountId, profileId: "profile-1"))
     }
 
     @MainActor
@@ -473,13 +479,15 @@ final class OnboardingInvitationTests: XCTestCase {
     @MainActor
     private func makeGate(
         serverId: String = "onboarding-gate-none",
+        localAccountId: String? = nil,
         isUpdateRequired: Bool = false
     ) async throws -> OnboardingTourGateModel {
         let api = try await makeAPI(isUpdateRequired: isUpdateRequired)
         return OnboardingTourGateModel(
             api: api,
             activeServerId: { serverId },
-            activeProfileId: { "profile-1" }
+            activeProfileId: { "profile-1" },
+            activeAccountId: { localAccountId }
         )
     }
 
@@ -488,6 +496,7 @@ final class OnboardingInvitationTests: XCTestCase {
         isUpdateRequired: Bool = false
     ) async throws -> OnboardingTestAPI {
         let tokens = try await OnboardingServerStub.tokenStore(testCase: self)
+        localAccountId = await tokens.refreshAccountIdentity()?.localAccountId
         let http = HTTPClient(session: server.makeSession(), tokenStore: tokens)
         return OnboardingTestAPI(
             client: APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { isUpdateRequired }),

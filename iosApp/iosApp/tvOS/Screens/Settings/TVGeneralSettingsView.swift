@@ -2,19 +2,17 @@
 import SwiftUI
 
 /// Family-synced tvOS interface preferences. Every control is a native focus
-/// target; the menu editor changes data only on Select and never intercepts
-/// directional movement, preserving the stable focus graph described in
-/// `docs/tvos-focus.md`.
+/// target and never intercepts directional movement, preserving the stable
+/// focus graph described in `docs/tvos-focus.md`.
 struct TVGeneralSettingsPane: View {
     @State private var preferences = UICustomizationPreferences.shared
     @State private var titleArt = TitleArtPreferences.shared
     @State private var themeMusic = ThemeMusicPreferences.shared
+    @State private var appLanguage = AppLanguagePreferences.shared
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var navPrefs = AppNavPreferences.shared
     @State private var activePicker: PickerKind?
-    @State private var showsMenuEditor = false
     @State private var registry = ServerRegistry.shared
-    @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
     let activeProfile: UserProfile?
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
@@ -24,10 +22,10 @@ struct TVGeneralSettingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TVSettingsSectionHeader("APPLE TV USER")
+            TVSettingsSectionHeader(.settingsGeneralAppleTvUserHeaderTv)
 
             TVSettingsPickerRow(
-                title: "Paired Silo Profile",
+                title: .settingsGeneralPairedProfile,
                 value: pairedProfileName,
                 action: changePairedProfile
             )
@@ -35,16 +33,20 @@ struct TVGeneralSettingsPane: View {
 
             TVSettingsFooter(pairingDescription)
 
-            TVSettingsSectionHeader("PROFILE AT LAUNCH")
+            TVSettingsSectionHeader(.settingsGeneralProfileAtLaunchHeaderTv)
 
             TVSettingsPickerRow(
-                title: "Profile Selection",
+                title: .settingsControlProfileSelection,
                 value: launchPreferences.behavior.title
             ) { activePicker = .profileLaunch }
             .focused(detailFocus, equals: .generalProfileLaunch)
-            .accessibilityHint(launchPreferences.behavior.tvDescription)
+            .accessibilityHint(Text(launchPreferences.behavior.tvDescription))
 
             TVSettingsFooter(launchPreferences.behavior.tvDescription)
+
+            if appLanguage.currentChoice != nil {
+                languageGroup
+            }
 
             if titleArt.isOffered {
                 titleArtGroup
@@ -55,26 +57,26 @@ struct TVGeneralSettingsPane: View {
             }
 
             if let message = preferences.capabilityMessage {
-                TVSettingsSectionHeader("SERVER SUPPORT")
-                TVSettingsFooter(message)
+                TVSettingsSectionHeader(.settingsGeneralServerSupportHeaderTv)
+                TVSettingsFooter(.verbatim(message))
             }
 
             if preferences.hasDeviceOverrides {
-                TVSettingsSectionHeader("SYNC SOURCE")
+                TVSettingsSectionHeader(.settingsGeneralSyncSourceHeaderTv)
                 if preferences.cardPresentationUsesDeviceOverride {
                     familySettingsButton
                         .focused(detailFocus, equals: .generalPosterSize)
                 } else {
                     familySettingsButton
                 }
-                TVSettingsFooter("This Apple TV has older device-specific settings. Clear them to use the TV-family choices shared by this profile.")
+                TVSettingsFooter(.settingsGeneralDeviceOverrideFooterTv)
             }
 
-            TVSettingsSectionHeader("CARDS & POSTERS")
+            TVSettingsSectionHeader(.settingsGeneralCardsHeaderTv)
 
             if advisoryAgePreference.isSupported {
                 TVSettingsToggleRow(
-                    title: "Show Advisory Age",
+                    title: .settingsGeneralShowAdvisoryAge,
                     isOn: advisoryAgePreference.showsAdvisoryAge
                 ) {
                     Task {
@@ -86,60 +88,28 @@ struct TVGeneralSettingsPane: View {
                 .focused(detailFocus, equals: .generalAdvisoryAge)
                 .disabled(advisoryAgePreference.isSaving)
 
-                TVSettingsFooter("Show a suggested minimum viewer age, such as Common Sense Media’s, on movie and show details. This does not change what the profile may watch.")
+                TVSettingsFooter(.settingsGeneralShowAdvisoryAgeFooter)
                 if let writeError = advisoryAgePreference.writeError {
-                    TVSettingsFooter(writeError)
+                    TVSettingsFooter(.verbatim(writeError))
                 }
             }
 
             posterSizeRow
 
             if preferences.cardPresentationUsesFamilyOverride {
-                Button("Use Profile Default") {
+                Button(.settingsCardsUseProfileDefault) {
                     preferences.resetCardPresentationToInherited()
                 }
                 .buttonStyle(TVSettingsPaneRowStyle())
                 .disabled(preferences.isSaving || !preferences.allowsEditing)
             }
 
-            TVSettingsFooter("Poster size syncs with other TV-family devices on this profile.")
-
-            TVSettingsSectionHeader("TOP MENU")
-
-            if preferences.supportProjection == .knownUnsupported {
-                TVSettingsToggleRow(
-                    title: "Show Audiobooks",
-                    isOn: navPrefs.showAudiobooks
-                ) {
-                    navPrefs.setShowAudiobooks(!navPrefs.showAudiobooks)
-                }
-                .focused(detailFocus, equals: .generalTopMenu)
-
-                TVSettingsFooter("This server uses the legacy device-local menu preference. Adds an Audiobooks tab when an audiobook library is available.")
-            } else {
-                Button { showsMenuEditor = true } label: {
-                    HStack(spacing: 16) {
-                        Text("Customize Top Menu")
-                            .font(.system(size: 26))
-                        Spacer(minLength: 16)
-                        Text("\(visibleMenuCount) items")
-                            .font(.system(size: 24))
-                            .opacity(0.68)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 18, weight: .semibold))
-                            .opacity(0.55)
-                    }
-                }
-                .buttonStyle(TVSettingsPaneRowStyle())
-                .disabled(!preferences.allowsEditing)
-
-                TVSettingsFooter("Reorder or hide destinations and pin individual libraries. Search and Profile stay fixed so remote navigation always has stable anchors.")
-            }
+            TVSettingsFooter(.settingsGeneralPosterSizeSyncsTv)
 
             if let message = preferences.syncErrorMessage,
                message != preferences.capabilityMessage,
                message != HeldSettingChange.message {
-                TVSettingsFooter(message)
+                TVSettingsFooter(.verbatim(message))
             }
             if preferences.hasHeldChanges {
                 TVHeldSettingChangesRows(
@@ -147,32 +117,38 @@ struct TVGeneralSettingsPane: View {
                     discard: { await preferences.discardHeldChanges() }
                 )
             }
+
+            TVSettingsSectionHeader(.settingsGeneralTopMenuHeaderTv)
+
+            TVSettingsToggleRow(
+                title: .settingsExperimentalShowAudiobooks,
+                isOn: navPrefs.showAudiobooks
+            ) {
+                navPrefs.setShowAudiobooks(!navPrefs.showAudiobooks)
+            }
+            .focused(detailFocus, equals: .generalTopMenu)
+
+            TVSettingsFooter(.settingsGeneralTopMenuFooterTv)
         }
         .fullScreenCover(item: $activePicker) { picker in
             pickerSheet(for: picker)
-        }
-        .fullScreenCover(isPresented: $showsMenuEditor) {
-            TVMenuCustomizationSheet(libraries: libraries)
         }
         .task {
             async let preferencesRefresh: Void = preferences.refresh()
             async let titleArtRefresh: Void = titleArt.refresh()
             async let advisoryRefresh: Void = advisoryAgePreference.refresh()
             async let themeMusicRefresh: Void = themeMusic.refresh()
-            _ = await (preferencesRefresh, titleArtRefresh, advisoryRefresh, themeMusicRefresh)
-        }
-        .task(id: currentLibraryAuthority) {
-            await refreshLibraries(for: currentLibraryAuthority)
+            async let languageRefresh: Void = appLanguage.refresh()
+            _ = await (preferencesRefresh, titleArtRefresh, advisoryRefresh, themeMusicRefresh, languageRefresh)
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
-            let authority = currentLibraryAuthority
             Task {
                 async let preferencesRefresh: Void = preferences.refresh()
                 async let titleArtRefresh: Void = titleArt.refresh()
                 async let themeMusicRefresh: Void = themeMusic.refresh()
-                async let librariesRefresh: Void = refreshLibraries(for: authority)
-                _ = await (preferencesRefresh, titleArtRefresh, themeMusicRefresh, librariesRefresh)
+                async let languageRefresh: Void = appLanguage.refresh()
+                _ = await (preferencesRefresh, titleArtRefresh, themeMusicRefresh, languageRefresh)
             }
         }
     }
@@ -181,32 +157,52 @@ struct TVGeneralSettingsPane: View {
     /// See `TitleArtPreferences` for the scopes each row writes.
     @ViewBuilder
     private var titleArtGroup: some View {
-        TVSettingsSectionHeader("TITLE PAGES")
+        TVSettingsSectionHeader(.settingsGeneralTitlePagesHeaderTv)
 
         TVSettingsToggleRow(
-            title: "Show Title Art",
+            title: .settingsControlTitleArt,
             isOn: titleArt.showsTitleArt
         ) {
             titleArt.setShowTitleArt(!titleArt.showsTitleArt)
         }
-        .accessibilityHint("Use logo artwork as the title when available.")
+        .accessibilityHint(Text(.settingsTitleArtFooter))
         .disabled(!titleArt.allowsEditing)
 
         TVSettingsToggleRow(
-            title: "Apply to All Devices",
+            title: .settingsInterfaceApplyToAllDevices,
             isOn: titleArt.appliesToAllDevices
         ) {
             titleArt.setAppliesToAllDevices(!titleArt.appliesToAllDevices)
         }
-        .accessibilityHint("Use this choice everywhere on this profile.")
+        .accessibilityHint(Text(.settingsInterfaceApplyToAllDevicesSubtitle))
         .disabled(!titleArt.allowsEditing)
 
         if titleArt.appliesToAllDevices {
-            TVSettingsFooter("Title art is \(titleArt.showsTitleArt ? "on" : "off") on every device signed into this profile. Changing it here changes it everywhere. Turn off Apply to All Devices to choose for this Apple TV only.")
+            TVSettingsFooter(
+                titleArt.showsTitleArt
+                    ? .settingsGeneralTitleArtAllOnTv
+                    : .settingsGeneralTitleArtAllOffTv
+            )
         } else {
-            TVSettingsFooter("Use logo artwork as the title when available. Only affects this Apple TV. Your other devices keep their own setting.")
+            TVSettingsFooter(.settingsGeneralTitleArtThisAppleTv)
         }
         if let message = titleArt.errorMessage ?? titleArt.readErrorMessage {
+            TVSettingsFooter(.verbatim(message))
+        }
+    }
+
+    /// The profile's app language. See `AppLanguagePreferences`.
+    @ViewBuilder
+    private var languageGroup: some View {
+        TVSettingsSectionHeader(.settingsAppLanguageHeaderTv)
+
+        TVSettingsPickerRow(
+            title: .settingsAppLanguageTitle,
+            value: appLanguage.selectedLabel
+        ) { activePicker = .appLanguage }
+
+        TVSettingsFooter(appLanguage.footer)
+        if let message = appLanguage.errorMessage {
             TVSettingsFooter(message)
         }
     }
@@ -215,61 +211,60 @@ struct TVGeneralSettingsPane: View {
     /// `ThemeMusicPreferences`.
     @ViewBuilder
     private var themeMusicGroup: some View {
-        TVSettingsSectionHeader("THEME MUSIC")
+        TVSettingsSectionHeader(.settingsGeneralThemeMusicHeaderTv)
 
         TVSettingsToggleRow(
-            title: "Play Theme Music",
+            title: .settingsControlThemeMusic,
             isOn: themeMusic.playsThemeMusic
         ) {
             themeMusic.setEnabled(!themeMusic.playsThemeMusic)
         }
-        .accessibilityHint("Play a title's theme song from your library while its page is open.")
+        .accessibilityHint(Text(.settingsInterfacePlayThemeMusicSubtitle))
         .disabled(!themeMusic.allowsEditing)
 
         TVSettingsToggleRow(
-            title: "Loop Theme Music",
+            title: .settingsControlThemeMusicLoop,
             isOn: themeMusic.loops
         ) {
             themeMusic.setLoop(!themeMusic.loops)
         }
-        .accessibilityHint("Repeat the theme while the page stays open.")
+        .accessibilityHint(Text(.settingsInterfaceLoopThemeMusicSubtitle))
         .disabled(!themeMusic.allowsEditing || !themeMusic.playsThemeMusic)
 
-        TVSettingsFooter("Play a title's theme song from your library while its page is open. Only affects this Apple TV.")
+        TVSettingsFooter(.settingsGeneralThemeMusicFooterTv)
         if let message = themeMusic.errorMessage {
-            TVSettingsFooter(message)
+            TVSettingsFooter(.verbatim(message))
         }
     }
 
-    private var visibleMenuCount: Int {
-        TVPrimaryMenuProjection.visibleItems(
-            in: preferences.resolvedPrimaryMenuItems(),
-            libraries: libraries
-        ).count
-    }
-
-    private var pairedProfileName: String {
-        guard let serverID = registry.activeServerId,
-              let remembered = launchPreferences.rememberedProfile(for: serverID) else {
-            return "Not paired"
+    private var pairedProfileName: LocalizedStringResource {
+        guard registry.activeServerId != nil,
+              let remembered = launchPreferences.rememberedProfile(
+                  forAccount: AccountScope.current?.localAccountId
+              ) else {
+            return .settingsGeneralNotPaired
         }
         guard let activeProfile,
               activeProfile.id == remembered.profileID else {
-            return "Saved profile"
+            return .settingsGeneralSavedProfile
         }
-        return activeProfile.name
+        return .verbatim(activeProfile.name)
     }
 
-    private var pairingDescription: String {
-        let base = appleTVUserContext.pairingDescription
-        guard launchPreferences.behavior == .askEveryLaunch else { return base }
-        return "\(base) Ask Every Time is on, so Silo will still show Who's Watching at launch."
+    /// How profile pairing works for this Apple TV user, with the Ask Every
+    /// Time note, as one whole sentence each.
+    private var pairingDescription: LocalizedStringResource {
+        let asksEveryLaunch = launchPreferences.behavior == .askEveryLaunch
+        if appleTVUserContext.shouldStorePreferencesForCurrentUser {
+            return asksEveryLaunch ? .settingsGeneralPairingSeparateAskEveryTime : .settingsGeneralPairingSeparate
+        }
+        return asksEveryLaunch ? .settingsGeneralPairingSharedAskEveryTime : .settingsGeneralPairingShared
     }
 
     @ViewBuilder
     private var posterSizeRow: some View {
         let row = TVSettingsPickerRow(
-            title: "Poster Size",
+            title: .settingsCardsPosterSize,
             value: preferences.cardPresentation.posterSize.title
         ) { activePicker = .posterSize }
 
@@ -281,7 +276,7 @@ struct TVGeneralSettingsPane: View {
     }
 
     private var familySettingsButton: some View {
-        Button("Use Synced TV Settings") {
+        Button(.settingsGeneralUseSyncedTvSettings) {
             preferences.useFamilySettings()
         }
         .buttonStyle(TVSettingsPaneRowStyle())
@@ -293,13 +288,24 @@ struct TVGeneralSettingsPane: View {
         switch picker {
         case .profileLaunch:
             TVSettingsPickerSheet(
-                title: "Profile Selection",
+                title: .settingsControlProfileSelection,
                 options: TVSettingsOptions.profileLaunch,
                 selection: $launchPreferences.behaviorID
             )
+        case .appLanguage:
+            TVSettingsPickerSheet(
+                title: .settingsAppLanguageTitle,
+                options: appLanguage.options.map { TVSettingsOption(id: $0.id, label: $0.label) },
+                selection: Binding(
+                    get: { appLanguage.currentChoice?.tag ?? "" },
+                    set: { id in Task { await appLanguage.select(id.isEmpty ? nil : id) } }
+                ),
+                allowsSelection: !appLanguage.isBusy,
+                disabledMessage: appLanguage.isBusy ? .settingsAppLanguageSaving : nil
+            )
         case .posterSize:
             TVSettingsPickerSheet(
-                title: "Poster Size",
+                title: .settingsCardsPosterSize,
                 options: CardPosterSize.allCases.map {
                     TVSettingsOption(id: $0.rawValue, label: $0.title)
                 },
@@ -311,300 +317,16 @@ struct TVGeneralSettingsPane: View {
                     }
                 ),
                 allowsSelection: preferences.allowsEditing,
-                disabledMessage: preferences.capabilityMessage
+                disabledMessage: preferences.capabilityMessage.map { .verbatim($0) }
             )
         }
     }
 
     private enum PickerKind: String, Identifiable {
         case profileLaunch
+        case appLanguage
         case posterSize
         var id: String { rawValue }
     }
-
-    private var currentLibraryAuthority: MainTabLibraryAuthority? {
-        MainTabLibraryAuthority(
-            serverId: registry.activeServerId,
-            profileId: registry.activeProfileId
-        )
-    }
-
-    private var libraries: [Library] {
-        librarySnapshot.availableLibraries(for: currentLibraryAuthority)
-    }
-
-    private func refreshLibraries(for authority: MainTabLibraryAuthority?) async {
-        let retained = librarySnapshot.authority == authority ? librarySnapshot.libraries : []
-        librarySnapshot = .init(authority: authority, libraries: retained)
-        guard let authority else { return }
-        do {
-            let response = try await StartupContentPrefetcher.fetchUserLibraries()
-            guard !Task.isCancelled, currentLibraryAuthority == authority else { return }
-            librarySnapshot = .init(authority: authority, libraries: response.libraries)
-        } catch {
-            // Keep the same-authority cache; a different authority already
-            // failed closed above.
-        }
-    }
-}
-
-private struct TVMenuCustomizationSheet: View {
-    let libraries: [Library]
-    @State private var preferences = UICustomizationPreferences.shared
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
-                    if let message = preferences.capabilityMessage {
-                        TVSettingsFooter(message)
-                    }
-
-                    if preferences.primaryMenuUsesDeviceOverride {
-                        TVSettingsFooter("This Apple TV's older device-specific menu is read-only. You can still update profile library pins below, or clear the override from General settings.")
-                    }
-
-                    sectionHeader("VISIBLE DESTINATIONS")
-
-                    VStack(spacing: 10) {
-                        ForEach(visibleItems) { item in
-                            visibleRow(item)
-                        }
-                    }
-                    .focusSection()
-                    .disabled(!familyMenuMutationsEnabled)
-
-                    if !hiddenBuiltins.isEmpty {
-                        sectionHeader("HIDDEN DESTINATIONS")
-                        VStack(spacing: 10) {
-                            ForEach(hiddenBuiltins) { item in
-                                showButton(item)
-                            }
-                        }
-                        .focusSection()
-                        .disabled(!familyMenuMutationsEnabled)
-                    }
-
-                    if !availableLibraryShortcuts.isEmpty {
-                        sectionHeader("AVAILABLE LIBRARY SHORTCUTS")
-                        VStack(spacing: 10) {
-                            ForEach(availableLibraryShortcuts) { item in
-                                showButton(item)
-                            }
-                        }
-                        .focusSection()
-                        .disabled(!familyMenuMutationsEnabled)
-                    }
-
-                    if !libraries.isEmpty {
-                        sectionHeader("PIN LIBRARIES")
-                        VStack(spacing: 10) {
-                            ForEach(libraries.sorted(by: librarySort)) { library in
-                                TVSettingsToggleRow(
-                                    title: library.name,
-                                    isOn: preferences.isLibraryPinned(library.id)
-                                ) {
-                                    preferences.setLibraryPinned(
-                                        library,
-                                        isPinned: !preferences.isLibraryPinned(library.id)
-                                    )
-                                }
-                            }
-                        }
-                        .focusSection()
-                        .disabled(!profilePinMutationsEnabled)
-                    }
-
-                    TVSettingsFooter("Home cannot be hidden. Pinned libraries also enter your profile shortcut catalog; their top-menu placement stays specific to TV-family devices.")
-                }
-                .frame(maxWidth: 1120, alignment: .leading)
-                .padding(.horizontal, 72)
-                .padding(.vertical, 36)
-            }
-            .navigationTitle("Customize Top Menu")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
-            .background(Color.siloBackground.ignoresSafeArea())
-        }
-    }
-
-    private var visibleItems: [PrimaryMenuItem] {
-        TVPrimaryMenuProjection.visibleItems(
-            in: preferences.resolvedPrimaryMenuItems(),
-            libraries: libraries
-        )
-    }
-
-    private var familyMenuMutationsEnabled: Bool {
-        tvCustomizationMutationIsEnabled(
-            allowsEditing: preferences.allowsEditing,
-            usesDeviceMenuOverride: preferences.primaryMenuUsesDeviceOverride,
-            changesFamilyMenu: true
-        )
-    }
-
-    private var profilePinMutationsEnabled: Bool {
-        tvCustomizationMutationIsEnabled(
-            allowsEditing: preferences.allowsEditing,
-            usesDeviceMenuOverride: preferences.primaryMenuUsesDeviceOverride,
-            changesFamilyMenu: false
-        )
-    }
-
-    private var hiddenBuiltins: [PrimaryMenuItem] {
-        let visibleIds = Set(visibleItems.map(\.id))
-        return builtinCandidates.filter { !visibleIds.contains($0.id) }
-    }
-
-    /// A profile shortcut and a TV-family menu row are separate pieces of
-    /// state. Keep a hidden pinned library pinned, while still offering an
-    /// explicit way to restore it to this TV's top menu.
-    private var availableLibraryShortcuts: [PrimaryMenuItem] {
-        let visibleIds = Set(visibleItems.map(\.id))
-        let availableLibraryIds = Set(libraries.map(\.id))
-        return preferences.shortcuts.items.filter { item in
-            guard case .library(let libraryId, _) = item else { return false }
-            return availableLibraryIds.contains(libraryId) && !visibleIds.contains(item.id)
-        }
-    }
-
-    private var builtinCandidates: [PrimaryMenuItem] {
-        var items: [PrimaryMenuItem] = [.builtin(.home)]
-        for type in TVLibraryTabType.allCases where Self.hasLibrary(type, in: libraries) {
-            let builtin: PrimaryMenuBuiltin
-            switch type {
-            case .movies: builtin = .movies
-            case .series: builtin = .series
-            case .music: builtin = .music
-            case .audiobooks: builtin = .audiobooks
-            }
-            items.append(.builtin(builtin))
-        }
-        items.append(contentsOf: [.builtin(.forYou), .builtin(.calendar)])
-        return items
-    }
-
-    private func visibleRow(_ item: PrimaryMenuItem) -> some View {
-        let index = visibleItems.firstIndex(where: { $0.id == item.id }) ?? 0
-        return HStack(spacing: 12) {
-            Text(item.title)
-                .font(.system(size: 26, weight: .medium))
-                .lineLimit(1)
-            Spacer(minLength: 12)
-
-            Button {
-                move(item, by: -1)
-            } label: {
-                Image(systemName: "arrow.up")
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(.bordered)
-            .disabled(index == 0)
-            .accessibilityLabel("Move \(item.title) earlier")
-
-            Button {
-                move(item, by: 1)
-            } label: {
-                Image(systemName: "arrow.down")
-                    .frame(width: 44, height: 44)
-            }
-            .buttonStyle(.bordered)
-            .disabled(index == visibleItems.count - 1)
-            .accessibilityLabel("Move \(item.title) later")
-
-            if !item.isHome {
-                Button {
-                    hide(item)
-                } label: {
-                    Image(systemName: "eye.slash")
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Hide \(item.title)")
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.siloChromeRestingFill)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.siloChromeRestingBorder, lineWidth: 1)
-        }
-    }
-
-    private func move(_ item: PrimaryMenuItem, by offset: Int) {
-        var items = visibleItems
-        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-        let target = index + offset
-        guard items.indices.contains(target) else { return }
-        items.swapAt(index, target)
-        persistVisibleItems(items)
-    }
-
-    private func hide(_ item: PrimaryMenuItem) {
-        guard !item.isHome else { return }
-        persistVisibleItems(visibleItems.filter { $0.id != item.id })
-    }
-
-    /// Weave the edited, focus-visible rows back through the complete synced
-    /// menu. Section/collection targets and temporarily unavailable libraries
-    /// are not renderable roots on Apple TV yet, but must survive an unrelated
-    /// reorder so another TV-family client does not lose them.
-    private func persistVisibleItems(_ updatedVisibleItems: [PrimaryMenuItem]) {
-        let currentlyVisibleIds = Set(visibleItems.map(\.id))
-        var replacements = updatedVisibleItems.makeIterator()
-        var result: [PrimaryMenuItem] = []
-
-        for item in preferences.resolvedPrimaryMenuItems() {
-            if currentlyVisibleIds.contains(item.id) {
-                if let replacement = replacements.next() {
-                    result.append(replacement)
-                }
-            } else {
-                result.append(item)
-            }
-        }
-        while let remaining = replacements.next() {
-            result.append(remaining)
-        }
-        preferences.setPrimaryMenuItems(result)
-    }
-
-    private static func hasLibrary(_ type: TVLibraryTabType, in libraries: [Library]) -> Bool {
-        libraries.contains(where: { type.matches($0) })
-    }
-
-    private func showButton(_ item: PrimaryMenuItem) -> some View {
-        Button {
-            persistVisibleItems(visibleItems + [item])
-        } label: {
-            HStack(spacing: 18) {
-                Image(systemName: "plus.circle.fill")
-                Text("Show \(item.title)")
-                Spacer()
-            }
-            .font(.system(size: 26, weight: .medium))
-        }
-        .buttonStyle(TVSettingsPaneRowStyle())
-    }
-
-    private func librarySort(_ lhs: Library, _ rhs: Library) -> Bool {
-        (lhs.sortOrder ?? Int.max, lhs.id) < (rhs.sortOrder ?? Int.max, rhs.id)
-    }
-}
-
-/// Mono caps header shared by the Home Sections and Top Menu editors.
-private func sectionHeader(_ title: String) -> some View {
-    Text(title)
-        .font(.system(size: 15, weight: .semibold, design: .monospaced))
-        .tracking(2)
-        .foregroundStyle(Color.siloSecondaryText)
 }
 #endif

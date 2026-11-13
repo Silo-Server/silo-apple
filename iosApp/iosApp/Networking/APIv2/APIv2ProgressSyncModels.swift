@@ -147,8 +147,8 @@ enum ProgressSyncError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidBatch: return "The progress batch is not valid."
-        case .incompleteResult: return "The server returned incomplete progress results."
+        case .invalidBatch: return AppLanguage.string(.errorsAppleProgressInvalidBatch)
+        case .incompleteResult: return AppLanguage.string(.errorsAppleProgressIncompleteResult)
         }
     }
 }
@@ -188,6 +188,6 @@ enum ProgressReadError: LocalizedError, Equatable {
     case incompleteRead
 
     var errorDescription: String? {
-        "The server returned incomplete watch progress."
+        AppLanguage.string(.errorsAppleProgressIncompleteRead)
     }
 }

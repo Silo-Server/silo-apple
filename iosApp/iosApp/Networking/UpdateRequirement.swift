@@ -16,8 +16,8 @@ enum UpdateRequirement: Equatable, Sendable {
     /// the `client_upgrade_required` problem type or v1 error code.
     case app
 
-    static let serverMessage = "This server needs to be updated before this version of Silo can use it."
-    static let appMessage = "Update Silo to keep using this server."
+    static var serverMessage: String { AppLanguage.string(.updateServerRequired) }
+    static var appMessage: String { AppLanguage.string(.updateAppRequired) }
 
     /// The final segment of the problem `type` URI, and the `error` code of
     /// the v1 error envelope.

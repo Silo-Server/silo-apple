@@ -291,6 +291,7 @@ struct MacFeaturedHero: View {
                 .padding(.horizontal, HomeFeedMetrics.gutter)
                 // Room for the highlight ring, which draws outside the art.
                 .padding(.vertical, SiloTheme.smallPadding)
+                .mouseDragScrolling()
             }
             .onChange(of: index) { _, newIndex in
                 guard section.items.indices.contains(newIndex) else { return }
@@ -418,7 +419,7 @@ struct MacFeaturedHero: View {
     /// the item does not carry.
     static func metadataLine(for item: SectionItem) -> String? {
         var parts: [String] = []
-        if let year = item.year { parts.append(String(year)) }
+        if let year = item.year { parts.append(LocaleFormat.integer(year)) }
         if let runtime = MediaTextFormatting.runtime(minutes: item.runtime) { parts.append(runtime) }
         if let rating = item.ratingImdb, rating > 0 {
             parts.append("IMDb " + String(format: "%.1f", rating))

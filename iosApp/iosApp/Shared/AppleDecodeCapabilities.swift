@@ -20,9 +20,11 @@ struct AppleVideoDecodeCapability: Equatable, Sendable {
 /// Online playback and persistent downloads deliberately use different
 /// policies. Aether probes each online source and chooses its native or
 /// libavcodec path at load time, so physical iOS devices and Apple TV 4K report
-/// the pinned engine/build manifest without predicting profiles, bit depths, or
-/// performance in app code. Downloads have no server replan available when
-/// they are played offline, so they retain the bounded platform attestation.
+/// the pinned engine/build manifest without predicting profiles or bit depths
+/// in app code, except that iPhone and iPad bound the codecs they may decode
+/// only in software (`declaredOnlineVideo`). Downloads have no server replan
+/// available when they are played offline, so they retain the bounded
+/// platform attestation.
 ///
 /// This is intentionally the only codec/container inventory in the app. Wire
 /// surfaces may narrow it for their delivery contract, but must not recreate
@@ -171,11 +173,61 @@ enum AppleDecodeCapabilities {
     static func streamingVideoCodecs(for mode: StreamingVideoCapabilityMode) -> [String] {
         switch mode {
         case .aetherDeclared:
-            return aetherOriginalHTTPVideoCodecs
+            return declaredOnlineVideo.codecs
         case .platformAttested:
             return attestedVideoCodecs
         }
     }
+
+    /// The online declaration's video codecs, and the decode entries that
+    /// bound the ones iPhone and iPad may decode only in software. At the
+    /// `declared` tier an entry naming a codec narrows the flat claim to the
+    /// sources it admits, so the server sends a file outside the measured
+    /// software envelope through another route rather than straight to a
+    /// decoder that cannot keep up with it.
+    ///
+    /// - AV1 is unbounded where VideoToolbox decodes it in hardware, the same
+    ///   answer AetherEngine routes on. Without hardware AV1 a device claims
+    ///   only dav1d's measured envelope, and the simulator, where AV1 direct
+    ///   play has been seen never to start, does not claim AV1 at all.
+    /// - MPEG-2 always decodes in libavcodec, within its measured envelope.
+    ///
+    /// Apple TV 4K keeps the unbounded declaration.
+    static func declaredOnlineVideo(
+        isTVOS: Bool,
+        hardwareAV1: Bool,
+        isSimulator: Bool
+    ) -> (codecs: [String], decode: [AppleVideoDecodeCapability]) {
+        guard !isTVOS else { return (aetherOriginalHTTPVideoCodecs, []) }
+        var boundedCodecs: Set<String> = ["mpeg2video"]
+        var codecs = aetherOriginalHTTPVideoCodecs
+        if !hardwareAV1 {
+            if isSimulator {
+                codecs.removeAll { $0 == "av1" }
+            } else {
+                boundedCodecs.insert("av1")
+            }
+        }
+        return (codecs, softwareVideoDecodeCapabilities.filter { boundedCodecs.contains($0.codec) })
+    }
+
+    static let declaredOnlineVideo: (codecs: [String], decode: [AppleVideoDecodeCapability]) = {
+        #if os(tvOS)
+        let isTVOS = true
+        #else
+        let isTVOS = false
+        #endif
+        #if targetEnvironment(simulator)
+        let isSimulator = true
+        #else
+        let isSimulator = false
+        #endif
+        return declaredOnlineVideo(
+            isTVOS: isTVOS,
+            hardwareAV1: hardwareDecodeSupported(kCMVideoCodecType_AV1),
+            isSimulator: isSimulator
+        )
+    }()
 
     static func streamingAudioCodecs(for mode: StreamingVideoCapabilityMode) -> [String] {
         mode == .aetherDeclared
@@ -224,7 +276,8 @@ enum AppleDecodeCapabilities {
     /// narrower software envelopes proven with Aether fixtures. This is the
     /// persistent-download safety contract and the fallback for Apple TV HD
     /// and macOS. Online iOS and Apple TV 4K playback delegate
-    /// these decisions to Aether's source probe.
+    /// these decisions to Aether's source probe, apart from the software
+    /// envelopes `declaredOnlineVideo` sends from iPhone and iPad.
     static func videoDecodeAttestation() -> [AppleVideoDecodeCapability] {
         videoDecodeAttestationValue
     }
@@ -253,18 +306,25 @@ enum AppleDecodeCapabilities {
                 hardware: true
             )
         }
-        let softwareCapabilities: [(
+        return hardwareCapabilities + softwareVideoDecodeCapabilities
+    }
+
+    /// The software envelopes proven with Aether fixtures.
+    private static let softwareVideoDecodeCapabilities: [AppleVideoDecodeCapability] = {
+        let capabilities: [(
             codec: String, decoder: String, profiles: [String], bitDepths: [Int],
             maxWidth: Int, maxHeight: Int, maxFrameRate: Double, maxBitrateKbps: Int
         )] = [
             ("h264", "libavcodec", ["high 10"], [10], 1_920, 1_080, 30, 10_000),
             ("av1", "dav1d", ["main"], [10], 1_920, 1_080, 30, 3_000),
             ("vp9", "libavcodec", ["profile 0"], [8], 1_920, 1_080, 30, 3_000),
-            // The exercised NTSC fixture reports 30.303 fps.
-            ("mpeg2video", "libavcodec", ["main"], [8], 720, 480, 31, 7_000),
+            // Blu-ray MPEG-2 up to its 40 Mbps video ceiling. 31 fps admits
+            // the exercised NTSC fixture, which reports 30.303 fps. Not yet
+            // measured on Apple TV HD (silo-apple#1124).
+            ("mpeg2video", "libavcodec", ["main"], [8], 1_920, 1_080, 31, 40_000),
             ("vc1", "libavcodec", ["advanced"], [8], 1_920, 1_080, 30, 32_000),
         ]
-        return hardwareCapabilities + softwareCapabilities.map { capability in
+        return capabilities.map { capability in
             AppleVideoDecodeCapability(
                 codec: capability.codec,
                 decoderName: capability.decoder,
@@ -278,7 +338,7 @@ enum AppleDecodeCapabilities {
                 hardware: false
             )
         }
-    }
+    }()
 
     static let hardwareVideoCodecs = videoDecodeAttestationValue.filter(\.hardware).map(\.codec)
 
@@ -296,6 +356,14 @@ enum AppleDecodeCapabilities {
         // codec. AVPlayer there still plays H.264.
         return codecType == kCMVideoCodecType_H264
         #else
+        // AV1 asks the way AetherEngine's `VTCapabilityProbe` does before it
+        // routes AV1 to the native player: register the supplemental decoder
+        // where the SDK has it, then ask for hardware decode.
+        #if os(macOS) || compiler(>=6.2.3)
+        if codecType == kCMVideoCodecType_AV1, #available(tvOS 26.2, iOS 26.2, macOS 16.0, *) {
+            VTRegisterSupplementalVideoDecoderIfAvailable(codecType)
+        }
+        #endif
         return VTIsHardwareDecodeSupported(codecType)
         #endif
     }

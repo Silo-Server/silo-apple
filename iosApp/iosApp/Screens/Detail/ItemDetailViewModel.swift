@@ -17,6 +17,10 @@ class ItemDetailViewModel {
 
     var detail: ItemDetail?
     var error: ErrorState?
+    /// The movie's box set, drawn as a row after the extras. Nil while it
+    /// loads, for a movie in no box set, and for anything but a movie.
+    private(set) var boxSet: CatalogBoxSetDetail?
+    @ObservationIgnored private var boxSetTask: Task<Void, Never>?
 
     // Catalog metadata and the hierarchy finish independently. An empty array
     // is only an empty result after its request has succeeded.
@@ -31,6 +35,7 @@ class ItemDetailViewModel {
     func cancelDetailLoading() {
         detailLoadGeneration += 1
         _ = beginDetailWrite()
+        boxSetTask?.cancel()
         seasonsLoadGeneration += 1
         episodeLoadGeneration += 1
         episodePersonalListRefreshGeneration += 1
@@ -47,8 +52,8 @@ class ItemDetailViewModel {
     }
 
     var seriesLoadErrorMessage: String? {
-        if seasonsLoadState == .failed { return "Couldn't load seasons." }
-        if episodesLoadFailed { return "Couldn't load episodes." }
+        if seasonsLoadState == .failed { return AppLanguage.string(.detailErrorLoadSeasons) }
+        if episodesLoadFailed { return AppLanguage.string(.detailErrorLoadEpisodes) }
         return nil
     }
 
@@ -191,12 +196,15 @@ class ItemDetailViewModel {
     // being reset every time the detail task restarts. The phone page keeps
     // its own per-visit copies in ItemDetailPhoneContent.
     var preferredVersionFileId: Int?
+    /// The edition picked on the page; nil opens on the last-played one.
+    var preferredEditionId: String?
     var preferredAudioTrackIndex: Int?
     var preferredSubtitleTrackIndex: Int?
     /// Distinguishes a selector choice from a server-derived launch seed so
     /// enabling device caption settings can discard only the latter.
     var preferredSubtitleTrackWasManuallySelected = false
     var preferredNextUpFileId: Int?
+    var preferredNextUpEditionId: String?
     var preferredNextUpAudioTrackIndex: Int?
     var preferredNextUpSubtitleTrackIndex: Int?
     #endif
@@ -230,6 +238,8 @@ class ItemDetailViewModel {
         detailLoadGeneration += 1
         let loadGeneration = detailLoadGeneration
         if let detail, detail.contentId != contentId {
+            boxSetTask?.cancel()
+            boxSet = nil
             seasonsLoadGeneration += 1
             episodeLoadGeneration += 1
             self.detail = nil
@@ -334,6 +344,8 @@ class ItemDetailViewModel {
                 isWatched = enriched.userData?.played ?? false
             }
 
+            refreshBoxSet(for: enriched)
+
             #if os(tvOS)
             if cachedDetailForRelatedStructure != nil {
                 await cachedRelatedStructureLoad
@@ -378,6 +390,29 @@ class ItemDetailViewModel {
             if detail == nil {
                 self.error = ErrorState(err)
             }
+        }
+    }
+
+    /// Reads the movie's box set beside the page's own refresh, so watched
+    /// badges follow the player and Mark as Watched. A failed reread keeps
+    /// the row on screen; the server answering "no box set" removes it.
+    private func refreshBoxSet(for item: ItemDetail) {
+        guard item.type == "movie" else {
+            boxSetTask?.cancel()
+            boxSet = nil
+            return
+        }
+        let contentId = item.contentId
+        boxSetTask?.cancel()
+        boxSetTask = Task { [weak self, libraryId] in
+            let fresh: CatalogBoxSetDetail?
+            do {
+                fresh = try await SiloAPI.shared.itemBoxSet(contentId: contentId, libraryId: libraryId)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, self.detail?.contentId == contentId else { return }
+            self.boxSet = fresh
         }
     }
 
@@ -1577,6 +1612,9 @@ class ItemDetailViewModel {
             invalidateRelatedCaches(contentId: contentId)
             if isSeries {
                 await refreshWatchedSeries(seriesId: contentId)
+            } else if let detail, detail.contentId == contentId {
+                // The row's watched badges include this movie.
+                refreshBoxSet(for: detail)
             }
         } else {
             if toggleGeneration == watchedToggleGeneration, isWatched == requested {
@@ -1798,7 +1836,7 @@ enum ItemDetailViewModelError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noItemLoaded:
-            return "No item is loaded."
+            return AppLanguage.string(.detailErrorNoItemLoaded)
         }
     }
 }

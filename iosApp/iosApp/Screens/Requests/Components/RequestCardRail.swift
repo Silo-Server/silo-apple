@@ -39,11 +39,14 @@ struct RequestCardRail<Item: Identifiable, Card: View>: View {
             #else
             .scrollTargetLayout()
             .phoneMediaRailBounds()
+            .mouseDragScrolling()
             #endif
         }
         .mediaRailScrolling()
-        #if os(tvOS)
+        // Cards scroll past the page's side padding to the screen edge, as
+        // Home's rows do, and under the iPhone Duo's status column.
         .scrollClipDisabled()
+        #if os(tvOS)
         // Pull the rail back to the header rhythm the padding pushed out.
         .padding(.vertical, -RequestsUI.railVerticalPadding)
         #endif
@@ -80,7 +83,7 @@ struct RequestsSectionHeader: View {
                 Button(action: action) {
                     HStack(spacing: 3) {
                         Text(trailing)
-                        Image(systemName: "chevron.right")
+                        Image(systemName: "chevron.forward")
                             .font(.system(size: trailingSize * 0.8, weight: .semibold))
                     }
                     .font(.system(size: trailingSize, weight: .medium))

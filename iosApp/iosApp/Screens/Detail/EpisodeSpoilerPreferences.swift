@@ -75,12 +75,12 @@ enum EpisodeSpoilerSyncState: Equatable, Sendable {
     var userMessage: String? {
         switch self {
         case .checking:
-            return "Checking whether this server supports spoiler settings…"
+            return AppLanguage.string(.detailSpoilersChecking)
         case .supported, .serverUpgradeRequired:
             // An older server hides the rows entirely.
             return nil
         case .unavailable:
-            return "Spoiler settings can be changed once this server is reachable."
+            return AppLanguage.string(.detailSpoilersUnavailable)
         }
     }
 }
@@ -144,7 +144,7 @@ final class EpisodeSpoilerPreferences {
         self.defaults = defaults
         self.transport = transport
         self.requestIdentity = requestIdentity
-        loadCache(for: requestIdentity().map(Self.cacheKey(for:)))
+        loadCache(for: requestIdentity().map(adoptedCacheKey(for:)))
     }
 
     // MARK: Reading
@@ -157,7 +157,7 @@ final class EpisodeSpoilerPreferences {
         // adopts the new identity still observes the store and redraws when
         // the server's answer arrives.
         let loaded = values
-        let key = requestIdentity().map(Self.cacheKey(for:))
+        let key = requestIdentity().map(adoptedCacheKey(for:))
         guard key != loadedCacheKey else { return loaded }
         return key.flatMap(cachedValues(for:))
     }
@@ -174,7 +174,7 @@ final class EpisodeSpoilerPreferences {
             return
         }
         let context = OperationContext(
-            cacheKey: Self.cacheKey(for: identity),
+            cacheKey: adoptedCacheKey(for: identity),
             requestIdentity: identity
         )
         loadCache(for: context.cacheKey)
@@ -226,9 +226,9 @@ final class EpisodeSpoilerPreferences {
                 syncState = .serverUpgradeRequired
                 clearServerValues(cacheKey: context.cacheKey)
             } else {
-                readErrorMessage = values == nil
-                    ? "Couldn't load spoiler settings from the server."
-                    : "Couldn't refresh spoiler settings. Showing the last saved values."
+                readErrorMessage = AppLanguage.string(values == nil
+                    ? .detailSpoilersLoadFailed
+                    : .detailSpoilersRefreshFailed)
             }
         }
     }
@@ -243,7 +243,7 @@ final class EpisodeSpoilerPreferences {
               var next = values,
               let identity = requestIdentity() else { return }
         let context = OperationContext(
-            cacheKey: Self.cacheKey(for: identity),
+            cacheKey: adoptedCacheKey(for: identity),
             requestIdentity: identity
         )
         guard context.cacheKey == loadedCacheKey, next[setting] != isOn else { return }
@@ -385,18 +385,28 @@ final class EpisodeSpoilerPreferences {
     }
 
     static func writeFailureMessage(setting: EpisodeSpoilerSetting, error: Error) -> String {
-        let name = setting == .images ? "image setting" : "description setting"
+        let images = setting == .images
+        let message: LocalizedStringResource
         switch SettingsAPIError.from(error) {
         case .transport:
-            return "Couldn't save the \(name). Check the connection and try again."
+            message = images ? .detailSpoilersImagesSaveTransport : .detailSpoilersOverviewsSaveTransport
         case .serverUpgradeRequired, .unknownSetting:
-            return "This server can't save the \(name)."
+            message = images ? .detailSpoilersImagesSaveUnsupported : .detailSpoilersOverviewsSaveUnsupported
         default:
-            return "The server didn't save the \(name). Try again."
+            message = images ? .detailSpoilersImagesSaveFailed : .detailSpoilersOverviewsSaveFailed
         }
+        return AppLanguage.string(message)
     }
 
+    /// `silo.episodeSpoilers.v2.<server>.<account>.<profile>`. Top Shelf
+    /// reads the same key (`EpisodeSpoilerCache`).
     static func cacheKey(for identity: HTTPRequestIdentity) -> String {
-        EpisodeSpoilerCache.key(serverId: identity.serverId, profileId: identity.profileId)
+        identity.accountScopedKey(EpisodeSpoilerCache.prefix)
+    }
+
+    /// `cacheKey(for:)`, after the legacy owner takes over the cache saved
+    /// before accounts.
+    private func adoptedCacheKey(for identity: HTTPRequestIdentity) -> String {
+        identity.adoptedAccountScopedKey(EpisodeSpoilerCache.prefix, defaults: defaults)
     }
 }

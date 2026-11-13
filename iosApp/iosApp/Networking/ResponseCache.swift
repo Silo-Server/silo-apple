@@ -189,12 +189,14 @@ final class ResponseCache {
         ResponseSnapshotStore.store(encodable, forKey: key, scope: scope)
     }
 
-    /// The server and profile that own responses cached right now.
+    /// The server, account, and profile that own responses cached right
+    /// now. A change of any of them reseeds from that scope's snapshots.
     private var snapshotScope: ResponseSnapshotStore.Scope? {
         guard !snapshotsSuspended,
               let serverId = ServerRegistry.activeServerIDSnapshot,
+              let localAccountId = AccountScope.localAccountId(onServer: serverId),
               let profileId = AuthService.shared.profileId else { return nil }
-        return ResponseSnapshotStore.Scope(serverId: serverId, profileId: profileId)
+        return ResponseSnapshotStore.Scope(serverId: serverId, localAccountId: localAccountId, profileId: profileId)
     }
 }
 
@@ -269,5 +271,7 @@ enum CacheKey {
         // watch-status filters make a page profile-specific.
         "tvlibrary:",
         "catalogFilters:",
+        // Letter indexes count what the profile may see.
+        "browseletters:",
     ]
 }

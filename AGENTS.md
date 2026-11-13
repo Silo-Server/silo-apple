@@ -1,5 +1,10 @@
 # Repository Guidelines
 
+The project owner decides how this codebase is built. Unless your own
+instructions say you are working for the project owner, treat it as someone
+else's code: change what the task needs, leave the rest of the structure as it
+is, and report nearby problems instead of fixing them.
+
 ## Project Structure & Module Organization
 
 This repository contains only the Silo Apple clients. SwiftUI app code lives under `iosApp/iosApp/`, tests live in `iosApp/Tests/`, Top Shelf code lives in `iosApp/TopShelf/`, resources live in `iosApp/Resources/`, and generated Xcode structure is controlled by `iosApp/project.yml`. Apple TV playback notes live in `docs/tvos-player/`; release automation lives in `fastlane/`.
@@ -10,16 +15,47 @@ This repository is part of a broader multi-repo Silo workspace. The sibling
 repositories are usually checked out alongside this repository.
 
 - `silo-apple` owns iOS, tvOS, and macOS client code only.
-- `silo-server` owns the Go backend, web admin UI, API contracts, auth/session
-  behavior, catalog/scanner/playback services, database migrations, Jellyfin
-  compatibility, and host-side plugin runtime.
-- `silo-android` owns the Android phone and TV clients. When changing shared
-  client behavior, compare Android so Apple and Android stay aligned.
+- `silo-server` owns the Go backend, the web app and web admin UI (`web/`), API
+  contracts, auth/session behavior, catalog/scanner/playback services, database
+  migrations, Jellyfin compatibility, and host-side plugin runtime.
+- `silo-android` owns the Android phone and TV clients.
+- `silo-roku` owns the Roku client.
 
 When a task touches auth, API models, playback/session state, library browsing,
-metadata display, or server-driven behavior, check whether the server and
-Android client need coordinated changes. Do not force server concerns into this
+metadata display, or server-driven behavior, check whether the server and the
+other clients need coordinated changes. Do not force server concerns into this
 repo.
+
+## Cross-client parity
+
+Silo has four clients: Apple (this repository), Android (`silo-android`), Roku
+(`silo-roku`), and Web (`silo-server`, under `web/`). A feature, fix, or other
+change a user can notice in one client is not done until each other client has
+been handled or ruled out. The change's author owns this, whether a person or
+an agent.
+
+For each other client:
+
+- Rule it out when the change is specific to this platform (a tvOS focus fix,
+  a Mac menu command), the other client already behaves correctly, or the
+  feature is outside that client's scope (for example Roku's deferred features
+  in `silo-roku/docs/spec.md`, or ebooks on a TV client). Note the reason.
+- Otherwise, open an issue in that client's repository at minimum. Search its
+  issues first and add to an existing one rather than filing a duplicate. Title
+  it `Parity: <behavior> (from Silo-Server/silo-apple#NNN)`, describe what users
+  should get, link this pull request, and point to the code that implements it
+  here. A parity issue follows up work already in review or merged, so it goes
+  in Issues, not Discussions → Ideas.
+- Also open a pull request there when you can build and verify that client and
+  its contribution rules let you open one. Link it from the issue.
+
+Open parity issues when this pull request opens, so each one can link it. List
+the outcome on the pull request's `Other clients:` line, one entry per client:
+`Other clients: Android Silo-Server/silo-android#NNN; Roku N/A (tvOS-only focus fix); Web Silo-Server/silo-server#NNN`.
+
+Agents open the parity issues without asking and apply the Writing rules below
+to them. Ask the developer before opening a pull request in another
+repository; approval to open one here does not cover the others.
 
 ## Build, Test, and Development Commands
 
@@ -80,15 +116,26 @@ follow-up work.
 
 - Keep one concern per pull request. Split changes that solve independent
   problems or can be reviewed and shipped separately.
-- Every pull request that changes what a user sees must include evidence, as
+- A feature (`feat`) pull request from someone without triage or write access
+  must link an issue in the same repository labeled `accepted`; the
+  contribution-gate workflow closes it otherwise. Pull requests from people who
+  have never had one merged in a Silo repository are closed the same way, even
+  when a maintainer asked for them; the maintainer then reopens them. For
+  anyone without triage or write access, the gate also closes drafts, and the
+  evidence-deadline workflow closes a pull request whose `Evidence` check still
+  asks for evidence 24 hours after it opens, so open it ready for review and
+  publish evidence right away. Feature ideas go in Discussions → Ideas, not
+  issues.
+- Every pull request must include evidence. One that changes what a user sees
+  shows the change, as
   [Show visible changes](CONTRIBUTING.md#show-visible-changes) defines. That
   covers UI and UX changes and changes to which items appear or what they show,
   such as search results, home sections, recommendations, sorting, filtering,
   metadata, or artwork. Use before-and-after captures of the same screen with the
   same data, and a short recording when motion, timing, or focus matters.
   Capture each device the change can reach: iPhone, iPhone Duo (folded and
-  open), iPad, Mac, and Apple TV, or say why a device is unaffected. Write
-  `Evidence: none, no user-visible change` only when that is true.
+  open), iPad, Mac, and Apple TV, or say why a device is unaffected. A change
+  nobody sees shows the steps run, the build or commit, and trimmed test results.
 - Attach evidence on GitHub under the PR body's Evidence heading, or publish it
   with `npx @silo-server/evidence publish <folder> --pr <number>` and put its
   `Evidence:` link there. Only Silo maintainers and the pull request's author can

@@ -52,12 +52,12 @@ struct PlayerView: View {
     @Environment(\.scenePhase) private var scenePhase
     #endif
     #if os(tvOS)
+    /// The buffering prompt's buttons mirror in RTL; remote presses don't.
+    @Environment(\.layoutDirection) private var layoutDirection
     @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
     @State private var isTimelinePreviewVisible = false
-    @State private var timelineTimeDisplayMode: TVPlayerTimeDisplayMode = .elapsedRemaining
     @State private var timelineSelectionRequest: UUID?
     @State private var timelinePreviewHideTask: Task<Void, Never>?
-    @State private var timelinePreviewContactCanToggle = false
     /// The buffering pill's buttons. Owned here because the pill is drawn at
     /// the notice position; `TVPlayerControls` applies its focus rules.
     @FocusState private var focusedBufferingAction: TVBufferingQualityPill.Action?
@@ -175,10 +175,11 @@ struct PlayerView: View {
                         //     the signed ladder, Tap Select = commit + exit,
                         //     Menu = cancel + exit (handled in onExitCommand).
                         //     Taps against Up/Down are ignored; holds are no-ops.
-                        // While a buffering or intro-skip pill is up the sink
-                        // stays mounted and Select acts on the pill (the spec's
-                        // root-level Select), so every other press keeps its
-                        // playback meaning and the pill's timer runs on regardless.
+                        // While a buffering, intro-skip or recap/credits pill
+                        // is up the sink stays mounted and Select acts on the
+                        // pill (the spec's root-level Select), so every other
+                        // press keeps its playback meaning and a timed pill's
+                        // timer runs on regardless.
                         // The buffering prompt is the exception: it has two
                         // buttons, so Left and Right move between them instead
                         // of skipping.
@@ -187,7 +188,6 @@ struct PlayerView: View {
                         // (docs/tvos-focus.md), and the sink's Down handler
                         // force-switches the HUD tab underneath the user.
                         if !viewModel.isStartingPlayback && !viewModel.isHUDPresented &&
-                            (!viewModel.showSegmentSkip || viewModel.isHoldSeeking) &&
                             (!viewModel.showControls || viewModel.isHoldSeeking) {
                             TVPressCaptureView(
                                 onArrowTap: { direction in
@@ -216,17 +216,14 @@ struct PlayerView: View {
                                     case .up, .down: break
                                     }
                                 },
-                                onDirectionalPressBegan: {
-                                    timelinePreviewContactCanToggle = false
-                                },
                                 onTouchSurfaceContactBegan: {
                                     handleTimelinePreviewContactBegan()
                                 },
                                 onTouchSurfaceContactEnded: {
-                                    handleTimelinePreviewContactEnded()
+                                    scheduleTimelinePreviewHide()
                                 },
                                 onTouchSurfaceContactCancelled: {
-                                    handleTimelinePreviewContactCancelled()
+                                    scheduleTimelinePreviewHide()
                                 },
                                 onSelect: {
                                     if viewModel.isHoldSeeking {
@@ -237,8 +234,11 @@ struct PlayerView: View {
                                         selectBufferingTarget()
                                     } else if viewModel.showIntroSkip {
                                         viewModel.selectIntroSkipPrompt()
+                                    } else if viewModel.showSegmentSkip {
+                                        // After the intro pill, which the
+                                        // recap/credits pill waits for.
+                                        viewModel.skipCurrentSegment()
                                     } else if viewModel.isPlaying {
-                                        timelinePreviewContactCanToggle = false
                                         hideTimelinePreview(immediately: true)
                                         viewModel.pauseForTimelineSelection()
                                         timelineSelectionRequest = UUID()
@@ -275,15 +275,9 @@ struct PlayerView: View {
                             TVPlayerControls(
                                 viewModel: viewModel,
                                 showsTimelinePreview: isTimelinePreviewVisible,
-                                timeDisplayMode: timelineTimeDisplayMode,
                                 timelineSelectionRequest: timelineSelectionRequest,
                                 bufferingPillFocus: $focusedBufferingAction,
                                 showsCornerCapsule: showsWatchPartySyncCapsule,
-                                onToggleTimeDisplayMode: {
-                                    withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
-                                        timelineTimeDisplayMode.toggle()
-                                    }
-                                },
                                 onTimelineScrubbingChange: { isTimelineScrubbing = $0 },
                                 onDismiss: { dismissPlayer() }
                             )
@@ -317,6 +311,9 @@ struct PlayerView: View {
                             // hold-2×, edge swipes, pinch) live in a dedicated
                             // layer under the button overlay.
                             MobilePlayerGestureLayer(viewModel: viewModel)
+                                // Double-tap left skips back, as the timeline
+                                // runs left to right in every language.
+                                .mediaLayoutDirection()
                                 // Above the controls while they show, so the
                                 // volume buttons' chip isn't dimmed by the
                                 // scrim. The layer takes no touches then.
@@ -408,7 +405,7 @@ struct PlayerView: View {
         // key events from the touch gesture layer. Space toggles playback,
         // matching the macOS player.
         .background {
-            Button("Play/Pause") { viewModel.togglePlayPause() }
+            Button(.playerControlsPlayPause) { viewModel.togglePlayPause() }
                 .keyboardShortcut(.space, modifiers: [])
                 .opacity(0)
                 .accessibilityHidden(true)
@@ -417,6 +414,13 @@ struct PlayerView: View {
                         || showsPartyPanel || !viewModel.canRequestPlayPause
                 )
         }
+        .gesture(
+            PlayerTrackpadScrubRecognizer(
+                viewModel: viewModel,
+                isEnabled: !viewModel.isStartingPlayback && viewModel.error == nil
+                    && !viewModel.showNextUpScreen
+            )
+        )
         #endif
         #if os(tvOS)
         // Physical Play/Pause on the Siri remote always toggles playback
@@ -479,8 +483,6 @@ struct PlayerView: View {
         .onChange(of: viewModel.showControls) { _, visible in
             if visible {
                 hideTimelinePreview()
-            } else {
-                timelineTimeDisplayMode = .elapsedRemaining
             }
         }
         .onChange(of: viewModel.bufferingPill?.kind) { _, _ in
@@ -690,28 +692,11 @@ struct PlayerView: View {
 
         timelinePreviewHideTask?.cancel()
         timelinePreviewHideTask = nil
-        timelinePreviewContactCanToggle = isTimelinePreviewVisible
         withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
             if !isTimelinePreviewVisible {
                 isTimelinePreviewVisible = true
             }
         }
-    }
-
-    private func handleTimelinePreviewContactEnded() {
-        guard isTimelinePreviewVisible else { return }
-        if timelinePreviewContactCanToggle {
-            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
-                timelineTimeDisplayMode.toggle()
-            }
-        }
-        timelinePreviewContactCanToggle = false
-        scheduleTimelinePreviewHide()
-    }
-
-    private func handleTimelinePreviewContactCancelled() {
-        timelinePreviewContactCanToggle = false
-        scheduleTimelinePreviewHide()
     }
 
     private func scheduleTimelinePreviewHide() {
@@ -727,7 +712,6 @@ struct PlayerView: View {
     private func hideTimelinePreview(immediately: Bool = false) {
         timelinePreviewHideTask?.cancel()
         timelinePreviewHideTask = nil
-        timelinePreviewContactCanToggle = false
         guard isTimelinePreviewVisible else { return }
         if immediately {
             isTimelinePreviewVisible = false
@@ -735,10 +719,6 @@ struct PlayerView: View {
             withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                 isTimelinePreviewVisible = false
             }
-            // A dismissed quick preview always starts fresh in duration mode
-            // on the next light touch. The immediate Select-to-HUD handoff
-            // intentionally preserves the current display mode instead.
-            timelineTimeDisplayMode = .elapsedRemaining
         }
     }
     #endif
@@ -763,18 +743,18 @@ struct PlayerView: View {
         !showsBufferingPill && watchPartySyncMessage != nil
     }
 
-    private var watchPartySyncMessage: LocalizedStringKey? {
+    private var watchPartySyncMessage: LocalizedStringResource? {
         guard let context = watchPartyContext, viewModel.error == nil,
               let room = WatchPartySession.shared.room,
               room.roomId == context.roomId, room.selectionRevision == context.selectionRevision,
               room.phase == .playing else { return nil }
         if WatchPartySession.shared.connection == .reconnecting {
-            return "Reconnecting to the party…"
+            return .watchPartyPlayerReconnecting
         }
         let playback = viewModel.watchPartyPlaybackSnapshot
         if room.playbackState == .waiting || playback.isBuffering || playback.isSeeking
             || room.members.contains(where: { $0.isSelf && $0.isSyncing }) {
-            return "Syncing with the party…"
+            return .watchPartyPlayerSyncing
         }
         return nil
     }
@@ -855,7 +835,7 @@ struct PlayerView: View {
     private var bufferingPillIsSelectTarget: Bool {
         if capturesSelectForBufferingPillWhileLoading { return true }
         return !viewModel.isStartingPlayback && !viewModel.isHUDPresented && !viewModel.showControls &&
-            !viewModel.showSegmentSkip && !viewModel.isHoldSeeking
+            !viewModel.isHoldSeeking
     }
 
     /// One focus owner at a time (docs/tvos-focus.md), as for the intro pill.
@@ -878,8 +858,10 @@ struct PlayerView: View {
             return false
         }
         switch direction {
-        case .left: bufferingSelectTarget = .primary
-        case .right: bufferingSelectTarget = .secondary
+        case .left, .right:
+            // The prompt's buttons mirror in RTL; presses are physical.
+            let towardLeading = (direction == .left) == (layoutDirection == .leftToRight)
+            bufferingSelectTarget = towardLeading ? .primary : .secondary
         case .up, .down: return false
         }
         return true
@@ -991,7 +973,7 @@ struct PlayerView: View {
                     .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             }
             .buttonStyle(MobilePlayerGlassButtonStyle())
-            .accessibilityLabel("Close Player")
+            .accessibilityLabel(Text(.playerClosePlayer))
             .accessibilityIdentifier("player.close")
 
             Spacer()
@@ -1029,7 +1011,7 @@ struct PlayerView: View {
                     .frame(minWidth: 140)
                 }
 
-                Button("Go Back") { dismissPlayer() }
+                Button(.playerGoBack) { dismissPlayer() }
                     .siloPrimaryButton()
                     .frame(minWidth: 140)
             }
@@ -1093,6 +1075,7 @@ struct PlayerNextUpScreen: View {
     @FocusState private var focusedTarget: PlayerNextUpFocusTarget?
     @State private var didRequestInitialActionFocus = false
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @Environment(\.locale) private var locale
 
     #if os(tvOS)
     @Namespace private var defaultFocusNamespace
@@ -1219,7 +1202,7 @@ struct PlayerNextUpScreen: View {
                     .font(.callout)
                     .foregroundStyle(.white)
             } else {
-                Text(viewModel.nextUpScreenVideoEnded ? "End of playback" : "Almost finished")
+                Text(viewModel.nextUpScreenVideoEnded ? LocalizedStringResource.upNextEndOfPlayback : .upNextAlmostFinished)
                     .font(.headline)
                     .foregroundStyle(.white)
             }
@@ -1282,7 +1265,7 @@ struct PlayerNextUpScreen: View {
 
     /// "Shuffling Movies", "Shuffling Breaking Bad · Season 2".
     private func shuffleBadge(_ scopeLabel: String) -> some View {
-        Label("Shuffling \(scopeLabel)", systemImage: "shuffle")
+        Label(.upNextShuffling(scopeLabel), systemImage: "shuffle")
             .font(.system(size: captionSize, weight: .semibold))
             .foregroundStyle(.white.opacity(0.78))
             .lineLimit(1)
@@ -1312,7 +1295,7 @@ struct PlayerNextUpScreen: View {
 
     private var stopShufflingButton: some View {
         Button(action: onStopShuffling) {
-            Text("Stop shuffling")
+            Text(.upNextStopShuffling)
                 .font(.system(size: captionSize, weight: .semibold))
         }
         .buttonStyle(AutoPlayToggleButtonStyle())
@@ -1345,7 +1328,7 @@ struct PlayerNextUpScreen: View {
 
     private var finishedContent: some View {
         VStack(alignment: isTV ? .leading : .center, spacing: panelSpacing) {
-            Text(viewModel.nextUpScreenVideoEnded ? "End of playback" : "Almost finished")
+            Text(viewModel.nextUpScreenVideoEnded ? LocalizedStringResource.upNextEndOfPlayback : .upNextAlmostFinished)
                 .font(.system(size: titleSize, weight: .bold))
                 .foregroundStyle(.white)
             Text(finishedMessage)
@@ -1416,7 +1399,7 @@ struct PlayerNextUpScreen: View {
                         HStack(spacing: 18) {
                             Image(systemName: "play.fill")
                                 .font(.system(size: 32, weight: .bold))
-                            Text("Play Now")
+                            Text(.upNextPlayNow)
                                 .font(.system(size: 30, weight: .semibold))
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
@@ -1434,7 +1417,7 @@ struct PlayerNextUpScreen: View {
                         HStack(spacing: 16) {
                             Image(systemName: "shuffle")
                                 .font(.system(size: 26, weight: .semibold))
-                            Text("Pick Another")
+                            Text(.upNextPickAnother)
                                 .font(.system(size: 26, weight: .semibold))
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
@@ -1459,7 +1442,7 @@ struct PlayerNextUpScreen: View {
                         HStack(spacing: 16) {
                             Image(systemName: "rectangle.inset.filled")
                                 .font(.system(size: 25, weight: .semibold))
-                            Text("Keep Watching")
+                            Text(.upNextKeepWatching)
                                 .font(.system(size: 26, weight: .semibold))
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
@@ -1474,9 +1457,9 @@ struct PlayerNextUpScreen: View {
 
                 Button(action: onBack) {
                     HStack(spacing: 16) {
-                        Image(systemName: "chevron.left")
+                        Image(systemName: "chevron.backward")
                             .font(.system(size: 26, weight: .semibold))
-                        Text("Back")
+                        Text(.commonBack)
                             .font(.system(size: 26, weight: .semibold))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
@@ -1498,7 +1481,7 @@ struct PlayerNextUpScreen: View {
             HStack(spacing: 12) {
                 if hasNextEpisode {
                     Button(action: { viewModel.playNextEpisodeNow() }) {
-                        Label("Play Now", systemImage: "play.fill")
+                        Label(.upNextPlayNow, systemImage: "play.fill")
                             .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
                     }
                     .siloPrimaryButton(isLoading: viewModel.isStartingNextUp)
@@ -1507,7 +1490,7 @@ struct PlayerNextUpScreen: View {
                 }
                 if hasNextEpisode && viewModel.shuffleState != nil {
                     Button(action: { viewModel.pickAnotherShufflePick() }) {
-                        Label("Pick Another", systemImage: "shuffle")
+                        Label(.upNextPickAnother, systemImage: "shuffle")
                             .frame(minHeight: compact ? 24 : 44)
                     }
                     .siloSecondaryButton()
@@ -1523,7 +1506,7 @@ struct PlayerNextUpScreen: View {
             HStack(spacing: 10) {
                 if !viewModel.nextUpScreenVideoEnded {
                     Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
-                        Text("Keep Watching")
+                        Text(.upNextKeepWatching)
                             .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
                     }
                     .siloSecondaryButton()
@@ -1531,12 +1514,16 @@ struct PlayerNextUpScreen: View {
                     .disabled(viewModel.isStartingNextUp)
                 }
                 Button(action: onBack) {
-                    Label("Back", systemImage: "chevron.left")
+                    Label(.commonBack, systemImage: "chevron.backward")
                         .frame(minHeight: compact ? 24 : 44)
                 }
                 .siloSecondaryButton()
                 .frame(minHeight: 44)
-                if compact && hasNextEpisode && viewModel.shuffleState == nil { autoPlayToggle }
+                if compact && hasNextEpisode && viewModel.shuffleState == nil {
+                    // Keep Watching stretches, so the toggle claims its width
+                    // first; a longer translation would otherwise truncate it.
+                    autoPlayToggle.layoutPriority(1)
+                }
             }
             // With Stop shuffling beside it, the footer needs its own line.
             if compact && hasNextEpisode && viewModel.shuffleState != nil { autoPlayFooter }
@@ -1551,7 +1538,7 @@ struct PlayerNextUpScreen: View {
         Button {
             viewModel.setNextUpAutoPlayEnabled(!viewModel.settings.autoPlayNextEpisode)
         } label: {
-            Text("Auto-play is \(viewModel.settings.autoPlayNextEpisode ? "On" : "Off")")
+            Text(viewModel.settings.autoPlayNextEpisode ? LocalizedStringResource.upNextAutoPlayOn : .upNextAutoPlayOff)
                 .font(.system(size: captionSize, weight: .semibold))
         }
         .buttonStyle(AutoPlayToggleButtonStyle())
@@ -1567,7 +1554,7 @@ struct PlayerNextUpScreen: View {
 
     private var onDeckSection: some View {
         MediaRow(
-            title: "On Deck",
+            title: AppLanguage.string(.upNextOnDeck, locale: locale),
             items: viewModel.nextUpCarouselItems.map(\.sectionItem),
             onItemTap: playOnDeckItem(contentId:),
             showProgress: true,
@@ -1592,51 +1579,52 @@ struct PlayerNextUpScreen: View {
         #endif
     }
 
-    private var statusLabel: String {
+    private var statusLabel: LocalizedStringResource {
         if viewModel.nextUpEpisode == nil && !viewModel.isLoadingNextUpEpisode {
-            return viewModel.nextUpScreenVideoEnded ? "Finished" : "More To Watch"
+            return viewModel.nextUpScreenVideoEnded ? .upNextHeadingFinished : .upNextHeadingNothing
         }
-        if viewModel.shuffleState != nil { return "Up Next at Random" }
-        return viewModel.nextUpScreenVideoEnded ? "Playing Next" : "Up Next"
+        if viewModel.shuffleState != nil { return .upNextHeadingShuffle }
+        // An On Deck pick waits for Play Now, so it never reads as playing.
+        if viewModel.nextUpEpisode?.isFromOnDeck == true { return .upNextHeading }
+        return viewModel.nextUpScreenVideoEnded ? .upNextHeadingEnded : .upNextHeading
     }
 
-    private var loadingLabel: String {
-        viewModel.shuffleState != nil ? "Picking at random" : "Finding the next episode"
+    private var loadingLabel: LocalizedStringResource {
+        viewModel.shuffleState != nil ? .upNextPicking : .upNextFinding
     }
 
-    private var finishedMessage: String {
+    private var finishedMessage: LocalizedStringResource {
         if viewModel.shuffleState != nil {
             if viewModel.nextUpStartError != nil {
-                return "Couldn't start the next pick. Try again or go back."
+                return .upNextStartPickFailed
             }
-            return "Nothing else in this shuffle can play."
+            return .upNextShuffleDone
         }
         return episodeFinishedMessage
     }
 
-    private var episodeFinishedMessage: String {
+    private var episodeFinishedMessage: LocalizedStringResource {
         #if os(iOS)
         if viewModel.nextUpStartError != nil {
-            return "Couldn't start the next episode. Try again or go back."
+            return .upNextStartFailed
         }
         if viewModel.nextUpLookupError != nil {
-            return "Couldn't load the next episode. Go back to choose something else."
+            return .upNextLookupFailedAlone
         }
-        return "No next episode is available."
+        return .upNextNoNext
         #else
         if let startError = viewModel.nextUpStartError {
-            let suffix = viewModel.nextUpCarouselItems.isEmpty
-                ? "Try again or go back."
-                : "Try again, pick something from On Deck, or go back."
-            return "Couldn't start the next episode: \(startError) \(suffix)"
+            return viewModel.nextUpCarouselItems.isEmpty
+                ? .upNextStartFailedWithError(startError)
+                : .upNextStartFailedWithErrorOnDeck(startError)
         }
         if viewModel.nextUpLookupError != nil {
-            return "Couldn't load the next episode. Pick something from On Deck, or go back."
+            return .upNextLookupFailed
         }
         if viewModel.nextUpCarouselItems.isEmpty {
-            return "No next episode is available."
+            return .upNextNoNext
         }
-        return "No next episode is available. Pick something from On Deck instead."
+        return .upNextNoNextOnDeck
         #endif
     }
 
@@ -1710,7 +1698,7 @@ struct PlayerNextUpScreen: View {
 
     private func formatAirDate(_ airDate: String) -> String {
         guard let date = try? Date(airDate, strategy: .iso8601) else { return airDate }
-        return date.formatted(date: .abbreviated, time: .omitted)
+        return date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, locale: AppLanguage.formattingLocale))
     }
 
     /// One centered column shared by the hero and On Deck, as wide as four
@@ -1791,12 +1779,12 @@ private struct CountdownRing: View {
                 .trim(from: 0, to: progress)
                 .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-            Text("\(seconds)")
+            Text(verbatim: LocaleFormat.integer(seconds))
                 .font(.system(size: textSize, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
         }
         .frame(width: ringSize, height: ringSize)
-        .accessibilityLabel("Playing next in \(seconds) seconds")
+        .accessibilityLabel(Text(.upNextPlayingNextIn(seconds)))
     }
 
     private var progress: Double {

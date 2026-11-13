@@ -313,7 +313,7 @@ struct MarqueeErrorText: View {
         .foregroundStyle(Color.siloErrorInk)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Error: \(text)")
+        .accessibilityLabel(.shellMarqueeErrorSpoken(text))
         .transition(.opacity)
     }
 
@@ -329,11 +329,17 @@ struct MarqueeErrorText: View {
 // MARK: - Server identity
 
 /// The server's mark: its `mark_url` image when branding provides one,
-/// otherwise its initial on a warm tile, otherwise a server glyph.
+/// otherwise its initial on a warm tile, otherwise a server glyph. With
+/// `fallsBackToProjectIcon`, the Silo project icon instead of the initial or
+/// glyph (Change Account, the saved-server lists, spec §4.1).
 struct MarqueeServerMark: View {
     var name: String?
     var imageURL: URL?
     var size: CGFloat = 48
+    var fallsBackToProjectIcon = false
+    /// The initial in serif; Change Account on Apple TV sets it in sans, as
+    /// Roku draws its account tiles.
+    var serifInitial = true
 
     private static let initialGradient = [Color(hex: "#EAA65C"), Color(hex: "#A8521D"), Color(hex: "#5E290D")]
     private static let initialInk = Color(hex: "#FFF6EA")
@@ -364,14 +370,19 @@ struct MarqueeServerMark: View {
 
     @ViewBuilder
     private var fallback: some View {
-        if let initial = name?.trimmingCharacters(in: .whitespaces).first {
+        if fallsBackToProjectIcon {
+            // The icon brings its own field; the rounder clip trims its corners.
+            Image("SiloProjectIcon")
+                .resizable()
+                .scaledToFill()
+        } else if let initial = name?.trimmingCharacters(in: .whitespaces).first {
             LinearGradient(
                 colors: Self.initialGradient,
                 startPoint: .topLeading, endPoint: .bottomTrailing
             )
             .overlay(
                 Text(String(initial).uppercased())
-                    .font(.system(size: size * 0.54, weight: .bold, design: .serif))
+                    .font(.system(size: size * 0.54, weight: .bold, design: serifInitial ? .serif : .default))
                     .foregroundStyle(Self.initialInk)
             )
         } else {
@@ -382,6 +393,15 @@ struct MarqueeServerMark: View {
                         .foregroundStyle(Color.siloOnSurface.opacity(0.62))
                 )
         }
+    }
+}
+
+extension MarqueeServerMark {
+    /// A saved server's mark: its cached branding logo, else the Silo
+    /// project icon, never its initial.
+    init(server: ServerEntry, size: CGFloat) {
+        self.init(imageURL: ServerBrandingCache.branding(for: server.url)?.markURL, size: size,
+                  fallsBackToProjectIcon: true)
     }
 }
 
@@ -451,7 +471,7 @@ struct MarqueeServerCard: View {
                 .siloGlass(in: RoundedRectangle(cornerRadius: corner, style: .continuous))
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(name), \(address)\(badge.map { ", \($0.text)" } ?? "")\(status.map { ", \($0.text)" } ?? "")")
+        .accessibilityLabel("\(name), \(address)\(badge.map { ", \($0.text)" } ?? "")\(status.map { ", \($0.text)" } ?? "")") // i18n-ignore: joins shown values with commas
     }
 
     #if os(tvOS)
@@ -503,7 +523,8 @@ struct MarqueeBadge: View {
     #endif
 }
 
-/// Compact server capsule for the top bar.
+/// Compact server capsule for the top bar. Its mark is the server's logo,
+/// else the Silo project icon, never the initial.
 struct MarqueeServerChipLabel: View {
     let name: String
     var markURL: URL?
@@ -511,7 +532,7 @@ struct MarqueeServerChipLabel: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            MarqueeServerMark(name: name, imageURL: markURL, size: markSize)
+            MarqueeServerMark(imageURL: markURL, size: markSize, fallsBackToProjectIcon: true)
             Text(name)
                 .font(.system(size: font, weight: .semibold))
                 .foregroundStyle(Color.siloOnSurface)

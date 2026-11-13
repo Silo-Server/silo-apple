@@ -27,6 +27,10 @@ final class RequestsFeatureStore {
     /// requested ("Notify Me"). False whenever `isEnabled` is.
     private(set) var followSupported = false
 
+    /// Whether the server lets a viewer remove their own failed request
+    /// that delivered nothing. False whenever `isEnabled` is.
+    private(set) var removeFailedSupported = false
+
     /// True once a probe for the current session has answered. `isEnabled`
     /// reads false before that answer as well as after it, so only this pair
     /// can tell "requests are off" from "not known yet".
@@ -69,9 +73,10 @@ final class RequestsFeatureStore {
         // transitions retry naturally.
         guard gen == generation, ordinal > newestAnswer, let status else { return }
         newestAnswer = ordinal
-        // Follow support first, so nothing that watches `isEnabled` reads a
+        // Follow and remove support first, so nothing that watches `isEnabled` reads a
         // stale value of it.
         followSupported = status.isAvailable && status.followSupported == true
+        removeFailedSupported = status.isAvailable && status.removeFailedSupported == true
         isEnabled = status.isAvailable
         isResolved = true
     }
@@ -80,6 +85,7 @@ final class RequestsFeatureStore {
         generation &+= 1
         isEnabled = false
         followSupported = false
+        removeFailedSupported = false
         isResolved = false
     }
 

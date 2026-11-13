@@ -27,6 +27,14 @@ extension PreparedPlaybackV3 {
     }
 }
 
+/// A subtitle rendition of a server HLS stream that a picker row selects: the
+/// EXT-X-MEDIA `NAME` (unique in the group) and its 1-based place in the
+/// SUBTITLES group.
+struct HLSSubtitleRenditionSlot: Equatable {
+    let name: String
+    let index: Int
+}
+
 enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
     case unsupportedDelivery(String)
     case invalidTransport(String)
@@ -123,7 +131,9 @@ enum ApplePlaybackV3PlanAdapter {
             }
         }
         if let rendition = plan.subtitle.hlsRendition {
-            guard plan.delivery == PlanDelivery.transcodeHLS,
+            // A copy remux carries the rendition the same way once the attempt
+            // negotiated `hls_remux_subtitle_renditions_v1`.
+            guard plan.delivery == PlanDelivery.transcodeHLS || plan.delivery == PlanDelivery.remuxHLS,
                   plan.stream.protocol == "hls",
                   PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
                   plan.subtitle.artifact == nil,
@@ -133,7 +143,13 @@ enum ApplePlaybackV3PlanAdapter {
                   let selected = plan.selectedSubtitleInventoryItem,
                   selected.trackId == plan.subtitle.trackId,
                   selected.trackId == plan.selectedTracks.subtitle?.id,
-                  selected.source == "embedded" else {
+                  selected.source == "embedded",
+                  // A group listing every track names the selected one twice:
+                  // on the decision and on its row. They must agree.
+                  // A decision without an index names its row by NAME alone.
+                  selected.hlsRendition.map({
+                      $0.name == rendition.name && (rendition.index == nil || $0.index == rendition.index)
+                  }) ?? true else {
                 throw ApplePlaybackV3PlanError.invalidHLSSubtitleRendition("unsupported delivery, mode, or track identity")
             }
         }
@@ -237,8 +253,9 @@ enum ApplePlaybackV3PlanAdapter {
     /// registering its URL with Aether. The active plan's single artifact is
     /// mounted separately by `AetherLoadSpec`.
     ///
-    /// `version` is only needed to give embedded rows their FFmpeg stream
-    /// index. Without it those rows persist as the explicit-Off sentinel,
+    /// An embedded row's FFmpeg stream index comes from the row itself when
+    /// the server names it; `version` is the fallback for one that does not.
+    /// Without either those rows persist as the explicit-Off sentinel,
     /// because `TrackSelectionPersistence` identifies an embedded pick by that
     /// index; the combined ordinal alone cannot stand in for it.
     static func subtitlePickerTracks(
@@ -260,7 +277,7 @@ enum ApplePlaybackV3PlanAdapter {
             let ffIndex: Int? = item.combinedIndex == plan.selectedSubtitleCombinedIndex && plan.subtitle.embedded != nil
                 ? plan.subtitle.embedded?.streamIndex
                 : item.source == "embedded"
-                ? version.flatMap {
+                ? item.embeddedStreamIndex ?? version.flatMap {
                     ffmpegSubtitleStreamIndex(
                         serverCombinedIndex: item.combinedIndex,
                         in: $0,
@@ -285,9 +302,78 @@ enum ApplePlaybackV3PlanAdapter {
                 isSelected: item.combinedIndex == selectedIndex,
                 ffIndex: ffIndex,
                 srcId: item.combinedIndex,
-                isDownloaded: item.source == "downloaded"
+                isDownloaded: item.source == "downloaded",
+                hasUnsupportedFormat: item.source == "embedded"
+                    && (item.codec?.trimmingCharacters(in: .whitespaces) ?? "").isEmpty
             )
         }
+    }
+
+    /// Every picker row the plan's server HLS stream carries as a subtitle
+    /// rendition, keyed by picker id. Under `hls_subtitle_renditions_all_v1`
+    /// that is each embedded row with `hls_rendition`; a plan's single
+    /// pipeline rendition is its group's only option, for the selected row.
+    static func hlsSubtitleRenditionSlots(plan: PlaybackV3Plan) -> [Int64: HLSSubtitleRenditionSlot] {
+        guard plan.stream.protocol == "hls",
+              [PlaybackProtocolV3.PlanDelivery.remuxHLS, PlaybackProtocolV3.PlanDelivery.transcodeHLS]
+                .contains(plan.delivery) else { return [:] }
+        var slots: [Int64: HLSSubtitleRenditionSlot] = [:]
+        for item in plan.subtitle.inventory {
+            guard item.source == "embedded", let rendition = item.hlsRendition, rendition.index >= 1 else { continue }
+            slots[SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)] =
+                HLSSubtitleRenditionSlot(name: rendition.name, index: rendition.index)
+        }
+        if slots.isEmpty,
+           let rendition = plan.subtitle.hlsRendition,
+           PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
+           let combinedIndex = plan.selectedSubtitleCombinedIndex {
+            slots[SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: combinedIndex)] =
+                HLSSubtitleRenditionSlot(name: rendition.name, index: rendition.index ?? 1)
+        }
+        return slots
+    }
+
+    /// Whether `next`, the answer to a replan of `prior`, plays on the HLS
+    /// transport `prior` already plays. The server keeps the running stream
+    /// for a subtitle change among on-demand renditions (§8): it hands back
+    /// the same stream, timeline origin and expiry, the same media and audio,
+    /// and the same renditions, and changes only the subtitle decision. Any
+    /// other difference is a new transport, which the player loads.
+    static func keepsHLSTransport(
+        prior: PlaybackV3Plan,
+        priorSessionId: String?,
+        next: PlaybackV3Plan,
+        nextSessionId: String
+    ) -> Bool {
+        guard priorSessionId == nextSessionId,
+              next.stream.protocol == "hls",
+              next.stream == prior.stream,
+              next.delivery == prior.delivery,
+              next.effectiveMediaFileId == prior.effectiveMediaFileId,
+              next.expiresAt != nil, next.expiresAt == prior.expiresAt,
+              next.timeline.streamOriginSeconds == prior.timeline.streamOriginSeconds,
+              next.timeline.timelineOffsetSeconds == prior.timeline.timelineOffsetSeconds,
+              next.effectiveRecipe == prior.effectiveRecipe,
+              next.selectedTracks.audio == prior.selectedTracks.audio else { return false }
+        let renditions = renditionRows(next)
+        return !renditions.isEmpty && renditions == renditionRows(prior)
+    }
+
+    /// The subtitle choice a plan that keeps its transport makes, when the
+    /// player can apply it there: one of the stream's renditions, or Off. Nil
+    /// for anything else (a sidecar, burn-in), which needs a load.
+    static func sameTransportSubtitleSelection(in plan: PlaybackV3Plan) -> ProtocolV3SubtitleSelection? {
+        if plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off { return .off }
+        guard plan.subtitle.hlsRendition != nil,
+              PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
+              let selected = plan.selectedSubtitleInventoryItem,
+              selected.hlsRendition != nil else { return nil }
+        return .track(selected.trackId)
+    }
+
+    private static func renditionRows(_ plan: PlaybackV3Plan) -> [String: PlaybackV3InventoryHLSRendition] {
+        Dictionary(plan.subtitle.inventory.compactMap { item in item.hlsRendition.map { (item.trackId, $0) } },
+                   uniquingKeysWith: { first, _ in first })
     }
 
     /// Server HLS carries only the audio the server packaged for the plan.
@@ -386,11 +472,13 @@ enum ApplePlaybackV3PlanAdapter {
     /// Resolves an embedded FFmpeg stream index against the server's published
     /// combined ordinals instead of deriving one.
     ///
-    /// The inventory's `embedded` entries are in container stream order, which
-    /// is the same order the catalog lists them in, so the *n*-th embedded
-    /// catalog track is the *n*-th embedded inventory entry — and that entry
-    /// carries the authoritative `combined_index`. An empty inventory means no
-    /// plan has published one yet, so the counted derivation stands in.
+    /// A row that names its stream (`PlaybackV3SubtitleInventoryItem
+    /// .embeddedStreamIndex`) answers directly. Otherwise the inventory's
+    /// `embedded` entries are in container stream order, which is the same
+    /// order the catalog lists them in, so the *n*-th embedded catalog track is
+    /// the *n*-th embedded inventory entry — and that entry carries the
+    /// authoritative `combined_index`. An empty inventory means no plan has
+    /// published one yet, so the counted derivation stands in.
     static func serverCombinedSubtitleIndex(
         ffmpegStreamIndex: Int,
         in version: FileVersion,
@@ -399,6 +487,9 @@ enum ApplePlaybackV3PlanAdapter {
         guard !inventory.isEmpty else {
             return serverCombinedSubtitleIndex(ffmpegStreamIndex: ffmpegStreamIndex, in: version)
         }
+        if let named = inventory.first(where: { $0.embeddedStreamIndex == ffmpegStreamIndex }) {
+            return named.combinedIndex
+        }
         guard let embeddedOrdinal = embeddedSubtitleOrdinal(
             ffmpegStreamIndex: ffmpegStreamIndex,
             in: version
@@ -406,7 +497,9 @@ enum ApplePlaybackV3PlanAdapter {
             return nil
         }
         let embeddedInventory = inventory.filter { $0.source == "embedded" }
-        guard embeddedInventory.indices.contains(embeddedOrdinal) else { return nil }
+        guard embeddedInventory.indices.contains(embeddedOrdinal),
+              // A row that names another stream is not this one.
+              embeddedInventory[embeddedOrdinal].embeddedStreamIndex == nil else { return nil }
         return embeddedInventory[embeddedOrdinal].combinedIndex
     }
 
@@ -467,6 +560,12 @@ enum ApplePlaybackV3PlanAdapter {
             // Not an embedded track: external and downloaded ordinals have no
             // FFmpeg stream to select.
             return nil
+        }
+        // The row's own identity wins. Counting catalog tracks is the last
+        // resort: any disagreement between the two lists would name another
+        // stream, or none, and send the pick to a whole-file server extract.
+        if let named = embeddedInventory[embeddedOrdinal].embeddedStreamIndex {
+            return named
         }
         let embedded = (version.subtitleTracks ?? []).filter { $0.external != true }
         guard embedded.indices.contains(embeddedOrdinal) else { return nil }

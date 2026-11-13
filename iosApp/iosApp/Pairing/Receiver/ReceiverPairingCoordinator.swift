@@ -51,17 +51,22 @@ final class ReceiverPairingCoordinator {
         /// to allow it. The channel is unauthenticated (public PSK), so
         /// without this gate any LAN device could push a server while the TV
         /// sits on its setup screen.
-        case consentRequested(serverName: String)
+        /// `accountName` is the phone's display-only claim of who it signs
+        /// in, nil when it sent none.
+        case consentRequested(serverName: String, accountName: String? = nil)
         /// Showing the sign-in code (`user_code`) for the named server while
-        /// the phone approves; people compare it with the phone. `matchWords`
-        /// is the two-word match code, shown as a secondary line because
-        /// phones released before user codes show only the words (remove it
-        /// once the iOS and Android apps that compare user codes have
-        /// shipped). `automatic` = a later server in a multi-server push; the
-        /// phone checks the request programmatically instead of asking the
-        /// user to compare again, and the copy must not claim otherwise.
-        case awaitingApproval(serverName: String, code: String, matchWords: String?, automatic: Bool)
-        /// A single server finished signing in (interim, during multi-server).
+        /// the phone approves; people compare it with the phone. Every push
+        /// shows its own request's code, since the phone may ask to compare
+        /// any of them. `matchWords` is the two-word match code, shown as a
+        /// secondary line because phones released before user codes show only
+        /// the words (remove it once the iOS and Android apps that compare
+        /// user codes have shipped). `automatic`: this request carries the
+        /// session binding and an earlier bound sign-in committed, so the
+        /// phone approves it without asking the person to compare again, and
+        /// the copy must not claim otherwise.
+        case awaitingApproval(serverName: String, accountName: String? = nil, code: String, matchWords: String?, automatic: Bool)
+        /// One pushed sign-in finished (interim, while the phone sends more
+        /// servers or accounts). The count is every sign-in so far.
         case signedIn(serverCount: Int)
         /// Terminal success; every signed-in server, named for the summary.
         case completed(serverNames: [String])
@@ -90,6 +95,8 @@ final class ReceiverPairingCoordinator {
         let serverName: String?
         let serverIdentity: String?
         let endpoints: [ServerEndpoint]
+        /// Who the phone says it signs in (display only).
+        var accountName: String? = nil
 
         var displayName: String { serverName ?? ServerRegistry.normalize(url: serverURL) }
 
@@ -105,7 +112,7 @@ final class ReceiverPairingCoordinator {
             if let provider = pushedProvider {
                 return provider.unreachableHelp(serverName: displayName)
             }
-            return "This Apple TV can't reach \(displayName) at \(ServerRegistry.normalize(url: serverURL)). Check its network connection and try again."
+            return AppLanguage.string(.tvPairingUnreachablePublicAppleTv(displayName, ServerRegistry.normalize(url: serverURL)))
         }
     }
 
@@ -121,6 +128,14 @@ final class ReceiverPairingCoordinator {
         /// The account the tokens authenticate (`TokenPair.user.id`), bound
         /// as the session's verified account.
         let accountID: String
+        var username: String? = nil
+    }
+
+    /// An account a pushed sign-in saved on this TV: new, or a saved one
+    /// refreshed.
+    struct CommittedAccount: Equatable, Sendable {
+        let serverId: String
+        let localAccountId: String
     }
 
     private enum AlternateChoice: Sendable {
@@ -150,13 +165,25 @@ final class ReceiverPairingCoordinator {
     }
 
     private(set) var state: State = .idle
+    /// The distinct accounts this session saved, first signed in first. A
+    /// phone may send several accounts, on one server or several, and the
+    /// same account twice (a refresh, counted once). Setup mode only: in
+    /// sign-in mode the sign-in screen saves the session.
+    private(set) var committedAccounts: [CommittedAccount] = []
     /// Set before `run`; the advertiser publishes the matching `st`.
     var mode: Mode = .setup
 
     private let api: any PairingDeviceAuthorizing
     private let identityProbe: @Sendable (_ serverURL: String) async -> ServerIdentityProbeResult
-    private let persist: @MainActor (PersistedPairing) async -> Bool
+    private let persist: @MainActor (PersistedPairing) async -> CommittedAccount?
+    private let makeBinding: @Sendable () -> PairingSessionBinding?
     private var signedInNames: [String] = []
+    /// This session's secret, made when the phone connects and sent to every
+    /// HTTPS server whose capability supports binding (contract §B.1–2).
+    private var sessionBinding: PairingSessionBinding?
+    /// A sign-in that carried the session binding committed: the phone now
+    /// trusts the binding and approves later bound requests on its own.
+    private var hasBoundSignIn = false
     private var consented = false
     private var pendingPush: PushedServer?
     /// The TV user's pending choice while `state` is `.unreachable`.
@@ -175,14 +202,16 @@ final class ReceiverPairingCoordinator {
 
     init(
         api: any PairingDeviceAuthorizing = PairingDeviceAPI(),
+        makeBinding: @escaping @Sendable () -> PairingSessionBinding? = { PairingSessionBinding.random() },
         identityProbe: @escaping @Sendable (String) async -> ServerIdentityProbeResult = { url in
             await ServerIdentityResolver().probeIdentity(serverURL: url)
         },
-        persist: @escaping @MainActor (PersistedPairing) async -> Bool = ReceiverPairingCoordinator.persistServer
+        persist: @escaping @MainActor (PersistedPairing) async -> CommittedAccount? = ReceiverPairingCoordinator.persistServer
     ) {
         self.api = api
         self.identityProbe = identityProbe
         self.persist = persist
+        self.makeBinding = makeBinding
     }
 
     /// Consume the session stream. The stream is ALWAYS being read here; each
@@ -193,6 +222,9 @@ final class ReceiverPairingCoordinator {
     func run(session: any PairingChannel, stream: AsyncThrowingStream<PairingMessage, Error>) async {
         isCancelling = false
         signedInNames = []
+        committedAccounts = []
+        sessionBinding = makeBinding()
+        hasBoundSignIn = false
         consented = false
         pendingPush = nil
         activeSession = session
@@ -211,7 +243,7 @@ final class ReceiverPairingCoordinator {
                 guard !isCancelling else { continue }
                 armIdleTimer(session)
                 switch message {
-                case let .pushServer(serverURL, serverName, serverIdentity, endpoints):
+                case let .pushServer(serverURL, serverName, serverIdentity, endpoints, accountName):
                     // The protocol is one-server-at-a-time: a new push while
                     // one is in flight means the phone gave up on the
                     // previous server — supersede it, don't ignore the push.
@@ -221,13 +253,14 @@ final class ReceiverPairingCoordinator {
                         serverURL: serverURL,
                         serverName: serverName,
                         serverIdentity: ServerIdentity.usable(serverIdentity),
-                        endpoints: endpoints ?? []
+                        endpoints: endpoints ?? [],
+                        accountName: ServerIdentity.usable(accountName)
                     )
                     if consented {
                         beginAttempt(push, session: session)
                     } else {
                         pendingPush = push
-                        state = .consentRequested(serverName: push.displayName)
+                        state = .consentRequested(serverName: push.displayName, accountName: push.accountName)
                     }
                 case .done:
                     // An in-flight server has no committed result; abandon it.
@@ -397,19 +430,12 @@ final class ReceiverPairingCoordinator {
     // MARK: - Per-server attempt
 
     private func beginAttempt(_ push: PushedServer, session: any PairingChannel) {
-        // "Automatic" only once a sign-in has been COMMITTED: the phone
-        // auto-approves only after its user confirmed a match code, and the
-        // first confirmed approval is what produces the first success. A
-        // pre-confirm failure on server 1 must not flip server 2's copy to
-        // "verifying automatically" while the phone is still asking the user
-        // to compare codes.
-        let automatic = !signedInNames.isEmpty
         idleTask?.cancel()
         let mode = self.mode
         pollTask = Task { [weak self] in
             switch mode {
             case .setup:
-                await self?.handlePushServer(push, session: session, automatic: automatic)
+                await self?.handlePushServer(push, session: session)
             case let .login(serverIdentity, source):
                 await self?.handleLoginPush(push, session: session, serverIdentity: serverIdentity, source: source)
             }
@@ -422,7 +448,7 @@ final class ReceiverPairingCoordinator {
         armIdleTimer(session)
     }
 
-    private func handlePushServer(_ push: PushedServer, session: any PairingChannel, automatic: Bool) async {
+    private func handlePushServer(_ push: PushedServer, session: any PairingChannel) async {
         // Every frame back to the phone names the PUSHED address, whatever
         // address this TV ends up using: phones key their per-server state
         // on the URL they sent.
@@ -438,17 +464,30 @@ final class ReceiverPairingCoordinator {
             state = .reaching(serverName: displayName)
             let loginURL = try await resolveLoginURL(push, pushedURL: pushedURL)
 
-            // 1. Start device auth against the PENDING candidate (not persisted).
+            // 1. Start device auth against the PENDING candidate (not
+            //    persisted), bound to this session when the server supports
+            //    it and is reached over HTTPS. A capability that can't be
+            //    read reads as no binding.
+            let capability = try? await api.capability(serverURL: loginURL)
+            try Task.checkCancellation()
+            let binding = PairingSessionBinding.applies(
+                to: loginURL, supportsBinding: capability?.supportsSessionBinding == true
+            ) ? sessionBinding : nil
+            // The phone skips the comparison only for a bound request once
+            // a bound sign-in committed (it trusted the binding then). Until
+            // then it asks the person to compare this code too.
+            let automatic = binding != nil && hasBoundSignIn
             let started: DeviceLoginStartResponse
             do {
-                started = try await api.start(serverURL: loginURL, deviceName: device.name, devicePlatform: device.platform)
+                started = try await api.start(serverURL: loginURL, deviceName: device.name,
+                                              devicePlatform: device.platform, binding: binding?.binding)
             } catch {
                 try Task.checkCancellation()
                 if let requirement = UpdateRequirement(error) { throw AttemptFailure.updateRequired(requirement) }
                 throw error is URLError ? AttemptFailure.unreachable : error
             }
             openRequest = (loginURL, started.deviceCode)
-            state = .awaitingApproval(serverName: displayName, code: started.userCode,
+            state = .awaitingApproval(serverName: displayName, accountName: push.accountName, code: started.userCode,
                                       matchWords: ServerIdentity.usable(started.matchCode), automatic: automatic)
             try await session.send(.deviceStarted(serverURL: pushedURL, userCode: started.userCode, matchCode: started.matchCode))
 
@@ -461,7 +500,8 @@ final class ReceiverPairingCoordinator {
                     interval: started.interval,
                     expiresIn: started.expiresIn
                 ) { [api] in
-                    try await api.poll(serverURL: loginURL, deviceCode: started.deviceCode)
+                    try await api.poll(serverURL: loginURL, deviceCode: started.deviceCode,
+                                       bindingSecret: binding?.secret)
                 }
             } catch let failure as DeviceLoginPoller.Failure {
                 // Decided on the server: nothing is left to withdraw. An
@@ -487,19 +527,22 @@ final class ReceiverPairingCoordinator {
             // stays silent when the attempt was cancelled (whoever
             // cancelled owns state) and otherwise shows the failure
             // and tells the phone, so neither device waits it out.
-            guard await persist(PersistedPairing(
+            guard let committed = await persist(PersistedPairing(
                 url: loginURL,
                 fetchedName: push.serverName,
                 verifiedServerId: push.serverIdentity,
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken,
-                accountID: tokens.user.id
+                accountID: tokens.user.id,
+                username: tokens.user.username
             )) else {
                 // A cancellation before the first write is not a failure
                 // (the catch below returns quietly).
                 try Task.checkCancellation()
                 throw AttemptFailure.saveFailed
             }
+            if !committedAccounts.contains(committed) { committedAccounts.append(committed) }
+            if binding != nil { hasBoundSignIn = true }
             signedInNames.append(displayName)
             state = .signedIn(serverCount: signedInNames.count)
             // Best-effort: the tokens are committed, so a lost
@@ -556,7 +599,7 @@ final class ReceiverPairingCoordinator {
             switch self {
             case .unreachable: return push.unreachableHelp()
             case .updateRequired(let requirement): return requirement.message
-            case .phoneUpdateRequired: return "Update Silo on your phone or tablet to sign in this Apple TV."
+            case .phoneUpdateRequired: return AppLanguage.string(.tvPairingFailedPhoneUpdateAppleTv)
             case .identityMismatch, .denied, .expired, .saveFailed, .reported: return nil
             }
         }
@@ -594,7 +637,7 @@ final class ReceiverPairingCoordinator {
             state = .preparingCode(serverName: displayName)
             guard let code = await source.codeForNearbyApproval() else { throw AttemptFailure.expired }
             try Task.checkCancellation()
-            state = .awaitingApproval(serverName: displayName, code: code.userCode,
+            state = .awaitingApproval(serverName: displayName, accountName: push.accountName, code: code.userCode,
                                       matchWords: ServerIdentity.usable(code.matchCode), automatic: false)
             try await session.send(.deviceStarted(serverURL: pushedURL, userCode: code.userCode, matchCode: code.matchCode))
             let outcome = await source.nearbyApprovalOutcome(deviceCode: code.deviceCode)
@@ -673,21 +716,22 @@ final class ReceiverPairingCoordinator {
         return nil
     }
 
-    /// Commit the now-trusted server + tokens. Runs only after a successful poll.
-    static func persistServer(_ pairing: PersistedPairing) async -> Bool {
+    /// Commit the now-trusted server + tokens. Runs only after a successful
+    /// poll. Returns the account saved, or nil when nothing was committed.
+    static func persistServer(_ pairing: PersistedPairing) async -> CommittedAccount? {
         let access = pairing.accessToken
         let refresh = pairing.refreshToken
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
-            return false
+            return nil
         }
         guard !Task.isCancelled else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return false
+            return nil
         }
         await HTTPClient.shared.cancelInFlightRequests()
         guard !Task.isCancelled else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return false
+            return nil
         }
         let previousTokenServerID = await TokenStore.shared.getActiveServerId()
         let previousServerURL = await TokenStore.shared.getServerUrl()
@@ -700,56 +744,36 @@ final class ReceiverPairingCoordinator {
         let saved = ServerRegistry.shared.entry(matching: pairedID)
         let url = saved?.url ?? pairing.url
         let id = saved?.id ?? pairedID
-        // Device authorization can replace the account for an already-saved
-        // server URL. Preserve its name, but never carry the previous account's
-        // profile selection across that credential boundary.
+        // Device authorization adds an account to an already-saved server
+        // URL, or refreshes it when it is already saved. Preserve the
+        // server's name; the account install below never carries the
+        // previous account's profile selection across that credential
+        // boundary.
         let entry = ServerEntry(
             id: id,
             url: url,
             fetchedName: pairing.fetchedName,
-            profileId: nil,
             lastUsedAt: Date(),
             verifiedServerId: pairing.verifiedServerId
         )
-        // Re-pairing an already saved server replaces its credential slot in
-        // the session install below (and adopts the slot even when the write fails
-        // part way), before the registry commit can still fail. Keep what
-        // the slot and its server-scoped profile proof held, so either
-        // failure puts it back instead of leaving the new credentials, an
-        // adoption marker, or a tombstone behind a reported failure.
+        // Re-pairing an already saved server changes its accounts in the
+        // install below, before the registry commit can still fail. Keep
+        // what the server's accounts and their profile proofs held, so
+        // either failure puts them back instead of leaving the new
+        // credentials behind a reported failure.
         let previousSession = await TokenStore.shared.accountSessionSnapshot(for: id)
         guard previousSession != .unreadable else {
             // A slot that cannot be read cannot be restored either; refuse
             // before anything is mutated rather than fail half way.
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return false
-        }
-        // `addOrUpdate(preservingProfile: false)` forgets the durable profile
-        // choice for this server id. When the pairing then fails, the previous
-        // session is kept, so its remembered profile must come back too or the
-        // next launch lands on profile selection for no reason.
-        let launchPreferences = ProfileLaunchPreferences.shared
-        let previousRememberedProfile = launchPreferences.rememberedProfile(for: id)
-        let previousSelectionRequired = launchPreferences.state.selectionRequiredServerIDs.contains(id)
-        func restoreRememberedProfile() {
-            if let remembered = previousRememberedProfile {
-                launchPreferences.remember(
-                    profileID: remembered.profileID,
-                    requiresPIN: remembered.requiredPINAtSelection,
-                    accountEpoch: remembered.accountEpoch,
-                    for: id
-                )
-            }
-            if previousSelectionRequired {
-                launchPreferences.markSelectionRequired(for: id)
-            }
+            return nil
         }
         // From this first persistent mutation onward the transaction must
         // finish even if the pairing task is cancelled. Publishing failure
         // after committed credentials would make the phone and TV disagree.
-        guard ServerRegistry.shared.addOrUpdate(entry, preservingProfile: false) != nil else {
+        guard ServerRegistry.shared.addOrUpdate(entry) != nil else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return false
+            return nil
         }
         await TokenStore.shared.setServerUrl(url)
         await TokenStore.shared.switchActiveServer(serverId: id)
@@ -772,30 +796,60 @@ final class ReceiverPairingCoordinator {
             await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
             await TokenStore.shared.setProfileId(previousProfileID)
             _ = await TokenStore.shared.setProfileToken(previousProfileToken)
-            restoreRememberedProfile()
             await HTTPClient.shared.endIdentityTransition(transitionLease)
         }
+        let installed: AccountSignInResult
         do {
-            try await TokenStore.shared.installAccountSession(
+            // Added beside the server's other accounts, as every sign-in
+            // is: a phone may send several accounts for one server.
+            installed = try await TokenStore.shared.installAccountSession(
                 accessToken: access,
                 refreshToken: refresh,
                 accountID: pairing.accountID,
-                clearProfile: false
+                username: pairing.username,
+                clearProfile: false,
+                replacingOtherAccounts: AuthService.signInReplacesOtherAccounts
             )
         } catch {
             Self.logger.error("pairing session install failed: \(String(describing: error), privacy: .private)")
             await rollBack()
-            return false
+            return nil
         }
         guard await ServerRegistry.shared.commitSwitchTo(
             serverId: id,
             holding: transitionLease
         ) else {
             await rollBack()
-            return false
+            return nil
         }
+        // A new account starts on Who's Watching, and any account it
+        // replaced leaves nothing remembered behind. A saved account that
+        // signed in again keeps its remembered profile (contract §B.7).
+        ProfileLaunchPreferences.shared.clearRememberedProfile(
+            forAccounts: (installed.refreshedExisting ? [] : [installed.account.localAccountId]) + installed.removedAccountIds
+        )
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         await ServerRegistry.shared.refreshFeaturesAfterGatedServerSwitch()
-        return true
+        return CommittedAccount(serverId: id, localAccountId: installed.account.localAccountId)
+    }
+}
+
+/// Where the TV goes once a phone's session ends (contract §B.7): one
+/// account signed in opens its "Who's watching?"; several make the first one
+/// the open account and show Change Account on its server, focused on its
+/// card, so Back opens its picker.
+enum PairingSessionEnd: Equatable, Sendable {
+    case nothingSignedIn
+    case openPicker(ReceiverPairingCoordinator.CommittedAccount)
+    case changeAccount(first: ReceiverPairingCoordinator.CommittedAccount)
+
+    init(committed: [ReceiverPairingCoordinator.CommittedAccount]) {
+        var seen = Set<String>()
+        let distinct = committed.filter { seen.insert($0.localAccountId).inserted }
+        guard let first = distinct.first else {
+            self = .nothingSignedIn
+            return
+        }
+        self = distinct.count == 1 ? .openPicker(first) : .changeAccount(first: first)
     }
 }

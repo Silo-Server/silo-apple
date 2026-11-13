@@ -20,10 +20,12 @@ struct PhoneTrailersRail: View {
     private let cardSpacing: CGFloat = 14
     private let thumbnailCornerRadius: CGFloat = 8
 
+    @Environment(\.locale) private var locale
+
     var body: some View {
         if !entries.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                PhoneSectionHeader(title: "Trailers & More")
+                PhoneSectionHeader(title: AppLanguage.string(.detailTrailers, locale: locale))
                     .padding(.horizontal, SiloTheme.safePadding)
                 rail
             }
@@ -46,6 +48,7 @@ struct PhoneTrailersRail: View {
             .scrollTargetLayout()
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
+            .mouseDragScrolling()
         }
         .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
         .mediaRailScrolling()
@@ -59,7 +62,8 @@ struct PhoneTrailersRail: View {
 /// Both phone detail screens embed this instead of `PhoneTrailersRail`
 /// directly: a remote trailer is handed to the YouTube app with the same
 /// deep link used on tvOS, then falls back to the public watch page when no
-/// app accepts it. That branch would otherwise be copied into
+/// installed app handles it. A viewer who cancels the system's prompt to open
+/// YouTube stays in Silo. That branch would otherwise be copied into
 /// `MovieDetailContent` and `SeriesDetailContent` verbatim. Local extras are
 /// ordinary playback targets, so those taps continue up to the detail view
 /// that owns the player presentation.
@@ -90,6 +94,14 @@ struct PhoneTrailersSection: View {
 
         openURL(appURL) { accepted in
             guard !accepted else { return }
+            #if os(iOS)
+            // "Not accepted" also covers a viewer who cancelled the system's
+            // prompt to open YouTube. An app that handles the link is
+            // installed in that case, and opening the watch page would take
+            // them out of Silo after they said no. `canOpenURL` needs
+            // `youtube` in the Info.plist's `LSApplicationQueriesSchemes`.
+            guard !UIApplication.shared.canOpenURL(appURL) else { return }
+            #endif
             openURL(webURL)
         }
     }
@@ -105,6 +117,7 @@ private struct PhoneTrailerCard: View {
     let onSelect: () -> Void
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Button(action: onSelect) {
@@ -137,7 +150,7 @@ private struct PhoneTrailerCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(entry.title), \(ExtraKindLabels.label(for: entry.kind))")
+        .accessibilityLabel(Text(.detailTrailerCardDescription(entry.title, ExtraKindLabels.label(for: entry.kind))))
     }
 
     // MARK: - Thumbnail
@@ -187,7 +200,7 @@ private struct PhoneTrailerCard: View {
     // MARK: - Derived data
 
     private var kindLabel: String {
-        ExtraKindLabels.label(for: entry.kind).uppercased()
+        ExtraKindLabels.label(for: entry.kind).uppercased(with: locale)
     }
 
     /// Local extras are real files, so the scanner knows their runtime.

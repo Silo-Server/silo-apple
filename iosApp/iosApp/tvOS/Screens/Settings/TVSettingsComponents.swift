@@ -6,9 +6,14 @@ import SwiftUI
 /// Option model shared by picker rows and their selection sheets.
 struct TVSettingsOption: Identifiable, Hashable {
     let id: String
-    let label: String
-    var detail: String? = nil
+    let label: LocalizedStringResource
+    var detail: LocalizedStringResource? = nil
     var previewFontName: String? = nil
+
+    // `LocalizedStringResource` isn't `Hashable`; equal options share an id.
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 }
 
 /// Canonical option sets shared by the tvOS settings sub-screens.
@@ -21,8 +26,8 @@ enum TVSettingsOptions {
     )
 
     static let onOff: [TVSettingsOption] = [
-        .init(id: SettingsViewModel.onTag, label: "On"),
-        .init(id: SettingsViewModel.offTag, label: "Off"),
+        .init(id: SettingsViewModel.onTag, label: .settingsOn),
+        .init(id: SettingsViewModel.offTag, label: .settingsOff),
     ]
 
     static let profileLaunch: [TVSettingsOption] =
@@ -32,7 +37,7 @@ enum TVSettingsOptions {
 
     /// The Resolution picker, tagged with the contract's resolution members.
     static let resolution: [TVSettingsOption] = SiloQualityPresets.resolutionChoices.map {
-        .init(id: $0, label: SiloQualityPresets.resolutionLabel($0))
+        .init(id: $0, label: .verbatim(SiloQualityPresets.resolutionLabel($0)))
     }
 
     /// The Maximum Bitrate picker: "No limit", then each cap.
@@ -41,9 +46,10 @@ enum TVSettingsOptions {
             + choicesKbps.map { .init(id: String($0), label: SiloQualityPresets.bitrateLabel($0)) }
     }
 
-    static func audioLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
+    static func audioLanguage(_ languages: [PlaybackLanguageOption], language: String) -> [TVSettingsOption] {
         languageOptions(
             languages,
+            language: language,
             key: .playbackAudioLanguage,
             unsetID: "",
             fallbackUnsetLabel: "No preference"
@@ -54,49 +60,52 @@ enum TVSettingsOptions {
     /// a device, so it only appears for a value an earlier build stored.
     static func deviceAudioLanguage(
         _ languages: [PlaybackLanguageOption],
-        includingNoPreference: Bool
+        includingNoPreference: Bool,
+        language: String
     ) -> [TVSettingsOption] {
-        let options = audioLanguage(languages)
+        let options = audioLanguage(languages, language: language)
         return [useProfileSetting] + (includingNoPreference ? options : Array(options.dropFirst()))
     }
 
     static let bufferAhead: [TVSettingsOption] =
-        BufferAheadMode.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+        BufferAheadMode.allCases.map { .init(id: $0.rawValue, label: .verbatim($0.label)) }
 
     static let deinterlaceMode: [TVSettingsOption] =
-        DeinterlacePreference.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+        DeinterlacePreference.allCases.map { .init(id: $0.rawValue, label: .verbatim($0.label)) }
 
     static let deinterlaceFieldRate: [TVSettingsOption] =
-        DeinterlaceFieldRatePreference.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+        DeinterlaceFieldRatePreference.allCases.map { .init(id: $0.rawValue, label: .verbatim($0.label)) }
 
     static let nextUpPrompt: [TVSettingsOption] = [
-        .init(id: "0", label: "At end"),
-        .init(id: "10", label: "10 seconds before end"),
-        .init(id: "30", label: "30 seconds before end"),
-        .init(id: "60", label: "1 minute before end"),
-        .init(id: "120", label: "2 minutes before end"),
+        .init(id: "0", label: .settingsNextUpAtEnd),
+        .init(id: "10", label: .settingsNextUpSecondsBeforeEnd(10)),
+        .init(id: "30", label: .settingsNextUpSecondsBeforeEnd(30)),
+        .init(id: "60", label: .settingsNextUpMinutesBeforeEnd(1)),
+        .init(id: "120", label: .settingsNextUpMinutesBeforeEnd(2)),
     ]
 
     static let introSkipMode: [TVSettingsOption] = IntroSkipMode.allCases.map {
-        TVSettingsOption(id: $0.wireValue, label: $0.label)
+        TVSettingsOption(id: $0.wireValue, label: .verbatim($0.label))
     }
 
     static let bufferingQualityMode: [TVSettingsOption] = BufferingQualityMode.allCases.map {
-        TVSettingsOption(id: $0.wireValue, label: $0.label)
+        TVSettingsOption(id: $0.wireValue, label: .verbatim($0.label))
     }
 
-    static func subtitleLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
+    static func subtitleLanguage(_ languages: [PlaybackLanguageOption], language: String) -> [TVSettingsOption] {
         languageOptions(
             languages,
+            language: language,
             key: .playbackSubtitleLanguage,
             unsetID: PlaybackPrefSentinel.none,
             fallbackUnsetLabel: "None"
         )
     }
 
-    static func metadataLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
+    static func metadataLanguage(_ languages: [PlaybackLanguageOption], language: String) -> [TVSettingsOption] {
         languageOptions(
             languages,
+            language: language,
             key: .catalogMetadataLanguage,
             unsetID: PlaybackPrefSentinel.none,
             fallbackUnsetLabel: "Library default"
@@ -105,41 +114,41 @@ enum TVSettingsOptions {
 
     private static func languageOptions(
         _ languages: [PlaybackLanguageOption],
+        language: String,
         key: SettingKey,
         unsetID: String,
         fallbackUnsetLabel: String
     ) -> [TVSettingsOption] {
-        let unsetLabel = SettingPresentationMetadata.definitions[key]?.unsetLabel
-            ?? fallbackUnsetLabel
-        return [.init(id: unsetID, label: unsetLabel)]
-            + languages.map { .init(id: $0.code, label: $0.label) }
+        let unsetLabel = SettingPresentationMetadata.unsetLabel(for: key, fallback: fallbackUnsetLabel, language: language)
+        return [.init(id: unsetID, label: .verbatim(unsetLabel))]
+            + languages.map { .init(id: $0.code, label: .verbatim($0.label)) }
     }
 
     static let subtitleMode: [TVSettingsOption] =
-        SubtitleMode.allCases.map { .init(id: $0.rawValue, label: $0.displayLabel) }
+        SubtitleMode.allCases.map { .init(id: $0.rawValue, label: .verbatim($0.displayLabel)) }
 
     static let subtitleSize: [TVSettingsOption] =
-        SubtitleFontSizePreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+        SubtitleFontSizePreset.allCases.map { .init(id: $0.rawValue, label: .verbatim($0.label)) }
 
     static let fontFamily: [TVSettingsOption] =
         SubtitleFontFamilyPreset.allCases.map {
-            .init(id: $0.rawValue, label: $0.label, previewFontName: $0.assFontName)
+            .init(id: $0.rawValue, label: .verbatim($0.label), previewFontName: $0.assFontName)
         }
 
     static let fontColor: [TVSettingsOption] =
-        SubtitleAppearance.fontColors.map { .init(id: $0.hex, label: $0.label) }
+        SubtitleAppearance.fontColors.map { .init(id: $0.hex, label: .verbatim($0.label)) }
 
     static let outlineColor: [TVSettingsOption] =
-        SubtitleAppearance.outlineColors.map { .init(id: $0.hex, label: $0.label) }
+        SubtitleAppearance.outlineColors.map { .init(id: $0.hex, label: .verbatim($0.label)) }
 
     static let backgroundStyle: [TVSettingsOption] =
-        SubtitleBackgroundStylePreset.selectableCases.map { .init(id: $0.rawValue, label: $0.label) }
+        SubtitleBackgroundStylePreset.selectableCases.map { .init(id: $0.rawValue, label: .verbatim($0.label)) }
 
     /// 5-point steps from `from`, plus the current value when another client
     /// stored one between them (see ``SubtitleAppearance/opacityPickerValues(current:lowest:step:)``).
     private static func opacityOptions(current: Int, from: Int) -> [TVSettingsOption] {
         SubtitleAppearance.opacityPickerValues(current: current, lowest: from, step: 5)
-            .map { .init(id: String($0), label: "\($0)%") }
+            .map { .init(id: String($0), label: .verbatim(LocaleFormat.percent($0))) }
     }
 
     static func backgroundOpacity(current: Int) -> [TVSettingsOption] {
@@ -151,13 +160,13 @@ enum TVSettingsOptions {
     }
 
     static let backgroundColor: [TVSettingsOption] =
-        SubtitleAppearance.backgroundColors.map { .init(id: $0.hex, label: $0.label) }
+        SubtitleAppearance.backgroundColors.map { .init(id: $0.hex, label: .verbatim($0.label)) }
 
     static let position: [TVSettingsOption] =
-        SubtitlePositionPreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+        SubtitlePositionPreset.allCases.map { .init(id: $0.rawValue, label: .verbatim($0.label)) }
 
-    static func label(for id: String, in options: [TVSettingsOption]) -> String {
-        options.first(where: { $0.id == id })?.label ?? "—"
+    static func label(for id: String, in options: [TVSettingsOption]) -> LocalizedStringResource {
+        options.first(where: { $0.id == id })?.label ?? .verbatim("—")
     }
 }
 
@@ -295,8 +304,8 @@ private struct TVSettingsPaneRowBody: View {
 /// Picker row: title, current value, chevron. Activating it presents the
 /// option sheet.
 struct TVSettingsPickerRow: View {
-    let title: String
-    let value: String
+    let title: LocalizedStringResource
+    let value: LocalizedStringResource
     let action: () -> Void
 
     var body: some View {
@@ -311,7 +320,7 @@ struct TVSettingsPickerRow: View {
                     .opacity(0.68)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.forward")
                     .font(.system(size: 18, weight: .semibold))
                     .opacity(0.55)
             }
@@ -324,7 +333,7 @@ struct TVSettingsPickerRow: View {
 /// value, the trailing text reads On / Off. (Same pattern as the player
 /// info HUD — no `Toggle`, whose system chrome fights the custom layout.)
 struct TVSettingsToggleRow: View {
-    let title: String
+    let title: LocalizedStringResource
     let isOn: Bool
     let action: () -> Void
 
@@ -335,13 +344,13 @@ struct TVSettingsToggleRow: View {
                     .font(.system(size: 26))
                     .lineLimit(1)
                 Spacer(minLength: 16)
-                Text(isOn ? "On" : "Off")
+                Text(isOn ? LocalizedStringResource.settingsOn : .settingsOff)
                     .font(.system(size: 24, weight: isOn ? .semibold : .regular))
                     .opacity(isOn ? 0.9 : 0.55)
             }
         }
         .buttonStyle(TVSettingsPaneRowStyle())
-        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityValue(Text(isOn ? LocalizedStringResource.settingsOn : .settingsOff))
         .accessibilityAddTraits(.isToggle)
     }
 }
@@ -352,10 +361,10 @@ struct TVSettingsToggleRow: View {
 struct TVSettingsNestedGroup<Content: View>: View {
     let enabled: Bool
     /// What VoiceOver says while the group is locked: how to unlock it.
-    let disabledHint: String
+    let disabledHint: LocalizedStringResource
     let content: Content
 
-    init(enabled: Bool, disabledHint: String, @ViewBuilder content: () -> Content) {
+    init(enabled: Bool, disabledHint: LocalizedStringResource, @ViewBuilder content: () -> Content) {
         self.enabled = enabled
         self.disabledHint = disabledHint
         self.content = content()
@@ -376,15 +385,15 @@ struct TVSettingsNestedGroup<Content: View>: View {
         )
         .padding(.leading, 24)
         .opacity(enabled ? 1 : 0.42)
-        .accessibilityHint(enabled ? "" : disabledHint)
+        .accessibilityHint(enabled ? Text(verbatim: "") : Text(disabledHint))
     }
 }
 
 /// Read-only fact row (server name, version). It is deliberately not a
 /// focus target; focus should land only on actionable settings rows.
 struct TVSettingsInfoRow: View {
-    let title: String
-    let value: String
+    let title: LocalizedStringResource
+    let value: LocalizedStringResource
 
     var body: some View {
         HStack(spacing: 16) {
@@ -418,9 +427,9 @@ struct TVSettingsInfoRow: View {
 
 /// Uppercase gray section header in the system grouped-list style.
 struct TVSettingsSectionHeader: View {
-    let title: String
+    let title: LocalizedStringResource
 
-    init(_ title: String) { self.title = title }
+    init(_ title: LocalizedStringResource) { self.title = title }
 
     var body: some View {
         Text(title)
@@ -435,9 +444,9 @@ struct TVSettingsSectionHeader: View {
 
 /// Explanatory caption under a section's rows.
 struct TVSettingsFooter: View {
-    let text: String
+    let text: LocalizedStringResource
 
-    init(_ text: String) { self.text = text }
+    init(_ text: LocalizedStringResource) { self.text = text }
 
     var body: some View {
         Text(text)
@@ -451,9 +460,10 @@ struct TVSettingsFooter: View {
 
 /// Semantic warning caption used for server and persistence failures.
 struct TVSettingsWarningFooter: View {
-    let text: String
+    let text: LocalizedStringResource
+    @Environment(\.locale) private var locale
 
-    init(_ text: String) { self.text = text }
+    init(_ text: LocalizedStringResource) { self.text = text }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -467,7 +477,7 @@ struct TVSettingsWarningFooter: View {
         .padding(.top, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Warning: \(text)")
+        .accessibilityLabel(Text(.settingsWarningLabel(AppLanguage.string(text, locale: locale))))
     }
 }
 
@@ -476,10 +486,10 @@ struct TVSettingsWarningFooter: View {
 /// Settings-styled destructive confirmation used instead of the native tvOS
 /// alert, whose app-wide tint can leave focused Cancel text without contrast.
 struct TVSettingsConfirmationOverlay: View {
-    let title: String
-    let message: String
-    let confirmTitle: String
-    var additionalDestructiveTitle: String? = nil
+    let title: LocalizedStringResource
+    var message: LocalizedStringResource? = nil
+    let confirmTitle: LocalizedStringResource
+    var additionalDestructiveTitle: LocalizedStringResource? = nil
     let cancel: () -> Void
     let confirm: () -> Void
     var additionalDestructiveAction: (() -> Void)? = nil
@@ -498,15 +508,19 @@ struct TVSettingsConfirmationOverlay: View {
                         .font(.system(size: 38, weight: .semibold))
                         .foregroundColor(.siloOnSurface)
 
-                    Text(message)
-                        .font(.system(size: 22))
-                        .foregroundColor(.siloSecondaryText)
-                        .multilineTextAlignment(.center)
+                    if let message {
+                        Text(message)
+                            .font(.system(size: 22))
+                            .foregroundColor(.siloSecondaryText)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 820)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 HStack(spacing: 16) {
                     Button(action: cancel) {
-                        Text("Cancel")
+                        Text(.commonCancel)
                             .font(.system(size: 24, weight: .semibold))
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
@@ -597,11 +611,11 @@ struct TVPrivacyPolicyOverlay: View {
                         .foregroundStyle(Color.siloOnSurface)
                         .accessibilityHidden(true)
 
-                    Text("Privacy Policy")
+                    Text(.settingsAboutPrivacyPolicy)
                         .font(.system(size: 42, weight: .bold))
                         .foregroundStyle(Color.siloOnSurface)
 
-                    Text("Scan this code with your phone or tablet to read Silo's privacy policy.")
+                    Text(.settingsPrivacyPolicyScanPrompt)
                         .font(.system(size: 23))
                         .foregroundStyle(Color.siloSecondaryText)
                         .fixedSize(horizontal: false, vertical: true)
@@ -609,11 +623,11 @@ struct TVPrivacyPolicyOverlay: View {
                     Text(SiloLegalLinks.privacyPolicy.absoluteString)
                         .font(.system(size: 20, weight: .medium, design: .monospaced))
                         .foregroundStyle(Color.siloSecondaryText)
-                        .accessibilityLabel("Privacy policy URL")
+                        .accessibilityLabel(Text(.settingsPrivacyPolicyUrlLabel))
                         .accessibilityValue(SiloLegalLinks.privacyPolicy.absoluteString)
 
                     Button(action: dismiss) {
-                        Text("Done")
+                        Text(.commonDone)
                             .font(.system(size: 24, weight: .semibold))
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
@@ -647,17 +661,18 @@ struct TVPrivacyPolicyOverlay: View {
 /// from the disabled two-pane settings focus graph beneath it.
 /// Selecting an option updates the binding and dismisses; Menu cancels.
 struct TVSettingsPickerSheet: View {
-    let title: String
+    let title: LocalizedStringResource
     let options: [TVSettingsOption]
     @Binding var selection: String
     var subtitlePreviewAppearance: SubtitleAppearance? = nil
     var allowsSelection = true
-    var disabledMessage: String? = nil
+    var disabledMessage: LocalizedStringResource? = nil
     var onDismiss: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.resetFocus) private var resetFocus
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.locale) private var locale
     @Namespace private var pickerFocusScope
     @FocusState private var focusedOptionID: String?
     @State private var isClosing = false
@@ -701,14 +716,14 @@ struct TVSettingsPickerSheet: View {
                         .foregroundStyle(Color.siloOnSurface)
                         .accessibilityAddTraits(.isHeader)
 
-                    Text("Choose an option")
+                    Text(.settingsPickerChooseOption)
                         .font(.system(size: 19))
                         .foregroundStyle(Color.siloSecondaryText)
                 }
 
                 Spacer(minLength: 12)
 
-                Label("Menu to close", systemImage: "arrow.uturn.backward")
+                Label(.settingsPickerMenuToClose, systemImage: "arrow.uturn.backward")
                     .font(.system(size: 17, weight: .medium))
                     .foregroundStyle(Color.siloSecondaryText)
                     .padding(.horizontal, 15)
@@ -797,7 +812,7 @@ struct TVSettingsPickerSheet: View {
         }
         .shadow(color: .black.opacity(0.58), radius: 48, y: 22)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(title) options")
+        .accessibilityLabel(Text(.settingsPickerOptionsLabel(AppLanguage.string(title, locale: locale))))
     }
 
     private var preferredCardHeight: CGFloat {
@@ -813,7 +828,7 @@ struct TVSettingsPickerSheet: View {
     /// the last row instead of clipping a wrapped description.
     private func estimatedRowHeight(for option: TVSettingsOption) -> CGFloat {
         if let detail = option.detail {
-            let detailLines = max(1.0, (Double(detail.count) / 54).rounded(.up))
+            let detailLines = max(1.0, (Double(AppLanguage.string(detail, locale: locale).count) / 54).rounded(.up))
             return 88 + CGFloat(detailLines) * 26
         }
         return option.previewFontName != nil ? 88 : 72
@@ -890,7 +905,7 @@ private struct TVSettingsPickerOptionRow: View {
                     }
 
                     if let previewFontName = option.previewFontName {
-                        Text("Subtitle sample")
+                        Text(.settingsPickerSubtitleSample)
                             .font(.custom(previewFontName, size: 22))
                             .lineLimit(1)
                             .opacity(0.72)
@@ -906,9 +921,9 @@ private struct TVSettingsPickerOptionRow: View {
         }
         .buttonStyle(TVSettingsPaneRowStyle(isSelected: isSelected))
         .focused($focusedOptionID, equals: option.id)
-        .accessibilityLabel(option.label)
-        .accessibilityHint(option.detail ?? "")
-        .accessibilityValue(isSelected ? "Selected" : "")
+        .accessibilityLabel(Text(option.label))
+        .accessibilityHint(option.detail.map { Text($0) } ?? Text(verbatim: ""))
+        .accessibilityValue(isSelected ? Text(.settingsMenuSelected) : Text(verbatim: ""))
     }
 }
 

@@ -17,6 +17,7 @@ struct TVPairingReceiverView: View {
     /// Dwell on the success screen before advancing, so it isn't a flash.
     private static let successDwell: Duration = .seconds(1.8)
 
+    @Environment(\.locale) private var locale
     @FocusState private var focused: Control?
     private enum Control: Hashable { case primary, secondary, tertiary }
 
@@ -43,56 +44,56 @@ struct TVPairingReceiverView: View {
         case .idle:
             EmptyView()
         case .linked:
-            chip("Phone or tablet connected", spinner: true)
-            headline(isSignIn ? "Continue on\nyour phone" : "Choose servers\non your phone")
-            MarqueeTVBody(isSignIn
-                ? "Continue on your phone or tablet."
-                : "On your phone or tablet, choose which servers this Apple TV should sign in to.")
+            chip(.tvPairingChipConnected, spinner: true)
+            headline(Text(isSignIn ? LocalizedStringResource.tvPairingConnectedTitleSignin : .companionLinkedHeadlineSetup))
+            MarqueeTVBody(AppLanguage.string(isSignIn
+                ? LocalizedStringResource.tvPairingConnectedDetailSignin
+                : .tvPairingConnectedDetailServersAppleTv))
                 .padding(.top, 28)
             actions { cancelButton(.primary) }
-        case let .consentRequested(serverName):
-            chip(isSignIn ? "A nearby phone is signing in this Apple TV" : "A nearby phone is setting up this Apple TV",
+        case let .consentRequested(serverName, accountName):
+            chip(isSignIn ? LocalizedStringResource.tvPairingChipConsentSigninAppleTv : .tvPairingChipConsentAppleTv,
                  systemImage: "iphone")
-            headline(isSignIn ? "Allow this\nsign-in?" : "Allow this\nsetup?")
-            MarqueeTVBody("A nearby phone or tablet wants to sign this Apple TV in to \(serverName).")
+            headline(Text(isSignIn ? LocalizedStringResource.tvPairingConsentTitleSignin : .tvPairingConsentTitle))
+            MarqueeTVBody(Self.consentDetail(serverName: serverName, accountName: accountName))
                 .padding(.top, 28)
             actions {
-                Button { coordinator.allowPendingServer() } label: { Text("Allow") }
+                Button { coordinator.allowPendingServer() } label: { Text(.tvPairingAllow) }
                     .buttonStyle(.marquee(.primary, fullWidth: false))
                     .focused($focused, equals: .primary)
-                Button { Task { await coordinator.denyPendingServer() } } label: { Text("Don’t Allow") }
+                Button { Task { await coordinator.denyPendingServer() } } label: { Text(.companionDeny) }
                     .buttonStyle(.marquee(.glass, fullWidth: false))
                     .focused($focused, equals: .secondary)
             }
             Text(isSignIn
-                ? "Only allow it if you started this on your own phone or tablet."
-                : "Only allow it if you started setup on your own phone or tablet.")
+                ? LocalizedStringResource.tvPairingConsentNoteSignin
+                : .tvPairingConsentNote)
                 .font(.system(size: 22))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                 .padding(.top, 30)
-        case let .awaitingApproval(_, _, _, automatic):
-            chip(automatic ? "Your phone is approving" : "Waiting for your phone", spinner: true)
-            headline(automatic ? "Signing in" : "Confirm on\nyour phone")
-            // Servers after the first are approved programmatically (the
-            // phone verifies this code against the server) — don't ask the
-            // user to compare a code their phone never shows.
-            MarqueeTVBody(automatic
-                ? "Your phone or tablet is checking this code for you."
-                : "Check that your phone or tablet shows this code, then approve.")
+        case let .awaitingApproval(serverName, accountName, _, _, automatic):
+            chip(Self.signingInText(serverName: serverName, accountName: accountName), spinner: true)
+            headline(Text(automatic ? LocalizedStringResource.tvPairingConfirmTitleAutomatic : .tvPairingConfirmTitle))
+            // A bound request after a bound sign-in is approved without a
+            // comparison (the phone checks the session binding), so don't ask
+            // the user to compare a code their phone never shows.
+            MarqueeTVBody(AppLanguage.string(automatic
+                ? LocalizedStringResource.tvPairingConfirmDetailAutomatic
+                : .tvPairingConfirmDetail))
                 .padding(.top, 28)
             actions { cancelButton(.primary) }
         case let .signedIn(count):
-            headline(count <= 1 ? "Signed in" : "Signed in to\n\(count) servers")
-            MarqueeTVBody("Finishing up on your phone or tablet…")
+            headline(Text(count <= 1 ? LocalizedStringResource.tvPairingSignedIn : .tvPairingSignedInAccounts(count)))
+            MarqueeTVBody(AppLanguage.string(.tvPairingFinishing))
                 .padding(.top, 28)
             // No Cancel here: this server's sign-in is already committed, so a
             // cancel button would promise an undo that doesn't exist.
         case let .completed(serverNames):
-            headline("You’re all set")
+            headline(Text(.companionCompletedHeadline))
             MarqueeTVBody(completedSummary(serverNames))
                 .padding(.top, 28)
             actions {
-                Button { advance() } label: { Text("Continue") }
+                Button { advance() } label: { Text(.tvPairingContinue) }
                     .buttonStyle(.marquee(.primary, fullWidth: false))
                     .focused($focused, equals: .primary)
             }
@@ -103,46 +104,46 @@ struct TVPairingReceiverView: View {
                 advance()
             }
         case let .reaching(serverName):
-            chip("Checking the address", spinner: true)
-            headline("Connecting to\n\(serverName)")
-            MarqueeTVBody("Checking which address this Apple TV can reach.")
+            chip(.companionReachingChip, spinner: true)
+            headline(Text(.companionReachingHeadline(serverName)))
+            MarqueeTVBody(AppLanguage.string(.tvPairingReachingDetailAppleTv))
                 .padding(.top, 28)
             actions { cancelButton(.primary) }
         case let .preparingCode(serverName):
-            chip("Getting a code", spinner: true)
-            headline("Signing in to\n\(serverName)")
-            MarqueeTVBody("Getting this Apple TV's sign-in code.")
+            chip(.tvPairingChipWorking, spinner: true)
+            headline(Text(.tvPairingWorkingTitle(serverName)))
+            MarqueeTVBody(AppLanguage.string(.tvPairingWorkingDetailAppleTv))
                 .padding(.top, 28)
             actions { cancelButton(.primary) }
         case let .unreachable(serverName, help, alternate):
-            headline("Can’t reach\n\(serverName)")
+            headline(Text(.companionUnreachableHeadline(serverName)))
             MarqueeTVBody(help)
                 .padding(.top, 28)
             actions {
                 if let alternate {
                     Button { coordinator.useAlternateAddress() } label: {
-                        Text("Use \(Self.hostLabel(alternate.url))")
+                        Text(.tvPairingUseAlternate(Self.hostLabel(alternate.url)))
                     }
                     .buttonStyle(.marquee(.primary, fullWidth: false))
                     .focused($focused, equals: .primary)
-                    Button { coordinator.retryPushedAddress() } label: { Text("Try again") }
+                    Button { coordinator.retryPushedAddress() } label: { Text(.commonTryAgain) }
                         .buttonStyle(.marquee(.glass, fullWidth: false))
                         .focused($focused, equals: .secondary)
                 } else {
-                    Button { coordinator.retryPushedAddress() } label: { Text("Try again") }
+                    Button { coordinator.retryPushedAddress() } label: { Text(.commonTryAgain) }
                         .buttonStyle(.marquee(.primary, fullWidth: false))
                         .focused($focused, equals: .primary)
                 }
-                Button { cancel() } label: { Text("Cancel") }
+                Button { cancel() } label: { Text(.commonCancel) }
                     .buttonStyle(.marquee(.plain, fullWidth: false))
                     .focused($focused, equals: .tertiary)
             }
         case let .failed(name, code, help):
-            headline(isSignIn ? "Sign-in didn’t finish" : "Setup didn’t finish")
+            headline(Text(isSignIn ? LocalizedStringResource.companionFailedHeadline : .companionFailedHeadlineSetup))
             MarqueeTVBody(Self.failureText(name: name, code: code, help: help, signIn: isSignIn))
                 .padding(.top, 28)
             actions {
-                Button { cancel() } label: { Text("Try again") }
+                Button { cancel() } label: { Text(.commonTryAgain) }
                     .buttonStyle(.marquee(.primary, fullWidth: false))
                     .focused($focused, equals: .primary)
             }
@@ -158,67 +159,75 @@ struct TVPairingReceiverView: View {
             EmptyView()
         case .linked:
             MarqueeTVCardSymbol(systemImage: "iphone")
-            cardTitle("On your phone")
-            cardNote(isSignIn ? "Approve the sign-in there." : "Pick the servers to bring over, then tap Continue.")
-        case let .consentRequested(serverName):
+            cardTitle(Text(.tvPairingCardOnPhone))
+            cardNote(Text(isSignIn ? LocalizedStringResource.tvPairingCardOnPhoneNoteSignin : .companionLinkedCardNoteSetup))
+        case let .consentRequested(serverName, _):
             HStack(spacing: 26) {
                 MarqueeTVCardSymbol(systemImage: "iphone", size: 96)
                 MarqueeWaitingDots(count: 5, size: 10)
                 MarqueeServerMark(name: serverName, imageURL: nil, size: 96)
             }
-            cardTitle(serverName)
-            cardNote("After you allow it, a code appears here to compare with your phone.")
-        case let .awaitingApproval(serverName, code, matchWords, automatic):
-            cardTitle("Sign-in code").padding(.top, 0)
+            cardTitle(Text(verbatim: serverName))
+            cardNote(Text(.tvPairingCardConsentNote))
+        case let .awaitingApproval(serverName, accountName, code, matchWords, automatic):
+            cardTitle(Text(.companionCodeCardTitle)).padding(.top, 0)
             MarqueeCodeTiles(code: DeviceUserCode.display(code))
                 .padding(.top, 26)
-                .accessibilityLabel(Text("Code: \(Text(DeviceUserCode.spokenCharacters(code)).speechSpellsOutCharacters())"))
+                .accessibilityLabel(DeviceUserCode.spokenLabel(code) { AppLanguage.string(.shellMarqueeCodeSpoken($0)) })
             // Rollout fallback: phones released before user codes compare
             // the match words. Remove together with the phone's "Older TV
             // apps show ..." line once the iOS and Android apps that compare
             // user codes have shipped.
             if !automatic, let matchWords {
-                cardNote("Older phones show \(matchWords.uppercased()) instead.")
+                cardNote(Text(.tvPairingConfirmOlderPhones(matchWords.uppercased())))
             }
             Divider().overlay(Color.white.opacity(0.1)).padding(.vertical, 30)
             HStack(spacing: 18) {
                 MarqueeServerMark(name: serverName, imageURL: nil, size: 56)
-                Text(serverName)
-                    .font(.system(size: 28, weight: .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(serverName)
+                        .font(.system(size: 28, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let accountName {
+                        Text(accountName)
+                            .font(.system(size: 22))
+                            .foregroundStyle(Color.siloOnSurface.opacity(0.5))
+                            .lineLimit(1)
+                    }
+                }
             }
         case .signedIn, .completed:
             MarqueeTVCardSymbol(systemImage: "checkmark", tint: Color.siloStatusLive, size: 140)
-            cardTitle("Signed in")
+            cardTitle(Text(.tvPairingSignedIn))
         case let .reaching(serverName):
             ProgressView().scaleEffect(1.6).frame(height: 112)
-            cardTitle(serverName)
-            cardNote("Trying the addresses your phone sent.")
+            cardTitle(Text(verbatim: serverName))
+            cardNote(Text(.companionReachingCardNote))
         case let .preparingCode(serverName):
             ProgressView().scaleEffect(1.6).frame(height: 112)
-            cardTitle(serverName)
+            cardTitle(Text(verbatim: serverName))
         case .unreachable:
             MarqueeTVCardSymbol(systemImage: "wifi.exclamationmark", tint: Color.siloStatusWarning)
-            cardTitle("No answer")
-            cardNote("This Apple TV couldn’t reach the address your phone sent.")
+            cardTitle(Text(.tvPairingCardNoAnswer))
+            cardNote(Text(.tvPairingCardNoAnswerNoteAppleTv))
         case let .failed(name, _, _):
             MarqueeTVCardSymbol(systemImage: "exclamationmark.triangle", tint: Color.siloStatusWarning)
-            cardTitle("Not finished")
+            cardTitle(Text(.tvPairingCardNotFinished))
             // Earlier servers in the same session may have signed in.
-            cardNote("\(name) wasn't signed in.")
+            cardNote(Text(.tvPairingCardNotFinishedNote(name)))
         }
     }
 
     // MARK: - Pieces
 
-    private func chip(_ text: String, spinner: Bool = false, systemImage: String? = nil) -> some View {
-        MarqueeTVStatusChip(text: text, showsSpinner: spinner, systemImage: systemImage)
+    private func chip(_ text: LocalizedStringResource, spinner: Bool = false, systemImage: String? = nil) -> some View {
+        MarqueeTVStatusChip(text: AppLanguage.string(text), showsSpinner: spinner, systemImage: systemImage)
             .padding(.bottom, 36)
     }
 
-    private func headline(_ text: String) -> some View {
-        Text(text)
+    private func headline(_ text: Text) -> some View {
+        text
             .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))
             .kerning(-2)
             .foregroundStyle(Color.siloOnSurface)
@@ -234,31 +243,47 @@ struct TVPairingReceiverView: View {
             .focusSection()
     }
 
-    private func cardTitle(_ text: String) -> some View {
-        Text(text)
+    private func cardTitle(_ text: Text) -> some View {
+        text
             .font(.system(size: 32, weight: .semibold))
             .foregroundStyle(Color.siloOnSurface)
             .lineLimit(2)
             .padding(.top, 34)
     }
 
-    private func cardNote(_ text: String) -> some View {
-        Text(text)
+    private func cardNote(_ text: Text) -> some View {
+        text
             .font(.system(size: 22))
             .foregroundStyle(Color.siloOnSurface.opacity(0.4))
             .padding(.top, 10)
     }
 
     private func cancelButton(_ control: Control) -> some View {
-        Button { cancel() } label: { Text("Cancel") }
+        Button { cancel() } label: { Text(.commonCancel) }
             .buttonStyle(.marquee(.glass, fullWidth: false))
             .focused($focused, equals: control)
     }
 
+    /// Each server once, however many of its accounts signed in.
     private func completedSummary(_ names: [String]) -> String {
-        names.isEmpty
-            ? "Taking you to your profiles…"
-            : "Signed in to \(names.joined(separator: ", ")). Taking you to your profiles…"
+        var seen = Set<String>()
+        let servers = names.filter { seen.insert($0).inserted }
+        return servers.isEmpty
+            ? AppLanguage.string(.tvPairingCompletedNone)
+            : AppLanguage.string(.tvPairingCompletedNamed(servers.joined(separator: ", ")))
+    }
+
+    /// "Signing in sam on Home", or "Signing in to Home" when the phone
+    /// named no account. The name is the phone's claim, for display only.
+    static func signingInText(serverName: String, accountName: String?) -> LocalizedStringResource {
+        guard let accountName else { return .tvPairingChipSigningIn(serverName) }
+        return .tvPairingChipSigningInAccount(accountName, serverName)
+    }
+
+    /// "… to Home as sam.", or "… to Home." when the phone named no account.
+    private static func consentDetail(serverName: String, accountName: String?) -> String {
+        guard let accountName else { return AppLanguage.string(.tvPairingConsentDetailAppleTv(serverName)) }
+        return AppLanguage.string(.tvPairingConsentDetailAppleTvAccount(serverName, accountName))
     }
 
     /// The host of an address, for a button label. Falls back to the
@@ -270,22 +295,24 @@ struct TVPairingReceiverView: View {
     private static func failureText(name: String, code: PairingFailureCode, help: String?, signIn: Bool) -> String {
         switch code {
         case .unreachable:
-            return (help ?? "This Apple TV can’t reach \(name).")
-                + " You can also add the server manually with its public address."
+            guard let help else { return AppLanguage.string(.tvPairingFailedUnreachableAppleTv(name)) }
+            return AppLanguage.string(.tvPairingFailedUnreachableHelp(help))
         case .identityMismatch where signIn:
-            return "The phone or tablet offered \(name), which isn't the server this Apple TV uses. Choose this Apple TV's server on your phone or tablet, or sign in here with a password."
+            return AppLanguage.string(.tvPairingFailedIdentitySigninAppleTv(name))
         case .identityMismatch:
-            return "The phone or tablet sent an address for \(name) that answered as a different server. Check the server on your phone or tablet, or add your server manually."
+            return AppLanguage.string(.tvPairingFailedIdentity(name))
         case .denied:
-            return "The sign-in to \(name) was declined. Try again from your phone or tablet."
+            return AppLanguage.string(.tvPairingFailedDenied(name))
         case .expired:
-            return "The code for \(name) expired before it was approved. Try again from your phone or tablet."
+            return AppLanguage.string(.tvPairingFailedExpired(name))
         case .updateRequired:
             return help ?? UpdateRequirement.serverMessage
         case .saveFailed:
-            return "\(name) approved the sign-in, but this Apple TV couldn't save it. Try again from your phone or tablet."
+            return AppLanguage.string(.tvPairingFailedSaveAppleTv(name))
+        case .limitReached:
+            return AppLanguage.string(.tvPairingFailedLimitAppleTv(name))
         case .authFailed:
-            return "Something went wrong signing in to \(name). Try again from your phone or tablet, or add your server manually."
+            return AppLanguage.string(.tvPairingFailedGeneric(name))
         }
     }
 

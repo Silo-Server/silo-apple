@@ -3,8 +3,8 @@ import SwiftUI
 
 /// Which rows a `TVRequestsPage` shows.
 enum TVRequestsPageMode {
-    /// The top-bar Requests tab: the user's requests, then the discover
-    /// carousels.
+    /// The Requests page the profile menu opens under the top bar: the
+    /// user's requests, then the discover carousels.
     case hub
     /// The user's requests grouped In progress / Needs you / Available.
     case mine
@@ -20,6 +20,7 @@ enum TVRequestsPageMode {
 /// and restores the last card, and the sole directional interception is Up
 /// from the first row to the top bar.
 struct TVRequestsPage: View {
+    @Environment(\.locale) private var locale
     let mode: TVRequestsPageMode
     /// Shell hand-down token: claims the first card on tab entry.
     var focusRequest: Int = 0
@@ -35,6 +36,8 @@ struct TVRequestsPage: View {
     /// Last focused card, restored when the page returns from a detail push.
     @State private var lastFocusedKey: String?
     @State private var pendingEntryRequest: Int?
+    /// The failed request waiting on the remove confirmation.
+    @State private var pendingRemoval: MediaRequest?
     @State private var appliedEntryRequest = 0
     @Environment(AppRouter.self) private var router
 
@@ -58,13 +61,18 @@ struct TVRequestsPage: View {
             case .mine: mine.applyRequestUpdate(update)
             }
         }
+        .onChange(of: RequestsEventBus.shared.lastRemoval) { _, removed in
+            // The mine model reads its list again after its own remove.
+            guard let removed, mode == .hub else { return }
+            hub.applyRemoval(removed)
+        }
         .onChange(of: RequestsEventBus.shared.lastTitleState) { _, update in
             // Only discover cards carry a title's follow state.
             guard let update, mode == .hub else { return }
             hub.applyTitleState(update)
         }
         .overlay(alignment: .bottomLeading) {
-            if let message = mine.actionErrorMessage {
+            if let message = mine.actionErrorMessage ?? mine.notice {
                 Text(message)
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(Color.siloOnSurface)
@@ -75,6 +83,9 @@ struct TVRequestsPage: View {
                     .padding(.bottom, 40)
                     .allowsHitTesting(false)
             }
+        }
+        .requestRemoveConfirmation($pendingRemoval) { record in
+            Task { await mine.remove(record, refresh: actionRefresh) }
         }
         .onChange(of: focusRequest) { _, request in requestEntryFocus(request) }
         .onChange(of: rows.map(\.id)) { _, _ in
@@ -92,7 +103,7 @@ struct TVRequestsPage: View {
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "Loading requests",
+                    accessibilityLabel: AppLanguage.string(.requestsLoadingSpoken),
                     onMoveUp: onTopMenuFocusRequest
                 )
         } else if let error = loadError {
@@ -123,15 +134,15 @@ struct TVRequestsPage: View {
 
     private var emptyTitle: String {
         switch mode {
-        case .hub: "Nothing here yet"
-        case .mine: "No requests yet"
+        case .hub: AppLanguage.string(.requestsEmpty)
+        case .mine: AppLanguage.string(.requestsMineEmptyTitle)
         }
     }
 
     private var emptySubtitle: String {
         switch mode {
-        case .hub: "Use Search to find a movie or series to request"
-        case .mine: "Movies and series you request will show up here"
+        case .hub: AppLanguage.string(.requestsEmptyBody)
+        case .mine: AppLanguage.string(.requestsMineEmptyBody)
         }
     }
 
@@ -147,14 +158,14 @@ struct TVRequestsPage: View {
             if !hub.myRequests.isEmpty {
                 rows.append(TVRequestRow(
                     id: "mine",
-                    title: "Your requests",
+                    title: AppLanguage.string(.requestsYourRequests),
                     items: hub.myRequests.map { .record($0) }
                 ))
             }
             for (index, carousel) in hub.carousels.enumerated() {
                 rows.append(TVRequestRow(
                     id: "discover:\(carousel.id)",
-                    label: index == 0 ? "Discover" : nil,
+                    label: index == 0 ? AppLanguage.string(.requestsHubDiscover) : nil,
                     title: carousel.title,
                     items: carousel.results.map { .result($0) }
                 ))
@@ -163,8 +174,9 @@ struct TVRequestsPage: View {
         case .mine:
             return mine.buckets.map { entry in
                 TVRequestRow(
-                    id: "bucket:\(entry.bucket.title)",
-                    title: entry.bucket.title,
+                    // The id stays the same in every language.
+                    id: "bucket:\(entry.bucket)",
+                    title: AppLanguage.string(entry.bucket.title),
                     items: entry.requests.map { .record($0) }
                 )
             }
@@ -174,7 +186,8 @@ struct TVRequestsPage: View {
     private func load() async {
         switch mode {
         case .hub:
-            await hub.load()
+            // Actions on hub cards hold through `mine`; this read settles them.
+            await mine.settleHolds { await hub.load() }
         case .mine:
             await mine.load()
         }
@@ -291,17 +304,18 @@ struct TVRequestsPage: View {
                 .cardWidth(SiloTheme.Skyline.densePosterCardWidth)
                 .focused($focusedKey, id: key)
                 .contextMenu {
-                    if RequestDisplayState(record: record).isCancelable, !mine.isCancelUnconfirmed(record) {
+                    if mine.canCancel(record) {
                         Button(role: .destructive) {
-                            Task {
-                                if mode == .mine {
-                                    await mine.cancel(record)
-                                } else {
-                                    await mine.cancel(record, refresh: { await hub.load() })
-                                }
-                            }
+                            Task { await mine.cancel(record, refresh: actionRefresh) }
                         } label: {
-                            Label("Cancel Request", systemImage: "xmark.circle")
+                            Label(.requestsActionCancel, systemImage: "xmark.circle")
+                        }
+                    }
+                    if mine.canRemove(record) {
+                        Button(role: .destructive) {
+                            pendingRemoval = record
+                        } label: {
+                            Label(.requestsRowRemoveRequest, systemImage: "trash")
                         }
                     }
                 }
@@ -310,6 +324,12 @@ struct TVRequestsPage: View {
                 .cardWidth(SiloTheme.Skyline.densePosterCardWidth)
                 .focused($focusedKey, id: key)
         }
+    }
+
+    /// The read that settles a cancel or remove: none on the mine page,
+    /// whose model reads its own list, and the hub's read on the hub.
+    private var actionRefresh: (() async -> Bool)? {
+        mode == .mine ? nil : { await hub.load() }
     }
 
     // MARK: - Focus
@@ -380,14 +400,14 @@ struct TVRequestsPage: View {
 
     static func marqueeContent(_ item: TVRequestItem, row: TVRequestRow) -> TVMarqueeContent {
         var meta: [String] = []
-        if let year = item.year, year > 0 { meta.append(String(year)) }
+        if let year = item.year, year > 0 { meta.append(LocaleFormat.integer(year)) }
         meta.append(item.mediaType.displayName)
         let progress: RequestProgress?
         let statusText: String?
         var rating: DisplayRating?
         switch item {
         case .record(let record):
-            meta.append("Requested \(record.createdAt.formatted(.dateTime.month(.abbreviated).day()))")
+            meta.append(AppLanguage.string(.requestsRequestedOn(record.createdAt.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale)))))
             let recordProgress = RequestProgress(record: record)
             progress = recordProgress
             statusText = RequestRowCopy.status(record, progress: recordProgress)
@@ -560,7 +580,7 @@ struct TVRequestsLoadingView: View {
                 ProgressView()
                     .controlSize(.regular)
                     .tint(.white)
-                Text("Loading Requests")
+                Text(.requestsLoading)
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(Color.siloOnSurface.opacity(0.72))
             }

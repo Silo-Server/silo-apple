@@ -88,7 +88,7 @@ extension View {
 /// Sentence-case header above an inset group, with an optional trailing
 /// count, matching the system grouped-list headers in Settings.
 struct DownloadSectionHeader: View {
-    let title: String
+    let title: LocalizedStringResource
     var count: Int? = nil
 
     var body: some View {
@@ -96,7 +96,7 @@ struct DownloadSectionHeader: View {
             Text(title)
             Spacer()
             if let count {
-                Text("\(count)")
+                Text(verbatim: LocaleFormat.integer(count))
             }
         }
         .font(.subheadline.weight(.medium))
@@ -116,6 +116,7 @@ struct DownloadsStorageHeader: View {
     let used: Int64
     let breakdown: DownloadStorageBreakdown
     var activeCount: Int = 0
+    @Environment(\.locale) private var locale
 
     private static let seriesColor = Color.siloBrandBlue
     private static let moviesColor = Color.siloBrandRed
@@ -130,7 +131,7 @@ struct DownloadsStorageHeader: View {
             let context = Text(contextSuffix)
                 .font(.subheadline)
                 .foregroundColor(.siloSecondaryText)
-            Text("\(amount)\(context)")
+            Text("\(amount)\(context)") // i18n-ignore: joins two Text values
 
             if activeCount > 0 {
                 Text(inProgressLine)
@@ -149,20 +150,21 @@ struct DownloadsStorageHeader: View {
 
     private var contextSuffix: String {
         let deviceTotal = DownloadFilePaths.totalCapacity
-        return deviceTotal > 0
-            ? "  of \(DownloadFormatting.bytes(deviceTotal)) on this device"
-            : "  downloaded"
+        let suffix: LocalizedStringResource = deviceTotal > 0
+            ? .downloadsStorageOfDevice(DownloadFormatting.bytes(deviceTotal))
+            : .downloadsStorageDownloaded
+        return "  " + AppLanguage.string(suffix, locale: locale)
     }
 
     /// Mid-flight transfers are invisible to `used` (partial media sits in
     /// the session's staging area), so this line keeps the hero honest
     /// while something is downloading.
     private var inProgressLine: String {
-        var line = "\(activeCount) download\(activeCount == 1 ? "" : "s") in progress"
+        var parts = [AppLanguage.string(.downloadsStorageInProgress(count: activeCount, LocaleFormat.integer(activeCount, locale: locale)), locale: locale)]
         if breakdown.inProgress > 0 {
-            line += " · \(DownloadFormatting.bytes(breakdown.inProgress)) so far"
+            parts.append(AppLanguage.string(.downloadsStorageSoFar(DownloadFormatting.bytes(breakdown.inProgress)), locale: locale))
         }
-        return line
+        return parts.joined(separator: " · ")
     }
 
     private var breakdownBar: some View {
@@ -193,14 +195,14 @@ struct DownloadsStorageHeader: View {
             alignment: .leading,
             spacing: 6
         ) {
-            legendItem(color: Self.seriesColor, bytes: breakdown.series, label: "Series")
-            legendItem(color: Self.moviesColor, bytes: breakdown.movies, label: "Movies")
-            legendItem(color: Self.inProgressColor, bytes: breakdown.inProgress, label: "In progress")
-            legendItem(color: Self.otherColor, bytes: breakdown.other, label: "Other")
+            legendItem(color: Self.seriesColor, bytes: breakdown.series, label: .downloadsStorageSeries)
+            legendItem(color: Self.moviesColor, bytes: breakdown.movies, label: .downloadsStorageMovies)
+            legendItem(color: Self.inProgressColor, bytes: breakdown.inProgress, label: .downloadsStorageInProgressLegend)
+            legendItem(color: Self.otherColor, bytes: breakdown.other, label: .downloadsStorageOtherLegend)
         }
     }
 
-    @ViewBuilder private func legendItem(color: Color, bytes: Int64, label: String) -> some View {
+    @ViewBuilder private func legendItem(color: Color, bytes: Int64, label: LocalizedStringResource) -> some View {
         if bytes > 0 {
             HStack(spacing: 6) {
                 Circle()
@@ -226,21 +228,23 @@ struct DownloadReclaimBanner: View {
     let episodeCount: Int
     let bytes: Int64
     let onReview: () -> Void
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Button(action: onReview) {
             HStack(spacing: 12) {
-                let amount = Text("Free up \(DownloadFormatting.bytes(bytes))")
+                let amount = Text(.downloadsReclaimFreeUp(DownloadFormatting.bytes(bytes)))
                     .foregroundColor(.siloOnSurface)
-                let count = Text(" · \(episodeCount) watched")
+                let count = Text(verbatim: " · " + AppLanguage.string(
+                    .downloadsSeriesRowWatchedCount(count: episodeCount, LocaleFormat.integer(episodeCount, locale: locale)), locale: locale))
                     .foregroundColor(.siloSecondaryText)
-                Text("\(amount)\(count)")
+                Text("\(amount)\(count)") // i18n-ignore: joins two Text values
                     .font(.subheadline)
                     .lineLimit(1)
 
                 Spacer(minLength: 8)
 
-                Text("Review")
+                Text(.downloadsReclaimReview)
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(.siloOnSurface)
                     .padding(.horizontal, 14)
@@ -252,7 +256,7 @@ struct DownloadReclaimBanner: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityHint("Reviews \(episodeCount) item\(episodeCount == 1 ? "" : "s") you've finished")
+        .accessibilityHint(Text(.downloadsReclaimReviewHint(count: episodeCount, LocaleFormat.integer(episodeCount))))
     }
 }
 
@@ -266,10 +270,12 @@ struct DownloadSortControl: View {
     var body: some View {
         HStack {
             Menu {
-                Picker("Sort", selection: $option) {
+                Picker(selection: $option) {
                     ForEach(DownloadSortOption.allCases) { opt in
                         Label(opt.displayName, systemImage: opt.systemImage).tag(opt)
                     }
+                } label: {
+                    Text(.downloadsSortTitle)
                 }
             } label: {
                 HStack(spacing: 5) {
@@ -283,7 +289,7 @@ struct DownloadSortControl: View {
 
             Spacer()
 
-            Text("\(itemCount) item\(itemCount == 1 ? "" : "s")")
+            Text(.downloadsSortItemCount(count: itemCount, LocaleFormat.integer(itemCount)))
                 .font(.footnote)
                 .foregroundColor(.siloSecondaryText)
         }

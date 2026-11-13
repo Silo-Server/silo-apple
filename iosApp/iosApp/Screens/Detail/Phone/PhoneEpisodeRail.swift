@@ -56,6 +56,7 @@ struct PhoneEpisodeRail: View {
             .padding(.horizontal, HorizontalMediaRailLayout.isPhone ? 0 : SiloTheme.safePadding)
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
+            .mouseDragScrolling()
         }
         .contentMargins(.leading, leadingContentMargin, for: .scrollContent)
         .contentMargins(.trailing, trailingContentMargin, for: .scrollContent)
@@ -142,6 +143,7 @@ enum PhoneEpisodeRailLayout {
 }
 
 private struct PhoneEpisodeCard: View {
+    @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     let isCurrent: Bool
     let cardWidth: CGFloat
@@ -193,7 +195,7 @@ private struct PhoneEpisodeCard: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(
-                    "Play Season \(episode.seasonNumber), Episode \(episode.episodeNumber)"
+                    Text(.detailPlaySeasonEpisode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))
                 )
             }
         }
@@ -202,14 +204,14 @@ private struct PhoneEpisodeCard: View {
         #endif
         .contextMenu {
             #if os(iOS)
-            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",
+            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode", // i18n-ignore: watch-party payload (D44)
                 episode: episode)
             #endif
             MediaStateMenuItems(
                 isWatched: episode.userData?.played == true,
                 isFavorite: isFavorite,
                 inWatchlist: inWatchlist,
-                watchedSubject: "Episode",
+                watchedSubject: "Episode", // i18n-ignore: fragment for MediaStateMenuItems (shared component, not in this group)
                 isUpdating: isUpdatingWatched || actionFeedback.isUpdating,
                 onToggleWatched: onSetWatched.map { update in
                     { update(episode, !(episode.userData?.played ?? false)) }
@@ -230,7 +232,7 @@ private struct PhoneEpisodeCard: View {
                 nowViewingTag
             }
 
-            Text(EpisodeCardCaption.railTitle(for: episode))
+            Text(EpisodeCardCaption.railTitle(for: episode, locale: locale))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(titleColor)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
@@ -283,7 +285,7 @@ private struct PhoneEpisodeCard: View {
     }
 
     private var nowViewingTag: some View {
-        Text("NOW VIEWING")
+        Text(.detailNowViewing)
             .font(.caption2.weight(.heavy))
             .tracking(0.8)
             .foregroundColor(.black)
@@ -293,7 +295,7 @@ private struct PhoneEpisodeCard: View {
     }
 
     private var accessibilityDescription: String {
-        PhoneEpisodeFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent)
+        PhoneEpisodeFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent, locale: locale)
     }
 
     private var spoilers: EpisodeSpoilerSettings {
@@ -328,7 +330,7 @@ private struct PhoneEpisodeCard: View {
             }
 
             if let progress = progressFraction {
-                progressBar(fraction: progress)
+                ProgressBar(value: progress)
             }
         }
         .frame(width: cardWidth, height: stillHeight)
@@ -358,17 +360,6 @@ private struct PhoneEpisodeCard: View {
                 .font(.system(size: 11, weight: .bold))
                 .foregroundColor(.black)
         }
-    }
-
-    private func progressBar(fraction: Double) -> some View {
-        ZStack(alignment: .leading) {
-            Rectangle()
-                .fill(Color.black.opacity(0.6))
-            Rectangle()
-                .fill(Color.white)
-                .frame(width: cardWidth * CGFloat(fraction))
-        }
-        .frame(width: cardWidth, height: 3)
     }
 
     private var progressFraction: Double? {

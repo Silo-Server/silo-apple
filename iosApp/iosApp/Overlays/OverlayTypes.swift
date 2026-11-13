@@ -12,6 +12,7 @@ enum OverlayId: String, Hashable {
     case resolution
     case hdr
     case resolutionHdr = "resolution_hdr"
+    case resolutionHdrAudio = "resolution_hdr_audio"
     case audio
     case audioChannels = "audio_channels"
     case videoCodec = "video_codec"
@@ -40,11 +41,27 @@ enum OverlayId: String, Hashable {
     case rtCertifiedFresh = "rt_certified_fresh"
 }
 
+/// Where a badge sits on the card: three corners and a rail centred on each
+/// side edge. The top-right corner belongs to the watch-status indicator
+/// (`CardWatchStatus`), so no badge is placed there. Mirrors
+/// `OVERLAY_POSITIONS` in `web/src/lib/overlays/types.ts`.
 enum OverlayPosition: String, Hashable {
     case topLeft = "top-left"
-    case topRight = "top-right"
     case bottomLeft = "bottom-left"
     case bottomRight = "bottom-right"
+    case leftEdge = "left-edge"
+    case rightEdge = "right-edge"
+
+    /// The position a stored document names. The contract keeps `top-right`
+    /// valid for documents written before that corner held watch status;
+    /// such a badge draws on the right-edge rail, the same side of the card.
+    init?(stored: String) {
+        if stored == "top-right" {
+            self = .rightEdge
+        } else {
+            self.init(rawValue: stored)
+        }
+    }
 }
 
 enum PresetId: String, Hashable {
@@ -53,6 +70,8 @@ enum PresetId: String, Hashable {
     case vibrant
     case pill
     case square
+    case plate
+    case band
 }
 
 /// Per-overlay user configuration. `accentColor` and `showIcon` are
@@ -65,6 +84,44 @@ struct OverlayItemConfig: Hashable {
     var accentColor: String?
     /// When non-nil, overrides `OverlayPreset.preferIcon` for this badge.
     var showIcon: Bool?
+    /// Uploaded image ref drawn in the icon's place, beside the label.
+    var image: String?
+    /// Uploaded image refs by value key (`OverlayDef.getValueKey`); a match
+    /// replaces the whole badge.
+    var valueImages: [String: String] = [:]
+}
+
+enum OverlayShape: String, Hashable {
+    case pill
+    case rounded
+    case square
+}
+
+enum OverlayFontWeight: String, Hashable {
+    case regular
+    case semibold
+    case extrabold
+}
+
+/// Overrides layered on the preset. Each absent field keeps the preset's
+/// value. Mirrors `OverlayStyle` in `web/src/lib/overlays/types.ts`.
+struct OverlayStyle: Hashable {
+    /// 0.75–2; scales text, padding and icons.
+    var size: Double?
+    var shape: OverlayShape?
+    /// `#RRGGBBAA`.
+    var background: String?
+    /// `#RRGGBB`.
+    var textColor: String?
+    /// `#RRGGBBAA`.
+    var borderColor: String?
+    /// 0–3 at the reference card width.
+    var borderWidth: Int?
+    var fontWeight: OverlayFontWeight?
+    var uppercase: Bool?
+    var shadow: Bool?
+
+    var isEmpty: Bool { self == OverlayStyle() }
 }
 
 /// Versioned root document stored under the user setting key
@@ -75,7 +132,9 @@ struct CardOverlayPrefs: Hashable {
 
     var version: Int
     var preset: PresetId
-    /// User-chosen render order within each corner. Empty array means
+    /// Overrides on top of the preset; `nil` draws the preset as it is.
+    var style: OverlayStyle?
+    /// User-chosen render order within each position. Empty array means
     /// "use registry order".
     var order: [OverlayId]
     var items: [OverlayId: OverlayItemConfig]
@@ -132,6 +191,14 @@ struct OverlayDef {
     let iconCapable: Bool
     let getValue: (OverlayData) -> String?
     let getIcon: ((OverlayData) -> OverlayIconId?)?
+    /// A rating's source mark ("IMDb") and its bare score, for presets that
+    /// draw the mark as a chip. Both are set together.
+    let sourceMark: String?
+    let getScore: ((OverlayData) -> String?)?
+    /// The key a `valueImages` entry matches: the value as the API returns
+    /// it, so every client matches the same keys. `nil` means the badge
+    /// takes no per-value images (scores, runtimes).
+    let getValueKey: ((OverlayData) -> String?)?
 
     init(
         id: OverlayId,
@@ -141,7 +208,10 @@ struct OverlayDef {
         defaultAccent: String? = nil,
         iconCapable: Bool,
         getValue: @escaping (OverlayData) -> String?,
-        getIcon: ((OverlayData) -> OverlayIconId?)? = nil
+        getIcon: ((OverlayData) -> OverlayIconId?)? = nil,
+        sourceMark: String? = nil,
+        getScore: ((OverlayData) -> String?)? = nil,
+        getValueKey: ((OverlayData) -> String?)? = nil
     ) {
         self.id = id
         self.defaultPosition = defaultPosition
@@ -151,11 +221,14 @@ struct OverlayDef {
         self.iconCapable = iconCapable
         self.getValue = getValue
         self.getIcon = getIcon
+        self.sourceMark = sourceMark
+        self.getScore = getScore
+        self.getValueKey = getValueKey
     }
 }
 
 /// Typed icon identifiers. Lucide icons map to SF Symbols in
-/// ``OverlayIcon``; brand marks render as text.
+/// ``OverlayIcon``; wordmarks render as text and Dolby Vision as its mark.
 enum OverlayIconId: String, Hashable {
     // generic
     case clock
@@ -178,14 +251,14 @@ enum OverlayIconId: String, Hashable {
     case atmos
     case av1
 
-    /// The text a brand mark draws. The badge drops this token from its
-    /// label so it doesn't read "HDR10 HDR10" or "DV DV HDR10" (web's
-    /// `WORDMARK_TEXT` does the same for its text marks).
-    var brandText: String? {
+    /// The text a wordmark icon spells. When a badge's label says the same
+    /// thing, the renderer drops the label so the badge doesn't read
+    /// "HDR10 HDR10". Mirrors web's `WORDMARK_TEXT`; Dolby Vision draws a
+    /// mark, not a word, so its label always shows.
+    var wordmark: String? {
         switch self {
         case .hdr: return "HDR"
         case .hdr10: return "HDR10"
-        case .dolbyVision: return "DV"
         case .atmos: return "ATMOS"
         case .av1: return "AV1"
         default: return nil
@@ -193,35 +266,80 @@ enum OverlayIconId: String, Hashable {
     }
 }
 
-/// Visual recipe for a badge. The renderer applies `font`, `padding`,
-/// `cornerStyle`, etc. uniformly to every badge; per-badge variation
-/// comes from the registry (icon) and the user's `accentColor`.
-struct OverlayPreset {
-    let fontSize: CGFloat
-    let textWeight: Font.Weight
-    let textCase: Text.Case?
-    let tracking: CGFloat
-    let horizontalPadding: CGFloat
-    let verticalPadding: CGFloat
-    let cornerStyle: CornerStyle
-    let iconSize: CGFloat
-    let preferIcon: Bool
-    /// Spacing between stacked badges in the same corner.
-    let gap: CGFloat
-    /// Compute the background color given the user's accent override (or
-    /// the registry default). Returns `.clear` for transparent presets.
-    let backgroundColor: (Color?) -> Color
-    /// Compute the foreground (text + icon) color.
-    let foregroundColor: (Color?) -> Color
-    /// Optional 1-pt accent border (used by `.square` when an accent is set).
-    let borderColor: (Color?) -> Color?
-    /// Background blur material (used by `.pill`); `nil` means no blur.
-    let backdropMaterial: Material?
-    /// Subtle shadow under the badge (only `.minimal` uses it).
-    let textShadow: Bool
+/// An image an administrator uploaded for badges, as the overlay-config
+/// endpoint lists it.
+struct OverlayImageAsset: Hashable {
+    let url: URL
+    /// Width over height of the stored image.
+    let aspectRatio: CGFloat
+}
 
-    enum CornerStyle {
+/// An offset shadow, in points at the reference card width.
+struct OverlayShadow: Hashable {
+    var x: CGFloat = 0
+    var y: CGFloat
+    var blur: CGFloat
+    var color: OverlayColor
+}
+
+/// The colours one badge draws with, after the accent is applied.
+struct OverlayBadgePaint: Hashable {
+    var background: OverlayColor
+    var foreground: OverlayColor
+    /// Colour of the border around the badge; `nil` draws it in the text colour.
+    var border: OverlayColor?
+    /// Colour of the bar on the badge's left side (`.square` with an accent).
+    var accentBar: OverlayColor?
+}
+
+/// Visual recipe for a badge, mirroring `OverlayPreset` in
+/// `web/src/lib/overlays/types.ts`. Lengths are points at the 185-point
+/// reference card width; the renderer scales them with the card.
+struct OverlayPreset {
+    enum Layout {
+        /// Each position's badges stack.
+        case stack
+        /// Each edge's badges form one strip of marks over a scrim.
+        case band
+    }
+
+    /// How the preset paints a badge's accent colour.
+    enum AccentStrategy {
+        case background
+        case border
+        case text
+    }
+
+    enum CornerStyle: Hashable {
         case capsule
         case rounded(CGFloat)
     }
+
+    let id: PresetId
+    let layout: Layout
+    /// A rating badge draws its source mark as an accent-coloured chip ahead
+    /// of the score instead of one "IMDb 7.8" label.
+    let sourceChips: Bool
+    var fontSize: CGFloat
+    var fontWeight: Font.Weight
+    var uppercase: Bool
+    /// Letter spacing as a share of the font size.
+    let trackingEm: CGFloat
+    var paddingInline: CGFloat
+    var paddingBlock: CGFloat
+    var cornerStyle: CornerStyle
+    /// Width of the border around the badge; `nil` or 0 draws none.
+    var borderWidth: CGFloat?
+    /// Width of the accent bar on the badge's left side.
+    let accentBarWidth: CGFloat?
+    var textShadow: OverlayShadow?
+    var boxShadow: OverlayShadow?
+    var iconSize: CGFloat
+    var iconGap: CGFloat
+    let preferIcon: Bool
+    /// Spacing between stacked badges in the same position.
+    var stackGap: CGFloat
+    let accentStrategy: AccentStrategy
+    /// The badge's colours for an accent (the viewer's, or the badge's default).
+    var paint: (OverlayColor?) -> OverlayBadgePaint
 }

@@ -27,7 +27,7 @@ struct PhoneEpisodeCarousel: View {
             if isLoading, episodes.isEmpty {
                 PhoneEpisodeRailSkeleton()
             } else if episodes.isEmpty {
-                Text("No episodes available")
+                Text(.detailEpisodesEmpty)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, SiloTheme.safePadding)

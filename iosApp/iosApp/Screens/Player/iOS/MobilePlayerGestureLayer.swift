@@ -392,7 +392,9 @@ struct MobilePlayerGestureLayer: View {
                 seconds: flash.seconds
             ))
                 .font(.system(size: 26, weight: .semibold))
-            Text(flash.forward ? "+\(flash.seconds)s" : "−\(flash.seconds)s")
+            Text(flash.forward
+                 ? LocalizedStringResource.playerGesturesSkipFlashForward(LocaleFormat.integer(flash.seconds))
+                 : .playerGesturesSkipFlashBack(LocaleFormat.integer(flash.seconds)))
                 .font(.system(size: 11, weight: .bold))
         }
         .foregroundStyle(.white)
@@ -423,7 +425,7 @@ struct MobilePlayerGestureLayer: View {
 
     private var holdFastForwardChip: some View {
         HStack(spacing: 6) {
-            Text("2×")
+            Text(verbatim: "2×")
                 .font(.system(size: 14, weight: .bold))
             Image(systemName: "forward.fill")
                 .font(.system(size: 12, weight: .semibold))
@@ -442,7 +444,7 @@ struct MobilePlayerGestureLayer: View {
                 // The speaker's waves make it wider than the sun.
                 .frame(width: adjustment == .volume ? 30 : 24, height: 24)
                 .contentTransition(.symbolEffect(.replace))
-            Text("\(Int((fraction * 100).rounded()))%")
+            Text(verbatim: LocaleFormat.percent(Int((fraction * 100).rounded())))
                 .font(.system(size: 17, weight: .medium))
                 .monospacedDigit()
                 .frame(minWidth: 44, alignment: .leading)

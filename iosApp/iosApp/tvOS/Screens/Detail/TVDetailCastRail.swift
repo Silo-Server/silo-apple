@@ -127,7 +127,10 @@ private struct CastCardLabel: View {
         .clipShape(Circle())
         .overlay(
             Circle()
-                .stroke(Color.white.opacity(isFocused ? 0.85 : 0.08), lineWidth: isFocused ? 2 : 1)
+                .stroke(
+                    Color.white.opacity(isFocused ? TVCardOutline.opacity : 0.08),
+                    lineWidth: isFocused ? TVCardOutline.lineWidth : 1
+                )
         )
     }
 }

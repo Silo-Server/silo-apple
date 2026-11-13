@@ -102,6 +102,51 @@ final class TrackPreferencesV2Tests: XCTestCase {
         XCTAssertEqual(Set(signature.keys), ["source", "language", "codec", "label", "forced", "hearing_impaired"])
     }
 
+    func testReadDecodesTheStoredRowAndTheServerClock() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        stub.reply(200, """
+        {"profile_id":"profile-one","series_id":"series-9","audio_track_index":1,"audio_language":"ja",
+         "track_signature":{"language":"ja","title":"Japanese","embedded_title":"JPN 5.1","codec":"eac3",
+         "layout":"5.1","channels":6,"default":true},"updated_at":"2026-10-24T10:00:00.250Z"}
+        """, headers: ["Date": "Sat, 24 Oct 2026 10:05:00 GMT"])
+
+        let read = try await api.readTrackPreference(AudioPrefRequest.self, seriesId: "series-9", auth: auth)
+
+        XCTAssertEqual(stub.requests.last?.method, "GET")
+        XCTAssertEqual(stub.requests.last?.path, "/api/v2/audio-prefs/series-9")
+        let row = try XCTUnwrap(read.row)
+        XCTAssertEqual(row.body.audioTrackIndex, 1)
+        XCTAssertEqual(row.body.trackSignature?.embeddedTitle, "JPN 5.1")
+        XCTAssertEqual(row.body.trackSignature?.isDefault, true)
+        XCTAssertEqual(row.updatedAt, Date(timeIntervalSince1970: 1_792_836_000.25))
+        XCTAssertEqual(read.serverDate, Date(timeIntervalSince1970: 1_792_836_300))
+    }
+
+    func testWriteAnswersTheServerClock() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        stub.reply(204, "", headers: ["Date": "Sat, 24 Oct 2026 10:05:00 GMT"])
+
+        let serverDate = try await api.deleteTrackPreference(kind: .audio, seriesId: "series-9", auth: auth)
+
+        XCTAssertEqual(serverDate, Date(timeIntervalSince1970: 1_792_836_300))
+    }
+
+    func testReadOfASeriesWithNoRowIsNil() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        stub.reply(404, #"{"type":"https://siloserver.org/problems/not_found","title":"Not Found","status":404,"detail":"No preference."}"#)
+
+        let read = try await api.readTrackPreference(SubtitlePrefRequest.self, seriesId: "series-9", auth: auth)
+
+        XCTAssertEqual(stub.requests.last?.path, "/api/v2/subtitle-prefs/series-9")
+        XCTAssertNil(read.row)
+    }
+
     func testClearSendsDeleteWithAnEncodedKey() async throws {
         let (api, tokens) = try await client()
 
@@ -432,6 +477,54 @@ final class TrackPreferencesV2Tests: XCTestCase {
         await TrackSelectionPersistence.clearSubtitle(prefKey: key, client: api, tokenStore: tokens).value
         let cleared = await TrackSelectionPersistence.settlePendingWrites(prefKey: key, owner: owner, since: mark)
         XCTAssertTrue(cleared.unsettled.isEmpty, "the stored Auto replaces the failed pick")
+    }
+
+    /// The downloads flush sends queued offline picks in the same per-key
+    /// order as streaming writes; a streaming read waits for it as for any
+    /// write of its owner, and reads again once it stores.
+    func testReadWaitsForADownloadsFlushAndRereadsOnceItStores() async throws {
+        let (_, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let owner = try XCTUnwrap(captured)
+        let key = "series-barrier-flush"
+        let (started, startedNow) = AsyncStream<Void>.makeStream()
+        let (release, releaseNow) = AsyncStream<Void>.makeStream()
+        let flush = TrackSelectionPersistence.ordered(kind: .audio, prefKey: key, owner: owner) {
+            startedNow.yield()
+            for await _ in release { break }
+            return true
+        }
+        for await _ in started { break }
+        let mark = TrackSelectionPersistence.pendingWriteMark()
+
+        let read = Task {
+            await TrackSelectionPersistence.settlePendingWrites(prefKey: key, owner: owner, since: mark,
+                                                                timeout: .seconds(30))
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        releaseNow.yield()
+        let settlement = await read.value
+        await flush.value
+
+        XCTAssertTrue(settlement.rereads, "the read waited for the flush's write and must see it")
+    }
+
+    func testAStoredFlushWriteEndsAnOlderFailedPick() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let owner = try XCTUnwrap(captured)
+        let key = "series-barrier-flush-failed"
+        stub.sequence([.failure(URLError(.networkConnectionLost))])
+        await TrackSelectionPersistence.saveSubtitle(
+            prefKey: key, request: TrackSelectionPersistence.subtitleOffRequest(), client: api, tokenStore: tokens
+        ).value
+
+        await TrackSelectionPersistence.ordered(kind: .subtitle, prefKey: key, owner: owner) { true }.value
+        let settled = await TrackSelectionPersistence.settlePendingWrites(
+            prefKey: key, owner: owner, since: TrackSelectionPersistence.pendingWriteMark()
+        )
+
+        XCTAssertTrue(settled.unsettled.isEmpty, "the flushed pick is newer than the failed Off; reads must not fold it back")
     }
 
     func testNewerWriteSupersedesOneStillQueued() async throws {

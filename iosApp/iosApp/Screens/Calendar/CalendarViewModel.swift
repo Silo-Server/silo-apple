@@ -20,7 +20,7 @@ final class CalendarViewModel {
 
     var week: CalendarWeek
     /// Day highlighted in the week strip; drives scroll-to-day.
-    var selectedDay: Date = Date()
+    var selectedDay: Date
 
     var filter: CalendarFilter
 
@@ -31,8 +31,11 @@ final class CalendarViewModel {
     @ObservationIgnored private let fetchWeek: FetchCalendarWeek
     /// The device timezone, read on every load so a change is picked up.
     @ObservationIgnored private let deviceTimeZone: () -> TimeZone
+    /// The current time; injectable so tests do not depend on the real date.
+    @ObservationIgnored private let now: () -> Date
 
     init(
+        now: @escaping () -> Date = Date.init,
         deviceTimeZone: @escaping () -> TimeZone = { .current },
         fetchWeek: @escaping FetchCalendarWeek = { start, end, filter, timezone in
             try await SiloAPI.shared.calendarEvents(
@@ -40,16 +43,19 @@ final class CalendarViewModel {
             )
         }
     ) {
+        self.now = now
         self.deviceTimeZone = deviceTimeZone
         self.fetchWeek = fetchWeek
-        week = CalendarWeek(containing: Date(), timeZone: deviceTimeZone())
+        let today = now()
+        selectedDay = today
+        week = CalendarWeek(containing: today, timeZone: deviceTimeZone())
         let stored = UserDefaults.standard.string(forKey: Self.filterDefaultsKey) ?? ""
         filter = CalendarFilter(rawValue: stored) ?? .following
     }
 
     // MARK: - Derived
 
-    var isCurrentWeek: Bool { week.containsToday() }
+    var isCurrentWeek: Bool { week.containsToday(now()) }
 
     var isEmpty: Bool {
         days.allSatisfy { $0.items.isEmpty }
@@ -64,11 +70,11 @@ final class CalendarViewModel {
     }
 
     /// Day-shelf heading: "Today" / "Tomorrow" / "Monday, June 9".
-    func sectionHeading(for date: Date) -> String {
+    func sectionHeading(for date: Date, locale: Locale) -> String {
         let calendar = Calendar.current
-        if calendar.isDateInToday(date) { return "Today" }
-        if calendar.isDateInTomorrow(date) { return "Tomorrow" }
-        return date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        if calendar.isDateInToday(date) { return AppLanguage.string(.calendarToday, locale: locale) }
+        if calendar.isDateInTomorrow(date) { return AppLanguage.string(.calendarTomorrow, locale: locale) }
+        return date.formatted(.dateTime.weekday(.wide).month(.wide).day().locale(locale))
     }
 
     // MARK: - Actions
@@ -99,8 +105,9 @@ final class CalendarViewModel {
     /// Returns to the current week and awaits its load so callers can scroll
     /// to today's shelf once the data is in place.
     func goToToday() async {
-        week = CalendarWeek(containing: Date(), timeZone: deviceTimeZone())
-        selectedDay = Date()
+        let today = now()
+        week = CalendarWeek(containing: today, timeZone: deviceTimeZone())
+        selectedDay = today
         await load()
     }
 
@@ -112,7 +119,8 @@ final class CalendarViewModel {
         let timeZone = deviceTimeZone()
         guard timeZone.identifier != week.timeZone.identifier else { return }
         week = week.rebuilt(in: timeZone)
-        selectedDay = week.containsToday() ? Date() : week.startDate
+        let today = now()
+        selectedDay = week.containsToday(today) ? today : week.startDate
     }
 
     func load() async {

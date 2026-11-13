@@ -31,13 +31,13 @@ enum SeekIntervalSyncState: Equatable, Sendable {
     var userMessage: String? {
         switch self {
         case .checking:
-            return "Checking whether this server supports skip interval settings…"
+            return AppLanguage.string(.playerSeekIntervalChecking)
         case .supported:
             return nil
         case .serverUpgradeRequired:
-            return "Update this Silo server to choose skip intervals. Playback uses the built-in intervals."
+            return AppLanguage.string(.playerSeekIntervalServerUpgrade)
         case .unavailable:
-            return "Skip intervals can be changed once this server is reachable."
+            return AppLanguage.string(.playerSeekIntervalUnreachable)
         }
     }
 }
@@ -107,7 +107,7 @@ final class SeekIntervalPreferences {
         self.defaults = defaults
         self.transport = transport
         self.requestIdentity = requestIdentity
-        loadCache(for: requestIdentity().map(Self.cacheKey(for:)))
+        loadCache(for: requestIdentity().map(adoptedCacheKey(for:)))
     }
 
     // MARK: Reading
@@ -122,7 +122,7 @@ final class SeekIntervalPreferences {
     /// identity's cached answer (or the legacy intervals), never the previous
     /// profile's. Reads only; `refresh()` owns the switch itself.
     private func currentValues() -> SeekIntervalValues? {
-        let key = requestIdentity().map(Self.cacheKey(for:))
+        let key = requestIdentity().map(adoptedCacheKey(for:))
         guard key != loadedCacheKey else { return values }
         return key.flatMap(cachedValues(for:))
     }
@@ -160,7 +160,7 @@ final class SeekIntervalPreferences {
             return
         }
         let context = OperationContext(
-            cacheKey: Self.cacheKey(for: identity),
+            cacheKey: adoptedCacheKey(for: identity),
             requestIdentity: identity
         )
         loadCache(for: context.cacheKey)
@@ -216,8 +216,8 @@ final class SeekIntervalPreferences {
                 clearServerValues(cacheKey: context.cacheKey)
             } else {
                 readErrorMessage = values == nil
-                    ? "Couldn't load skip intervals from the server."
-                    : "Couldn't refresh skip intervals. Showing the last saved values."
+                    ? AppLanguage.string(.playerSeekIntervalLoadFailed)
+                    : AppLanguage.string(.playerSeekIntervalRefreshFailed)
             }
         }
     }
@@ -233,7 +233,7 @@ final class SeekIntervalPreferences {
               var next = values,
               let identity = requestIdentity() else { return }
         let context = OperationContext(
-            cacheKey: Self.cacheKey(for: identity),
+            cacheKey: adoptedCacheKey(for: identity),
             requestIdentity: identity
         )
         guard context.cacheKey == loadedCacheKey, next[media][direction] != seconds else { return }
@@ -404,31 +404,43 @@ final class SeekIntervalPreferences {
         direction: SeekDirection,
         error: Error
     ) -> String {
-        let setting = "\(media == .video ? "video" : "audiobook") \(direction == .backward ? "rewind" : "fast-forward") interval"
-        switch SettingsAPIError.from(error) {
-        case .transport:
-            return "Couldn't save the \(setting). Check the connection and try again."
-        case .serverUpgradeRequired, .unknownSetting:
-            return "This server can't save the \(setting)."
-        default:
-            return "The server didn't save the \(setting). Try again."
+        let failure = SettingsAPIError.from(error)
+        let message: LocalizedStringResource
+        switch (media, direction, failure) {
+        case (.video, .backward, .transport): message = .playerSeekIntervalSaveConnectionVideoRewind
+        case (.video, .forward, .transport): message = .playerSeekIntervalSaveConnectionVideoFastForward
+        case (_, .backward, .transport): message = .playerSeekIntervalSaveConnectionAudiobookRewind
+        case (_, .forward, .transport): message = .playerSeekIntervalSaveConnectionAudiobookFastForward
+        case (.video, .backward, .serverUpgradeRequired), (.video, .backward, .unknownSetting):
+            message = .playerSeekIntervalSaveUnsupportedVideoRewind
+        case (.video, .forward, .serverUpgradeRequired), (.video, .forward, .unknownSetting):
+            message = .playerSeekIntervalSaveUnsupportedVideoFastForward
+        case (_, .backward, .serverUpgradeRequired), (_, .backward, .unknownSetting):
+            message = .playerSeekIntervalSaveUnsupportedAudiobookRewind
+        case (_, .forward, .serverUpgradeRequired), (_, .forward, .unknownSetting):
+            message = .playerSeekIntervalSaveUnsupportedAudiobookFastForward
+        case (.video, .backward, _): message = .playerSeekIntervalSaveRejectedVideoRewind
+        case (.video, .forward, _): message = .playerSeekIntervalSaveRejectedVideoFastForward
+        case (_, .backward, _): message = .playerSeekIntervalSaveRejectedAudiobookRewind
+        case (_, .forward, _): message = .playerSeekIntervalSaveRejectedAudiobookFastForward
         }
+        return AppLanguage.string(message)
     }
 
+    nonisolated static let cachePrefix = "silo.seekIntervals"
+
+    /// `silo.seekIntervals.v2.<server>.<account>.<profile>`.
     static func cacheKey(for identity: HTTPRequestIdentity) -> String {
-        "silo.seekIntervals.\(identity.serverId).\(identity.profileId)"
+        identity.accountScopedKey(cachePrefix)
+    }
+
+    /// `cacheKey(for:)`, after the legacy owner takes over the cache saved
+    /// before accounts.
+    private func adoptedCacheKey(for identity: HTTPRequestIdentity) -> String {
+        identity.adoptedAccountScopedKey(Self.cachePrefix, defaults: defaults)
     }
 
     static func activeRequestIdentity() -> HTTPRequestIdentity? {
-        guard let server = ServerRegistry.shared.activeServer,
-              ServerRegistry.shared.activeServerId == server.id,
-              let profileId = AuthService.shared.profileId,
-              !profileId.isEmpty else { return nil }
-        return HTTPRequestIdentity(
-            serverId: server.id,
-            serverURL: server.url,
-            profileId: profileId,
-            clientFamily: AppleDeviceIdentity.current.clientFamily
-        )
+        HTTPRequestIdentity.activeProfile()
     }
 }

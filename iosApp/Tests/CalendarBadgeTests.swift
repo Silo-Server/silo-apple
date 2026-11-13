@@ -18,7 +18,10 @@ final class CalendarBadgeTests: XCTestCase {
         ]}
         """
         let response = try HTTPClient.makeJSONDecoder().decode(CalendarResponse.self, from: Data(json.utf8))
-        let labels = response.events.flatMap(\.items).map { $0.displayBadges.map(\.label) }
+        let english = Locale(identifier: "en_US")
+        let labels = response.events.flatMap(\.items).map { item in
+            item.displayBadges.map { AppLanguage.string($0.label, locale: english) }
+        }
         XCTAssertEqual(labels, [["DIGITAL"], ["PHYSICAL"]])
     }
 }

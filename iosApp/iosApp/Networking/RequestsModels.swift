@@ -108,6 +108,10 @@ struct RequestsFeatureStatus: Decodable {
     /// viewer can ask to hear when someone else's request lands. Absent on
     /// older servers, which reads as unsupported.
     var followSupported: Bool? = nil
+    /// The server offers `DELETE /api/v2/requests/{id}`, so a viewer can
+    /// remove their own failed request. Absent on older servers, which
+    /// reads as unsupported.
+    var removeFailedSupported: Bool? = nil
 
     /// The feature is on and this profile may use it. A blocked account sees
     /// `requests_enabled: true` with `allowed: false`.
@@ -275,6 +279,13 @@ struct MediaRequest: Codable, Identifiable, Hashable {
     /// always names the signed-in user.
     var requestedByUserId: String? = nil
     var requestedByProfileId: String? = nil
+
+    /// Mirrors the server's rule for removing a failed request: it failed
+    /// and delivered nothing. One that delivered a quality before failing
+    /// stays as the record of that copy.
+    var isRemovable: Bool {
+        outcome == .failed && !(targets ?? []).contains { $0.status == .completed }
+    }
 }
 
 // MARK: - Mutations

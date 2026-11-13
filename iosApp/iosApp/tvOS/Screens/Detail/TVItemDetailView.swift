@@ -27,6 +27,11 @@ struct TVItemDetailView: View {
     /// the selector must stop feeding it to the "Auto: …" preview.
     @State private var didClearSubtitleOverride = false
     @State private var didClearNextUpSubtitleOverride = false
+    /// Counts Subtitles picks on the next-up episode, so a refresh that
+    /// lands after one keeps it.
+    @State private var nextUpSubtitlePickCount = 0
+    /// The file the next-up episode's subtitle index was picked on.
+    @State private var nextUpSubtitlePickFileId: Int?
     @State private var nextUpPlaybackDetail: ItemDetail?
     /// The next-up episode's catalog item. The hero reads its ratings when
     /// the playback details for that episode could not be loaded.
@@ -53,6 +58,9 @@ struct TVItemDetailView: View {
     @State private var allowRemoteTrailers = false
     @Environment(AppRouter.self) private var router
     @Environment(\.scenePhase) private var scenePhase
+    /// The trailer status and series errors are resolved from the models when
+    /// read; reading the locale re-renders them after a language change.
+    @Environment(\.locale) private var locale
     private static let focusLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVFocus"
@@ -70,6 +78,7 @@ struct TVItemDetailView: View {
     }
 
     var body: some View {
+        let _ = locale
         Group {
             // A resolved series entry shows the loading view until its task
             // seeds the season. Otherwise cached detail paints at once while
@@ -153,6 +162,11 @@ struct TVItemDetailView: View {
             nextUpCatalogDetail = nil
             if !isReturning {
                 activeSeriesEpisodeContentId = entryContext?.episodeContentId
+                // An edition is picked per visit. The cached model keeps it
+                // across a trip to the player, but a new visit opens on the
+                // last-played cut again.
+                preferredEditionId = nil
+                preferredNextUpEditionId = nil
             }
             if let seasonNumber = entryContext?.seasonNumber {
                 viewModel.prepareInitialSeriesSeason(
@@ -183,6 +197,16 @@ struct TVItemDetailView: View {
     private var preferredVersionFileId: Int? {
         get { viewModel.preferredVersionFileId }
         nonmutating set { viewModel.preferredVersionFileId = newValue }
+    }
+
+    private var preferredEditionId: String? {
+        get { viewModel.preferredEditionId }
+        nonmutating set { viewModel.preferredEditionId = newValue }
+    }
+
+    private var preferredNextUpEditionId: String? {
+        get { viewModel.preferredNextUpEditionId }
+        nonmutating set { viewModel.preferredNextUpEditionId = newValue }
     }
 
     private func takePlaybackReturn() -> SeriesPlaybackReturn? {
@@ -274,6 +298,10 @@ struct TVItemDetailView: View {
             TVAudiobookDetailView(
                 detail: detail,
                 libraryId: libraryId,
+                isFavorite: viewModel.isFavorite,
+                isFinished: viewModel.isWatched,
+                onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
+                onToggleFinished: { Task { await viewModel.toggleWatched() } },
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 }
@@ -307,6 +335,7 @@ struct TVItemDetailView: View {
                 hierarchyError: viewModel.seriesLoadErrorMessage,
                 onRetryHierarchy: { await viewModel.retrySeriesHierarchy() },
                 selectedNextUpFileId: preferredNextUpFileId,
+                selectedNextUpEditionId: preferredNextUpEditionId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                 nextUpPlaybackDetail: nextUpPlaybackDetail,
@@ -347,30 +376,30 @@ struct TVItemDetailView: View {
                     let episode = viewModel.seriesEpisodeWindow.episodes.first(where: { $0.contentId == id })
                     // Version and track picks are read at the press, not
                     // after the watch-state read.
-                    let playbackFileId = nextUpPlaybackFileId(
-                        resolvedFileId: fileId,
-                        contentId: id
+                    let resolveStart = nextUpPlaybackStart(
+                        pinnedFileId: fileId,
+                        contentId: id,
+                        startFromBeginning: startFromBeginning
                     )
-                    let audioTrackIndex = preferredNextUpAudioTrackIndex
-                    let subtitleTrackIndex = preferredNextUpSubtitleTrackIndex
                     playWithFreshResumePosition(
                         contentId: id,
                         startFromBeginning: startFromBeginning,
                         cached: episode?.userData
-                    ) { resumePosition in
+                    ) { resumePosition, watchState in
                         awaitsPlaybackReturn = true
                         SeriesPlaybackReturnInbox.discardPending()
-                        if let playbackFileId {
+                        let start = resolveStart(resumePosition, watchState)
+                        if let playbackFileId = start.fileId {
                             router.navigate(
                                 to: .playerWithFile(
                                     contentId: id,
                                     fileId: playbackFileId,
                                     // `fileId` is set only by a version picked for this episode.
                                     pinsVersion: fileId != nil,
-                                    audioTrackIndex: audioTrackIndex,
-                                    subtitleTrackIndex: subtitleTrackIndex,
+                                    audioTrackIndex: start.audioTrackIndex,
+                                    subtitleTrackIndex: start.subtitleTrackIndex,
                                     startFromBeginning: startFromBeginning,
-                                    resumePosition: resumePosition,
+                                    resumePosition: start.resumePosition,
                                     libraryId: libraryId
                                 )
                             )
@@ -379,7 +408,7 @@ struct TVItemDetailView: View {
                                 to: .player(
                                     contentId: id,
                                     startFromBeginning: startFromBeginning,
-                                    resumePosition: resumePosition,
+                                    resumePosition: start.resumePosition,
                                     libraryId: libraryId
                                 )
                             )
@@ -395,19 +424,8 @@ struct TVItemDetailView: View {
                 onSetEpisodeWatchlist: { id, inWatchlist in
                     await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
                 },
-                onSelectNextUpVersion: { fileId in
-                    preferredNextUpFileId = fileId
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpAudioTrackIndex
-                    )
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpPlaybackDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpSubtitleTrackIndex
-                    )
-                },
+                onSelectNextUpVersion: { selectNextUpVersion($0) },
+                onSelectNextUpEdition: { selectNextUpEdition($0) },
                 onSelectNextUpAudioTrack: { index in
                     preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: nextUpPlaybackDetail,
@@ -422,6 +440,8 @@ struct TVItemDetailView: View {
                     )
                 },
                 onSelectNextUpSubtitleTrack: { index in
+                    nextUpSubtitlePickCount &+= 1
+                    nextUpSubtitlePickFileId = effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId)?.fileId
                     didClearNextUpSubtitleOverride = (index == nil)
                     preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: nextUpPlaybackDetail,
@@ -445,7 +465,7 @@ struct TVItemDetailView: View {
                     }
                 },
                 onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    router.openRelatedTitle(contentId: id)
                 },
                 synopsisStatus: viewModel.descriptionTranslationStatus,
                 isTranslatingEpisodes: viewModel.isTranslatingSeasonEpisodes,
@@ -471,7 +491,9 @@ struct TVItemDetailView: View {
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
+                boxSet: viewModel.boxSet,
                 selectedVersionFileId: preferredVersionFileId,
+                selectedEditionId: preferredEditionId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
                 subtitleOverrideCleared: didClearSubtitleOverride,
@@ -491,25 +513,24 @@ struct TVItemDetailView: View {
                 onPlay: { startFromBeginning in
                     // Version and track picks are read at the press, not
                     // after the watch-state read.
-                    let fileId = playbackFileId(for: detail)
+                    let resolveStart = playbackStart(for: detail, startFromBeginning: startFromBeginning)
                     let pinsVersion = preferredVersionFileId != nil
-                    let audioTrackIndex = preferredAudioTrackIndex
-                    let subtitleTrackIndex = preferredSubtitleTrackIndex
                     playWithFreshResumePosition(
                         contentId: contentId,
                         startFromBeginning: startFromBeginning,
                         cached: detail.userData
-                    ) { resumePosition in
-                        if let fileId {
+                    ) { resumePosition, watchState in
+                        let start = resolveStart(resumePosition, watchState)
+                        if let fileId = start.fileId {
                             router.navigate(
                                 to: .playerWithFile(
                                     contentId: contentId,
                                     fileId: fileId,
                                     pinsVersion: pinsVersion,
-                                    audioTrackIndex: audioTrackIndex,
-                                    subtitleTrackIndex: subtitleTrackIndex,
+                                    audioTrackIndex: start.audioTrackIndex,
+                                    subtitleTrackIndex: start.subtitleTrackIndex,
                                     startFromBeginning: startFromBeginning,
-                                    resumePosition: resumePosition,
+                                    resumePosition: start.resumePosition,
                                     libraryId: libraryId
                                 )
                             )
@@ -518,26 +539,15 @@ struct TVItemDetailView: View {
                                 to: .player(
                                     contentId: contentId,
                                     startFromBeginning: startFromBeginning,
-                                    resumePosition: resumePosition,
+                                    resumePosition: start.resumePosition,
                                     libraryId: libraryId
                                 )
                             )
                         }
                     }
                 },
-                onSelectVersion: { fileId in
-                    preferredVersionFileId = fileId
-                    preferredAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: detail,
-                        versionFileId: fileId,
-                        candidate: preferredAudioTrackIndex
-                    )
-                    preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: detail,
-                        versionFileId: fileId,
-                        candidate: preferredSubtitleTrackIndex
-                    )
-                },
+                onSelectVersion: { selectVersion($0, in: detail) },
+                onSelectEdition: { selectEdition($0, in: detail) },
                 onSelectAudioTrack: { index in
                     preferredAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: detail,
@@ -575,7 +585,7 @@ struct TVItemDetailView: View {
                     }
                 },
                 onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    router.openRelatedTitle(contentId: id)
                 },
                 synopsisStatus: viewModel.descriptionTranslationStatus,
                 onTranslateDescription: translateDescriptionAction
@@ -589,33 +599,149 @@ struct TVItemDetailView: View {
         return { viewModel.translateDescriptions() }
     }
 
-    private func playbackFileId(for detail: ItemDetail) -> Int? {
-        if let preferredVersionFileId {
-            return preferredVersionFileId
-        }
-        if preferredAudioTrackIndex != nil || preferredSubtitleTrackIndex != nil {
-            return effectiveVersion(for: detail, versionFileId: preferredVersionFileId)?.fileId
-        }
-        return nil
+    /// The file and track picks Play sends: the file the page shows, for
+    /// the watch state the resume position comes from. The page's picks
+    /// are read now, at the press; the start resolves once that watch state
+    /// is known. Only a Version pick pins the file (`pinsVersion`);
+    /// otherwise the server may fall back to another file of the edition.
+    private func playbackStart(
+        for detail: ItemDetail,
+        startFromBeginning: Bool
+    ) -> (_ resumePosition: Double?, _ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
+        pressStart(
+            versions: detail.versions ?? [],
+            variants: detail.playbackVariants,
+            pinnedFileId: preferredVersionFileId,
+            editionId: preferredEditionId,
+            snapshot: detail.userData,
+            startFromBeginning: startFromBeginning,
+            audioTrackIndex: preferredAudioTrackIndex,
+            subtitleTrackIndex: preferredSubtitleTrackIndex
+        )
     }
 
-    /// Next-up analogue of `playbackFileId(for:)`. When Series focus changes,
+    private func pressStart(
+        versions: [FileVersion],
+        variants: [PlaybackVariant]?,
+        pinnedFileId: Int?,
+        editionId: String?,
+        snapshot: LeafItemUserData?,
+        startFromBeginning: Bool,
+        audioTrackIndex: Int?,
+        subtitleTrackIndex: Int?
+    ) -> (_ resumePosition: Double?, _ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
+        let quality = PlayerSettings.shared.connectionPreferredQuality
+        return { resumePosition, watchState in
+            DetailVersionSelection.pageStart(
+                versions: versions,
+                pinnedFileId: pinnedFileId,
+                editionId: editionId,
+                shownWith: snapshot,
+                startsWith: watchState,
+                resumePosition: resumePosition,
+                preferredQualityId: quality,
+                startFromBeginning: startFromBeginning,
+                audioTrackIndex: audioTrackIndex,
+                subtitleTrackIndex: subtitleTrackIndex,
+                variants: variants
+            )
+        }
+    }
+
+    private func selectVersion(_ fileId: Int?, in detail: ItemDetail) {
+        // A pin records its cut, so Auto stays there once the pin is cleared.
+        if let fileId {
+            preferredEditionId = PlaybackEditions.edition(forFileId: fileId, in: detail.versions ?? [])?.id
+        }
+        preferredVersionFileId = fileId
+        preferredAudioTrackIndex = sanitizedAudioTrackIndex(
+            for: detail,
+            versionFileId: fileId,
+            candidate: preferredAudioTrackIndex
+        )
+        preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+            for: detail,
+            versionFileId: fileId,
+            candidate: preferredSubtitleTrackIndex
+        )
+    }
+
+    /// An Edition pick: Version returns to Auto in that edition. When that
+    /// changes the file, the audio pick and a subtitle track pick named
+    /// streams of the old file, so they go: subtitle Auto and Off stay, and
+    /// the subtitle reseeds for the new file as on entry.
+    private func selectEdition(_ id: String, in detail: ItemDetail) {
+        let before = effectiveVersion(for: detail, versionFileId: preferredVersionFileId)?.fileId
+        preferredEditionId = id
+        preferredVersionFileId = nil
+        guard effectiveVersion(for: detail, versionFileId: nil)?.fileId != before else { return }
+        preferredAudioTrackIndex = nil
+        guard let subtitle = preferredSubtitleTrackIndex, subtitle >= 0 else { return }
+        viewModel.preferredSubtitleTrackWasManuallySelected = false
+        preferredSubtitleTrackIndex = nil
+        seedSubtitleOverrideIfNeeded()
+    }
+
+    /// `selectEdition` for the selected episode.
+    private func selectNextUpEdition(_ id: String) {
+        let before = effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId)?.fileId
+        preferredNextUpEditionId = id
+        preferredNextUpFileId = nil
+        guard let nextUpPlaybackDetail,
+              effectiveVersion(for: nextUpPlaybackDetail, versionFileId: nil)?.fileId != before else { return }
+        preferredNextUpAudioTrackIndex = nil
+        preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.subtitleIndexAfterFileChange(
+            preferredNextUpSubtitleTrackIndex
+        ) {
+            DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: nil),
+                signature: nextUpPlaybackDetail.effectiveSubtitleTrackSignature,
+                mode: nextUpPlaybackDetail.effectiveSubtitleMode,
+                showForced: nextUpPlaybackDetail.showsForcedSubtitles,
+                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+            )
+        }
+    }
+
+    private func selectNextUpVersion(_ fileId: Int?) {
+        if let fileId {
+            preferredNextUpEditionId = PlaybackEditions.edition(forFileId: fileId, in: nextUpPlaybackDetail?.versions ?? [])?.id
+        }
+        preferredNextUpFileId = fileId
+        preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
+            for: nextUpPlaybackDetail,
+            versionFileId: fileId,
+            candidate: preferredNextUpAudioTrackIndex
+        )
+        preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+            for: nextUpPlaybackDetail,
+            versionFileId: fileId,
+            candidate: preferredNextUpSubtitleTrackIndex
+        )
+    }
+
+    /// Next-up analogue of `playbackStart(for:)`. When Series focus changes,
     /// reject any file choice still belonging to the previous episode so an
     /// immediate quick Play safely falls back to server/device defaults.
-    private func nextUpPlaybackFileId(
-        resolvedFileId: Int?,
-        contentId: String
-    ) -> Int? {
-        if nextUpPlaybackDetail?.contentId != contentId {
-            return nil
+    /// `pinnedFileId` is a version picked for this episode.
+    private func nextUpPlaybackStart(
+        pinnedFileId: Int?,
+        contentId: String,
+        startFromBeginning: Bool
+    ) -> (_ resumePosition: Double?, _ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
+        guard let nextUpPlaybackDetail, nextUpPlaybackDetail.contentId == contentId else {
+            return { resumePosition, _ in .unresolved(resumePosition: resumePosition) }
         }
-        if let resolvedFileId {
-            return resolvedFileId
-        }
-        return effectiveVersion(
-            for: nextUpPlaybackDetail,
-            versionFileId: preferredNextUpFileId
-        )?.fileId
+        return pressStart(
+            versions: nextUpPlaybackDetail.versions ?? [],
+            variants: nextUpPlaybackDetail.playbackVariants,
+            pinnedFileId: pinnedFileId ?? preferredNextUpFileId,
+            editionId: preferredNextUpEditionId,
+            snapshot: nextUpPlaybackDetail.userData,
+            startFromBeginning: startFromBeginning,
+            audioTrackIndex: preferredNextUpAudioTrackIndex,
+            subtitleTrackIndex: preferredNextUpSubtitleTrackIndex
+        )
     }
 
     /// Starts playback from the server's current position. The page's
@@ -624,24 +750,25 @@ struct TVItemDetailView: View {
     /// a Resume/Play press re-reads the item's watch state first. The
     /// snapshot (`cached`) is used only when the server is known unreachable,
     /// errors, or takes longer than `DetailResumeState.defaultTimeout`.
-    /// Start Over skips the read.
+    /// Start Over skips the read. `play` also gets the watch state the
+    /// position came from, so the start file is resolved from it.
     private func playWithFreshResumePosition(
         contentId id: String,
         startFromBeginning: Bool,
         cached: LeafItemUserData?,
-        play: @escaping (_ resumePosition: Double?) -> Void
+        play: @escaping (_ resumePosition: Double?, _ watchState: LeafItemUserData?) -> Void
     ) {
         resumeLookupTask?.cancel()
         resumeLookupTask = nil
         guard !startFromBeginning else {
-            play(nil)
+            play(nil, cached)
             return
         }
         resumeLookupTask = Task {
             let state = await refreshedResumeState(contentId: id)
             guard !Task.isCancelled, isPageVisible else { return }
             resumeLookupTask = nil
-            play(state.resumePosition(cached: cached))
+            play(state.resumePosition(cached: cached), state.userData(cached: cached))
         }
     }
 
@@ -653,12 +780,20 @@ struct TVItemDetailView: View {
         }
     }
 
+    /// `detail`'s file in the edition picked for it: the selected episode's
+    /// on a series page, else the movie's.
     private func effectiveVersion(for detail: ItemDetail, versionFileId: Int?) -> FileVersion? {
         DetailVersionSelection.displayVersion(
             versions: detail.versions ?? [],
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            lastFileInProgress: detail.userData?.hasResumePoint ?? false,
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: detail.contentId == nextUpPlaybackDetail?.contentId
+                ? preferredNextUpEditionId
+                : preferredEditionId,
+            lastEditionKey: detail.userData?.lastEditionKey,
+            variants: detail.playbackVariants
         )
     }
 
@@ -802,6 +937,7 @@ struct TVItemDetailView: View {
             nextUpPlaybackDetail = nil
             nextUpCatalogDetail = nil
             preferredNextUpFileId = nil
+            preferredNextUpEditionId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
             didClearNextUpSubtitleOverride = false
@@ -815,6 +951,7 @@ struct TVItemDetailView: View {
         nextUpPlaybackDetail = usableCached
         nextUpCatalogDetail = nil
         preferredNextUpFileId = nil
+        preferredNextUpEditionId = nil
         preferredNextUpAudioTrackIndex = nil
         preferredNextUpSubtitleTrackIndex = nil
         didClearNextUpSubtitleOverride = false
@@ -827,6 +964,7 @@ struct TVItemDetailView: View {
                 usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
             )
         }
+        let subtitlePickCountAtLoad = nextUpSubtitlePickCount
 
         do {
             // Paint the episode and any cached selectors immediately. Wait
@@ -856,13 +994,31 @@ struct TVItemDetailView: View {
             }
             nextUpPlaybackDetail = resolved
             if let resolved {
-                preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
-                    version: effectiveVersion(for: resolved, versionFileId: nil),
-                    signature: resolved.effectiveSubtitleTrackSignature,
-                    mode: resolved.effectiveSubtitleMode,
-                    showForced: resolved.showsForcedSubtitles,
-                    usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
-                )
+                // Keep a Subtitles pick made while this ran when the page
+                // still shows the file it was picked on and that file still
+                // offers it. Otherwise re-derive the preference on the file
+                // the page shows.
+                let keepsPick = nextUpSubtitlePickCount != subtitlePickCountAtLoad
+                    && DetailPlaybackFormatting.keepsManualSubtitlePick(
+                        preferredNextUpSubtitleTrackIndex,
+                        pickedFileId: nextUpSubtitlePickFileId,
+                        reloadedFileId: effectiveVersion(for: resolved, versionFileId: preferredNextUpFileId)?.fileId
+                    ) { index in
+                        sanitizedSubtitleTrackIndex(
+                            for: resolved,
+                            versionFileId: preferredNextUpFileId,
+                            candidate: index
+                        ) != nil
+                    }
+                if !keepsPick {
+                    preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                        version: effectiveVersion(for: resolved, versionFileId: preferredNextUpFileId),
+                        signature: resolved.effectiveSubtitleTrackSignature,
+                        mode: resolved.effectiveSubtitleMode,
+                        showForced: resolved.showsForcedSubtitles,
+                        usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+                    )
+                }
             }
         } catch {
             guard !Task.isCancelled else { return }

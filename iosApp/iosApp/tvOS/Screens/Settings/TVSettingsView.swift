@@ -19,14 +19,12 @@ struct TVSettingsView: View {
     @State private var viewModel = SettingsViewModel()
     @State private var diagnosticsModel = DiagnosticsViewModel()
     @State private var experimental = ExperimentalFeatures.shared
-    @State private var showSignOutConfirm = false
     @State private var showPrivacyPolicy = false
     @State private var showOpenSourceAcknowledgements = false
     @State private var selectedCategory: TVSettingsCategory = .general
     @State private var activePicker: TVSettingsPickerRequest?
     @State private var pendingPickerFocus: TVSettingsDetailFocus?
     @State private var isRestoringDetailFocus = false
-    @State private var isRestoringRailFocus = false
     @State private var preferredFocusOwner: FocusOwner = .rail
     @State private var preferredRailFocus: RailItem = .category(.general)
     @State private var preferredDetailFocus: TVSettingsDetailFocus = .top
@@ -37,27 +35,16 @@ struct TVSettingsView: View {
     @Namespace private var railFocusScope
     @Namespace private var detailFocusScope
     @Environment(AppRouter.self) private var router
+    /// The rail shows view-model text resolved in the app language; reading
+    /// the locale re-renders it when it changes.
+    @Environment(\.locale) private var locale
 
     var body: some View {
+        let _ = locale
         ZStack {
             SettingsBackdrop()
 
             settingsContent
-
-            if showSignOutConfirm {
-                TVSettingsConfirmationOverlay(
-                    title: "Sign Out",
-                    message: "Choose whether to keep or remove this server from this Apple TV.",
-                    confirmTitle: "Sign Out",
-                    additionalDestructiveTitle: "Sign Out & Remove Server",
-                    cancel: dismissSignOutConfirmation,
-                    confirm: router.signOutAndReset,
-                    additionalDestructiveAction: router.signOutRemoveServerAndReset
-                )
-                .onDisappear(perform: restoreSignOutFocus)
-                .transition(.opacity)
-                .zIndex(1)
-            }
 
             if let activePicker {
                 TVSettingsPickerSheet(
@@ -86,7 +73,6 @@ struct TVSettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSignOutConfirm)
         .onAppear(perform: focusGeneralOnEntry)
         .task {
             await viewModel.loadSettings()
@@ -95,8 +81,7 @@ struct TVSettingsView: View {
         .onChange(of: railFocus) { _, focus in
             if let focus,
                !isModalPresented,
-               !isRestoringDetailFocus,
-               !isRestoringRailFocus {
+               !isRestoringDetailFocus {
                 preferredFocusOwner = .rail
                 preferredRailFocus = focus
             }
@@ -115,8 +100,7 @@ struct TVSettingsView: View {
         .onChange(of: detailFocus) { _, focus in
             if let focus,
                !isModalPresented,
-               !isRestoringDetailFocus,
-               !isRestoringRailFocus {
+               !isRestoringDetailFocus {
                 preferredDetailFocus = focus
                 preferredFocusOwner = .detail
             }
@@ -128,9 +112,12 @@ struct TVSettingsView: View {
         }
     }
 
-    /// A picker, confirmation, or full-screen overlay owns focus.
+    /// A picker or full-screen overlay owns focus. The sign-out
+    /// confirmation (`AccountRemovalConfirmationModifier`) disables the
+    /// screen from the app's root instead; once it closes, focus returns to
+    /// Sign Out (the rail's remembered control).
     private var isModalPresented: Bool {
-        activePicker != nil || showSignOutConfirm || showPrivacyPolicy || showOpenSourceAcknowledgements
+        activePicker != nil || showPrivacyPolicy || showOpenSourceAcknowledgements
     }
 
     /// Settings always enters through General. Assign the concrete rail focus
@@ -172,7 +159,7 @@ struct TVSettingsView: View {
 
             detailPane
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .disabled(isModalPresented || isRestoringRailFocus)
+                .disabled(isModalPresented)
                 .defaultFocus(
                     $detailFocus,
                     preferredDetailFocus,
@@ -194,7 +181,7 @@ struct TVSettingsView: View {
 
     private var rail: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Settings")
+            Text(.settingsTitle)
                 .font(.system(size: 48, weight: .bold))
                 .foregroundStyle(Color.siloOnSurface)
                 .padding(.horizontal, 20)
@@ -211,7 +198,7 @@ struct TVSettingsView: View {
 
             signOutRow
 
-            Text("Silo \(Self.versionString)")
+            Text(verbatim: "Silo \(Self.versionString)")
                 .font(.system(size: 18))
                 .foregroundColor(.siloSecondaryText.opacity(0.7))
                 .padding(.leading, 20)
@@ -243,7 +230,7 @@ struct TVSettingsView: View {
 
                 Spacer(minLength: 0)
 
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.forward")
                     .font(.system(size: 17, weight: .semibold))
                     .opacity(0.5)
             }
@@ -280,15 +267,16 @@ struct TVSettingsView: View {
         .focused($railFocus, equals: .category(category))
     }
 
+    /// Signs out of the current account after the shared confirmation.
     private var signOutRow: some View {
         Button {
-            showSignOutConfirm = true
+            router.signOutAndReset()
         } label: {
             HStack(spacing: 16) {
-                Image(systemName: "rectangle.portrait.and.arrow.right")
+                Image(systemName: "rectangle.portrait.and.arrow.forward")
                     .font(.system(size: 22, weight: .medium))
                     .frame(width: 34)
-                Text("Sign Out")
+                Text(.settingsSignOut)
                     .font(.system(size: 27, weight: .medium))
                 Spacer(minLength: 0)
             }
@@ -339,27 +327,6 @@ struct TVSettingsView: View {
         detailFocus = nil
         railFocus = .category(selectedCategory)
         resetFocus(in: railFocusScope)
-    }
-
-    private func dismissSignOutConfirmation() {
-        preferredFocusOwner = .rail
-        preferredRailFocus = .signOut
-        isRestoringRailFocus = true
-        showSignOutConfirm = false
-        railFocus = nil
-    }
-
-    private func restoreSignOutFocus() {
-        guard isRestoringRailFocus else { return }
-        // Restore after the confirmation's focus subtree has left, ignoring
-        // transient rail focus while the dismissal animation completes.
-        Task { @MainActor in
-            await Task.yield()
-            resetFocus(in: railFocusScope)
-            railFocus = .signOut
-            try? await Task.sleep(for: .milliseconds(120))
-            isRestoringRailFocus = false
-        }
     }
 
     private func presentPrivacyPolicy() {
@@ -535,28 +502,28 @@ struct TVSettingsView: View {
 
     private var serverPane: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TVSettingsSectionHeader("ACTIVE SERVER")
+            TVSettingsSectionHeader(.settingsActiveServerHeaderTv)
 
             TVSettingsInfoRow(
-                title: "Server",
+                title: .settingsActiveServerServer,
                 value: viewModel.serverDisplayName.isEmpty
-                    ? "Not configured"
-                    : viewModel.serverDisplayName
+                    ? .settingsActiveServerNotConfigured
+                    : .verbatim(viewModel.serverDisplayName)
             )
 
             if !viewModel.serverUrl.isEmpty,
                viewModel.serverDisplayName != viewModel.serverUrl {
-                TVSettingsInfoRow(title: "Address", value: viewModel.serverUrl)
+                TVSettingsInfoRow(title: .settingsActiveServerAddress, value: .verbatim(viewModel.serverUrl))
             }
 
-            Button { router.navigate(to: .serverList) } label: {
+            Button { router.navigate(to: .accounts) } label: {
                 HStack(spacing: 16) {
-                    Image(systemName: "server.rack")
+                    Image(systemName: "person.2")
                         .font(.system(size: 22, weight: .medium))
-                    Text("Manage Servers")
+                    Text(.accountsTitle)
                         .font(.system(size: 26))
                     Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
+                    Image(systemName: "chevron.forward")
                         .font(.system(size: 18, weight: .semibold))
                         .opacity(0.55)
                 }
@@ -564,15 +531,15 @@ struct TVSettingsView: View {
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($detailFocus, equals: .top)
 
-            TVSettingsSectionHeader("ABOUT")
+            TVSettingsSectionHeader(.settingsAboutHeaderTv)
 
-            TVSettingsInfoRow(title: "App Version", value: Self.versionString)
+            TVSettingsInfoRow(title: .settingsAboutAppVersion, value: .verbatim(Self.versionString))
 
             Button(action: presentPrivacyPolicy) {
                 HStack(spacing: 16) {
                     Image(systemName: "hand.raised.fill")
                         .font(.system(size: 22, weight: .medium))
-                    Text("Privacy Policy")
+                    Text(.settingsAboutPrivacyPolicy)
                         .font(.system(size: 26))
                     Spacer(minLength: 0)
                     Image(systemName: "qrcode")
@@ -587,7 +554,7 @@ struct TVSettingsView: View {
                 HStack(spacing: 16) {
                     Image(systemName: "curlybraces")
                         .font(.system(size: 22, weight: .medium))
-                    Text("Acknowledgements")
+                    Text(.settingsAboutAcknowledgements)
                         .font(.system(size: 26))
                     Spacer(minLength: 0)
                     Image(systemName: "doc.text.magnifyingglass")
@@ -598,7 +565,7 @@ struct TVSettingsView: View {
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($detailFocus, equals: .serverOpenSourceLicenses)
 
-            TVSettingsSectionHeader("EXTRA FEATURES")
+            TVSettingsSectionHeader(.settingsExperimentalExtraFeaturesHeaderTv)
 
             ForEach(ExperimentalFeature.allCases) { feature in
                 TVSettingsToggleRow(
@@ -658,6 +625,7 @@ enum TVSettingsDetailFocus: Hashable {
     case playbackBufferAhead
     case playbackDeinterlaceMode
     case playbackDeinterlaceFieldRate
+    case playbackStillWatching
     case playbackNextUpPrompt
     case playbackIntroSkipMode
     case playbackAutoPlayNext
@@ -694,13 +662,13 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .general: return "General"
-        case .playback: return "Playback"
-        case .subtitles: return "Subtitles"
-        case .diagnostics: return "Diagnostics"
-        case .server: return "Server"
+        case .general: return .settingsGeneral
+        case .playback: return .settingsPlayback
+        case .subtitles: return .settingsSubtitles
+        case .diagnostics: return .settingsDiagnostics
+        case .server: return .settingsCategoryServer
         }
     }
 
@@ -714,28 +682,28 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
         }
     }
 
-    var blurb: String {
+    var blurb: LocalizedStringResource {
         switch self {
         case .general:
-            return "App-level options for this Apple TV."
+            return .settingsBlurbGeneralAppleTv
         case .playback:
-            return "Streaming quality and episode behavior for this Apple TV."
+            return .settingsBlurbPlaybackAppleTv
         case .subtitles:
-            return "Language, behavior, and on-screen appearance."
+            return .settingsBlurbSubtitles
         case .diagnostics:
-            return "Review and send diagnostics to this Silo server."
+            return .settingsBlurbDiagnostics
         case .server:
-            return "The Silo server this Apple TV is connected to."
+            return .settingsBlurbServerAppleTv
         }
     }
 
-    var railDescription: String {
+    var railDescription: LocalizedStringResource {
         switch self {
-        case .general: return "App and navigation"
-        case .playback: return "Quality and episodes"
-        case .subtitles: return "Language and appearance"
-        case .diagnostics: return "Reports and support"
-        case .server: return "Connection and version"
+        case .general: return .settingsRailGeneral
+        case .playback: return .settingsRailDescriptionPlayback
+        case .subtitles: return .settingsRailSubtitles
+        case .diagnostics: return .settingsRailDiagnostics
+        case .server: return .settingsRailServer
         }
     }
 

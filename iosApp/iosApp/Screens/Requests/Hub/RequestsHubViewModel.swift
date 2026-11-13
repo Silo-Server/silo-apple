@@ -51,6 +51,11 @@ final class RequestsHubViewModel {
     private(set) var hasSearched = false
 
     private var searchTask: Task<Void, Never>?
+    /// Bumped by every read; only the newest read installs its answer.
+    private var listGeneration = 0
+    /// Requests the user removed this session. A read that started before a
+    /// removal still lists it, so every answer leaves them out.
+    private var removedRequestIds: Set<String> = []
     private let api: SiloAPI
 
     init(api: SiloAPI = .shared) {
@@ -63,15 +68,22 @@ final class RequestsHubViewModel {
     }
 
     /// Returns whether discover and the user's requests read successfully.
+    /// A read overtaken by a newer one installs nothing and reports false.
     @discardableResult
     func load() async -> Bool {
+        listGeneration &+= 1
+        let generation = listGeneration
         isLoading = carousels.isEmpty && myRequests.isEmpty
         error = nil
+        defer { if generation == listGeneration { isLoading = false } }
         async let discover = api.requestsDiscover()
         async let mine = api.myRequests()
         var succeeded = false
         do {
-            let (layout, requests) = try await (discover, mine)
+            let (layout, answer) = try await (discover, mine)
+            guard generation == listGeneration else { return false }
+            // The cache too: a removed record must not seed its title's page.
+            let requests = answer.filter { !removedRequestIds.contains($0.id) }
             carousels = RequestCarouselMerge.carousels(from: layout)
             myRequests = MyRequestsBucket.bucket(requests).flatMap(\.requests)
             RequestDetailCache.shared.storeOwnRecords(requests)
@@ -80,11 +92,10 @@ final class RequestsHubViewModel {
         } catch {
             // Keep any prior content on a transient failure; only surface
             // the error when there's nothing to show instead.
-            if carousels.isEmpty, myRequests.isEmpty {
+            if generation == listGeneration, carousels.isEmpty, myRequests.isEmpty {
                 self.error = ErrorState(error)
             }
         }
-        isLoading = false
         return succeeded
     }
 
@@ -140,9 +151,18 @@ final class RequestsHubViewModel {
         }
     }
 
+    /// Bus consumer: the user removed one of their requests. A read already
+    /// running still lists it, so the row stays out of every answer.
+    func applyRemoval(_ record: MediaRequest) {
+        removedRequestIds.insert(record.id)
+        myRequests.removeAll { $0.id == record.id }
+    }
+
     /// Bus consumer: patch every visible surface in place after a mutation
     /// anywhere in the app (detail submit, My Requests cancel, …).
     func applyRequestUpdate(_ record: MediaRequest) {
+        // A late answer for a request removed since must not bring it back.
+        guard !removedRequestIds.contains(record.id) else { return }
         searchResults.applyRequestUpdate(record)
         carousels = carousels.map { carousel in
             var results = carousel.results

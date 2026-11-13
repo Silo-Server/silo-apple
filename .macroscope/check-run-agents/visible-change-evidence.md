@@ -17,8 +17,9 @@ maxBudgetPerRun: 0.50
 maxBudgetPerPR: 3.00
 ---
 
-Silo requires evidence in every pull request that changes what a user sees. Reviewers should be
-able to see the change without building the branch. Your job is to decide whether this PR changes
+Silo requires evidence in every pull request: a change users can see shows the change, and a
+change they can't see shows how it was checked. Reviewers should be able to see the change without
+building the branch. Your job is to decide whether this PR changes
 what a user sees, on which devices, and, if it does, whether its Evidence section shows that change
 on each of them. You report; you do not judge whether the change is good.
 
@@ -82,8 +83,10 @@ An explanation of why evidence could not be captured is acceptable; report it so
 decide, and do not count it as a pass. A reason for leaving out a device is acceptable when the code
 you traced agrees with it; when it does not, say which code reaches that device.
 
-For a change that is not visible, the section should say `Evidence: none, no user-visible change`.
-If it is empty or still holds the template table, suggest that line.
+For a change that is not visible, the section passes when it shows how the change was checked: the
+steps run, the build or commit, and trimmed test or benchmark results, or a line starting with
+`Evidence: https://evidence.siloserver.org/`. `Evidence: none, no user-visible change` alone no
+longer passes. If the section is empty or still holds the template table, say what it needs.
 
 You cannot open images. Judge them from their placement, alt text, captions, and surrounding text.
 Never claim an image shows something you could not read.
@@ -96,7 +99,7 @@ list the user-visible effects you found, each with the file that causes it and t
 reaches, and what the evidence covers or lacks.
 
 Post one conversation comment on the PR only when a visible change has missing or incomplete
-evidence, or when a change that is not visible has no Evidence line. Name each visible effect that
+evidence, or when a change that is not visible has no evidence of how it was checked. Name each visible effect that
 lacks evidence, the devices it is missing on, and the kind of evidence it needs, in one line each.
 If the author has replied that evidence is not needed or has explained why it is unavailable,
 accept that and do not raise it again unless new commits change what users see.

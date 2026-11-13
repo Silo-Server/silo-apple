@@ -283,7 +283,7 @@ final class PlaybackNetworkQualityTests: XCTestCase {
             versions: Self.versions,
             requestedFileId: requestedFileId,
             lastFileId: lastFileId,
-            lastResolution: "1080p",
+            lastFileInProgress: false,
             prefersLastUsedVersion: resuming,
             pinsRequestedVersion: pinsVersion,
             startsAtFirstPart: false,
@@ -356,17 +356,14 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         }
     }
 
-    /// When the last-played file is gone, a resume ranks the remaining
-    /// versions by the resolution it last played, and still asks for the
-    /// saved quality.
-    func testAResumeWhoseFileIsGoneRanksByTheLastResolution() {
+    /// When the last-played file is gone, a resume falls back to Auto for
+    /// the saved quality, as a fresh start does, not to the resolution it
+    /// last played.
+    func testAResumeWhoseFileIsGoneFallsBackToAuto() {
         let resumed = start(lastFileId: 99, resuming: true, settings: .auto)
-        XCTAssertEqual(resumed.version.fileId, 2)
+        XCTAssertEqual(resumed.version.fileId, 1)
         XCTAssertEqual(resumed.source, .ranked)
         XCTAssertNil(resumed.qualityPreference)
-
-        let fresh = start(lastFileId: 99, resuming: false, settings: .auto)
-        XCTAssertEqual(fresh.version.fileId, 1, "a fresh start ranks by resolution alone")
     }
 
     // MARK: - Replanning on a connection change
@@ -486,6 +483,30 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         controller.connectionDidChange()
         try await waitUntil("the change's check runs") { !controller.hasPendingCheck }
         XCTAssertEqual(player.replans, [cellularPair])
+    }
+
+    /// Wi-Fi Assist or a roam between access points can put the phone's path
+    /// on cellular for several seconds while Wi-Fi stays connected. Each
+    /// follow is a full reload, so a blip of that length must reload nothing.
+    func testABlipOfSeveralSecondsReloadsNothing() async throws {
+        let player = FakePlayer(main: mainPair, cellular: cellularPair)
+        let controller = PlaybackNetworkQualityController(
+            isMetered: { player.metered },
+            pair: { player.pairs[$0]! },
+            replan: { player.replan($0) }
+        )
+        defer { controller.stop() }
+        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+
+        player.metered = true
+        controller.connectionDidChange()
+        try await Task.sleep(for: .seconds(5))
+        XCTAssertTrue(player.replans.isEmpty, "a five-second blip did not hold long enough to follow")
+        XCTAssertTrue(controller.hasPendingCheck)
+
+        player.metered = false
+        controller.connectionDidChange()
+        XCTAssertTrue(player.replans.isEmpty)
     }
 
     func testPairsThatMatchNeedNoReplan() {

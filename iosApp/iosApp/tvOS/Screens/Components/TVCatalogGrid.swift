@@ -13,6 +13,7 @@ import SwiftUI
 ///   side-rail (alphabet jumper etc.) eats horizontal space, or the
 ///   fixed `posterCardWidth` cards start overlapping each other.
 struct TVCatalogGrid: View {
+    @Environment(\.locale) private var locale
     let items: [BrowseItem]
     let isLoading: Bool
     let hasMore: Bool
@@ -56,56 +57,19 @@ struct TVCatalogGrid: View {
     }
 
     var body: some View {
-        // Rows are explicit full-width focus sections so a D-pad move into a
-        // ragged row (fewer cards than columns) still lands: the focus engine
-        // resolves moves geometrically, and a partially filled LazyVGrid row
-        // has no focusable under most columns. The row's full-width section
-        // frame is the catchment; the engine snaps to its nearest card.
-        LazyVStack(alignment: .leading, spacing: rowSpacing) {
-            ForEach(rowStartIndices, id: \.self) { rowStart in
-                let row = rowItems(from: rowStart)
-                HStack(alignment: .top, spacing: columnSpacing) {
-                    ForEach(Array(row.enumerated()), id: \.element.id) { column, item in
-                        TVMediaCard(
-                            title: EpisodeCardCaption.cardTitle(for: item),
-                            posterUrl: item.posterUrl ?? "",
-                            posterThumbhash: item.posterThumbhash,
-                            episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
-                            imageIsEpisodeStill: item.posterIsEpisodeStill,
-                            mediaType: item.type,
-                            year: item.year,
-                            subtitle: EpisodeCardCaption.line(for: item),
-                            userState: item.userState,
-                            overlayData: OverlayData.from(item),
-                            action: { onItemTap(item) },
-                            playAction: playAction(for: item),
-                            cardWidth: cardWidth,
-                            aspect: item.isAudiobook ? .square : .poster,
-                            prefersDefaultFocus: prefersDefaultFocusOnFirstItem
-                                && rowStart == 0 && column == 0,
-                            defaultFocusNamespace: gridFocusNamespace,
-                            focusBinding: $focusedItemId,
-                            focusContentId: item.contentId,
-                            contentId: item.contentId
-                        )
-                        .frame(maxWidth: .infinity)
-                        .onAppear { onCellAppear(index: rowStart + column) }
+        // The first row is built eagerly. A grid that starts below the screen
+        // edge (Search's results under a Box Sets or People row) otherwise has
+        // no cards yet, so Down from the row above finds nothing to move to.
+        // Later rows stay lazy; each is created as the row above scrolls in.
+        VStack(alignment: .leading, spacing: rowSpacing) {
+            if let firstRow = rowStartIndices.first {
+                gridRow(from: firstRow)
+            }
+            if rowStartIndices.count > 1 {
+                LazyVStack(alignment: .leading, spacing: rowSpacing) {
+                    ForEach(rowStartIndices.dropFirst(), id: \.self) { rowStart in
+                        gridRow(from: rowStart)
                     }
-                    // Keep ragged-row cards in their column positions by
-                    // filling the empty slots with equally flexible spacers.
-                    ForEach(0..<(resolvedColumnCount - row.count), id: \.self) { _ in
-                        Color.clear
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 1)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .focusSection()
-                .onScrollVisibilityChange(threshold: 0.01) { isVisible in
-                    onRowVisibilityChange?(
-                        rowStart..<min(rowStart + resolvedColumnCount, items.count),
-                        isVisible
-                    )
                 }
             }
         }
@@ -127,6 +91,65 @@ struct TVCatalogGrid: View {
         }
     }
 
+    // Rows are explicit full-width focus sections so a D-pad move into a
+    // ragged row (fewer cards than columns) still lands: the focus engine
+    // resolves moves geometrically, and a partially filled LazyVGrid row
+    // has no focusable under most columns. The row's full-width section
+    // frame is the catchment; the engine snaps to its nearest card.
+    @ViewBuilder
+    private func gridRow(from rowStart: Int) -> some View {
+        let row = rowItems(from: rowStart)
+        HStack(alignment: .top, spacing: columnSpacing) {
+            ForEach(Array(row.enumerated()), id: \.element.id) { column, item in
+                // A box set card opens its own page and has no
+                // title menu or Play shortcut.
+                let boxSet = item.isBoxSet ? item.boxSet : nil
+                TVMediaCard(
+                    title: EpisodeCardCaption.cardTitle(for: item),
+                    posterUrl: item.posterUrl ?? boxSet?.posterUrl ?? "",
+                    posterThumbhash: item.posterThumbhash ?? boxSet?.posterThumbhash,
+                    episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
+                    imageIsEpisodeStill: item.posterIsEpisodeStill,
+                    mediaType: boxSet == nil ? item.type : "movie",
+                    year: item.year,
+                    subtitle: boxSet?.cardCaption
+                        ?? EpisodeCardCaption.line(for: item, locale: locale)
+                        ?? CardYears.caption(for: item, locale: locale),
+                    userState: boxSet == nil ? item.userState : nil,
+                    overlayData: boxSet == nil ? OverlayData.from(item) : nil,
+                    action: { open(item) },
+                    playAction: playAction(for: item),
+                    cardWidth: cardWidth,
+                    aspect: item.isAudiobook ? .square : .poster,
+                    prefersDefaultFocus: prefersDefaultFocusOnFirstItem
+                        && rowStart == 0 && column == 0,
+                    defaultFocusNamespace: gridFocusNamespace,
+                    focusBinding: $focusedItemId,
+                    focusContentId: item.contentId,
+                    contentId: boxSet == nil ? item.contentId : nil,
+                    boxSet: boxSet
+                )
+                .frame(maxWidth: .infinity)
+                .onAppear { onCellAppear(index: rowStart + column) }
+            }
+            // Keep ragged-row cards in their column positions by
+            // filling the empty slots with equally flexible spacers.
+            ForEach(0..<(resolvedColumnCount - row.count), id: \.self) { _ in
+                Color.clear
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 1)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .focusSection()
+        .onScrollVisibilityChange(threshold: 0.01) { isVisible in
+            onRowVisibilityChange?(
+                rowStart..<min(rowStart + resolvedColumnCount, items.count),
+                isVisible
+            )
+        }
+    }
+
     private func rowItems(from rowStart: Int) -> [BrowseItem] {
         Array(items[rowStart..<min(rowStart + resolvedColumnCount, items.count)])
     }
@@ -137,6 +160,14 @@ struct TVCatalogGrid: View {
         if index >= threshold {
             onNearEnd(index)
         }
+    }
+
+    private func open(_ item: BrowseItem) {
+        if item.isBoxSet {
+            if let boxSet = item.boxSet, let route = Route.boxSet(boxSet) { router.navigate(to: route) }
+            return
+        }
+        onItemTap(item)
     }
 
     private func playAction(for item: BrowseItem) -> (() -> Void)? {

@@ -4,8 +4,12 @@ import Foundation
 /// can be unit-tested against a scripted fake. `PairingDeviceAPI` is the
 /// production conformer.
 protocol PairingDeviceAuthorizing: Sendable {
-    func start(serverURL: String, deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse
-    func poll(serverURL: String, deviceCode: String) async throws -> APIv2DevicePoll
+    /// `binding` binds the request to a pairing session
+    /// (`PairingSessionBinding.binding`); nil sends none.
+    func start(serverURL: String, deviceName: String, devicePlatform: String, binding: String?) async throws -> DeviceLoginStartResponse
+    /// `bindingSecret` is the session secret a bound request must be polled
+    /// with (`PairingSessionBinding.secret`); nil sends none.
+    func poll(serverURL: String, deviceCode: String, bindingSecret: String?) async throws -> APIv2DevicePoll
     func lookup(serverURL: String, bearer: String, userCode: String) async throws -> DeviceLookupResponse
     func approve(serverURL: String, bearer: String, userCode: String) async throws
     /// Withdraw a request the TV abandoned (`cancelDeviceLogin`). Callers
@@ -16,6 +20,15 @@ protocol PairingDeviceAuthorizing: Sendable {
 }
 
 extension PairingDeviceAuthorizing {
+    /// A request with no pairing-session binding.
+    func start(serverURL: String, deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse {
+        try await start(serverURL: serverURL, deviceName: deviceName, devicePlatform: devicePlatform, binding: nil)
+    }
+
+    func poll(serverURL: String, deviceCode: String) async throws -> APIv2DevicePoll {
+        try await poll(serverURL: serverURL, deviceCode: deviceCode, bindingSecret: nil)
+    }
+
     /// The one withdraw policy for a device request a TV abandoned: send
     /// `cancelDeviceLogin` only when the server's capability says it exists,
     /// best effort, ignoring the answer. `capability` is nil when unknown or
@@ -50,10 +63,10 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
 
     // MARK: Receiver (unauthenticated)
 
-    func start(serverURL: String, deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse {
+    func start(serverURL: String, deviceName: String, devicePlatform: String, binding: String?) async throws -> DeviceLoginStartResponse {
         try await start(
             serverURL: serverURL,
-            request: DeviceLoginStartRequest(deviceName: deviceName, devicePlatform: devicePlatform)
+            request: DeviceLoginStartRequest(deviceName: deviceName, devicePlatform: devicePlatform, binding: binding)
         )
     }
 
@@ -68,11 +81,14 @@ struct PairingDeviceAPI: PairingDeviceAuthorizing {
 
     /// `POST /api/v2/auth/device/poll` (`non_retryable`). Tokens arrive once,
     /// on the first `approved` answer; the validated value is what the caller
-    /// installs.
-    func poll(serverURL: String, deviceCode: String) async throws -> APIv2DevicePoll {
+    /// installs. A bound request is polled with its session secret; the
+    /// server refuses it (403 `device_binding_mismatch`) otherwise.
+    func poll(serverURL: String, deviceCode: String, bindingSecret: String?) async throws -> APIv2DevicePoll {
+        var body = ["device_code": deviceCode]
+        if let bindingSecret { body["binding_secret"] = bindingSecret }
         let value: APIv2DevicePoll = try await post(
             serverURL, "/api/v2/auth/device/poll", bearer: nil, expectedStatus: 200,
-            body: JSONSerialization.data(withJSONObject: ["device_code": deviceCode])
+            body: JSONSerialization.data(withJSONObject: body)
         )
         return try value.validated()
     }

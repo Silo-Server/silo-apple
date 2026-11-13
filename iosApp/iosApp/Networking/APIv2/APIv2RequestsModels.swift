@@ -32,10 +32,10 @@ enum APIv2RequestsError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .unsupportedMediaType: return "This title can't be requested."
-        case .emptySearchQuery: return "Enter a title to search for."
+        case .unsupportedMediaType: return AppLanguage.string(.errorsAppleRequestsUnsupportedMediaType)
+        case .emptySearchQuery: return AppLanguage.string(.errorsAppleRequestsEmptySearchQuery)
         case .outcomeUnknownOwnerChanged:
-            return "The account or profile changed before the request was confirmed."
+            return AppLanguage.string(.errorsAppleRequestsOutcomeUnknownOwnerChanged)
         }
     }
 }

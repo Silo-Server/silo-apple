@@ -55,6 +55,10 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let lastAirDate: String?
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
+    /// Set on a box set search result lifted into a card
+    /// (`BrowseItem(boxSet:)`): the box set the card stands for. Absent on
+    /// every catalog card.
+    var boxSet: CatalogBoxSet? = nil
     var id: String { contentId }
 }
 
@@ -81,11 +85,32 @@ struct MediaItemUserState: Codable, Hashable {
     let played: Bool
     let isFavorite: Bool
     let inWatchlist: Bool
+    /// Episodes the profile has watched, and available episodes it has not.
+    /// The v2 catalog sends them only for a series or season the profile has
+    /// not finished.
+    var watchedCount: Int? = nil
+    var unplayedCount: Int? = nil
 
-    init(played: Bool = false, isFavorite: Bool = false, inWatchlist: Bool = false) {
+    init(
+        played: Bool = false,
+        isFavorite: Bool = false,
+        inWatchlist: Bool = false,
+        watchedCount: Int? = nil,
+        unplayedCount: Int? = nil
+    ) {
         self.played = played
         self.isFavorite = isFavorite
         self.inWatchlist = inWatchlist
+        self.watchedCount = watchedCount
+        self.unplayedCount = unplayedCount
+    }
+
+    /// The episodes a started, unfinished series or season has left, or nil.
+    /// An untouched one has none to show: its count would be on every new
+    /// show. Mirrors `remainingEpisodes` in web's `CardWatchStatus.tsx`.
+    var episodesLeft: Int? {
+        guard !played, (watchedCount ?? 0) > 0, let unplayedCount, unplayedCount > 0 else { return nil }
+        return unplayedCount
     }
 }
 
@@ -168,6 +193,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
     var pendingTranslationLanguage: String? = nil
     /// Localized fields ("overview", "tagline") machine-translated by AI.
     var machineTranslatedFields: [String]? = nil
+    /// A series' last air date, "2023-05-28". Absent from older servers and caches.
+    var lastAirDate: String? = nil
     var id: String { contentId }
 
     /// Lift a catalog row into a section row so client-composed shelves
@@ -215,6 +242,7 @@ struct SectionItem: Codable, Identifiable, Hashable {
         logoUrl = nil
         userState = item.userState
         overlaySummary = item.overlaySummary
+        lastAirDate = item.lastAirDate
     }
 }
 
@@ -319,8 +347,8 @@ extension BrowseItem {
     /// Lift a Home row into the catalog shape for Watch Party's picker, which
     /// opens a confirmation page from a `BrowseItem`. Every field the two
     /// types share is copied; artwork on a decoded section row is already
-    /// resolved. `addedAt`, `releaseDate` and `lastAirDate` are not on
-    /// section rows and stay nil.
+    /// resolved. `addedAt` and `releaseDate` are not on section rows and
+    /// stay nil.
     init(sectionItem item: SectionItem) {
         self.init(
             contentId: item.contentId,
@@ -364,7 +392,7 @@ extension BrowseItem {
             seasonPosterThumbhash: item.seasonPosterThumbhash,
             addedAt: nil,
             releaseDate: nil,
-            lastAirDate: nil,
+            lastAirDate: item.lastAirDate,
             userState: item.userState,
             overlaySummary: item.overlaySummary
         )
@@ -422,9 +450,24 @@ struct ResolvedSection: Codable, Identifiable {
     let isCustom: Bool?
     let customized: Bool?
     let items: [SectionItem]
+    /// The catalog key of the server's own title (`home.section.*`), sent
+    /// only while the title is the server's text, never an admin's rename.
+    let titleKey: String?
+    /// The values that key's placeholder takes (`{"library": "Movies"}`).
+    let titleArgs: [String: String]?
 
     /// Whether this section is featured (defaults to false if nil).
     var isFeatured: Bool { featured ?? false }
+
+    /// The title in the language `locale` shows: the catalog's translation of
+    /// the server's own title, else `title` as sent.
+    func displayTitle(in locale: Locale) -> String {
+        displayTitle(language: AppLanguage.language(of: locale))
+    }
+
+    func displayTitle(language: String) -> String {
+        AppLanguage.serverText(title, key: titleKey, args: titleArgs, language: language)
+    }
 
     init(
         id: String,
@@ -435,7 +478,9 @@ struct ResolvedSection: Codable, Identifiable {
         totalCount: Int?,
         isCustom: Bool?,
         customized: Bool?,
-        items: [SectionItem]
+        items: [SectionItem],
+        titleKey: String? = nil,
+        titleArgs: [String: String]? = nil
     ) {
         self.id = id
         self.sectionType = sectionType
@@ -446,6 +491,8 @@ struct ResolvedSection: Codable, Identifiable {
         self.isCustom = isCustom
         self.customized = customized
         self.items = items
+        self.titleKey = titleKey
+        self.titleArgs = titleArgs
     }
 
     init(from decoder: Decoder) throws {
@@ -459,6 +506,10 @@ struct ResolvedSection: Codable, Identifiable {
         isCustom = try c.decodeIfPresent(Bool.self, forKey: .isCustom)
         customized = try c.decodeIfPresent(Bool.self, forKey: .customized)
         items = try c.decodeIfPresent([SectionItem].self, forKey: .items) ?? []
+        // Optional extras: a malformed key or argument map shows `title`
+        // rather than failing the row.
+        titleKey = (try? c.decodeIfPresent(String.self, forKey: .titleKey)) ?? nil
+        titleArgs = (try? c.decodeIfPresent([String: String].self, forKey: .titleArgs)) ?? nil
     }
 }
 
@@ -496,7 +547,9 @@ struct SectionsResponse: Codable {
                 totalCount: section.totalCount,
                 isCustom: section.isCustom,
                 customized: section.customized,
-                items: kept
+                items: kept,
+                titleKey: section.titleKey,
+                titleArgs: section.titleArgs
             )
         }
     }
@@ -823,14 +876,6 @@ struct Season: Codable, Identifiable, Hashable {
     var machineTranslatedFields: [String]? = nil
     var id: String { contentId }
 
-    /// Consistent label for season pickers and episode-section headings.
-    var downloadDisplayName: String {
-        if isSpecials == true || seasonNumber == 0 {
-            return title ?? "Specials"
-        }
-        return "Season \(seasonNumber)"
-    }
-
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         contentId = try c.decode(String.self, forKey: .contentId)
@@ -1101,7 +1146,13 @@ struct VideoTrack: Codable, Identifiable, Hashable {
     let colorPrimaries: String?
     let colorTransfer: String?
     let videoRange: String?
+    /// The server's finer class of the range ("HDR10", "HDR10Plus", "HLG",
+    /// "DOVIWithHDR10", …); `videoRange` only tells HDR from Dolby Vision.
+    let videoRangeType: String?
     let dolbyVision: String?
+    /// The stream carries HDR10+ dynamic metadata, on its own or beside
+    /// Dolby Vision.
+    let hdr10Plus: Bool?
     let title: String?
     let language: String?
     var id: Int { index ?? 0 }
@@ -1167,6 +1218,15 @@ struct SubtitleTrack: Codable, Identifiable, Hashable {
         return external == true ? nil : 0
     }
 
+    /// An embedded track the server stored with no codec: its probe didn't
+    /// recognize the format (a Matroska S_TEXT/WEBVTT track, for one), so the
+    /// server can neither deliver nor burn it in, and a start or switch that
+    /// asks for it is refused (`subtitle_codec_unsupported`). The same rule
+    /// marks the player's inventory rows (`ApplePlaybackV3PlanAdapter`).
+    var hasUnsupportedFormat: Bool {
+        external != true && (codec?.trimmingCharacters(in: .whitespaces) ?? "").isEmpty
+    }
+
     enum CodingKeys: String, CodingKey {
         case index
         case codec
@@ -1203,6 +1263,16 @@ struct LeafItemUserData: Codable, Hashable {
     let durationSeconds: Double?
     let lastFileId: Int?
     let lastResolution: String?
+    /// The edition of the version last played.
+    let lastEditionKey: String?
+
+    /// A position Resume would offer (`PlaybackResumePoint`). Only then does
+    /// Auto stay on a later multipart part last played; otherwise it starts
+    /// at part 1. `played` is ignored: the server zeroes the position when a
+    /// title is finished and keeps the flag through a rewatch.
+    var hasResumePoint: Bool {
+        PlaybackResumePoint.position(positionSeconds, duration: durationSeconds) != nil
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1212,6 +1282,7 @@ struct LeafItemUserData: Codable, Hashable {
         durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
         lastFileId = try c.decodeIfPresent(Int.self, forKey: .lastFileId)
         lastResolution = try c.decodeIfPresent(String.self, forKey: .lastResolution)
+        lastEditionKey = try c.decodeIfPresent(String.self, forKey: .lastEditionKey)
     }
 }
 
@@ -1340,6 +1411,9 @@ struct WatchDetail {
     var effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
     var effectiveSubtitleTrackSignature: SubtitleTrackSignature?
+    /// The server's watch choices; their order breaks the last tie between
+    /// cuts. Nil from servers that predate it.
+    var playbackVariants: [PlaybackVariant]? = nil
 
     /// "Show forced subtitles" for this content. The server omits
     /// `effective_show_forced_subtitles` when no stored setting applies, and

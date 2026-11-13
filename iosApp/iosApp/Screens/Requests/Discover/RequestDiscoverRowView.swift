@@ -17,6 +17,7 @@ struct RequestDiscoverRowView: View {
 
 #if !os(tvOS)
 private struct PhoneRequestDiscoverRowView: View {
+    @Environment(\.locale) private var locale
     @State private var viewModel: RequestDiscoverRowViewModel
 
     init(rowKey: String, title: String) {
@@ -53,8 +54,8 @@ private struct PhoneRequestDiscoverRowView: View {
         if viewModel.notFound {
             EmptyStateView(
                 icon: "rectangle.stack.badge.minus",
-                title: "This row is gone",
-                subtitle: "The server's Discover page no longer shows it"
+                title: AppLanguage.string(.requestsDiscoverRowGoneTitle),
+                subtitle: AppLanguage.string(.requestsDiscoverRowGoneBody)
             )
             .padding(.top, 80)
         } else if let error = viewModel.error, viewModel.results.isEmpty {
@@ -65,8 +66,8 @@ private struct PhoneRequestDiscoverRowView: View {
         } else if viewModel.results.isEmpty {
             EmptyStateView(
                 icon: "sparkles",
-                title: "Nothing here yet",
-                subtitle: "This row has no titles right now"
+                title: AppLanguage.string(.requestsDiscoverRowEmptyTitle),
+                subtitle: AppLanguage.string(.requestsDiscoverRowEmptyBody)
             )
             .padding(.top, 80)
         } else {
@@ -77,7 +78,7 @@ private struct PhoneRequestDiscoverRowView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity)
             } else if viewModel.moreFailed {
-                Button("Couldn't load more. Try again") {
+                Button(.requestsDiscoverRowLoadMoreFailed) {
                     Task { await viewModel.loadMore() }
                 }
                 .frame(maxWidth: .infinity)

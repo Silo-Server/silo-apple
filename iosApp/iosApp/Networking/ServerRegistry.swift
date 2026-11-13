@@ -1,12 +1,18 @@
 import Foundation
 import OSLog
 import Synchronization
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// A single Silo server the user has added to the device.
 ///
-/// The registry stores one of these per remembered server. Tokens live in
-/// Keychain keyed by `id`, never in the entry itself. The display name is
-/// always server-administered through the advertised `fetchedName`.
+/// The registry stores one of these per remembered server. Its accounts and
+/// their tokens live in `AccountStore`, keyed by `id`, never in the entry
+/// itself, and so does the profile each account opens with. The display
+/// name is always server-administered through the advertised `fetchedName`.
 struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// Stable client-derived ID: base64url of the normalized URL; reversible
     /// via `url(forServerId:)`.
@@ -45,7 +51,6 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
         id: String,
         url: String,
         fetchedName: String?,
-        profileId: String? = nil,
         lastUsedAt: Date,
         verifiedServerId: String? = nil
     ) {
@@ -53,7 +58,7 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
         self.url = url
         self.fetchedName = fetchedName
         self.lastUsedAt = lastUsedAt
-        self.legacyProfileId = profileId
+        self.legacyProfileId = nil
         self.verifiedServerId = ServerIdentity.usable(verifiedServerId)
     }
 
@@ -122,7 +127,7 @@ enum ServerRegistryError: LocalizedError {
     case persistenceFailed
 
     var errorDescription: String? {
-        "Silo couldn't save the server list. Please try again."
+        AppLanguage.string(.errorsAppleServersPersistenceFailed)
     }
 }
 
@@ -133,15 +138,15 @@ enum ServerRegistryError: LocalizedError {
 /// - **UserDefaults** (`siloServerRegistry.v1`): the server list and
 ///   active ID on iOS/macOS. tvOS stores the shared list in the
 ///   user-independent Keychain and the active ID in current-user defaults.
-/// - **Keychain** (`SharedKeychain` service `org.siloserver.silo`, account
-///   `org.siloserver.silo.<id>.{accessToken,refreshToken,profileToken}`): per-
-///   server tokens, activated by `TokenStore.switchActiveServer`.
+/// - **`AccountStore`**: each server's accounts and their tokens, read for
+///   the active server by `TokenStore.switchActiveServer`.
 ///
 /// The registry is the single source of truth for URL + name.
-/// TokenStore is the single source of truth for tokens. They coordinate
-/// through `switchActiveServer` — the registry writes the active ID and
-/// the active URL to UserDefaults, then tells TokenStore to
-/// retarget its Keychain slot.
+/// `AccountStore` is the single source of truth for accounts and tokens.
+/// They coordinate through `switchActiveServer` — the registry writes the
+/// active ID and the active URL to UserDefaults, then tells TokenStore to
+/// load that server's account. At launch the registry also runs
+/// `AccountMigration`, which needs the server list.
 @Observable
 final class ServerRegistry {
     static let shared = ServerRegistry()
@@ -181,7 +186,15 @@ final class ServerRegistry {
 
     private let defaults: SharedDefaults
     private let keychain: SharedKeychain
+    private let accounts: AccountStore
     private let launchPreferences: ProfileLaunchPreferences
+    /// False when the stored server list could not be read at launch, so an
+    /// empty list is not evidence that no session needs migrating.
+    private var serverListIsComplete = true
+    /// False until `init` finishes. A breadcrumb reads
+    /// `activeServerIDSnapshot`, which is `shared`, so one recorded while
+    /// `shared` is still being built re-enters its initializer and traps.
+    @ObservationIgnored private var initialized = false
     private let tokenStore: TokenStore
     private let httpClient: HTTPClient
     private let persistenceOverride: (([ServerEntry], String?) -> Bool)?
@@ -193,6 +206,7 @@ final class ServerRegistry {
     init(
         defaults: SharedDefaults = .shared,
         keychain: SharedKeychain = SharedKeychain(),
+        accounts: AccountStore? = nil,
         launchPreferences: ProfileLaunchPreferences = .shared,
         persistenceOverride: (([ServerEntry], String?) -> Bool)? = nil,
         tokenStore: TokenStore = .shared,
@@ -210,6 +224,7 @@ final class ServerRegistry {
     ) {
         self.defaults = defaults
         self.keychain = keychain
+        self.accounts = accounts ?? AccountStore(keychain: keychain, defaults: defaults)
         self.launchPreferences = launchPreferences
         self.persistenceOverride = persistenceOverride
         self.tokenStore = tokenStore
@@ -220,8 +235,13 @@ final class ServerRegistry {
         load()
         migrateLegacyIfNeeded()
         migrateLegacyProfileMappingsIfNeeded()
+        migrateAccountsIfNeeded()
+        mergeDuplicateServers()
         let initialActiveServerId = activeServerId
         activeServerSnapshot.withLock { $0 = initialActiveServerId }
+        observeForegroundForDuplicateServerProof()
+        scheduleDuplicateServerProof()
+        initialized = true
     }
 
     // MARK: - Sync accessors (SwiftUI-safe)
@@ -252,10 +272,12 @@ final class ServerRegistry {
 
     // MARK: - Mutations
 
-    /// Insert or update an entry. `preservingProfile: false` forgets the
-    /// server's remembered launch profile.
+    /// Insert or update an entry. A new address proven to reach a server
+    /// saved under another address (`mergeDuplicateServers`) takes that
+    /// entry's place, since the person just chose it; without a proof it is
+    /// saved as its own entry. Returns the saved entry.
     @discardableResult
-    func addOrUpdate(_ entry: ServerEntry, preservingProfile: Bool = true) -> ServerEntry? {
+    func addOrUpdate(_ entry: ServerEntry) -> ServerEntry? {
         let previousEntries = entries
         var merged = entry
         let existingIndex = index(matching: entry.id)
@@ -298,10 +320,17 @@ final class ServerRegistry {
             outcome: "succeeded",
             reason: isExistingEntry ? "updatedExisting" : "addedNew"
         )
-        if !preservingProfile {
-            launchPreferences.clearRememberedProfile(for: merged.id)
+        // The list just written is what storage holds now. A migration that
+        // launch deferred retries before this server is signed in to.
+        serverListIsComplete = true
+        migrateAccountsIfNeeded()
+        if !isExistingEntry {
+            // Saved again at an address merged away earlier: its own server now.
+            accounts.forgetMergedServer(merged.id)
         }
-        return merged
+        let survivors = mergeDuplicateServersAfterLaunch(preferring: isExistingEntry ? nil : merged.id)
+        scheduleDuplicateServerProof()
+        return self.entry(with: survivors[merged.id] ?? merged.id)
     }
 
     /// The saved entry for `serverId`'s origin: an exact id, else one whose
@@ -333,7 +362,9 @@ final class ServerRegistry {
 
     /// Records the deployment identity a server reported at its registry URL.
     /// A blank value is ignored: losing the identity is never an improvement
-    /// over a stale one, and both only affect matching, never authorization.
+    /// over a stale one. A saved server under another address that reported
+    /// the same identity, and is proven to be the same server, is merged with
+    /// this one (`mergeDuplicateServers`), so `serverId` may be gone afterwards.
     @discardableResult
     func updateVerifiedServerId(for serverId: String, verifiedServerId: String?) -> Bool {
         guard let idx = entries.firstIndex(where: { $0.id == serverId }),
@@ -346,6 +377,8 @@ final class ServerRegistry {
             _ = persist()
             return false
         }
+        mergeDuplicateServersAfterLaunch()
+        scheduleDuplicateServerProof()
         return true
     }
 
@@ -355,6 +388,194 @@ final class ServerRegistry {
         guard let identity = ServerIdentity.usable(verifiedServerId) else { return nil }
         if let active = activeServer, active.verifiedServerId == identity { return active }
         return sortedEntries.first { $0.verifiedServerId == identity }
+    }
+
+    // MARK: - Merging duplicate servers
+
+    /// Folds saved entries proven to reach one server into one (spec §5):
+    /// one server saved under two addresses, such as a LAN and a remote URL,
+    /// shows as one server with every account once. Entries that report one
+    /// `verifiedServerId` are only candidates, since that ID is
+    /// self-asserted; a pair merges once `LoginSessionProof` has shown both
+    /// addresses reach one backend (`ServerMerge.prove`), and until then
+    /// they stay separate. Nothing here uses the network: the proof runs
+    /// after launch (`scheduleDuplicateServerProof`), and its stored result
+    /// lets a proven pair merge offline later.
+    ///
+    /// An `https` entry survives an `http` one, so no account moves to a
+    /// cleartext address it hasn't used. Otherwise the entry the person just
+    /// added survives (`preferring`), else the active one, else the most
+    /// recently used. It keeps its id and URL, and the other address is
+    /// dropped. Its accounts and local data move to the survivor
+    /// (`AccountStore.planServerMerge`, `ServerMerge`): moves first, then the
+    /// account index commits, then the registry, then the leftovers go, so a
+    /// rerun after an interruption finishes the job.
+    ///
+    /// `whileRunning` skips a merge that moves, removes, or keeps the
+    /// account in use: its downloads and session are loaded, and a merge
+    /// under them would be overwritten. The stored proof keeps the pair
+    /// proven, so the next launch merges it here in `init`, before anything
+    /// loads. Returns, for each dropped id, the survivor's.
+    @discardableResult
+    func mergeDuplicateServers(preferring preferredId: String? = nil, whileRunning: Bool = false) -> [String: String] {
+        var survivors: [String: String] = [:]
+        let saved = (try? accounts.accounts()) ?? []
+        let accountInUse = whileRunning ? AccountScope.current?.localAccountId : nil
+        for (dropped, survivor) in duplicateServerCandidates(preferring: preferredId)
+        where ServerMerge.cachedProof(dropped.id, survivor.id, accounts: saved) == .proven
+            && merge(dropped, into: survivor, deferringAccount: accountInUse) {
+            survivors[dropped.id] = survivor.id
+        }
+        // Records an interrupted merge left behind.
+        accounts.finishServerMergeCleanup()
+        return survivors
+    }
+
+    /// Saved entries that report one `verifiedServerId`, each paired with
+    /// the entry it would merge into.
+    private func duplicateServerCandidates(preferring preferredId: String? = nil) -> [(ServerEntry, ServerEntry)] {
+        let identified = entries.filter { $0.verifiedServerId != nil }
+        return Dictionary(grouping: identified, by: { $0.verifiedServerId ?? "" }).values.flatMap { group in
+            // Survivors come from the `https` entries when there are any.
+            let secure = group.filter(Self.isHTTPS)
+            let eligible = secure.isEmpty ? group : secure
+            guard group.count > 1,
+                  let survivor = eligible.first(where: { $0.id == preferredId })
+                    ?? eligible.first(where: { $0.id == activeServerId })
+                    ?? eligible.max(by: { $0.lastUsedAt < $1.lastUsedAt }) else { return [(ServerEntry, ServerEntry)]() }
+            return group.filter { $0.id != survivor.id }.map { ($0, survivor) }
+        }
+    }
+
+    /// Proofs that found no answer (offline, or no server user signed in at
+    /// both addresses) in this foreground, keyed by the pair and the
+    /// sessions on it, so they are not asked again until the next launch,
+    /// foreground, or sign-in. Proofs with an answer are stored.
+    @ObservationIgnored private var unansweredProofs: Set<String> = []
+    @ObservationIgnored private var foregroundObserver: NSObjectProtocol?
+    /// Launch and a return to the foreground can ask at once; one pass runs.
+    @ObservationIgnored private var provingDuplicateServers = false
+
+    /// Runs the login-session proof for candidate pairs that have no stored
+    /// answer, after launch and on every return to the foreground, then
+    /// merges the proven ones. Never blocks the caller.
+    func scheduleDuplicateServerProof() {
+        Task { @MainActor [weak self] in await self?.proveDuplicateServers() }
+    }
+
+    private func proveDuplicateServers() async {
+        guard !provingDuplicateServers else { return }
+        provingDuplicateServers = true
+        defer { provingDuplicateServers = false }
+        let saved = (try? accounts.accounts()) ?? []
+        var proved = false
+        for (dropped, survivor) in duplicateServerCandidates()
+        where ServerMerge.cachedProof(dropped.id, survivor.id, accounts: saved) == nil {
+            let sessions = saved.filter { $0.serverId == dropped.id || $0.serverId == survivor.id }
+                .map { "\($0.localAccountId):\($0.epoch?.uuidString ?? "")" }.sorted()
+            let attempt = ([ServerMerge.pairKey(dropped.id, survivor.id)] + sessions).joined(separator: ",")
+            guard !unansweredProofs.contains(attempt) else { continue }
+            if await ServerMerge.prove(dropped.id, survivor.id, accounts: accounts, http: httpClient) == nil {
+                unansweredProofs.insert(attempt)
+            } else {
+                proved = true
+            }
+        }
+        if proved { mergeDuplicateServersAfterLaunch() }
+    }
+
+    private func observeForegroundForDuplicateServerProof() {
+        #if os(macOS)
+        let name = NSApplication.didBecomeActiveNotification
+        #else
+        let name = UIApplication.willEnterForegroundNotification
+        #endif
+        foregroundObserver = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            self?.unansweredProofs.removeAll()
+            self?.scheduleDuplicateServerProof()
+        }
+    }
+
+    /// `mergeDuplicateServers` while the app runs: the active server's
+    /// account and downloads may have changed under the token store and the
+    /// download manager, so both load them again.
+    @discardableResult
+    private func mergeDuplicateServersAfterLaunch(preferring preferredId: String? = nil) -> [String: String] {
+        let survivors = mergeDuplicateServers(preferring: preferredId, whileRunning: true)
+        guard !survivors.isEmpty else { return survivors }
+        let tokenStore = tokenStore
+        let activeId = activeServerId ?? ""
+        Task { @MainActor in
+            // The active entry itself was dropped for the one just added.
+            await tokenStore.switchActiveServer(serverId: activeId)
+            await tokenStore.reloadAfterServerMerge()
+            #if !os(tvOS)
+            await DownloadManager.shared.activateScopeIfNeeded()
+            #endif
+            AccountDirectory.shared.reload()
+        }
+        return survivors
+    }
+
+    private static func isHTTPS(_ entry: ServerEntry) -> Bool {
+        URL(string: entry.url)?.scheme?.lowercased() == "https"
+    }
+
+    private func merge(_ dropped: ServerEntry, into survivor: ServerEntry, deferringAccount accountInUse: String? = nil) -> Bool {
+        // Never onto a cleartext address from an `https` one.
+        guard !Self.isHTTPS(dropped) || Self.isHTTPS(survivor) else { return false }
+        let plan: AccountServerMerge
+        do {
+            plan = try accounts.planServerMerge(dropping: dropped.id, into: survivor.id)
+            if let accountInUse, plan.touches(accountInUse) {
+                // Left for the next launch (`mergeDuplicateServers`).
+                recordRegistryEvent(phase: "mergeServer", outcome: "deferred", reason: "accountInUse")
+                return false
+            }
+            guard ServerMerge.moveLocalData(plan, from: dropped, to: survivor) else {
+                // Some downloads are still under the dropped server; keep
+                // both entries until a later launch moves them.
+                recordRegistryEvent(phase: "mergeServer", outcome: "deferred", reason: "downloadsNotMoved")
+                return false
+            }
+            try accounts.commitServerMerge(plan, origin: ServerRegistry.normalize(url: survivor.url))
+        } catch {
+            // Nothing is committed; the next launch or identity check retries.
+            Self.logger.error("Merging a duplicate server failed: \(String(describing: error), privacy: .public)")
+            recordRegistryEvent(phase: "mergeServer", outcome: "failed", reason: "accountsUnavailable")
+            return false
+        }
+        let previousEntries = entries
+        let previousActiveServerID = activeServerId
+        entries.removeAll { $0.id == dropped.id }
+        if let index = entries.firstIndex(where: { $0.id == survivor.id }) {
+            entries[index].lastUsedAt = max(entries[index].lastUsedAt, dropped.lastUsedAt)
+            if entries[index].fetchedName?.isEmpty != false { entries[index].fetchedName = dropped.fetchedName }
+        }
+        // An address just added, or an `https` one, replaces the active
+        // entry. Its accounts and profile moved with it, so the profile
+        // stays selected.
+        if activeServerId == dropped.id {
+            activeServerId = survivor.id
+            defaults.set(survivor.url, forKey: SharedStorage.serverUrlKey)
+            defaults.set(survivor.id, forKey: SharedStorage.activeServerIdKey)
+        }
+        guard persist() else {
+            // The accounts already moved; the dropped entry shows empty until
+            // the next launch removes it.
+            entries = previousEntries
+            if activeServerId != previousActiveServerID {
+                activeServerId = previousActiveServerID
+                mirrorActiveServer()
+            }
+            _ = persist()
+            recordRegistryEvent(phase: "mergeServer", outcome: "failed", reason: "persistFailed")
+            return false
+        }
+        ServerMerge.removeLeftovers(plan, from: dropped, stillSaved: entries)
+        launchPreferences.clearRememberedProfile(forAccounts: plan.removed.map(\.account.localAccountId))
+        recordRegistryEvent(phase: "mergeServer", outcome: "succeeded", reason: "sameDeployment")
+        return true
     }
 
     // MARK: - Server switching
@@ -542,10 +763,13 @@ final class ServerRegistry {
 
     /// Forget the entry and its credentials. Removing the active server
     /// selects the most recently used remaining server, or clears setup.
+    /// `onlyIf` is checked again under the identity transition, after the
+    /// push wait, and the server stays when it no longer holds.
     @discardableResult
     func remove(
         serverId: String,
-        resolveFallbackProfile: Bool = false
+        resolveFallbackProfile: Bool = false,
+        onlyIf stillRemovable: (@MainActor () -> Bool)? = nil
     ) async -> Bool {
         // Runs before the credentials are deleted: the retirement it queues
         // needs only the installation key and is retried after they are
@@ -556,14 +780,16 @@ final class ServerRegistry {
         if turnsPushOff {
             await unregisterPush(serverId)
         }
-        let removed = await removeEntry(serverId: serverId, resolveFallbackProfile: resolveFallbackProfile)
+        let removed = await removeEntry(serverId: serverId, resolveFallbackProfile: resolveFallbackProfile,
+                                        onlyIf: stillRemovable)
         if turnsPushOff, !removed {
             await restorePush(serverId)
         }
         return removed
     }
 
-    private func removeEntry(serverId: String, resolveFallbackProfile: Bool) async -> Bool {
+    private func removeEntry(serverId: String, resolveFallbackProfile: Bool,
+                             onlyIf stillRemovable: (@MainActor () -> Bool)?) async -> Bool {
         guard let transitionLease = await httpClient.beginIdentityTransition() else {
             recordRegistryEvent(
                 phase: "removeServer",
@@ -588,6 +814,10 @@ final class ServerRegistry {
                 outcome: "failed",
                 reason: "unknownServer"
             )
+            return false
+        }
+        if let stillRemovable, !(await stillRemovable()) {
+            await httpClient.endIdentityTransition(transitionLease)
             return false
         }
         let removesActiveServer = activeServerId == serverId
@@ -667,10 +897,10 @@ final class ServerRegistry {
             activeServerId = fallback?.id
         }
         // Two durable writes happen here: the registry without this entry,
-        // then the tombstone for its canonical session. Neither may stay
+        // then the removal of its accounts. Neither may stay
         // committed when the other fails. The registry goes first because
         // its rollback is a plain re-persist of the previous entries; when
-        // the tombstone then fails, that same rollback restores the entry so
+        // that removal then fails, that same rollback restores the entry so
         // the server is neither half-removed nor silently signed out.
         func rollBackRemoval(reason: String) async {
             entries = previousEntries
@@ -707,12 +937,12 @@ final class ServerRegistry {
             await rollBackRemoval(reason: "persistFailed")
             return false
         }
-        // A canonical record that cannot be tombstoned would outlive the
-        // entry and restore the session when the same server is added again,
-        // so the entry comes back instead. Process-local credentials for the
-        // server are already cleared and its runtime is blocked; the record
-        // itself is intact, which is the state the restored entry describes.
-        guard await tokenStore.deleteTokens(for: serverId) else {
+        // Accounts that cannot be removed would outlive the entry and
+        // restore the session when the same server is added again, so the
+        // entry comes back instead. Process-local credentials for the server
+        // are already cleared and its runtime is blocked; the accounts
+        // themselves are intact, which is the state the restored entry describes.
+        guard let removedAccounts = await tokenStore.removeAccounts(onServer: serverId) else {
             await rollBackRemoval(reason: "sessionInvalidationFailed")
             return false
         }
@@ -729,7 +959,7 @@ final class ServerRegistry {
         if removesActiveServer {
             await tokenStore.switchActiveServer(serverId: activeServerId ?? "")
         }
-        launchPreferences.clearRememberedProfile(for: serverId)
+        launchPreferences.clearRememberedProfile(forAccounts: removedAccounts)
         // Branding is cached by address; another saved entry for the same
         // address still uses it.
         if let removedURL = previousEntries.first(where: { $0.id == serverId })?.url,
@@ -868,6 +1098,20 @@ final class ServerRegistry {
             entries = legacy.entries
             activeServerId = legacy.activeServerId
             persist()
+        } else {
+            // Nothing loaded. Only a list that is truly absent is complete.
+            let stored = Result { try sharedKeychain.getChecked(Self.sharedTVRegistryAccount) }
+            if case .success(nil) = stored, defaults.data(forKey: Self.defaultsKey) == nil {
+                serverListIsComplete = true
+            } else {
+                serverListIsComplete = false
+            }
+        }
+        // Another Apple TV user's active server may have been merged into
+        // another while they were away (`mergeDuplicateServers`).
+        if let id = activeServerId, !entries.contains(where: { $0.id == id }),
+           let survivor = MergedServerIds.survivor(of: id), entries.contains(where: { $0.id == survivor }) {
+            activeServerId = survivor
         }
         if activeServerId == nil || !entries.contains(where: { $0.id == activeServerId }) {
             activeServerId = entries.sorted { $0.lastUsedAt > $1.lastUsedAt }.first?.id
@@ -883,6 +1127,7 @@ final class ServerRegistry {
             registerDiagnosticsSensitiveHosts(state.entries)
         } catch {
             Self.logger.error("Registry decode failed: \(error.localizedDescription, privacy: .public). Starting empty.")
+            serverListIsComplete = false
             return
         }
         // Seed the shared App Group suite on first launch after upgrade.
@@ -907,6 +1152,8 @@ final class ServerRegistry {
     /// a licence — these lines carry only the transition and its outcome.
     private func recordRegistryEvent(phase: String, outcome: String, reason: String) {
         #if os(iOS) || os(tvOS)
+        // Skipped for the duplicate merge `init` runs; see `initialized`.
+        guard initialized else { return }
         DiagTrace.breadcrumb(
             .essential,
             category: .lifecycle,
@@ -996,8 +1243,8 @@ final class ServerRegistry {
             guard let profileID = entries[index].legacyProfileId,
                   !profileID.isEmpty else { continue }
             let serverID = entries[index].id
-            let accessKey = TokenStore.accessTokenKey(for: serverID)
-            let epochKey = TokenStore.accountEpochKey(for: serverID)
+            let accessKey = SharedStorage.accessTokenAccount(for: serverID)
+            let epochKey = SharedStorage.accountEpochAccount(for: serverID)
 
             guard accountKeychain.get(accessKey) != nil else {
                 // A signed-out legacy entry has no account to which the old
@@ -1025,7 +1272,7 @@ final class ServerRegistry {
             guard launchPreferences.migrateLegacyProfile(
                 profileID: profileID,
                 requiresPIN: profileKeychain.get(
-                    TokenStore.profileTokenKey(for: serverID)
+                    SharedStorage.profileTokenAccount(for: serverID)
                 ) != nil,
                 accountEpoch: accountEpoch,
                 for: serverID
@@ -1037,6 +1284,16 @@ final class ServerRegistry {
                 entries[index].legacyProfileId = profileID
             }
         }
+    }
+
+    /// Moves per-server sessions into accounts (`AccountMigration`), then this
+    /// device user's proofs and remembered profiles onto those accounts.
+    /// Runs after the two registry migrations above, which still write the
+    /// per-server slots it reads.
+    private func migrateAccountsIfNeeded() {
+        let migration = AccountMigration(keychain: keychain, accounts: accounts)
+        migration.runIfNeeded(servers: entries.map { ($0.id, $0.url) }, serverListIsComplete: serverListIsComplete)
+        migration.adoptCurrentUserState(launchPreferences: launchPreferences, defaults: defaults)
     }
 
     // MARK: - Migration from the continuum → silo rename
@@ -1087,9 +1344,9 @@ final class ServerRegistry {
         let id = Self.serverId(for: normalized)
 
         let legacyToNew: [(legacy: String, new: String, audience: KeychainAudience)] = [
-            ("com.continuum.app.accessToken", TokenStore.accessTokenKey(for: id), .userIndependent),
-            ("com.continuum.app.refreshToken", TokenStore.refreshTokenKey(for: id), .userIndependent),
-            ("com.continuum.app.profileToken", TokenStore.profileTokenKey(for: id), .currentUser),
+            ("com.continuum.app.accessToken", SharedStorage.accessTokenAccount(for: id), .userIndependent),
+            ("com.continuum.app.refreshToken", SharedStorage.refreshTokenAccount(for: id), .userIndependent),
+            ("com.continuum.app.profileToken", SharedStorage.profileTokenAccount(for: id), .currentUser),
         ]
         var copiedLegacyAccounts: [String] = []
         for (legacy, new, audience) in legacyToNew {
@@ -1100,13 +1357,13 @@ final class ServerRegistry {
             }
         }
 
-        let entry = ServerEntry(
+        var entry = ServerEntry(
             id: id,
             url: normalized,
             fetchedName: nil,
-            profileId: defaults.string(forKey: SharedStorage.profileIdKey),
             lastUsedAt: Date()
         )
+        entry.legacyProfileId = defaults.string(forKey: SharedStorage.profileIdKey)
         self.entries = [entry]
         self.activeServerId = id
         // load() registers persisted entries for redaction, but migration

@@ -48,11 +48,12 @@ final class ProfileVerificationSignalTests: XCTestCase {
         let serverURL = "https://profile-verification.example"
         await tokens.switchActiveServer(serverId: serverId)
         await tokens.setServerUrl(serverURL)
+        // A profile proof belongs to a signed-in account, so sign in first.
+        let saved = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
+        XCTAssertTrue(saved)
         await tokens.setProfileId("profile")
         let savedProof = await tokens.setProfileToken("proof")
         XCTAssertTrue(savedProof)
-        let saved = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
-        XCTAssertTrue(saved)
 
         let stub = StubURLProtocol.Handler()
         let response = reply ?? .json(Self.verificationProblem, status: 403,
@@ -212,6 +213,24 @@ final class ProfileVerificationSignalTests: XCTestCase {
         let reactivated = await h.tokens.activateProfile(profileID: "profile", profileToken: "proof-2",
             expectedAccount: event.account)
         XCTAssertTrue(reactivated)
+
+        await recoveryService(h).recoverFromProfileVerificationRequired(event)
+
+        let profileID = await h.tokens.getProfileId()
+        let proof = await h.tokens.getProfileToken()
+        XCTAssertEqual(profileID, "profile")
+        XCTAssertEqual(proof, "proof-2")
+    }
+
+    /// The same holds when the open profile's proof was renewed in place
+    /// (Add Profile's PIN step): a recovery queued for the replaced proof
+    /// must not close the profile the person just verified again.
+    func testRecoveryKeepsARenewedProofOfTheSameProfile() async throws {
+        let h = try await harness()
+        let event = try await rejectedEvent(h)
+        let renewed = await h.tokens.renewProfileProof("proof-2", forProfile: "profile",
+            expectedAccount: event.account)
+        XCTAssertTrue(renewed)
 
         await recoveryService(h).recoverFromProfileVerificationRequired(event)
 

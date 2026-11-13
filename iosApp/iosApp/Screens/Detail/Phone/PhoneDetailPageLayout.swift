@@ -77,7 +77,7 @@ struct PhoneDetailPageLayout<Column: View, PaneArtwork: View, PaneSidebar: View,
     #if os(iOS)
     private var statusColumn: StatusColumnLayout? {
         StatusColumnLayout(safeArea: EdgeInsets(
-            top: topSafeArea,
+            top: 0,
             leading: page.leadingInset,
             bottom: 0,
             trailing: page.trailingInset
@@ -95,8 +95,6 @@ struct PhoneDetailPageLayout<Column: View, PaneArtwork: View, PaneSidebar: View,
         return HStack(alignment: .top, spacing: 0) {
             ScrollView(.vertical, showsIndicators: false) {
                 paneSidebar()
-                    // The selectors sit low in the sidebar, with room above them.
-                    .environment(\.detailSelectorPopover, .sidebar)
                     .padding(.horizontal, 18)
                     // Clears the Close button, which moves into the sidebar.
                     .padding(.top, topSafeArea + Self.contentPaneTopInset)
@@ -239,19 +237,11 @@ extension EnvironmentValues {
     /// that extend beneath it.
     @Entry var detailPageTopSafeArea: CGFloat = 0
 
-    /// How the playback selectors' popover attaches and how big it is.
-    @Entry var detailSelectorPopover: DetailSelectorPopover = .standard
-}
-
-/// How the playback selectors' popover appears on a regular-size screen:
-/// below them as a titled list in a single column, and above them as a bare
-/// list of options in the split page's sidebar.
-struct DetailSelectorPopover {
-    let arrowEdge: Edge
-    let isCompact: Bool
-
-    static let standard = DetailSelectorPopover(arrowEdge: .top, isCompact: false)
-    static let sidebar = DetailSelectorPopover(arrowEdge: .bottom, isCompact: true)
+    #if os(macOS)
+    /// The detail page's height in the window, set by `PhoneDetailPageSurface`.
+    /// Zero until measured.
+    @Entry var detailPageVisibleHeight: CGFloat = 0
+    #endif
 }
 
 extension View {

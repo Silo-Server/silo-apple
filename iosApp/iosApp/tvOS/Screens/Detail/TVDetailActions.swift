@@ -413,6 +413,29 @@ enum TVCircleFocusMotion {
 
 // MARK: - Detail action row
 
+/// Focus targets in `TVDetailActionRow`. Each playback selector has its own
+/// value so returning to the row can land on the exact control the viewer left.
+enum TVDetailAction: Hashable {
+    case play
+    case startOver
+    case edition
+    case version
+    case audio
+    case subtitles
+    case watchlist
+    case more
+}
+
+/// Row actions that are mounted but disabled, reported by the playback
+/// selectors so the row never offers one as its entry target.
+struct TVDisabledDetailActionsKey: PreferenceKey {
+    static let defaultValue: Set<TVDetailAction> = []
+
+    static func reduce(value: inout Set<TVDetailAction>, nextValue: () -> Set<TVDetailAction>) {
+        value.formUnion(nextValue())
+    }
+}
+
 /// Shared native focus row for movie, episode, season and series detail pages.
 /// The only imperative focus work is a bounded page-entry retry for Play;
 /// directional movement remains owned by the tvOS focus engine.
@@ -420,14 +443,6 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     enum InitialFocusScope: Equatable {
         case page
         case season(key: String?)
-    }
-
-    private enum ActionID: Hashable {
-        case play
-        case startOver
-        case playbackSelectors
-        case watchlist
-        case more
     }
 
     let playTitle: String?
@@ -454,22 +469,29 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     var isPlaybackLoading = false
     var allowsInitialPlayFocus = true
     var tracksInitialFocusNavigation = false
-    @ViewBuilder let playbackSelectors: () -> PlaybackSelectors
+    /// Receives the row's focus binding; bind each selector to its
+    /// `TVDetailAction` so the row can restore it.
+    @ViewBuilder let playbackSelectors: (FocusState<TVDetailAction?>.Binding) -> PlaybackSelectors
     @ViewBuilder let moreMenu: () -> MoreMenu
 
     @Environment(\.resetFocus) private var resetFocus
+    @Environment(\.locale) private var locale
     @State private var didResetInitialPlayFocus = false
     @State private var initialFocusSeasonKey: String?
     @State private var initialPlayFocusTask: Task<Void, Never>?
-    @FocusState private var focusedAction: ActionID?
-    @FocusState private var playbackSelectorsFocused: Bool
+    @State private var lastFocusedAction: TVDetailAction = .play
+    @State private var disabledActions: Set<TVDetailAction> = []
+    @FocusState private var focusedAction: TVDetailAction?
 
     var body: some View {
         HStack(spacing: stabilizesFocusMotion ? 18 : 36) {
             if playTitle != nil || stabilizesFocusMotion {
                 TVPrimaryPillButton(
                     icon: "play.fill",
-                    title: playTitle ?? (isPlaybackLoading ? "Loading episodes…" : "Play"),
+                    title: playTitle ?? AppLanguage.string(
+                        isPlaybackLoading ? .detailEpisodesLoading : .commonPlay,
+                        locale: locale
+                    ),
                     subtitle: playSubtitle,
                     stabilizesFocusMotion: stabilizesFocusMotion,
                     fixedWidth: primaryButtonWidth,
@@ -491,26 +513,29 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                 if let onStartOver {
                     TVCircleActionButton(
                         icon: "backward.end.fill",
-                        title: "Start Over",
-                        accessibilityLabel: "Start Over",
+                        title: AppLanguage.string(.detailStartOver, locale: locale),
+                        accessibilityLabel: AppLanguage.string(.detailStartOver, locale: locale),
                         stabilizesFocusMotion: stabilizesFocusMotion,
                         action: onStartOver
                     )
                     .focused($focusedAction, equals: .startOver)
                 }
 
-                playbackSelectors()
-                    .focused($playbackSelectorsFocused)
+                playbackSelectors($focusedAction)
             }
 
             TVCircleActionButton(
                 icon: "bookmark",
                 iconActive: "bookmark.fill",
                 isActive: inWatchlist,
-                title: stabilizesFocusMotion
-                    ? "Watchlist"
-                    : (inWatchlist ? "Remove from Watchlist" : "Watchlist"),
-                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
+                title: AppLanguage.string(
+                    !stabilizesFocusMotion && inWatchlist ? .personalWatchlistRemove : .detailWatchlist,
+                    locale: locale
+                ),
+                accessibilityLabel: AppLanguage.string(
+                    inWatchlist ? .detailWatchlistRemove : .detailWatchlistAdd,
+                    locale: locale
+                ),
                 stabilizesFocusMotion: stabilizesFocusMotion,
                 action: onToggleWatchlist
             )
@@ -522,6 +547,16 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         .focused(rowFocused)
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+        // Entering the row from below lands on the last focused action,
+        // else Play, instead of whichever control sits above the season
+        // pill or card the focus came from.
+        .defaultFocus($focusedAction, entryAction, priority: .userInitiated)
+        .onChange(of: focusedAction) { _, action in
+            if let action { lastFocusedAction = action }
+        }
+        .onPreferenceChange(TVDisabledDetailActionsKey.self) { actions in
+            disabledActions = actions
+        }
         // Attaching the handler consumes Up at this hard top boundary of a
         // pushed detail page, keeping focus on the action row; Up must never
         // behave like Back/Menu or pop the page to the root.
@@ -532,15 +567,9 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                 cancelInitialPlayFocusRetry()
             }
         }
-        .onChange(of: playbackSelectorsFocused) { _, isFocused in
-            if isFocused {
-                focusedAction = .playbackSelectors
-            } else if focusedAction == .playbackSelectors {
-                focusedAction = nil
-            }
-        }
         .task(id: focusResetKey) {
             cancelInitialPlayFocusRetry()
+            lastFocusedAction = .play
             didResetInitialPlayFocus = !allowsInitialPlayFocus
             initialFocusSeasonKey = seasonKey
             await Task.yield()
@@ -568,6 +597,18 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     private var seasonKey: String? {
         guard case .season(let key) = initialFocusScope else { return nil }
         return key
+    }
+
+    /// Play stands in for an action that cannot take focus: Start Over once
+    /// the episode is no longer in progress, or a selector disabled while a
+    /// newly focused episode's versions load. Watchlist, always enabled,
+    /// stands in for Play while Series episodes are still loading.
+    private var entryAction: TVDetailAction {
+        var action = lastFocusedAction
+        if action == .startOver, onStartOver == nil { action = .play }
+        if disabledActions.contains(action) { action = .play }
+        if action == .play, playTitle == nil { return .watchlist }
+        return action
     }
 
     private func resetInitialPlayFocus() {
@@ -634,17 +675,22 @@ struct TVPillButtonStyle: ButtonStyle {
     let focusTreatment: FocusTreatment
     let stabilizesFocusMotion: Bool
     let fixedWidth: CGFloat?
+    /// Drawn focused without holding focus: the player's press capture owns
+    /// the remote and sends Select here.
+    let isSelectTarget: Bool
 
     init(
         kind: Kind,
         focusTreatment: FocusTreatment = .hero,
         stabilizesFocusMotion: Bool = false,
-        fixedWidth: CGFloat? = nil
+        fixedWidth: CGFloat? = nil,
+        isSelectTarget: Bool = false
     ) {
         self.kind = kind
         self.focusTreatment = focusTreatment
         self.stabilizesFocusMotion = stabilizesFocusMotion
         self.fixedWidth = fixedWidth
+        self.isSelectTarget = isSelectTarget
     }
 
     func makeBody(configuration: Configuration) -> some View {
@@ -653,7 +699,8 @@ struct TVPillButtonStyle: ButtonStyle {
             kind: kind,
             focusTreatment: focusTreatment,
             stabilizesFocusMotion: stabilizesFocusMotion,
-            fixedWidth: fixedWidth
+            fixedWidth: fixedWidth,
+            isSelectTarget: isSelectTarget
         )
     }
 }
@@ -664,8 +711,11 @@ private struct TVPillButtonBody: View {
     let focusTreatment: TVPillButtonStyle.FocusTreatment
     let stabilizesFocusMotion: Bool
     let fixedWidth: CGFloat?
+    let isSelectTarget: Bool
 
-    @Environment(\.isFocused) private var isFocused
+    @Environment(\.isFocused) private var hasFocus
+
+    private var isFocused: Bool { hasFocus || isSelectTarget }
 
     var body: some View {
         configuration.label

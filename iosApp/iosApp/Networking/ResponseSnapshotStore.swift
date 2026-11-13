@@ -2,12 +2,13 @@ import Foundation
 
 /// Last-known copies of the responses the first screens draw (Home, For You,
 /// the library list, library landings, first grid pages), kept in Caches per
-/// server and profile. A launch seeds `ResponseCache` from them before the
-/// app builds, so a slow or unreachable server still opens on content; fresh
-/// responses replace them as they arrive.
+/// server, account, and profile. A launch seeds `ResponseCache` from them
+/// before the app builds, so a slow or unreachable server still opens on
+/// content; fresh responses replace them as they arrive.
 enum ResponseSnapshotStore {
     struct Scope: Equatable, Sendable {
         let serverId: String
+        let localAccountId: String
         let profileId: String
     }
 
@@ -16,7 +17,12 @@ enum ResponseSnapshotStore {
         if key == CacheKey.homeSections || key == CacheKey.recommendations { return SectionsResponse.self }
         if key == CacheKey.userLibraries { return LibrariesResponse.self }
         if key.hasPrefix("library:"), key.hasSuffix(":sections") { return SectionsResponse.self }
-        if key.hasPrefix("browse:") || key.hasPrefix("tvlibrary:") { return CatalogResponse.self }
+        if key.hasPrefix("browse:") || key.hasPrefix("tvlibrary:") {
+            // A letter's page is a jump made during a visit, never a screen
+            // the app opens on. Saving one per letter would push the first
+            // screens out of the snapshots kept per scope.
+            return CatalogFilterState.isLetterPage(cacheKey: key) ? nil : CatalogResponse.self
+        }
         return nil
     }
 
@@ -33,7 +39,7 @@ enum ResponseSnapshotStore {
         guard fileName(forKey: key).utf8.count <= maxFileNameBytes else { return }
         queue.async {
             guard let data = try? JSONEncoder().encode(value) else { return }
-            let directory = directory(for: scope, in: root)
+            let directory = adoptedDirectory(for: scope, in: root)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try? data.write(to: directory.appendingPathComponent(fileName(forKey: key)), options: .atomic)
             trim(directory)
@@ -43,7 +49,7 @@ enum ResponseSnapshotStore {
     /// Removes `scope`'s snapshots whose key matches.
     static func remove(scope: Scope, in root: URL = defaultRoot, where matches: @escaping @Sendable (String) -> Bool) {
         queue.async {
-            let directory = directory(for: scope, in: root)
+            let directory = adoptedDirectory(for: scope, in: root)
             guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
                 return
             }
@@ -64,7 +70,7 @@ enum ResponseSnapshotStore {
     /// always sees the latest stored state.
     static func load(scope: Scope, in root: URL = defaultRoot) -> [(key: String, value: Any)] {
         queue.sync {
-            let directory = directory(for: scope, in: root)
+            let directory = adoptedDirectory(for: scope, in: root)
             guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
                 return []
             }
@@ -83,8 +89,91 @@ enum ResponseSnapshotStore {
             .appendingPathComponent("ResponseSnapshots", isDirectory: true)
     }
 
+    /// Removes every snapshot of `localAccountId` on `serverId`, and with
+    /// `includingLegacy` the server's snapshots from before accounts (the
+    /// account owned them). For sign-out (`AccountLocalData.purge`).
+    static func removeAll(
+        ofAccount localAccountId: String,
+        onServer serverId: String,
+        includingLegacy: Bool,
+        in root: URL = defaultRoot
+    ) {
+        queue.async {
+            guard let directories = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
+                return
+            }
+            let accountPrefix = "\(AccountScopedKeyAdoption.versionMarker)|\(serverId)|\(localAccountId)|"
+            let legacyPrefix = "\(serverId)|"
+            for directory in directories {
+                guard let name = decode(directory.lastPathComponent) else { continue }
+                if name.hasPrefix(accountPrefix) || (includingLegacy && name.hasPrefix(legacyPrefix)) {
+                    try? FileManager.default.removeItem(at: directory)
+                }
+            }
+        }
+    }
+
+    /// Moves a merged server's snapshots to the survivor (`ServerMerge`):
+    /// each listed account keeps its own, and with a `legacyTarget` the
+    /// snapshots from before accounts become that account's. A scope the
+    /// survivor already has keeps its own; the rest of the merged server's
+    /// snapshots are deleted.
+    static func moveAll(
+        fromServer droppedServerId: String,
+        toServer survivorServerId: String,
+        accounts: Set<String>,
+        legacyTarget: String?,
+        in root: URL = defaultRoot
+    ) {
+        queue.async {
+            let fm = FileManager.default
+            guard let directories = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
+            let marker = AccountScopedKeyAdoption.versionMarker
+            for directory in directories {
+                guard let name = decode(directory.lastPathComponent) else { continue }
+                let parts = name.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+                let scope: Scope?
+                if parts.count == 4, parts[0] == marker, parts[1] == droppedServerId {
+                    scope = accounts.contains(parts[2])
+                        ? Scope(serverId: survivorServerId, localAccountId: parts[2], profileId: parts[3]) : nil
+                } else if parts.count == 2, parts[0] == droppedServerId {
+                    scope = legacyTarget.map { Scope(serverId: survivorServerId, localAccountId: $0, profileId: parts[1]) }
+                } else {
+                    continue
+                }
+                if let scope {
+                    let target = self.directory(for: scope, in: root)
+                    if !fm.fileExists(atPath: target.path), (try? fm.moveItem(at: directory, to: target)) != nil { continue }
+                }
+                try? fm.removeItem(at: directory)
+            }
+        }
+    }
+
+    /// `v2|<server>|<account>|<profile>`, encoded. Server and account IDs
+    /// never contain "|" and no server ID is "v2", so no directory from
+    /// before accounts (`<server>|<profile>`) has this name.
     private static func directory(for scope: Scope, in root: URL) -> URL {
+        let name = "\(AccountScopedKeyAdoption.versionMarker)|\(scope.serverId)|\(scope.localAccountId)|\(scope.profileId)"
+        return root.appendingPathComponent(encode(name), isDirectory: true)
+    }
+
+    private static func legacyDirectory(for scope: Scope, in root: URL) -> URL {
         root.appendingPathComponent(encode("\(scope.serverId)|\(scope.profileId)"), isDirectory: true)
+    }
+
+    /// `scope`'s directory, after the account that owns its server's
+    /// snapshots from before accounts takes over the old one. Runs on
+    /// `queue`.
+    private static func adoptedDirectory(for scope: Scope, in root: URL) -> URL {
+        let directory = directory(for: scope, in: root)
+        AccountScopedKeyAdoption.adoptDirectory(
+            from: legacyDirectory(for: scope, in: root),
+            to: directory,
+            serverId: scope.serverId,
+            localAccountId: scope.localAccountId
+        )
+        return directory
     }
 
     private static func fileName(forKey key: String) -> String {
@@ -93,7 +182,11 @@ enum ResponseSnapshotStore {
 
     private static func key(fromFileName name: String) -> String? {
         guard name.hasSuffix(".json") else { return nil }
-        var base64 = String(name.dropLast(5))
+        return decode(String(name.dropLast(5)))
+    }
+
+    private static func decode(_ name: String) -> String? {
+        var base64 = name
             .replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
         base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)

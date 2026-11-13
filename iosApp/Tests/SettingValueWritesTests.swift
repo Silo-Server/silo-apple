@@ -107,46 +107,17 @@ final class SettingValueWritesTests: XCTestCase {
         XCTAssertEqual(stub.requests.last?.query, ["scope": "profile_library", "library_id": "7"])
     }
 
-    func testShortcutWriteSendsItemAndPresenceOnly() async throws {
-        let item = PrimaryMenuItem.section(libraryId: 7, sectionId: "recently-added", label: "Recently Added")
-        stub.reply(200, receipt(key: "nav.shortcuts", scope: "profile", value: #"{"items":[]}"#))
-
-        try await api.putNavigationShortcutItem(item, present: true)
-
-        let request = try XCTUnwrap(stub.requests.last)
-        XCTAssertEqual(request.method, "PUT")
-        XCTAssertEqual(request.path, "/api/v2/settings/values/nav.shortcuts/item")
-        XCTAssertTrue(request.query.isEmpty)
-        XCTAssertNil(request.header("X-Silo-Mutation-Id"))
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.body)) as? [String: Any])
-        XCTAssertEqual(Set(object.keys), ["item", "present"])
-        XCTAssertEqual(object["present"] as? Bool, true)
-        let encoded = try XCTUnwrap(object["item"] as? [String: Any])
-        XCTAssertEqual(encoded["type"] as? String, "section")
-        XCTAssertEqual(encoded["section_id"] as? String, "recently-added")
-    }
-
-    func testBuiltinShortcutIsRefusedBeforeSending() async throws {
-        do {
-            try await api.putNavigationShortcutItem(.builtin(.home), present: true)
-            XCTFail("built-in destinations are not shortcuts")
-        } catch let error as SettingsAPIError {
-            guard case .invalidValue = error else { return XCTFail("unexpected \(error)") }
-        }
-        XCTAssertTrue(stub.requests.isEmpty)
-    }
-
     func testDeleteExpectsNoContentAndTreatsAMissingRowAsCleared() async throws {
         stub.reply(204, "")
-        try await api.deleteValue(key: .navPrimaryMenu, scope: .profileClient)
+        try await api.deleteValue(key: .uiCardPresentation, scope: .profileClient)
         let request = try XCTUnwrap(stub.requests.last)
         XCTAssertEqual(request.method, "DELETE")
-        XCTAssertEqual(request.path, "/api/v2/settings/values/nav.primary_menu")
+        XCTAssertEqual(request.path, "/api/v2/settings/values/ui.card_presentation")
         XCTAssertEqual(request.query, ["scope": "profile_client"])
 
         stub.reply(404, problem(404, type: "https://siloserver.org/docs/api/v2/problems/not_found"))
         do {
-            try await api.deleteValue(key: .navPrimaryMenu, scope: .profileClient)
+            try await api.deleteValue(key: .uiCardPresentation, scope: .profileClient)
             XCTFail("a delete with nothing stored must report .noValueAtScope")
         } catch let error as SettingsAPIError {
             XCTAssertEqual(error, .noValueAtScope)
@@ -288,18 +259,6 @@ final class SettingValueWritesTests: XCTestCase {
             XCTFail("a lost connection must throw")
         } catch let error as SettingsAPIError {
             XCTAssertEqual(error.writeFailure, .retry, "a write lost in flight is retried within the bound")
-        }
-    }
-
-    func testShortcutConflictIsRetryable() async throws {
-        stub.reply(409, problem(409, type: "https://siloserver.org/docs/api/v2/problems/conflict"))
-        do {
-            try await api.putNavigationShortcutItem(
-                .library(libraryId: 3, label: "Films"), present: true
-            )
-            XCTFail("a 409 must throw")
-        } catch let error as SettingsAPIError {
-            XCTAssertEqual(error.writeFailure, .retry, "the server's compare-and-set lost; the request may be sent again")
         }
     }
 

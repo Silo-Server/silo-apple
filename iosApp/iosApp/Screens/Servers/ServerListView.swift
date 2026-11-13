@@ -12,9 +12,9 @@ import SwiftUI
 struct ServerListView: View {
     @Environment(AppRouter.self) private var router
     @State private var registry = ServerRegistry.shared
-    @State private var removeTarget: ServerEntry?
     @State private var isResolvingServer = false
     #if os(tvOS)
+    @State private var removeTarget: ServerEntry?
     @FocusState private var focusedRow: TVRow?
     #endif
 
@@ -26,9 +26,9 @@ struct ServerListView: View {
 
             if let entry = removeTarget {
                 TVSettingsConfirmationOverlay(
-                    title: "Remove this server?",
-                    message: "Sign-in credentials for \(entry.displayName) will be forgotten on this device.",
-                    confirmTitle: "Remove",
+                    title: .serversRemoveConfirmTitle,
+                    message: .serversRemoveBodyAppleTv(entry.displayName),
+                    confirmTitle: .serversRemoveConfirm,
                     cancel: { dismissRemoveConfirmation(for: entry) },
                     confirm: { remove(entry) }
                 )
@@ -39,25 +39,13 @@ struct ServerListView: View {
         .background(SettingsBackdrop())
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: removeTarget)
         #else
+        // Removing asks through the app's shared confirmation
+        // (`AccountRemovalConfirmationModifier`), which names the accounts
+        // and downloads that go with the server.
         contentList
             .disabled(isResolvingServer)
-            .navigationTitle("Servers")
+            .navigationTitle(Text(.serversTitle))
             .siloNavigationTitleDisplayMode(.inline)
-            .alert(
-                "Remove this server?",
-                isPresented: Binding(
-                    get: { removeTarget != nil },
-                    set: { if !$0 { removeTarget = nil } }
-                ),
-                presenting: removeTarget
-            ) { entry in
-                Button("Remove", role: .destructive) {
-                    remove(entry)
-                }
-                Button("Cancel", role: .cancel) { removeTarget = nil }
-            } message: { entry in
-                Text("Sign-in credentials for \(entry.displayName) will be forgotten on this device.")
-            }
         #endif
     }
 
@@ -66,31 +54,31 @@ struct ServerListView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 8) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("CONNECTION")
+                    Text(.serversManageEyebrow)
                         .font(.system(size: 15, weight: .semibold, design: .monospaced))
                         .tracking(2)
                         .foregroundColor(.siloSecondaryText)
-                    Text("Manage Servers")
+                    Text(.serversManageTitle)
                         .font(.system(size: 38, weight: .semibold))
                         .foregroundColor(.siloOnSurface)
-                    Text("Manage saved Silo servers or add another connection.")
+                    Text(.serversManageBody)
                         .font(.system(size: 20))
                         .foregroundColor(.siloSecondaryText)
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 18)
 
-                TVSettingsSectionHeader("SAVED SERVERS")
+                TVSettingsSectionHeader(.serversManageSavedHeader)
 
                 if registry.sortedEntries.isEmpty {
-                    TVSettingsFooter("No servers have been saved on this Apple TV.")
+                    TVSettingsFooter(.serversManageEmpty)
                 } else {
                     ForEach(registry.sortedEntries) { entry in
                         tvOSRow(for: entry)
                     }
                 }
 
-                TVSettingsSectionHeader("CONNECTIONS")
+                TVSettingsSectionHeader(.serversManageConnectionsHeader)
 
                 Button {
                     router.navigate(to: .serverSetup)
@@ -99,10 +87,10 @@ struct ServerListView: View {
                         Image(systemName: "plus")
                             .font(.system(size: 22, weight: .semibold))
                             .frame(width: 28)
-                        Text("Add Server")
+                        Text(.serversAddServer)
                             .font(.system(size: 26))
                         Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
+                        Image(systemName: "chevron.forward")
                             .font(.system(size: 18, weight: .semibold))
                             .opacity(0.55)
                     }
@@ -110,7 +98,7 @@ struct ServerListView: View {
                 .buttonStyle(TVSettingsPaneRowStyle())
                 .focused($focusedRow, equals: .add)
 
-                TVSettingsFooter("Select the trash icon to remove a saved server.")
+                TVSettingsFooter(.serversManageRemoveHint)
             }
             .frame(maxWidth: 1080, alignment: .leading)
             .padding(.bottom, 64)
@@ -139,9 +127,9 @@ struct ServerListView: View {
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($focusedRow, equals: .server(entry.id))
             .accessibilityHint(
-                entry.id == registry.activeServerId
-                    ? "Current server. Server names are managed by the server administrator"
-                    : "Switch to this server. Server names are managed by the server administrator"
+                Text(entry.id == registry.activeServerId
+                    ? LocalizedStringResource.serversRowHintCurrent
+                    : .serversRowHintSwitch)
             )
 
             Button {
@@ -154,7 +142,7 @@ struct ServerListView: View {
             .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
             .frame(width: 92)
             .focused($focusedRow, equals: .remove(entry.id))
-            .accessibilityLabel("Remove \(entry.displayName)")
+            .accessibilityLabel(Text(.serversRemoveAudio(entry.displayName)))
         }
     }
 
@@ -181,7 +169,7 @@ struct ServerListView: View {
                     row(for: entry)
                 }
             } header: {
-                Text("Saved servers")
+                Text(.serversSavedHeader)
                     .foregroundColor(.siloSecondaryText)
             }
             .listRowBackground(Color.siloGroupedCell)
@@ -190,7 +178,7 @@ struct ServerListView: View {
                 Button {
                     router.resetToServerSetup()
                 } label: {
-                    Label("Add Server", systemImage: "plus")
+                    Label(.serversAddServer, systemImage: "plus")
                         .foregroundColor(.siloOnSurface)
                 }
             }
@@ -205,12 +193,7 @@ struct ServerListView: View {
             switchTo(entry)
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: entry.id == registry.activeServerId
-                      ? "checkmark.circle.fill"
-                      : "server.rack")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(.siloOnSurface)
-                    .frame(width: 28)
+                MarqueeServerMark(server: entry, size: 32)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.displayName)
@@ -231,15 +214,21 @@ struct ServerListView: View {
                 }
                 .multilineTextAlignment(.leading)
                 Spacer()
+                if entry.id == registry.activeServerId {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.siloOnSurface)
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityValue(entry.id == registry.activeServerId ? Text(.serversActive) : Text(verbatim: ""))
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
-                removeTarget = entry
+                Task { await router.confirmRemoveServer(entry.id) }
             } label: {
-                Label("Remove", systemImage: "trash")
+                Label(.serversRemove, systemImage: "trash")
             }
         }
     }
@@ -265,22 +254,25 @@ struct ServerListView: View {
         }
     }
 
+    #if os(tvOS)
     private func remove(_ entry: ServerEntry) {
         guard !isResolvingServer else { return }
         isResolvingServer = true
         let wasActive = entry.id == registry.activeServerId
         Task {
-            let removed = await registry.remove(serverId: entry.id, resolveFallbackProfile: wasActive)
+            // Every account on the server signs out first, deleting its downloads.
+            let removed = await AccountSessions.removeServer(entry.id)
             isResolvingServer = false
             removeTarget = nil
             guard removed else {
-                router.accountActionError = "Silo couldn't remove the saved server. Please try again."
+                router.accountActionError = AppLanguage.string(.serversRemoveFailedToast)
                 if wasActive { refreshAuthState() }
                 return
             }
             if wasActive { refreshAuthState() }
         }
     }
+    #endif
 
     /// Recompute auth state for the (possibly new) active server and
     /// drop any in-tab navigation that belonged to the previous server.
@@ -302,9 +294,8 @@ private struct TVServerSummaryLabel: View {
 
     var body: some View {
         HStack(spacing: 18) {
-            Image(systemName: isActive ? "checkmark.circle.fill" : "server.rack")
-                .font(.system(size: 24, weight: .medium))
-                .frame(width: 34)
+            // Its branding mark, else the Silo project icon (spec §4.1).
+            MarqueeServerMark(server: entry, size: 48)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(entry.displayName)
@@ -324,14 +315,14 @@ private struct TVServerSummaryLabel: View {
             Spacer(minLength: 16)
 
             if isActive {
-                Text("Active")
+                Text(.serversActive)
                     .font(.system(size: 19, weight: .semibold))
                     .opacity(0.72)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(isActive ? "Active" : "Saved")
+        .accessibilityValue(Text(isActive ? LocalizedStringResource.serversActive : .serversSaved))
     }
 }
 #endif

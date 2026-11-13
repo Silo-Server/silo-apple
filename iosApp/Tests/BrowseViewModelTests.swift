@@ -8,11 +8,10 @@ final class BrowseViewModelTests: XCTestCase {
         super.tearDown()
     }
 
-    func testMixedLibraryCategorySelectsTheMatchingVideoScope() {
-        XCTAssertEqual(mixedLibraryVideoScope(libraryType: "mixed", category: .movies, selection: .series), .movie)
-        XCTAssertEqual(mixedLibraryVideoScope(libraryType: "mixed", category: .series, selection: .movie), .series)
-        XCTAssertEqual(mixedLibraryVideoScope(libraryType: "mixed", category: nil, selection: .series), .series)
-        XCTAssertNil(mixedLibraryVideoScope(libraryType: "audiobooks", category: nil, selection: .movie))
+    func testMixedLibraryUsesTheSelectedVideoScope() {
+        XCTAssertEqual(mixedLibraryVideoScope(libraryType: "mixed", selection: .series), .series)
+        XCTAssertEqual(mixedLibraryVideoScope(libraryType: "mixed", selection: .movie), .movie)
+        XCTAssertNil(mixedLibraryVideoScope(libraryType: "audiobooks", selection: .movie))
     }
 
     func testSwitchingScopeOnSameLibraryClearsOldItemsAndUsesScopedCache() async throws {
@@ -38,6 +37,225 @@ final class BrowseViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.items.map(\.contentId), ["show"])
         XCTAssertEqual(viewModel.mediaType, .series)
         XCTAssertFalse(viewModel.hasMore)
+    }
+
+    func testJumpingPastTheLoadedTitlesKeepsTheLettersBeforeItWithinReach() async throws {
+        let stub = APIv2TestStub()
+        let api = try await stubbedAPI(stub)
+        let letters = #"{"total":130,"letters":[{"letter":"A","count":70,"position":0},{"letter":"Y","count":60,"position":70}],"runs":[{"letter":"A","position":0},{"letter":"Y","position":70}]}"#
+        let titles = { (range: Range<Int>) in range.map { "movie:t\($0)" } }
+        stub.sequence([
+            .json(200, Self.page(["movie:alien", "movie:avatar"], nextCursor: "cursor-2")),
+            .json(200, letters),
+            .json(200, Self.page(titles(51..<129))),
+            .json(200, Self.page(titles(0..<51))),
+            .json(200, Self.page(titles(129..<130))),
+        ])
+        let cacheKey = CacheKey.browse(libraryId: 811, filterKey: CatalogFilterState.none.cacheKeyFragment)
+        defer {
+            ResponseCache.shared.remove(cacheKey)
+            ResponseCache.shared.remove("browseletters:" + cacheKey)
+        }
+        let viewModel = BrowseViewModel(
+            readFirstPage: { libraryId, state, mediaScope in
+                try await api.catalogPage(CatalogQueryBuilder.build(
+                    state, libraryId: libraryId, mediaType: .movie, limit: 60, includeType: false, enforcedScope: mediaScope
+                ))
+            },
+            readPage: { try await api.catalogPage($0) },
+            readLetters: { try await api.catalogLetters($0) }
+        )
+        await viewModel.configure(libraryId: 811, libraryType: "movies")
+        await viewModel.loadItems(reset: true)
+        await viewModel.loadLetterIndex()
+        XCTAssertEqual(stub.requests.last?.path, "/api/v2/catalog/letters")
+
+        let loaded = await viewModel.jump(to: "A", columns: 3)
+        XCTAssertEqual(loaded, "movie:alien", "a loaded letter is only a scroll away")
+        XCTAssertEqual(stub.requests.count, 2)
+
+        // Y's first title is at 70, in the row starting at 69; the grid starts
+        // six rows above that row.
+        let jumped = await viewModel.jump(to: "Y", columns: 3)
+        XCTAssertEqual(jumped, "movie:t70")
+        XCTAssertEqual(stub.requests.last?.query["seek"], "51")
+        XCTAssertEqual(stub.requests.last?.query["limit"], "78")
+        XCTAssertEqual(viewModel.windowStart, 51)
+        XCTAssertTrue(viewModel.hasEarlier)
+
+        // Scrolling up from Y reads the titles above it, whole rows at a time.
+        await viewModel.loadEarlier(columns: 3)
+        XCTAssertNil(stub.requests.last?.query["seek"], "position 0 is the first page")
+        XCTAssertEqual(stub.requests.last?.query["limit"], "51")
+        XCTAssertEqual(viewModel.windowStart, 0)
+        XCTAssertFalse(viewModel.hasEarlier)
+        XCTAssertEqual(viewModel.items.first?.contentId, "movie:t0")
+        XCTAssertEqual(viewModel.items.count, 129)
+
+        // Scrolling down continues by position, not through page 1's cursor.
+        await viewModel.loadItems()
+        XCTAssertEqual(stub.requests.last?.query["seek"], "129")
+        XCTAssertNil(stub.requests.last?.query["cursor"])
+        XCTAssertEqual(viewModel.items.count, 130)
+        XCTAssertFalse(viewModel.hasMore)
+    }
+
+    func testTitleOrderReadsTheListByPositionOnceTheLetterIndexArrives() async throws {
+        let stub = APIv2TestStub()
+        let api = try await stubbedAPI(stub)
+        let letters = #"{"total":430,"letters":[{"letter":"A","count":370,"position":0},{"letter":"Y","count":60,"position":370}],"runs":[{"letter":"A","position":0},{"letter":"Y","position":370}]}"#
+        let hundred = Self.page((0..<100).map { "movie:t\($0)" })
+        stub.sequence([
+            .json(200, Self.page(["movie:alien", "movie:avatar"], nextCursor: "cursor-2")),
+            .json(200, letters),
+            .json(200, hundred),
+            .json(200, hundred),
+            .json(200, letters),
+        ])
+        let cacheKey = CacheKey.browse(libraryId: 812, filterKey: CatalogFilterState.none.cacheKeyFragment)
+        defer { ResponseCache.shared.remove(cacheKey) }
+        let viewModel = BrowseViewModel(
+            readFirstPage: { libraryId, state, mediaScope in
+                try await api.catalogPage(CatalogQueryBuilder.build(
+                    state, libraryId: libraryId, mediaType: .movie, limit: 60, includeType: false, enforcedScope: mediaScope
+                ))
+            },
+            readPage: { try await api.catalogPage($0) },
+            readLetters: { try await api.catalogLetters($0) }
+        )
+        await viewModel.configure(libraryId: 812, libraryType: "movies")
+        await viewModel.loadItems(reset: true)
+        XCTAssertNil(viewModel.pager, "no letter index yet: the grid shows the loaded titles")
+        await viewModel.loadLetterIndex()
+        let pager = try XCTUnwrap(viewModel.pager)
+        XCTAssertEqual(pager.total, 430, "the grid is as long as the whole list")
+
+        // Y's first title and the screenful after it span two pages.
+        let position = await viewModel.position(forJumpTo: "Y", patience: .seconds(2))
+        XCTAssertEqual(position, 370)
+        let reads = stub.requests.dropFirst(2)
+        XCTAssertEqual(reads.compactMap { $0.query["seek"] }.sorted(), ["300", "400"])
+        XCTAssertEqual(Set(reads.compactMap { $0.query["limit"] }), ["100"])
+        XCTAssertNotNil(pager.item(at: 370))
+
+        // Coming back to the screen reads the index again; the same list
+        // keeps the titles already read.
+        await viewModel.loadLetterIndex()
+        XCTAssertTrue(viewModel.pager === pager)
+    }
+
+    func testAJumpToALoadedLetterOverridesAnEarlierJumpStillLoading() async throws {
+        let stub = APIv2TestStub()
+        let api = try await stubbedAPI(stub)
+        let letters = #"{"total":130,"letters":[{"letter":"A","count":70,"position":0},{"letter":"Y","count":60,"position":70}],"runs":[{"letter":"A","position":0},{"letter":"Y","position":70}]}"#
+        stub.sequence([
+            .json(200, Self.page(["movie:alien", "movie:avatar"], nextCursor: "cursor-2")),
+            .json(200, letters),
+            .json(200, Self.page(["movie:yojimbo"])),
+        ])
+        let cacheKey = CacheKey.browse(libraryId: 812, filterKey: CatalogFilterState.none.cacheKeyFragment)
+        defer {
+            ResponseCache.shared.remove(cacheKey)
+            ResponseCache.shared.remove("browseletters:" + cacheKey)
+        }
+        let viewModel = BrowseViewModel(
+            readFirstPage: { libraryId, state, mediaScope in
+                try await api.catalogPage(CatalogQueryBuilder.build(
+                    state, libraryId: libraryId, mediaType: .movie, limit: 60, includeType: false, enforcedScope: mediaScope
+                ))
+            },
+            readPage: { try await api.catalogPage($0) },
+            readLetters: { try await api.catalogLetters($0) }
+        )
+        await viewModel.configure(libraryId: 812, libraryType: "movies")
+        await viewModel.loadItems(reset: true)
+        await viewModel.loadLetterIndex()
+
+        stub.hold(path: "/api/v2/catalog")
+        let toY = Task { await viewModel.jump(to: "Y", columns: 3) }
+        await stub.waitUntilHeld()
+        let toA = await viewModel.jump(to: "A", columns: 3)
+        stub.release()
+        let staleY = await toY.value
+
+        XCTAssertEqual(toA, "movie:alien")
+        XCTAssertNil(staleY, "the later jump wins")
+        XCTAssertEqual(viewModel.items.first?.contentId, "movie:alien")
+        XCTAssertFalse(viewModel.hasEarlier)
+    }
+
+    func testAJumpThatOvertakesALoadingPageLeavesTheGridFreeToLoadMore() async throws {
+        let stub = APIv2TestStub()
+        let api = try await stubbedAPI(stub)
+        let letters = #"{"total":300,"letters":[{"letter":"A","count":100,"position":0},{"letter":"M","count":100,"position":100},{"letter":"Y","count":100,"position":200}],"runs":[{"letter":"A","position":0},{"letter":"M","position":100},{"letter":"Y","position":200}]}"#
+        stub.sequence([
+            .json(200, Self.page(["movie:alien", "movie:avatar"], nextCursor: "cursor-2")),
+            .json(200, letters),
+            .json(200, Self.page((182..<260).map { "movie:t\($0)" })),
+            .json(200, Self.page(["movie:t260"])),
+        ])
+        let cacheKey = CacheKey.browse(libraryId: 813, filterKey: CatalogFilterState.none.cacheKeyFragment)
+        defer {
+            ResponseCache.shared.remove(cacheKey)
+            ResponseCache.shared.remove("browseletters:" + cacheKey)
+        }
+        // Positional reads park here while `parking` is set, and fail while
+        // `failing` is set.
+        var parking = false
+        var failing = false
+        var parked: CheckedContinuation<Void, Never>?
+        let viewModel = BrowseViewModel(
+            readFirstPage: { libraryId, state, mediaScope in
+                try await api.catalogPage(CatalogQueryBuilder.build(
+                    state, libraryId: libraryId, mediaType: .movie, limit: 60, includeType: false, enforcedScope: mediaScope
+                ))
+            },
+            readPage: { query in
+                if failing { throw URLError(.notConnectedToInternet) }
+                if parking { await withCheckedContinuation { parked = $0 } }
+                return try await api.catalogPage(query)
+            },
+            readLetters: { try await api.catalogLetters($0) }
+        )
+        await viewModel.configure(libraryId: 813, libraryType: "movies")
+        await viewModel.loadItems(reset: true)
+        await viewModel.loadLetterIndex()
+        let landedOnY = await viewModel.jump(to: "Y", columns: 3)
+        XCTAssertNotNil(landedOnY)
+
+        // The page below Y is loading when a jump to M overtakes it and fails.
+        parking = true
+        let loadMore = Task { await viewModel.loadItems() }
+        while parked == nil { await Task.yield() }
+        XCTAssertTrue(viewModel.isLoading)
+        parking = false
+        failing = true
+        let failedJump = await viewModel.jump(to: "M", columns: 3)
+        XCTAssertNil(failedJump)
+        XCTAssertFalse(viewModel.isLoading, "the overtaken page no longer blocks loading more")
+
+        failing = false
+        parked?.resume()
+        await loadMore.value
+        XCTAssertFalse(viewModel.isLoading)
+    }
+
+    private func stubbedAPI(_ stub: APIv2TestStub) async throws -> SiloAPI {
+        let name = "BrowseViewModelTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite))
+        await tokens.switchActiveServer(serverId: "browse-test")
+        await tokens.setServerUrl("https://browse.example")
+        await tokens.setProfileId("profile-one")
+        return SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+    }
+
+    private static func page(_ ids: [String], nextCursor: String? = nil) -> String {
+        let items = ids.map { #"{"content_id":"\#($0)","type":"movie","title":"\#($0)"}"# }.joined(separator: ",")
+        let page = nextCursor.map { #"{"has_more":true,"next_cursor":"\#($0)"}"# } ?? #"{"has_more":false}"#
+        return #"{"items":[\#(items)],"page":\#(page),"total":\#(ids.count),"total_exact":true,"window_cursor":"w"}"#
     }
 
     func testConfigureUsesInitialMixedLibraryType() async {

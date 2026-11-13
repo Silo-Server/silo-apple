@@ -1,14 +1,18 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Phone movie detail: artwork hero, then cast, trailers, Details and More
-/// Like This. Mirrors TVMovieDetailView's metadata and actions, sized for touch.
+/// Phone movie detail: artwork hero, then cast, trailers and extras, the
+/// box set, More Like This and Details. Mirrors TVMovieDetailView's metadata and actions, sized for touch.
 struct MovieDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
+    /// The box set the movie belongs to; nil draws no row.
+    let boxSet: CatalogBoxSetDetail?
     let selectedVersionFileId: Int?
+    /// The edition picked on this visit; nil opens on the last-played one.
+    let selectedEditionId: String?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
     /// The viewer picked Auto on this visit, so `detail`'s effective
@@ -16,11 +20,14 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let subtitleOverrideCleared: Bool
     /// `resumePosition` is the point the user was offered (nil for a
     /// restart or a title without progress).
-    let onPlay: (_ startFromBeginning: Bool, _ resumePosition: Double?) -> Void
+    /// `watchState` is the watch state the position came from; Play
+    /// resolves its file from it.
+    let onPlay: (_ startFromBeginning: Bool, _ resumePosition: Double?, _ watchState: LeafItemUserData?) -> Void
     /// Reads the title's current watch state from the server, so the resume
     /// prompt never offers a position another device has moved past.
     let refreshResumeState: () async -> DetailResumeState
     let onSelectVersion: (Int?) -> Void
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
     let onToggleFavorite: () -> Void
@@ -48,12 +55,17 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.locale) private var locale
     /// The position the resume prompt offers; non-nil while it is shown.
     @State private var pendingResumePosition: Double?
+    /// The watch state `pendingResumePosition` came from.
+    @State private var pendingResumeWatchState: LeafItemUserData?
     /// The Play tap's in-flight watch-state read. A second tap replaces it.
     @State private var resumeLookupTask: Task<Void, Never>?
     /// The download options sheet, opened from the More menu.
     @State private var showDownloadOptions = false
+    /// The viewer opened the Media Info section.
+    @State private var showsMediaInfo = false
 
     var body: some View {
         PhoneDetailPageSurface(
@@ -97,9 +109,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
             stoppedAt: resumeTimestamp
         ) {
             guard let pendingResumePosition else { return }
-            onPlay(false, pendingResumePosition)
+            onPlay(false, pendingResumePosition, pendingResumeWatchState)
         } onRestart: {
-            onPlay(true, nil)
+            onPlay(true, nil, pendingResumeWatchState ?? detail.userData)
         }
         .onDisappear {
             resumeLookupTask?.cancel()
@@ -153,7 +165,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
         VStack(spacing: 14) {
             PhonePrimaryPillButton(
                 icon: "play.fill",
-                title: DetailPlayLabel.item(detail.userData),
+                title: DetailPlayLabel.item(detail.userData, shown: effectiveVersion, in: availableVersions),
                 action: handlePlayTap,
                 fullWidth: true
             )
@@ -163,27 +175,33 @@ struct MovieDetailContent<BelowOverview: View>: View {
                     icon: "heart",
                     iconActive: "heart.fill",
                     isActive: isFavorite,
-                    label: "Favorite",
-                    accessibilityLabelOverride: isFavorite
-                        ? "Remove from Favorites" : "Add to Favorites",
+                    label: AppLanguage.string(.detailFavorite, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        isFavorite ? .detailMoreRemoveFavorite : .detailMoreAddFavorite,
+                        locale: locale
+                    ),
                     action: onToggleFavorite
                 )
                 PhoneLabeledAction(
                     icon: "bookmark",
                     iconActive: "bookmark.fill",
                     isActive: inWatchlist,
-                    label: "Watchlist",
-                    accessibilityLabelOverride: inWatchlist
-                        ? "Remove from Watchlist" : "Add to Watchlist",
+                    label: AppLanguage.string(.detailWatchlist, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        inWatchlist ? .personalWatchlistRemove : .cardMenuAddWatchlist,
+                        locale: locale
+                    ),
                     action: onToggleWatchlist
                 )
                 PhoneLabeledAction(
                     icon: "checkmark.circle",
                     iconActive: "checkmark.circle.fill",
                     isActive: isWatched,
-                    label: "Watched",
-                    accessibilityLabelOverride: isWatched
-                        ? "Mark as Unwatched" : "Mark as Watched",
+                    label: AppLanguage.string(.detailWatched, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        isWatched ? .detailMoreMarkUnwatched : .detailMoreMarkWatched,
+                        locale: locale
+                    ),
                     action: onToggleWatched
                 )
                 if showsDownloadButton {
@@ -191,11 +209,14 @@ struct MovieDetailContent<BelowOverview: View>: View {
                         detail: detail,
                         versions: availableVersions,
                         selectedVersionFileId: selectedVersionFileId,
+                        selectedEditionId: selectedEditionId,
                         showOptions: $showDownloadOptions
                     )
+                } else if showsUnavailableDownload {
+                    DownloadUnavailableButton()
                 }
                 if hasOverflowMenu {
-                    PhoneLabeledMenu(label: "More") {
+                    PhoneLabeledMenu(label: AppLanguage.string(.detailMore, locale: locale)) {
                         overflowMenuItems
                     }
                 }
@@ -228,6 +249,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             subtitleSignature: detail.effectiveSubtitleTrackSignature,
             showForcedSubtitles: detail.showsForcedSubtitles,
             onSelectVersion: onSelectVersion,
+            onSelectEdition: onSelectEdition,
             onSelectAudioTrack: onSelectAudioTrack,
             onSelectSubtitleTrack: onSelectSubtitleTrack
         )
@@ -239,10 +261,17 @@ struct MovieDetailContent<BelowOverview: View>: View {
             let state = await refreshResumeState()
             guard !Task.isCancelled else { return }
             resumeLookupTask = nil
-            if let position = state.resumePosition(cached: detail.userData) {
+            let watchState = state.userData(cached: detail.userData)
+            // A position saved on another edition than the one shown isn't
+            // offered: Play starts the shown one at 0.
+            if let position = state.resumePosition(cached: detail.userData),
+               DetailVersionSelection.savedPositionIsInEdition(
+                   of: effectiveVersion, in: availableVersions, userData: watchState
+               ) {
+                pendingResumeWatchState = watchState
                 pendingResumePosition = position
             } else {
-                onPlay(false, nil)
+                onPlay(false, nil, watchState)
             }
         }
     }
@@ -250,6 +279,13 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// server advertises the capability for this profile.
     private var showsDownloadButton: Bool {
         DownloadManager.shared.downloadsEnabled
+            && detail.type == "movie"
+    }
+
+    /// The server offers downloads but this account may not use them:
+    /// Download stays in its place, unavailable, and says why when tapped.
+    private var showsUnavailableDownload: Bool {
+        DownloadManager.shared.downloadsRestricted
             && detail.type == "movie"
     }
 
@@ -263,18 +299,18 @@ struct MovieDetailContent<BelowOverview: View>: View {
     private var overflowMenuItems: some View {
         #if os(iOS)
         WatchPartyMenuButton(contentId: detail.contentId, title: detail.title, type: detail.type,
-            fileId: selectedVersionFileId, preview: WatchPartySelectedItem(previewing: detail))
+            fileId: watchPartyFileId, preview: WatchPartySelectedItem(previewing: detail))
         #endif
         if showsDownloadButton {
             Button {
                 showDownloadOptions = true
             } label: {
-                Label("Download Options…", systemImage: "slider.horizontal.3")
+                Label(.detailMoreDownloadOptions, systemImage: "slider.horizontal.3")
             }
         }
         if detail.type == "movie" {
             Button(action: onFindTrailers) {
-                Label("Find Trailers", systemImage: "film")
+                Label(.detailMoreFindTrailers, systemImage: "film")
             }
             .disabled(isFindingTrailers)
         }
@@ -290,10 +326,16 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
             trailersSection
 
+            if let boxSet {
+                PhoneBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
+            }
+
+            similarSection
+
             detailsSection
                 .padding(.horizontal, SiloTheme.safePadding)
 
-            similarSection
+            PhoneMediaInfoSection(version: effectiveVersion, isExpanded: $showsMediaInfo)
         }
     }
 
@@ -323,7 +365,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @ViewBuilder
     private func castSection(cast: [CastMember]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Cast & Crew")
+            PhoneSectionHeader(title: AppLanguage.string(.detailCast, locale: locale))
                 .padding(.horizontal, SiloTheme.safePadding)
             PhoneCastRail(cast: cast, onTap: onPersonTap)
         }
@@ -344,7 +386,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Details")
+            PhoneSectionHeader(title: AppLanguage.string(.detailDetails, locale: locale))
             PhoneDetailFactsSection(detail: detail)
         }
     }
@@ -367,8 +409,18 @@ struct MovieDetailContent<BelowOverview: View>: View {
             versions: availableVersions,
             selectedFileId: selectedVersionFileId,
             lastFileId: detail.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            lastFileInProgress: detail.userData?.hasResumePoint ?? false,
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: selectedEditionId,
+            lastEditionKey: detail.userData?.lastEditionKey,
+            variants: detail.playbackVariants
         )
+    }
+
+    /// The file a party starts from: the one the page shows once the viewer
+    /// picked an edition or a version here, else the server's default.
+    private var watchPartyFileId: Int? {
+        selectedVersionFileId == nil && selectedEditionId == nil ? nil : effectiveVersion?.fileId
     }
 }
 #endif

@@ -224,6 +224,9 @@ enum APIv2CatalogRead {
         let inWatchlist: Bool
         let isFavorite: Bool
         let played: Bool
+        /// Present on a series or season the profile has not finished.
+        let unplayedCount: Int64?
+        let watchedCount: Int64?
     }
 
     struct CrewCredit: Decodable {
@@ -355,6 +358,27 @@ enum APIv2CatalogRead {
         let effectiveSubtitleMode: String?
         let effectiveShowForcedSubtitles: Bool?
         let effectiveSubtitleTrackSignature: WatchSubtitleSignature?
+        /// Absent from servers that predate it.
+        let playbackVariants: [WatchPlaybackVariant]?
+    }
+
+    struct WatchPlaybackVariant: Decodable {
+        let variantId: String
+        let editionRaw: String?
+        let editionKey: String?
+        let presentationKind: String?
+        let presentationGroupKey: String?
+        let partCount: Int64
+        let totalDurationSeconds: Int64?
+        let defaultFileId: String?
+        let parts: [WatchPlaybackVariantPart]
+    }
+
+    struct WatchPlaybackVariantPart: Decodable {
+        let partIndex: Int64
+        let defaultFileId: String?
+        let totalDurationSeconds: Int64?
+        let versions: [WatchFileVersion]
     }
 
     struct ItemExtraInfo: Decodable {
@@ -442,11 +466,13 @@ enum APIv2CatalogRead {
         let colorTransfer: String?
         let dolbyVision: String?
         let frameRate: String?
+        let hdr10Plus: Bool?
         let height: Int64?
         let level: Int64?
         let profile: String?
         let title: String?
         let videoRange: String?
+        let videoRangeType: String?
         let width: Int64?
     }
 
@@ -454,6 +480,7 @@ enum APIv2CatalogRead {
         let durationSeconds: Double?
         let inProgressCount: Int64
         let isInProgress: Bool?
+        let lastEditionKey: String?
         let lastFileId: String?
         let lastResolution: String?
         let played: Bool
@@ -500,6 +527,25 @@ struct APIv2DiscoverRow: Decodable {
     let type: String
     let title: String
     let items: [SectionItem]
+    /// The catalog key and arguments for a title the server wrote, as on
+    /// home sections; absent from older servers.
+    let titleKey: String?
+    let titleArgs: [String: String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case type, title, items, titleKey, titleArgs
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decode(String.self, forKey: .type)
+        title = try c.decode(String.self, forKey: .title)
+        items = try c.decode([SectionItem].self, forKey: .items)
+        // Optional extras: a malformed key or argument map shows `title`
+        // rather than failing the row.
+        titleKey = (try? c.decodeIfPresent(String.self, forKey: .titleKey)) ?? nil
+        titleArgs = (try? c.decodeIfPresent([String: String].self, forKey: .titleArgs)) ?? nil
+    }
 }
 
 /// In-memory provenance for the existing library section consumers.

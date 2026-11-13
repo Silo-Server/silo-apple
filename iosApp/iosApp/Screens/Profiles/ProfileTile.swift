@@ -51,6 +51,10 @@ private let kidsFont: CGFloat = 11
 /// One person in "Who's watching?": a round avatar like the cast rows on
 /// detail pages, with lock and KIDS badges riding on the circle.
 struct ProfileTile: View {
+    /// How far a focused tile's name drops to clear the enlarged avatar.
+    static let focusedNameDrop: CGFloat = 18
+
+    @Environment(\.locale) private var locale
     let profile: UserProfile
     var isRemembered: Bool = false
     /// Avatar diameter. The picker sizes avatars to the household; badges
@@ -90,19 +94,21 @@ struct ProfileTile: View {
                     .scaleEffect(isFocused && !reduceMotion ? focusScale : 1.0)
                     .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: isFocused ? 30 : 0, y: isFocused ? 20 : 0)
 
-                Text(profile.name)
-                    .font(.system(size: scaledNameSize(size), weight: .semibold))
-                    .foregroundStyle(isFocused ? Color.siloOnSurface : Color.siloOnSurface.opacity(nameOpacity))
-                    .lineLimit(1)
-                    .padding(.top, isFocused ? nameSpacing + 18 : nameSpacing)
-
-                if isRemembered {
-                    Text(rememberedBadgeLabel)
-                        .font(.system(size: metaSize))
-                        .foregroundStyle(Color.siloOnSurface.opacity(0.4))
+                VStack(spacing: 0) {
+                    Text(profile.name)
+                        .font(.system(size: scaledNameSize(size), weight: .semibold))
+                        .foregroundStyle(isFocused ? Color.siloOnSurface : Color.siloOnSurface.opacity(nameOpacity))
                         .lineLimit(1)
-                        .padding(.top, 2)
+
+                    if isRemembered {
+                        Text(rememberedBadgeLabel)
+                            .font(.system(size: metaSize))
+                            .foregroundStyle(Color.siloOnSurface.opacity(0.4))
+                            .lineLimit(1)
+                            .padding(.top, 2)
+                    }
                 }
+                .tileNameSpacing(focused: isFocused)
             }
             .frame(maxWidth: .infinity)
             .contentShape(.rect)
@@ -189,7 +195,7 @@ struct ProfileTile: View {
 
     private var kidsBadge: some View {
         let kidsFont = kidsFont * scale
-        return Text("KIDS")
+        return Text(.profilesKids)
             .font(.system(size: kidsFont, weight: .heavy))
             .kerning(0.4)
             .foregroundStyle(.black)
@@ -203,24 +209,24 @@ struct ProfileTile: View {
     private var accessibilityValue: String {
         var values: [String] = []
         if isRemembered { values.append(rememberedAccessibilityValue) }
-        if profile.hasPin { values.append("PIN protected") }
-        if profile.isChild { values.append("Kids profile") }
+        if profile.hasPin { values.append(AppLanguage.string(.profilesPinProtected)) }
+        if profile.isChild { values.append(AppLanguage.string(.profilesKidsProfile)) }
         return values.joined(separator: ", ")
     }
 
-    private var rememberedBadgeLabel: String {
+    private var rememberedBadgeLabel: LocalizedStringResource {
         #if os(tvOS)
-        "Apple TV user"
+        .profilesTileAppleTvUser
         #else
-        "Last used"
+        .profilesTileLastUsed
         #endif
     }
 
     private var rememberedAccessibilityValue: String {
         #if os(tvOS)
-        "Paired with this Apple TV user"
+        AppLanguage.string(.profilesTilePairedAppleTvUser)
         #else
-        "Last used"
+        AppLanguage.string(.profilesTileLastUsed)
         #endif
     }
 }
@@ -238,6 +244,22 @@ private struct ProfileTileButtonStyle: ButtonStyle {
     }
 }
 
+private extension View {
+    /// Spaces a tile's name below its avatar, dropping it further while the
+    /// tile is focused. On tvOS the drop is an offset, so focus doesn't change
+    /// the tile's height: a taller tile grows its grid row and moves the
+    /// picker's other rows. The tvOS picker reserves the drop below its grid.
+    @ViewBuilder
+    func tileNameSpacing(focused: Bool) -> some View {
+        #if os(tvOS)
+        padding(.top, nameSpacing)
+            .offset(y: focused ? ProfileTile.focusedNameDrop : 0)
+        #else
+        padding(.top, focused ? nameSpacing + ProfileTile.focusedNameDrop : nameSpacing)
+        #endif
+    }
+}
+
 /// Names grow more slowly than avatars so large avatars keep short labels.
 private func scaledNameSize(_ size: CGFloat) -> CGFloat {
     nameSize * (1 + (size / tileSize - 1) * 0.35)
@@ -245,6 +267,7 @@ private func scaledNameSize(_ size: CGFloat) -> CGFloat {
 
 struct AddProfileTile: View {
     var size: CGFloat = tileSize
+    let title: LocalizedStringResource
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -274,10 +297,10 @@ struct AddProfileTile: View {
                     }
                     .scaleEffect(isFocused && !reduceMotion ? focusScale : 1.0)
 
-                Text("Add profile")
+                Text(title)
                     .font(.system(size: scaledNameSize(size), weight: .semibold))
                     .foregroundStyle(Color.siloOnSurface.opacity(isFocused ? 1 : 0.62))
-                    .padding(.top, isFocused ? nameSpacing + 18 : nameSpacing)
+                    .tileNameSpacing(focused: isFocused)
             }
             .frame(maxWidth: .infinity)
             .contentShape(.rect)
@@ -288,7 +311,7 @@ struct AddProfileTile: View {
         #if os(tvOS)
         .focusEffectDisabled()
         #endif
-        .accessibilityLabel("Add profile")
+        .accessibilityLabel(title)
     }
 }
 

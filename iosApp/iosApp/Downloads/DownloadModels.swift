@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Capability (GET /api/v2/capabilities/downloads)
 
 /// Server-advertised download feature gate, cached in the scope's store.
-/// Fetched at login + profile switch; the UI is hidden unless `isUsable`.
+/// Fetched at login + profile switch; `access` decides what the UI offers.
 struct DownloadCapability: Codable, Hashable, Sendable {
     /// The capability's support state (`available`, `disabled`,
     /// `not_configured` or `unsupported`).
@@ -26,13 +26,38 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     let bulkQuality: Bool
     /// Monitors store a quality; without it they download originals.
     let monitorQuality: Bool
+    /// Season and series batches can follow a chosen version; without it the
+    /// server picks each episode's version.
+    let batchVersion: Bool
     /// A `revoked` entry was revoked by an administrator: delete the local
     /// copy, then the entry. Without it revoked files stay playable.
     let revokedRemovesLocal: Bool
 
+    /// What the app offers for downloads.
+    enum Access: Equatable {
+        /// Downloads work for this account.
+        case usable
+        /// The server offers downloads, and this account's policy denies
+        /// them. Title pages show Download as unavailable and say why.
+        case restricted
+        /// Nothing is shown: the server has no downloads, has them switched
+        /// off, or refuses them for a reason the account's admin can't lift.
+        case hidden
+    }
+
+    /// The one mapping from the server's fields to what the app offers.
+    /// `allowed` is also false in demo mode for an account whose policy
+    /// allows downloads; that stays hidden, because asking the admin for
+    /// access would not help.
+    var access: Access {
+        guard state == "available", enabled else { return .hidden }
+        guard downloadAllowed else { return .restricted }
+        return allowed ? .usable : .hidden
+    }
+
     /// Downloads are usable only when the capability is available and this
     /// principal may use it.
-    var isUsable: Bool { state == "available" && allowed && enabled && downloadAllowed }
+    var isUsable: Bool { access == .usable }
 
     /// The label for a preset, with the server's resolution ceiling when it
     /// reports one: "10 Mbps · up to 1080p".
@@ -54,6 +79,7 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         case monitoringModes
         case bulkQuality
         case monitorQuality
+        case batchVersion
         case revokedRemovesLocal
     }
 
@@ -73,6 +99,7 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         monitoringModes = wire.monitoringModes
         bulkQuality = wire.bulkQuality ?? false
         monitorQuality = wire.monitorQuality ?? false
+        batchVersion = wire.batchVersion ?? false
         revokedRemovesLocal = wire.revokedRemovesLocal ?? false
     }
 
@@ -93,6 +120,7 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         monitoringModes = try container.decode([String].self, forKey: .monitoringModes)
         bulkQuality = try container.decodeIfPresent(Bool.self, forKey: .bulkQuality) ?? false
         monitorQuality = try container.decodeIfPresent(Bool.self, forKey: .monitorQuality) ?? false
+        batchVersion = try container.decodeIfPresent(Bool.self, forKey: .batchVersion) ?? false
         revokedRemovesLocal = try container.decodeIfPresent(Bool.self, forKey: .revokedRemovesLocal) ?? false
     }
 }
@@ -115,35 +143,33 @@ struct DownloadPreparation: Codable, Hashable, Sendable {
     var statusLine: String {
         switch state {
         case "queued":
-            guard let position = queuePosition, position > 0 else { return "Waiting to prepare" }
-            if position == 1 { return "Waiting to prepare · next in line" }
-            let ordinal = Self.ordinalFormatter.string(from: NSNumber(value: position)) ?? "#\(position)"
-            return "Waiting to prepare · \(ordinal) in line"
+            guard let position = queuePosition, position > 0 else {
+                return AppLanguage.string(.downloadsPreparationWaiting)
+            }
+            if position == 1 { return AppLanguage.string(.downloadsPreparationNextInLine) }
+            let ordinal = LocaleFormat.ordinal(position)
+            return AppLanguage.string(.downloadsPreparationInLine(ordinal))
         case "retrying":
-            return "Preparing · trying again soon"
+            return AppLanguage.string(.downloadsPreparationRetrying)
         case "paused":
-            return "Preparation paused on the server"
+            return AppLanguage.string(.downloadsPreparationPausedOnServer)
         default:
-            guard let progress else { return "Preparing on server…" }
-            var parts = ["Preparing", "\(Int((progress * 100).rounded(.down)))%"]
-            if let remainingSeconds { parts.append(Self.timeLeft(remainingSeconds)) }
-            return parts.joined(separator: " · ")
+            guard let progress else { return AppLanguage.string(.downloadsStatusPreparingOnServer) }
+            let percent = LocaleFormat.integer(Int((progress * 100).rounded(.down)))
+            guard let remainingSeconds else { return AppLanguage.string(.downloadsPreparationProgress(percent)) }
+            return AppLanguage.string(.downloadsPreparationProgressTimeLeft(percent, Self.timeLeft(remainingSeconds)))
         }
     }
 
-    private static let ordinalFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .ordinal
-        return formatter
-    }()
-
     /// "under a minute left", "6 min left", "1 hr 5 min left".
     static func timeLeft(_ seconds: Int) -> String {
-        if seconds < 60 { return "under a minute left" }
+        if seconds < 60 { return AppLanguage.string(.downloadsPreparationUnderAMinuteLeft) }
         let minutes = (seconds + 59) / 60
-        if minutes < 60 { return "\(minutes) min left" }
+        if minutes < 60 { return AppLanguage.string(.downloadsPreparationMinutesLeft(LocaleFormat.integer(minutes))) }
         let rest = minutes % 60
-        return rest == 0 ? "\(minutes / 60) hr left" : "\(minutes / 60) hr \(rest) min left"
+        return rest == 0
+            ? AppLanguage.string(.downloadsPreparationHoursLeft(LocaleFormat.integer(minutes / 60)))
+            : AppLanguage.string(.downloadsPreparationHoursMinutesLeft(LocaleFormat.integer(minutes / 60), LocaleFormat.integer(rest)))
     }
 }
 
@@ -167,7 +193,7 @@ enum DownloadFormat: String, Codable, CaseIterable, Sendable {
 
     var displayName: String {
         switch self {
-        case .original: return "Original"
+        case .original: return AppLanguage.string(.downloadsQualityOriginal)
         case .twentyMbps: return "20 Mbps"
         case .tenMbps: return "10 Mbps"
         case .fiveMbps: return "5 Mbps"
@@ -182,7 +208,7 @@ enum DownloadFormat: String, Codable, CaseIterable, Sendable {
     func label(maxHeight: Int?) -> String {
         guard let maxHeight, maxHeight > 0 else { return displayName }
         let resolution = maxHeight >= 2160 ? "4K" : "\(maxHeight)p"
-        return "\(displayName) · up to \(resolution)"
+        return AppLanguage.string(.downloadsQualityUpTo(displayName, resolution))
     }
 }
 
@@ -566,10 +592,10 @@ enum SubscriptionMode: String, Codable, CaseIterable, Sendable {
 
     var displayName: String {
         switch self {
-        case .all: return "All Episodes"
-        case .future: return "Future Episodes"
-        case .latestSeason: return "Last Season"
-        case .specificSeasons: return "Custom"
+        case .all: return AppLanguage.string(.downloadsMonitorModeAll)
+        case .future: return AppLanguage.string(.downloadsMonitorModeFuture)
+        case .latestSeason: return AppLanguage.string(.downloadsMonitorModeLastSeason)
+        case .specificSeasons: return AppLanguage.string(.downloadsMonitorModeCustom)
         }
     }
 }
@@ -700,7 +726,9 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     // Display fields cached so the Downloads list renders before the
     // manifest is fetched and offline.
     var title: String?
-    var subtitle: String?                // e.g. "2024" or "S1 · E2"
+    /// e.g. "2024" or "S1 · E2", stored in English (D44). Rows show
+    /// `displaySubtitle(locale:)`.
+    var subtitle: String?
     var type: String?                    // "movie" | "episode" | "series"
     var seriesId: String?
     /// Cached parent-series title for episode downloads (from the manifest),
@@ -710,6 +738,10 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// manifest.
     var seasonNumber: Int? = nil
     var episodeNumber: Int? = nil
+    /// The numbers an episode download request named. Display text uses
+    /// them until the manifest's `seasonNumber` and `episodeNumber` arrive.
+    var requestSeasonNumber: Int? = nil
+    var requestEpisodeNumber: Int? = nil
     var posterThumbhash: String?
     /// ThumbHash of the parent series poster, for an episode download.
     var seriesPosterThumbhash: String? = nil
@@ -754,34 +786,98 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
         return min(1, max(0, Double(bytesDownloaded) / Double(fileSize)))
     }
 
-    /// Why a failed download failed, in words the user can act on.
+    /// Why a failed download failed, in words the user can act on, in the
+    /// app's language. Resolved when shown; `lastError` keeps the code.
     var failureReason: String {
         switch lastError {
-        case "storage_full": return "Not enough storage on this device"
-        case "size_mismatch": return "The file arrived incomplete"
-        case "move_failed": return "Couldn't save the file"
-        case "not_found", "removed_on_server": return "No longer available on the server"
-        case "forbidden": return "Not available to this profile"
-        case "unauthorized": return "Sign-in expired"
-        case "server_failed": return "The server couldn't prepare this download"
-        case let code? where code.hasPrefix("http_5") || code == "http_429": return "The server had a problem"
-        default: return "Download failed"
+        case "storage_full": return AppLanguage.string(.downloadsFailureStorageFull)
+        case "size_mismatch": return AppLanguage.string(.downloadsFailureSizeMismatch)
+        case "move_failed": return AppLanguage.string(.downloadsFailureMoveFailed)
+        case "not_found", "removed_on_server": return AppLanguage.string(.downloadsFailureNotFound)
+        case "forbidden": return AppLanguage.string(.downloadsFailureForbidden)
+        case "unauthorized": return AppLanguage.string(.downloadsFailureUnauthorized)
+        case "server_failed": return AppLanguage.string(.downloadsFailureServerFailed)
+        case let code? where code.hasPrefix("http_5") || code == "http_429":
+            return AppLanguage.string(.downloadsFailureServerError)
+        default: return AppLanguage.string(.downloadsFailureGeneric)
         }
     }
 }
 
-/// The owner of one background transfer: the scope (server and profile)
-/// whose store holds its record, and the download id. Every profile and
-/// server shares one background session, so each task carries this in its
-/// `taskDescription`, and its events reach that scope whichever one is
-/// loaded when they arrive.
+// MARK: - Display text
+
+extension DownloadRecord {
+    /// The season and episode code as `both` writes it in `locale` ("S1 · E2"
+    /// by default; ASCII digits, D78), or the one number that is known ("S1",
+    /// "E2"). Nil when the record knows neither.
+    func episodeTag(
+        locale: Locale = AppLanguage.formattingLocale,
+        both: (String, String) -> LocalizedStringResource = { .catalogEpisodeCaption($0, $1) }
+    ) -> String? {
+        let season = shownNumbers.season.map { LocaleFormat.codeNumber($0) }
+        let episode = shownNumbers.episode.map { LocaleFormat.codeNumber($0) }
+        let resource: LocalizedStringResource
+        switch (season, episode) {
+        case let (season?, episode?): resource = both(season, episode)
+        case let (season?, nil): resource = .calendarSeasonShort(season)
+        case let (nil, episode?): resource = .calendarEpisodeShort(episode)
+        case (nil, nil): return nil
+        }
+        return AppLanguage.string(resource, locale: locale)
+    }
+
+    /// `subtitle` as a row shows it: an episode's season and episode in
+    /// `locale` when the record knows them, a movie's stored year in
+    /// `locale`'s digits, otherwise what was stored.
+    func displaySubtitle(locale: Locale = AppLanguage.formattingLocale) -> String? {
+        if type == "episode" { return episodeTag(locale: locale) ?? subtitle }
+        // A movie's year is stored in ASCII digits (D44).
+        guard let subtitle, subtitle.allSatisfy({ $0.isASCII && $0.isNumber }), let year = Int(subtitle) else { return subtitle }
+        return LocaleFormat.integer(year, locale: locale)
+    }
+
+    /// The name stored for an untitled episode: English "Episode 2" (D44).
+    /// `shownTitle(locale:)` shows it in the app language.
+    static func storedEpisodeName(_ number: Int) -> String {
+        AppLanguage.inEnglish { AppLanguage.string(.detailEpisode(LocaleFormat.integer(number))) }
+    }
+
+    /// `title` as the app shows it: the stored stand-in name of an untitled
+    /// episode in `locale`, any other title as stored.
+    func shownTitle(locale: Locale = AppLanguage.formattingLocale) -> String? {
+        guard let title, type == "episode", let episodeNumber = shownNumbers.episode,
+              title == Self.storedEpisodeName(episodeNumber) else { return title }
+        return AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber, locale: locale)), locale: locale)
+    }
+
+    /// The manifest's numbers once it has given any, else the request's.
+    private var shownNumbers: (season: Int?, episode: Int?) {
+        seasonNumber != nil || episodeNumber != nil
+            ? (seasonNumber, episodeNumber)
+            : (requestSeasonNumber, requestEpisodeNumber)
+    }
+
+    /// `shownTitle(locale:)`, else the content id.
+    func displayTitle(locale: Locale = AppLanguage.formattingLocale) -> String {
+        shownTitle(locale: locale) ?? contentId
+    }
+}
+
+/// The owner of one background transfer: the scope (server, account, and
+/// profile) whose store holds its record, and the download id. Every
+/// account, profile, and server shares one background session, so each task
+/// carries this in its `taskDescription`, and its events reach that scope
+/// whichever one is loaded when they arrive.
 struct DownloadTaskTag: Hashable, Sendable {
     let serverId: String
+    /// `Account.localAccountId` of the account whose store holds the record.
+    let localAccountId: String
     let profileId: String
     let downloadId: String
 
-    init(serverId: String, profileId: String, downloadId: String) {
+    init(serverId: String, localAccountId: String, profileId: String, downloadId: String) {
         self.serverId = serverId
+        self.localAccountId = localAccountId
         self.profileId = profileId
         self.downloadId = downloadId
     }
@@ -791,38 +887,75 @@ struct DownloadTaskTag: Hashable, Sendable {
     private struct Payload: Codable {
         let v: Int
         let server: String
+        /// Absent in version 1, written before accounts.
+        let account: String?
         let profile: String
         let download: String
     }
 
-    private static let payloadVersion = 1
+    /// Version 1 names no account: builds from before accounts wrote it.
+    private static let accountlessPayloadVersion = 1
+    private static let payloadVersion = 2
 
-    /// JSON `{"v":1,"server":…,"profile":…,"download":…}`.
+    /// The server's legacy data owner, for tags and requests from before
+    /// accounts. Read on the session's queue as well as the main actor.
+    typealias LegacyOwner = @Sendable (String) -> String?
+
+    static let currentLegacyOwner: LegacyOwner = { serverId in
+        try? AccountStore.shared.legacyDataOwner(forServer: serverId)
+    }
+
+    /// JSON `{"account":…,"download":…,"profile":…,"server":…,"v":2}`.
     var taskDescription: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        let payload = Payload(v: Self.payloadVersion, server: serverId, profile: profileId, download: downloadId)
+        let payload = Payload(
+            v: Self.payloadVersion,
+            server: serverId,
+            account: localAccountId,
+            profile: profileId,
+            download: downloadId
+        )
         guard let data = try? encoder.encode(payload) else { return "" }
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// Nil for nil, non-JSON, other versions, or empty fields.
-    init?(taskDescription: String?) {
+    /// Nil for nil, non-JSON, unknown versions, or empty fields. A version 1
+    /// tag, from a transfer started before accounts, belongs to the account
+    /// that adopted its server's data; nil while there is none, which leaves
+    /// its events to be attributed again later. A tag naming a server that
+    /// was merged into another names the server that holds its account now,
+    /// and one naming an account such a merge removed names the account
+    /// that took its downloads.
+    init?(taskDescription: String?, legacyOwner: LegacyOwner = DownloadTaskTag.currentLegacyOwner) {
         guard let data = taskDescription?.data(using: .utf8),
               let payload = try? JSONDecoder().decode(Payload.self, from: data),
-              payload.v == Self.payloadVersion,
               !payload.server.isEmpty, !payload.profile.isEmpty, !payload.download.isEmpty else { return nil }
-        self.init(serverId: payload.server, profileId: payload.profile, downloadId: payload.download)
+        let account: String?
+        switch payload.v {
+        case Self.accountlessPayloadVersion:
+            // A merge hands a dropped server's data from before accounts to
+            // an account on the survivor.
+            account = legacyOwner(payload.server) ?? MergedServerIds.legacyDataOwner(of: payload.server)
+        case Self.payloadVersion: account = payload.account
+        default: return nil
+        }
+        guard let account, !account.isEmpty else { return nil }
+        self.init(serverId: MergedServerIds.survivor(of: payload.server) ?? payload.server,
+                  localAccountId: MergedAccountIds.kept(for: account) ?? account,
+                  profileId: payload.profile, downloadId: payload.download)
     }
 
     /// Attribution for a task an earlier build started without a tag: the
     /// download id from its v2 file URL, the profile from its `X-Profile-Id`
     /// header, and the first server whose file URL for that id has the same
-    /// origin and path. Nil when any of them is missing.
+    /// origin and path. Such a build had no accounts, so the task belongs to
+    /// the server's legacy data owner. Nil when any of them is missing.
     static func attributing(
         requestURL: URL?,
         profileId: String?,
-        servers: [(id: String, url: String)]
+        servers: [(id: String, url: String)],
+        legacyOwner: LegacyOwner = DownloadTaskTag.currentLegacyOwner
     ) -> DownloadTaskTag? {
         guard let downloadId = APIv2Client.downloadFileID(requestURL),
               let profileId, !profileId.isEmpty,
@@ -831,12 +964,17 @@ struct DownloadTaskTag: Hashable, Sendable {
                   DownloadSessionDelegate.legacyTransferKey(
                       APIv2Client.downloadFileURL(id: downloadId, serverURL: $0.url)
                   ) == key
-              }) else { return nil }
-        return DownloadTaskTag(serverId: server.id, profileId: profileId, downloadId: downloadId)
+              }),
+              let owner = legacyOwner(server.id), !owner.isEmpty else { return nil }
+        return DownloadTaskTag(serverId: server.id, localAccountId: owner, profileId: profileId, downloadId: downloadId)
     }
 
-    func isOwned(byServerId serverId: String, profileId: String) -> Bool {
-        self.serverId == serverId && self.profileId == profileId
+    func isOwned(byServerId serverId: String, localAccountId: String, profileId: String) -> Bool {
+        self.serverId == serverId && self.localAccountId == localAccountId && self.profileId == profileId
+    }
+
+    func isOwned(byAccount localAccountId: String, onServer serverId: String) -> Bool {
+        self.serverId == serverId && self.localAccountId == localAccountId
     }
 }
 
@@ -973,6 +1111,9 @@ struct DownloadStoreFile: Codable, Sendable {
     /// values belong to. Nil in stores written before the continuum → silo
     /// rename moved transfers to a new session.
     var taskSessionIdentifier: String? = nil
+    /// Per-series track preferences for downloaded playback, and the picks
+    /// made during it that have not reached the server.
+    var trackPrefs: TrackPrefsStore? = nil
 
     static let currentVersion = 1
 

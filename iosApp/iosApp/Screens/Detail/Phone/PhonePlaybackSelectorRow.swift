@@ -9,12 +9,22 @@ enum PhonePlaybackSelectorKind: String, Identifiable {
 
     var id: String { rawValue }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .edition: return "Edition"
-        case .version: return "Version"
-        case .audio: return "Audio"
-        case .subtitles: return "Subtitles"
+        case .edition: return .detailEdition
+        case .version: return .detailVersion
+        case .audio: return .detailAudio
+        case .subtitles: return .detailSubtitles
+        }
+    }
+
+    /// The row's spoken label: its title, then the current `value`.
+    func spokenLabel(_ value: String) -> LocalizedStringResource {
+        switch self {
+        case .edition: return .detailEditionSpoken(value)
+        case .version: return .detailVersionSpoken(value)
+        case .audio: return .detailAudioSpoken(value)
+        case .subtitles: return .detailSubtitlesSpoken(value)
         }
     }
 
@@ -29,13 +39,14 @@ enum PhonePlaybackSelectorKind: String, Identifiable {
 }
 
 /// Opaque, low-cost placeholder for the common version/audio/subtitle card.
-/// It deliberately mirrors `PhonePlaybackSelectorRow`'s three 44pt rows so an
+/// It deliberately mirrors `PhonePlaybackSelectorRow`'s three rows so an
 /// episode change never removes or inserts vertical space while networking.
 /// Row metrics come from `PhonePlaybackSelectorMetrics`, so the placeholder
 /// keeps matching the loaded card as Dynamic Type grows it.
 struct PhonePlaybackSelectorSkeleton: View {
     /// Card height at the default text size; larger sizes only grow it.
-    static let standardHeight: CGFloat = 133
+    /// Three rows and two hairline dividers.
+    static let standardHeight: CGFloat = 3 * PhonePlaybackSelectorMetrics.rowHeight + 1
 
     private let kinds: [PhonePlaybackSelectorKind] = [.version, .audio, .subtitles]
 
@@ -103,7 +114,7 @@ struct PhonePlaybackSelectorSkeleton: View {
                 Text(kind.title)
                     .siloScaledFont(size: 14, weight: .medium, relativeTo: .subheadline)
             }
-            Text("Loading")
+            Text(.commonLoading)
                 .siloScaledFont(size: 14, weight: .semibold, relativeTo: .subheadline)
         }
         .foregroundStyle(Color.white.opacity(0.16))
@@ -125,7 +136,13 @@ struct PhonePlaybackSelectorSkeleton: View {
 /// Row geometry shared by the selector card and its loading placeholder.
 /// Values are the default-text-size points; both views scale them.
 enum PhonePlaybackSelectorMetrics {
+    #if os(macOS)
+    /// Pointer-sized rows keep the Mac detail header short enough to leave
+    /// the backdrop and the seasons below it on the first screen.
+    static let rowHeight: CGFloat = 38
+    #else
     static let rowHeight: CGFloat = 44
+    #endif
     static let iconWidth: CGFloat = 20
     static let iconSpacing: CGFloat = 10
     static let stackedLineSpacing: CGFloat = 4
@@ -147,47 +164,34 @@ struct PhonePlaybackSelectorRow: View {
     var subtitleSignature: SubtitleTrackSignature? = nil
     var showForcedSubtitles = true
     let onSelectVersion: (Int?) -> Void
+    /// Takes a `PlaybackEditions.Edition.id`; Version stays on Auto.
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
 
-    #if os(iOS)
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @Environment(\.verticalSizeClass) private var verticalSizeClass
-    @Environment(\.detailSelectorPopover) private var selectorPopover
-    #endif
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// The values come from `DetailPlaybackFormatting` as strings in the app
+    /// language; reading the locale re-renders them when it changes.
+    @Environment(\.locale) private var locale
     @ScaledMetric(relativeTo: .subheadline) private var rowHeight = PhonePlaybackSelectorMetrics.rowHeight
     @ScaledMetric(relativeTo: .footnote) private var iconWidth = PhonePlaybackSelectorMetrics.iconWidth
+    #if os(macOS)
     @State private var activeSelector: PhonePlaybackSelectorKind?
+    #endif
+    /// The subtitle options list the profile's preferred language first.
+    @ObservedObject private var profilePrefs = ProfilePrefsStore.shared
 
     private var editions: [PlaybackEditions.Edition] {
         PlaybackEditions.editions(from: versions)
     }
 
     var body: some View {
+        let _ = locale
         if currentVersion != nil, !selectorKinds.isEmpty {
-            #if os(iOS)
-            if usesPopoverLayout {
-                selectorCard
-                    .popover(
-                        item: $activeSelector,
-                        attachmentAnchor: .rect(.bounds),
-                        arrowEdge: selectorPopover.arrowEdge
-                    ) { kind in
-                        selectorPresentation(for: kind)
-                    }
-            } else {
-                selectorCard
-                    .sheet(item: $activeSelector) { kind in
-                        selectorPresentation(for: kind)
-                    }
-            }
-            #else
+            // Each row anchors its own menu (iOS) or drop-down (Mac); see
+            // `selectorButton`.
             selectorCard
-                .sheet(item: $activeSelector) { kind in
-                    selectorPresentation(for: kind)
-                }
-            #endif
+                .task { await profilePrefs.hydrateIfNeeded() }
         }
     }
 
@@ -209,35 +213,26 @@ struct PhonePlaybackSelectorRow: View {
 
     private func selectorPresentation(
         for kind: PhonePlaybackSelectorKind
-    ) -> PhonePlaybackSelectorSheet {
-        PhonePlaybackSelectorSheet(
+    ) -> PhonePlaybackSelectorOptions {
+        PhonePlaybackSelectorOptions(
             kind: kind,
             versions: versions,
             currentVersion: currentVersion,
             selectedVersionFileId: selectedVersionFileId,
             selectedAudioTrackIndex: selectedAudioTrackIndex,
             selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
-            popover: presentedPopover,
-            onSelectVersion: onSelectVersion,
-            onSelectAudioTrack: onSelectAudioTrack,
-            onSelectSubtitleTrack: onSelectSubtitleTrack
+            preferredSubtitleLanguage: profilePrefs.preferredSubtitleLanguage,
+            onSelectVersion: { closeDropDown(); onSelectVersion($0) },
+            onSelectEdition: { closeDropDown(); onSelectEdition($0) },
+            onSelectAudioTrack: { closeDropDown(); onSelectAudioTrack($0) },
+            onSelectSubtitleTrack: { closeDropDown(); onSelectSubtitleTrack($0) }
         )
     }
 
-    /// Nil when the selectors present a sheet.
-    private var presentedPopover: DetailSelectorPopover? {
-        #if os(iOS)
-        usesPopoverLayout ? selectorPopover : nil
-        #else
-        nil
-        #endif
-    }
-
-    private var usesPopoverLayout: Bool {
-        #if os(iOS)
-        horizontalSizeClass == .regular && verticalSizeClass == .regular
-        #else
-        false
+    /// Closes the Mac drop-down after a pick. An iOS menu closes itself.
+    private func closeDropDown() {
+        #if os(macOS)
+        activeSelector = nil
         #endif
     }
 
@@ -322,10 +317,17 @@ struct PhonePlaybackSelectorRow: View {
             .foregroundColor(.white)
     }
 
+    /// Mac rows open a drop-down below them; iOS rows open a menu.
+    #if os(macOS)
+    private static let chevronSymbol = "chevron.down"
+    #else
+    private static let chevronSymbol = "chevron.up.chevron.down"
+    #endif
+
     @ViewBuilder
     private func selectorChevron(_ kind: PhonePlaybackSelectorKind) -> some View {
         if isInteractive(kind) {
-            Image(systemName: "chevron.right")
+            Image(systemName: Self.chevronSymbol)
                 .siloScaledFont(size: 11, weight: .bold, relativeTo: .caption2)
                 .foregroundColor(.white.opacity(0.35))
         }
@@ -339,15 +341,45 @@ struct PhonePlaybackSelectorRow: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         if isInteractive(kind) {
+            #if os(iOS)
+            // The system menu sizes itself to the options, scrolls a long
+            // list, and checks the current one.
+            Menu {
+                selectorPresentation(for: kind)
+            } label: {
+                content()
+            }
+            // Keep Auto at the top even when the menu opens upward.
+            .menuOrder(.fixed)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(kind.spokenLabel(value(for: kind))))
+            #else
             Button { activeSelector = kind } label: { content() }
                 .buttonStyle(.plain)
-                .accessibilityLabel("\(kind.title), \(value(for: kind))")
+                .accessibilityLabel(Text(kind.spokenLabel(value(for: kind))))
+                .popover(isPresented: dropDownBinding(for: kind), arrowEdge: .bottom) {
+                    selectorPresentation(for: kind)
+                }
+            #endif
         } else {
             content()
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(kind.title), \(value(for: kind))")
+                .accessibilityLabel(Text(kind.spokenLabel(value(for: kind))))
         }
     }
+
+    #if os(macOS)
+    /// Presents `kind`'s drop-down while it is the active selector.
+    private func dropDownBinding(for kind: PhonePlaybackSelectorKind) -> Binding<Bool> {
+        Binding(
+            get: { activeSelector == kind },
+            set: { isPresented in
+                if !isPresented, activeSelector == kind { activeSelector = nil }
+            }
+        )
+    }
+    #endif
 
     private var selectorKinds: [PhonePlaybackSelectorKind] {
         var kinds: [PhonePlaybackSelectorKind] = []
@@ -413,10 +445,11 @@ struct PhonePlaybackSelectorRow: View {
     private func value(for kind: PhonePlaybackSelectorKind) -> String {
         switch kind {
         case .edition:
-            return DetailPlaybackFormatting.currentEdition(
+            let label = DetailPlaybackFormatting.currentEdition(
                 versions: versions,
                 currentVersion: currentVersion
-            )?.label ?? currentVersion?.editionDisplayLabel ?? "Standard"
+            )?.label ?? currentVersion?.editionDisplayLabel ?? PlaybackEditions.standardLabel
+            return PlaybackEditions.displayLabel(label, locale: locale)
         case .version:
             return DetailPlaybackFormatting.versionShortLabel(currentVersion)
         case .audio:
@@ -433,21 +466,27 @@ struct PhonePlaybackSelectorRow: View {
         }
     }
 }
-private struct PhonePlaybackSelectorSheet: View {
+
+/// A selector's options: the items of the row's menu on iOS, and the
+/// drop-down's rows on the Mac.
+private struct PhonePlaybackSelectorOptions: View {
     let kind: PhonePlaybackSelectorKind
     let versions: [FileVersion]
     let currentVersion: FileVersion?
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
-    /// Nil when presented as a sheet.
-    let popover: DetailSelectorPopover?
+    let preferredSubtitleLanguage: String?
     let onSelectVersion: (Int?) -> Void
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
 
-    @Environment(\.dismiss) private var dismiss
-    @State private var preferredSubtitleLanguage: String?
+    @Environment(\.locale) private var locale
+    #if os(macOS)
+    /// Height of the Mac drop-down's rows; nil until first measured.
+    @State private var macRowsHeight: CGFloat?
+    #endif
 
     private var editions: [PlaybackEditions.Edition] {
         PlaybackEditions.editions(from: versions)
@@ -462,89 +501,46 @@ private struct PhonePlaybackSelectorSheet: View {
 
     var body: some View {
         #if os(iOS)
-        if isCompactPopover {
-            compactList
-        } else {
-            titledList
-        }
+        // The items of the row's native menu.
+        optionContent
         #else
-        titledList
+        macDropDown
         #endif
     }
 
-    #if os(iOS)
-    /// Just the options, sized to fit and scrolling once they outgrow the
-    /// space above the selectors. Choosing one or tapping outside dismisses.
-    private var compactList: some View {
-        let rows = VStack(alignment: .leading, spacing: 0) {
-            optionContent
+    #if os(macOS)
+    private static let macDropDownWidth: CGFloat = 400
+    private static let macMaxListHeight: CGFloat = 440
+    /// Scroll target for the checked row. Optional to match the row's `id`.
+    private static let selectedRowID: String? = "selected"
+
+    /// The options, dropping down from the selector row. Choosing one, a
+    /// click outside, or Escape closes it. A popover takes its content's
+    /// ideal size, which a `List` barely has, so the rows sit in a measured
+    /// scroll view: it grows to fit them up to `macMaxListHeight`, then
+    /// scrolls, opening at the checked row like a pop-up menu.
+    private var macDropDown: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    optionContent
+                }
+                .padding(6)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                    macRowsHeight = $0
+                }
+            }
+            .onChange(of: macRowsHeight != nil) {
+                proxy.scrollTo(Self.selectedRowID, anchor: .center)
+            }
         }
-        .padding(.vertical, 6)
-        return ViewThatFits(in: .vertical) {
-            rows
-            ScrollView { rows }
-        }
-        .frame(width: 300)
-        .frame(maxHeight: 360)
-        .task { await loadPreferredSubtitleLanguage() }
-        .presentationCompactAdaptation(.popover)
+        .frame(width: Self.macDropDownWidth)
+        .frame(height: macRowsHeight.map { min($0, Self.macMaxListHeight) })
+        // The default glass takes on whatever is behind it, and the white
+        // Play button just below the selectors washes out the rows.
+        .presentationBackground(Color.siloSurfaceVariant.opacity(0.94))
     }
     #endif
-
-    private var isCompactPopover: Bool {
-        popover?.isCompact == true
-    }
-
-    private func loadPreferredSubtitleLanguage() async {
-        await ProfilePrefsStore.shared.hydrateIfNeeded()
-        preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
-    }
-
-    private var titledList: some View {
-        NavigationStack {
-            List {
-                optionContent
-            }
-            #if os(macOS)
-            .listStyle(.inset)
-            #else
-            .listStyle(.insetGrouped)
-            #endif
-            .scrollContentBackground(.hidden)
-            .siloSheetBackground(legacyColor: .siloBackground)
-            .task { await loadPreferredSubtitleLanguage() }
-            .navigationTitle(kind.title)
-            #if !os(macOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                #if os(macOS)
-                ToolbarItem {
-                    Button("Done") { dismiss() }
-                        .tint(.siloOnSurface)
-                }
-                #else
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .tint(.siloOnSurface)
-                }
-                #endif
-            }
-        }
-        #if os(iOS)
-        // Regular-width iPad uses this view as an anchored popover instead
-        // of forcing a phone detent into the split-view detail column.
-        .frame(
-            width: popover == nil ? nil : 440,
-            height: popover == nil ? nil : 480
-        )
-        .presentationCompactAdaptation(.sheet)
-        #endif
-        #if !os(macOS)
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-        #endif
-    }
 
     @ViewBuilder
     private var optionContent: some View {
@@ -564,22 +560,20 @@ private struct PhonePlaybackSelectorSheet: View {
     private var editionOptions: some View {
         Section {
             if editions.isEmpty {
-                optionButton(title: "Standard", detail: nil, isSelected: true, isEnabled: false) {}
+                optionButton(
+                    title: AppLanguage.string(.detailEditionStandard, locale: locale),
+                    detail: nil,
+                    isSelected: true,
+                    isEnabled: false
+                ) {}
             } else {
                 ForEach(editions) { edition in
                     optionButton(
-                        title: edition.label,
-                        detail: "\(edition.versions.count) version\(edition.versions.count == 1 ? "" : "s")",
+                        title: PlaybackEditions.displayLabel(edition.label, locale: locale),
+                        detail: AppLanguage.string(.detailEditionVersionCount(edition.versions.count), locale: locale),
                         isSelected: currentEdition?.id == edition.id
                     ) {
-                        let best = DetailVersionSelection.displayVersion(
-                            versions: edition.versions,
-                            selectedFileId: nil,
-                            lastFileId: nil,
-                            preferredQualityId: PlayerSettings.shared.preferredQuality
-                        )
-                        onSelectVersion(best?.fileId)
-                        dismiss()
+                        onSelectEdition(edition.id)
                     }
                 }
             }
@@ -590,12 +584,11 @@ private struct PhonePlaybackSelectorSheet: View {
     private var versionOptions: some View {
         Section {
             optionButton(
-                title: "Auto",
-                detail: "Best match for this device",
+                title: AppLanguage.string(.detailAuto, locale: locale),
+                detail: AppLanguage.string(.detailAutoVersion, locale: locale),
                 isSelected: selectedVersionFileId == nil
             ) {
                 onSelectVersion(nil)
-                dismiss()
             }
             ForEach(scopedVersions) { version in
                 optionButton(
@@ -604,7 +597,6 @@ private struct PhonePlaybackSelectorSheet: View {
                     isSelected: selectedVersionFileId == version.fileId
                 ) {
                     onSelectVersion(version.fileId)
-                    dismiss()
                 }
             }
         }
@@ -621,19 +613,23 @@ private struct PhonePlaybackSelectorSheet: View {
     private var audioOptions: some View {
         Section {
             optionButton(
-                title: "Auto",
-                detail: "Use the file default track",
+                title: AppLanguage.string(.detailAuto, locale: locale),
+                detail: AppLanguage.string(.detailPickerFileDefaultTrack, locale: locale),
                 isSelected: selectedAudioTrackIndex == nil
             ) {
                 onSelectAudioTrack(nil)
-                dismiss()
             }
             let options = DetailPlaybackFormatting.audioOptions(
                 version: currentVersion,
                 selectedAudioTrackIndex: selectedAudioTrackIndex
             )
             if options.isEmpty {
-                optionButton(title: "Unknown", detail: "No audio metadata", isSelected: false, isEnabled: false) {}
+                optionButton(
+                    title: AppLanguage.string(.detailUnknown, locale: locale),
+                    detail: AppLanguage.string(.detailNoAudioMetadata, locale: locale),
+                    isSelected: false,
+                    isEnabled: false
+                ) {}
             } else {
                 ForEach(options) { option in
                     optionButton(
@@ -642,7 +638,6 @@ private struct PhonePlaybackSelectorSheet: View {
                         isSelected: selectedAudioTrackIndex == option.ordinal
                     ) {
                         onSelectAudioTrack(option.ordinal)
-                        dismiss()
                     }
                 }
             }
@@ -653,20 +648,18 @@ private struct PhonePlaybackSelectorSheet: View {
     private var subtitleOptions: some View {
         Section {
             optionButton(
-                title: "Auto",
-                detail: "Use your subtitle preferences",
+                title: AppLanguage.string(.detailAuto, locale: locale),
+                detail: AppLanguage.string(.detailAutoSubtitles, locale: locale),
                 isSelected: selectedSubtitleTrackIndex == nil
             ) {
                 onSelectSubtitleTrack(nil)
-                dismiss()
             }
             optionButton(
-                title: "Off",
-                detail: "Start without subtitles",
+                title: AppLanguage.string(.detailOff, locale: locale),
+                detail: AppLanguage.string(.detailOffDetail, locale: locale),
                 isSelected: selectedSubtitleTrackIndex == -1
             ) {
                 onSelectSubtitleTrack(-1)
-                dismiss()
             }
             ForEach(DetailPlaybackFormatting.subtitleOptions(
                 version: currentVersion,
@@ -681,7 +674,6 @@ private struct PhonePlaybackSelectorSheet: View {
                 ) {
                     if let selectionIndex = option.selectionIndex {
                         onSelectSubtitleTrack(selectionIndex)
-                        dismiss()
                     }
                 }
             }
@@ -695,6 +687,17 @@ private struct PhonePlaybackSelectorSheet: View {
         isEnabled: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
+        #if os(iOS)
+        // In a menu, a Toggle draws the system checkmark, and a second Text
+        // in its label becomes the item's subtitle.
+        Toggle(isOn: Binding(get: { isSelected }, set: { _ in action() })) {
+            Text(title)
+            if let detail, !detail.isEmpty {
+                Text(detail)
+            }
+        }
+        .disabled(!isEnabled)
+        #else
         Button(action: action) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -716,14 +719,45 @@ private struct PhonePlaybackSelectorSheet: View {
                         .foregroundColor(.siloOnSurface)
                 }
             }
-            .padding(.vertical, isCompactPopover ? 10 : 4)
-            .padding(.horizontal, isCompactPopover ? 16 : 0)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MacSelectorOptionButtonStyle())
+        .id(isSelected ? Self.selectedRowID : nil)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.56)
-        .listRowBackground(Color.siloSurfaceVariant)
+        #endif
     }
 }
+
+#if os(macOS)
+/// Highlights a Mac drop-down row under the pointer and while pressed.
+private struct MacSelectorOptionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Row(configuration: configuration)
+    }
+
+    private struct Row: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var isHovered = false
+
+        var body: some View {
+            configuration.label
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(highlightOpacity))
+                )
+                .onHover { isHovered = $0 }
+        }
+
+        private var highlightOpacity: Double {
+            guard isEnabled else { return 0 }
+            if configuration.isPressed { return 0.14 }
+            return isHovered ? 0.08 : 0
+        }
+    }
+}
+#endif
 #endif

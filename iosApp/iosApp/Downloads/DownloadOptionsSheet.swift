@@ -6,22 +6,30 @@ struct DownloadRequestOptions {
     let quality: String
 
     /// The file a download pins: the version the detail screen displays.
-    /// Auto resolves the way the version selector shows it (last played,
-    /// then quality preference), so the saved file and the sidecar
-    /// subtitles that travel with it match what the user saw. Leaving Auto
-    /// to the server let it pick its own default, a different file. Nil
-    /// only when the item has no version metadata.
+    /// Auto resolves the way the version selector shows it (the best file
+    /// for the quality preference in the current edition), so the saved
+    /// file and the sidecar subtitles that travel with it match what the
+    /// user saw. Leaving Auto to the server let it pick its own default, a
+    /// different file. Nil only when the item has no version metadata.
     static func fileId(
         versions: [FileVersion],
         selectedFileId: Int?,
         lastFileId: Int?,
-        preferredQualityId: String?
+        lastFileInProgress: Bool,
+        preferredQualityId: String?,
+        editionId: String? = nil,
+        lastEditionKey: String? = nil,
+        variants: [PlaybackVariant]? = nil
     ) -> Int? {
         DetailVersionSelection.displayVersion(
             versions: versions,
             selectedFileId: selectedFileId,
             lastFileId: lastFileId,
-            preferredQualityId: preferredQualityId
+            lastFileInProgress: lastFileInProgress,
+            preferredQualityId: preferredQualityId,
+            editionId: editionId,
+            lastEditionKey: lastEditionKey,
+            variants: variants
         )?.fileId
     }
 }
@@ -30,12 +38,18 @@ struct DownloadOptionsSheet: View {
     let title: String
     let versions: [FileVersion]
     let lastVersionFileId: Int?
+    let lastFileInProgress: Bool
+    let lastEditionKey: String?
+    let variants: [PlaybackVariant]?
     let onStart: (DownloadRequestOptions) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     private var manager: DownloadManager { DownloadManager.shared }
 
     @State private var fileId: Int?
+    /// The edition picked here or on the page; Auto stays within it.
+    @State private var editionId: String?
     @State private var quality: String
     /// Free space for the size warning, read once in `.task` rather than on
     /// every render.
@@ -45,15 +59,37 @@ struct DownloadOptionsSheet: View {
         title: String,
         versions: [FileVersion],
         selectedVersionFileId: Int?,
+        selectedEditionId: String?,
         lastVersionFileId: Int?,
+        lastFileInProgress: Bool,
+        lastEditionKey: String?,
+        variants: [PlaybackVariant]?,
         onStart: @escaping (DownloadRequestOptions) -> Void
     ) {
         self.title = title
         self.versions = versions
         self.lastVersionFileId = lastVersionFileId
+        self.lastFileInProgress = lastFileInProgress
+        self.lastEditionKey = lastEditionKey
+        self.variants = variants
         self.onStart = onStart
 
         _fileId = State(initialValue: selectedVersionFileId)
+        // The cut the sheet opens on stays its cut: without one, Auto would
+        // re-rank across editions if the connection's quality changed.
+        let opening = DetailVersionSelection.displayVersion(
+            versions: versions,
+            selectedFileId: selectedVersionFileId,
+            lastFileId: lastVersionFileId,
+            lastFileInProgress: lastFileInProgress,
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: selectedEditionId,
+            lastEditionKey: lastEditionKey,
+            variants: variants
+        )
+        _editionId = State(
+            initialValue: selectedEditionId ?? PlaybackEditions.edition(forFileId: opening?.fileId, in: versions)?.id
+        )
         _quality = State(initialValue: DownloadSettings.shared.preferredFormat)
     }
 
@@ -67,11 +103,19 @@ struct DownloadOptionsSheet: View {
     }
 
     private var effectiveVersion: FileVersion? {
+        resolvedVersion(fileId: fileId)
+    }
+
+    private func resolvedVersion(fileId: Int?) -> FileVersion? {
         DetailVersionSelection.displayVersion(
             versions: versions,
             selectedFileId: fileId,
             lastFileId: lastVersionFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            lastFileInProgress: lastFileInProgress,
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: editionId,
+            lastEditionKey: lastEditionKey,
+            variants: variants
         )
     }
 
@@ -95,7 +139,7 @@ struct DownloadOptionsSheet: View {
                 Section {
                     summaryRow
                 } header: {
-                    Text("Download")
+                    Text(.downloadsOptionsSummaryHeader)
                 }
 
                 if editions.count > 1 {
@@ -109,7 +153,7 @@ struct DownloadOptionsSheet: View {
                 qualitySection
                 mediaSummarySection
             }
-            .navigationTitle("Download Options")
+            .navigationTitle(Text(.downloadsOptionsTitle))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -117,10 +161,10 @@ struct DownloadOptionsSheet: View {
             .siloSheetBackground()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(.commonCancel) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Download") {
+                    Button(.audiobookDetailDownload) {
                         // Auto sends the version this sheet summarizes, not
                         // nil, so the server can't substitute another file.
                         onStart(DownloadRequestOptions(fileId: effectiveVersion?.fileId, quality: quality))
@@ -161,7 +205,7 @@ struct DownloadOptionsSheet: View {
     private var summaryDetail: String {
         let qualityLabel = DownloadFormat(rawValue: quality).map(label(for:)) ?? quality
         let versionLabel = effectiveVersion.map(DetailPlaybackFormatting.versionPrimaryText)
-            ?? (fileId == nil ? "Auto version" : "Selected version")
+            ?? AppLanguage.string(fileId == nil ? .downloadsOptionsAutoVersion : .downloadsOptionsSelectedVersion, locale: locale)
         var parts = [versionLabel, qualityLabel]
         if let estimate = selectionEstimate {
             parts.append(estimate.sizeLabel)
@@ -183,29 +227,29 @@ struct DownloadOptionsSheet: View {
     }
 
     private var editionSection: some View {
-        Section("Edition") {
+        Section {
             ForEach(editions) { edition in
                 optionButton(
                     title: edition.label,
-                    detail: "\(edition.versions.count) version\(edition.versions.count == 1 ? "" : "s")",
+                    detail: AppLanguage.string(
+                        .downloadsOptionsVersionCount(count: edition.versions.count, LocaleFormat.integer(edition.versions.count)),
+                        locale: locale
+                    ),
                     isSelected: currentEdition?.id == edition.id
                 ) {
-                    let best = DetailVersionSelection.displayVersion(
-                        versions: edition.versions,
-                        selectedFileId: nil,
-                        lastFileId: lastVersionFileId,
-                        preferredQualityId: PlayerSettings.shared.preferredQuality
-                    )
-                    fileId = best?.fileId
+                    editionId = edition.id
+                    fileId = nil
                 }
             }
+        } header: {
+            Text(.downloadsOptionsEdition)
         }
     }
 
     private var versionSection: some View {
         Section {
             optionButton(
-                title: "Auto",
+                title: AppLanguage.string(.playerVersionsAuto, locale: locale),
                 detail: autoVersionDetail,
                 isSelected: fileId == nil
             ) {
@@ -221,7 +265,7 @@ struct DownloadOptionsSheet: View {
                 }
             }
         } header: {
-            Text("Version")
+            Text(.detailVersion)
         } footer: {
             if let selectionSizeWarning {
                 Text(selectionSizeWarning)
@@ -265,19 +309,14 @@ struct DownloadOptionsSheet: View {
            !fragment.isEmpty {
             return fragment
         }
-        return "File \(version.fileId)"
+        return AppLanguage.string(.downloadsOptionsFileFallback("\(version.fileId)"), locale: locale)
     }
 
     /// Names the version Auto resolves to, the one the detail screen shows,
     /// so choosing Auto never hides which file will be saved.
     private var autoVersionDetail: String {
-        guard let autoVersion = DetailVersionSelection.displayVersion(
-            versions: versions,
-            selectedFileId: nil,
-            lastFileId: lastVersionFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
-        ) else {
-            return "Let the server choose the file"
+        guard let autoVersion = resolvedVersion(fileId: nil) else {
+            return AppLanguage.string(.downloadsOptionsServerChooses, locale: locale)
         }
         let label = DetailPlaybackFormatting.versionPrimaryText(autoVersion)
         guard let estimate = DownloadSizeEstimate.estimate(versions: versions, fileId: autoVersion.fileId) else {
@@ -307,9 +346,9 @@ struct DownloadOptionsSheet: View {
                 ) {}
             }
         } header: {
-            Text("Quality")
+            Text(.optionsQuality)
         } footer: {
-            Text("This starts from your global Downloads default. Changing it here applies only to this download.")
+            Text(.downloadsOptionsQualityFooter)
         }
     }
 
@@ -320,9 +359,9 @@ struct DownloadOptionsSheet: View {
     private func qualityDetail(for format: DownloadFormat) -> String {
         switch format {
         case .original:
-            return "Source quality, with compatibility fallback if needed"
+            return AppLanguage.string(.downloadsOptionsQualityOriginalDetail, locale: locale)
         case .twentyMbps, .tenMbps, .fiveMbps, .twoMbps, .oneMbps:
-            return "Prepared on the server when the original is larger"
+            return AppLanguage.string(.downloadsOptionsQualityPreparedDetail, locale: locale)
         }
     }
 
@@ -337,24 +376,30 @@ struct DownloadOptionsSheet: View {
         Section {
             if let effectiveVersion {
                 readOnlyRow(
-                    title: "Audio",
+                    title: .playerTracksAudio,
                     detail: DetailPlaybackFormatting.audioValueLabel(
                         version: effectiveVersion,
                         selectedAudioTrackIndex: nil
                     )
                 )
                 readOnlyRow(
-                    title: "Subtitles",
+                    title: .playerTracksSubtitles,
                     detail: subtitleSummary(for: effectiveVersion)
                 )
             } else {
-                readOnlyRow(title: "Audio", detail: "File default")
-                readOnlyRow(title: "Subtitles", detail: "Available tracks")
+                readOnlyRow(
+                    title: .playerTracksAudio,
+                    detail: AppLanguage.string(.downloadsOptionsAudioFileDefault, locale: locale)
+                )
+                readOnlyRow(
+                    title: .playerTracksSubtitles,
+                    detail: AppLanguage.string(.downloadsOptionsSubtitlesAvailable, locale: locale)
+                )
             }
         } header: {
-            Text("Included Media")
+            Text(.downloadsOptionsIncludedMedia)
         } footer: {
-            Text("Audio and subtitles are chosen automatically for the selected file. Available subtitles are saved for offline playback.")
+            Text(.downloadsOptionsIncludedMediaFooter)
         }
     }
 
@@ -364,16 +409,17 @@ struct DownloadOptionsSheet: View {
 
     private func subtitleSummary(for version: FileVersion) -> String {
         let tracks = version.subtitleTracks ?? []
-        guard !tracks.isEmpty else { return "None" }
+        guard !tracks.isEmpty else { return AppLanguage.string(.detailNone, locale: locale) }
         let languages = tracks
             .compactMap { languageDisplayName($0.language) }
             .uniqued()
         if languages.isEmpty {
-            return "\(tracks.count) track\(tracks.count == 1 ? "" : "s")"
+            return AppLanguage.string(.downloadsOptionsTrackCount(count: tracks.count, LocaleFormat.integer(tracks.count, locale: locale)), locale: locale)
         }
         let shown = languages.prefix(Self.subtitleLanguageDisplayCap).joined(separator: ", ")
         let remainder = languages.count - Self.subtitleLanguageDisplayCap
-        return remainder > 0 ? "\(shown) +\(remainder) more" : shown
+        guard remainder > 0 else { return shown }
+        return AppLanguage.string(.downloadsOptionsLanguagesMore(count: remainder, shown, LocaleFormat.integer(remainder, locale: locale)), locale: locale)
     }
 
     private func languageDisplayName(_ value: String?) -> String? {
@@ -382,13 +428,12 @@ struct DownloadOptionsSheet: View {
             return nil
         }
         if value.count <= 3 {
-            let locale = Locale.current
             return locale.localizedString(forLanguageCode: value.lowercased()) ?? value.uppercased()
         }
         return value
     }
 
-    private func readOnlyRow(title: String, detail: String) -> some View {
+    private func readOnlyRow(title: LocalizedStringResource, detail: String) -> some View {
         HStack {
             Text(title)
             Spacer(minLength: 12)

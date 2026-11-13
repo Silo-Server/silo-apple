@@ -96,7 +96,6 @@ enum APIv2MutationCatalog {
         .init("DELETE", "/api/v2/subtitle-prefs/{series_id}", .naturalIdempotent),
         // Settings values
         .init("PUT", "/api/v2/settings/values/{key}", .naturalIdempotent),
-        .init("PUT", "/api/v2/settings/values/nav.shortcuts/item", .naturalIdempotent),
         .init("DELETE", "/api/v2/settings/values/{key}", .naturalIdempotent),
         // Catalog and home
         .init("POST", "/api/v2/catalog/query", .naturalIdempotent),
@@ -149,6 +148,9 @@ enum APIv2MutationCatalog {
         // repeat leaves the same state.
         .init("PUT", "/api/v2/requests/follows/{media_type}/{tmdb_id}", .naturalIdempotent),
         .init("DELETE", "/api/v2/requests/follows/{media_type}/{tmdb_id}", .naturalIdempotent),
+        // Apple push: a repeated reset leaves an installation already bound
+        // to the sent key alone.
+        .init("POST", "/api/v2/devices/push/apple/reset", .domainIdentity),
     ]
 
     /// `non_retryable` operations the client sends. They would be sent once
@@ -166,6 +168,7 @@ enum APIv2MutationCatalog {
         // Media requests
         .init("POST", "/api/v2/requests", .nonRetryable),
         .init("POST", "/api/v2/requests/{id}/cancel", .nonRetryable),
+        .init("DELETE", "/api/v2/requests/{id}", .nonRetryable),
         // Watch together
         .init("POST", "/api/v2/watch-together/rooms/{room_id}/playback/start", .nonRetryable),
         .init("PUT", "/api/v2/watch-together/rooms/{room_id}/selection", .nonRetryable),

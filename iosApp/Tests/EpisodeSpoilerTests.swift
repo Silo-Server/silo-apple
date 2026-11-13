@@ -174,18 +174,22 @@ final class EpisodeSpoilerPreferencesTests: XCTestCase {
     private var transport: FakeEpisodeSpoilerTransport!
     private var identity: HTTPRequestIdentity? = EpisodeSpoilerPreferencesTests.profileA
 
+    private static let account = "6F9619FF-8B86-D011-B42D-00C04FC964FF"
+
     private static let profileA = HTTPRequestIdentity(
         serverId: "server-1",
         serverURL: "https://silo.example",
         profileId: "profile-a",
-        clientFamily: "ios"
+        clientFamily: "ios",
+        localAccountId: account
     )
 
     private static let profileB = HTTPRequestIdentity(
         serverId: "server-1",
         serverURL: "https://silo.example",
         profileId: "profile-b",
-        clientFamily: "ios"
+        clientFamily: "ios",
+        localAccountId: account
     )
 
     override func setUp() async throws {
@@ -399,9 +403,15 @@ final class EpisodeSpoilerPreferencesTests: XCTestCase {
     func testTopShelfReadsTheImageSwitchTheStoreCached() async {
         transport.effective = ["catalog.hide_unwatched_episode_images": true]
         await makeStore().refresh()
-        XCTAssertTrue(EpisodeSpoilerCache.hidesImages(serverId: "server-1", profileId: "profile-a", in: suite))
-        XCTAssertFalse(EpisodeSpoilerCache.hidesImages(serverId: "server-1", profileId: "profile-b", in: suite))
-        XCTAssertFalse(EpisodeSpoilerCache.hidesImages(serverId: "server-1", profileId: nil, in: suite))
+        func hidesImages(_ profileId: String?) -> Bool {
+            EpisodeSpoilerCache.hidesImages(
+                scope: AccountScope(serverId: "server-1", localAccountId: Self.account, profileId: profileId),
+                in: suite, legacyOwner: { _ in nil }
+            )
+        }
+        XCTAssertTrue(hidesImages("profile-a"))
+        XCTAssertFalse(hidesImages("profile-b"))
+        XCTAssertFalse(hidesImages(nil))
     }
 
     func testProbeFailureKeepsTheCachedAnswer() async {
@@ -745,8 +755,7 @@ private func spoilerCapabilities(
         allowed: allowed,
         manifestRevision: revision,
         clientFamilies: ["tv", "mobile", "tablet", "desktop", "web"],
-        supportsBatchedEffective: batchedEffective,
-        supportsAtomicShortcuts: true
+        supportsBatchedEffective: batchedEffective
     )
 }
 

@@ -20,6 +20,12 @@ struct ApplePushDisplayTarget: Codable, Equatable, Sendable {
     /// RFC 3339 expiry of `displayToken`. Nil renews the token at the next
     /// registration pass.
     let expiresAt: String?
+    /// The saved account (`Account.localAccountId`) that registered. Pushes
+    /// name only their server and profile, and profile IDs repeat across
+    /// accounts on one server; the server sends this device only the pushes
+    /// of the account that holds its installation, which is this one. Nil
+    /// for a target from before accounts.
+    var localAccountID: String? = nil
 }
 
 /// The display targets, kept as one shared Keychain item: the extension can
@@ -53,8 +59,9 @@ struct ApplePushDisplayTargetStore: Sendable {
     /// before. A saved server never replaces another's target, even one
     /// claiming the same deployment: a server could claim any identity.
     /// One deployment saved under two addresses still ends up with one
-    /// target, because the server refuses the second address's
-    /// installation proof.
+    /// target: once the second address proves it is that deployment, both
+    /// share one installation record, and the registrar removes the other
+    /// address's target whenever one of them registers.
     @discardableResult
     func save(_ target: ApplePushDisplayTarget) -> Bool {
         update { targets in
@@ -66,6 +73,19 @@ struct ApplePushDisplayTargetStore: Sendable {
     @discardableResult
     func removeTargets(registeredBy registryServerID: String) -> Bool {
         update { $0.removeAll { $0.registryServerID == registryServerID } }
+    }
+
+    /// Removes the saved server's target when `localAccountID`, or a build
+    /// from before accounts, registered it. Another account's target stays:
+    /// that account holds the server's installation.
+    @discardableResult
+    func removeTargets(registeredBy registryServerID: String, account localAccountID: String) -> Bool {
+        update {
+            $0.removeAll {
+                $0.registryServerID == registryServerID
+                    && ($0.localAccountID == nil || $0.localAccountID == localAccountID)
+            }
+        }
     }
 
     /// A Keychain read failure leaves the stored targets as they are rather

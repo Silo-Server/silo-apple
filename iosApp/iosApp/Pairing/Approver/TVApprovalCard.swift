@@ -13,15 +13,19 @@ struct TVApprovalCard: View {
     /// Back to code entry when the code isn't found (a mistyped digit is the
     /// usual cause); nil hides it.
     var onEnterAnotherCode: (() -> Void)? = nil
-    /// "Not you?": sign out of this server in Silo only, then sign in again,
-    /// keeping the TV's code. The wording follows `model.accountSwitch`:
-    /// "Switch account" when the provider is asked for an account choice or
-    /// the server only takes passwords, "Sign out" when a provider could
-    /// sign the same person straight back in. Nil hides the link.
-    var onSwitchAccount: (() -> Void)? = nil
+    /// "Not you?": the other accounts this device has on the server, each
+    /// of which can approve instead (`onUseAccount`).
+    var otherAccounts: [SavedAccountSummary] = []
+    var onUseAccount: (SavedAccountSummary) -> Void = { _ in }
+    /// "Not you?": sign in with another account on this server, keeping
+    /// every account already saved and the TV's code. Nil hides it.
+    var onAddAccount: (() -> Void)? = nil
     var onClose: () -> Void
 
-    @State private var confirmsSwitchAccount = false
+    @State private var choosesAccount = false
+    @Environment(\.locale) private var locale
+
+    private var offersAnotherAccount: Bool { onAddAccount != nil || !otherAccounts.isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -29,7 +33,7 @@ struct TVApprovalCard: View {
             case .idle, .lookingUp:
                 HStack(spacing: 12) {
                     ProgressView()
-                    Text("Looking up the code…").foregroundStyle(.secondary)
+                    Text(.tvPairApprovalLookingUp).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.vertical, 30)
@@ -38,73 +42,65 @@ struct TVApprovalCard: View {
             case .approved(let request, let signedIn):
                 result(
                     symbol: "checkmark.circle.fill", tint: .green,
-                    title: signedIn ? "Your TV is signed in." : "Done. Your TV is signing in.",
-                    detail: signedIn ? "\(request.deviceName) can choose a profile now." : nil
+                    title: Text(signedIn ? LocalizedStringResource.signInTvSignedIn : .signInTvSigningIn),
+                    detail: signedIn ? Text(.tvPairApprovalChooseProfile(request.deviceName)) : nil
                 )
-                closeButton("Done")
+                closeButton(.commonDone)
             case .unconfirmed:
                 result(symbol: "questionmark.circle", tint: .orange,
-                       title: "Couldn't confirm the approval yet.",
-                       detail: "Check the TV. This updates when \(model.server.displayName) confirms it.")
-                closeButton("Close")
+                       title: Text(.tvPairApprovalUnconfirmed),
+                       detail: Text(.tvPairApprovalUnconfirmedDetail(model.server.displayName)))
+                closeButton(.companionClose)
             case .declined:
-                result(symbol: "xmark.circle", tint: .secondary, title: "Sign-in declined.",
-                       detail: "The TV shows that you declined.")
-                closeButton("Done")
+                result(symbol: "xmark.circle", tint: .secondary, title: Text(.tvPairApprovalDeclined),
+                       detail: Text(.tvPairApprovalDeclinedDetail))
+                closeButton(.commonDone)
             case .declinedElsewhere:
-                result(symbol: "xmark.circle", tint: .secondary, title: "This sign-in was declined.", detail: nil)
-                closeButton("Close")
+                result(symbol: "xmark.circle", tint: .secondary, title: Text(.signInTvErrorDeclined), detail: nil)
+                closeButton(.companionClose)
             case .canceled:
-                result(symbol: "tv.slash", tint: .orange, title: "This TV stopped waiting.",
-                       detail: "Start again on the TV.")
-                closeButton("Close")
+                result(symbol: "tv.slash", tint: .orange, title: Text(.tvPairApprovalCanceled),
+                       detail: Text(.tvPairApprovalCanceledDetail))
+                closeButton(.companionClose)
             case .notFound(let serverName):
                 notFound(serverName: serverName)
             case .expired:
                 result(symbol: "clock.badge.exclamationmark", tint: .orange,
-                       title: "This code expired.",
-                       detail: "Your TV is showing a new one; scan it again.")
-                closeButton("Close")
+                       title: Text(.tvPairApprovalExpired),
+                       detail: Text(.tvPairApprovalExpiredDetail))
+                closeButton(.companionClose)
             case .alreadyUsed:
-                result(symbol: "checkmark.circle", tint: .secondary, title: "That TV is already signed in.", detail: nil)
-                closeButton("Close")
+                result(symbol: "checkmark.circle", tint: .secondary, title: Text(.signInTvErrorAlreadySignedIn), detail: nil)
+                closeButton(.companionClose)
             case .needsSignIn(let serverName):
                 result(symbol: "person.crop.circle.badge.exclamationmark", tint: .orange,
-                       title: "Sign in to \(serverName) again",
-                       detail: "This device's sign-in for \(serverName) has ended. Sign in to it again, then approve the TV.")
-                closeButton("Close")
+                       title: Text(.tvPairApprovalNeedsSignIn(serverName)),
+                       detail: Text(.tvPairApprovalNeedsSignInDetail(serverName)))
+                closeButton(.companionClose)
             case .failed(let message):
-                result(symbol: "exclamationmark.triangle.fill", tint: .yellow, title: message, detail: nil)
-                closeButton("Close")
+                result(symbol: "exclamationmark.triangle.fill", tint: .yellow, title: Text(message), detail: nil)
+                closeButton(.companionClose)
             }
         }
-        .confirmationDialog(model.offersAccountChoice ? "Switch account?" : "Sign out?",
-                            isPresented: $confirmsSwitchAccount, titleVisibility: .visible) {
-            Button(model.offersAccountChoice ? "Sign Out and Switch" : "Sign Out") { onSwitchAccount?() }
-            Button("Cancel", role: .cancel) {}
+        .confirmationDialog(.tvPairApprovalAnotherAccountTitle, isPresented: $choosesAccount, titleVisibility: .visible) {
+            ForEach(otherAccounts) { account in
+                Button(account.username.map { LocalizedStringResource.tvPairApprovalUseAccount($0) } ?? .tvPairApprovalUseAnotherAccount) {
+                    onUseAccount(account)
+                }
+            }
+            if let onAddAccount {
+                Button(.tvPairApprovalSignInAnotherAccount) { onAddAccount() }
+            }
+            Button(.commonCancel, role: .cancel) {}
         } message: {
-            Text(Self.switchAccountMessage(serverName: model.server.displayName,
-                                           choosingAccount: model.offersAccountChoice))
+            Text(.tvPairApprovalAnotherAccountMessage(model.server.displayName))
         }
-    }
-
-    static func switchAccountLink(_ accountSwitch: TVApprovalAccountSwitch) -> String {
-        accountSwitch == .signOut ? "Not you? Sign out" : "Not you? Switch account"
-    }
-
-    /// The confirmation. Without `select_account` the provider may sign the
-    /// same person straight back in, so the copy promises no account choice.
-    static func switchAccountMessage(serverName: String, choosingAccount: Bool) -> String {
-        if choosingAccount {
-            return "You'll be signed out of \(serverName) on this device, then asked which account to sign in with. The TV's code stays ready to approve."
-        }
-        return "You'll be signed out of \(serverName) on this device. Sign in with the account the TV should use, then approve it. The TV's code stays ready to approve."
     }
 
     private func review(_ request: TVApprovalRequest, busy: Bool, declining: Bool) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Sign in \(request.deviceName)?")
+                Text(.signInTvCardTitle(request.deviceName))
                     .font(.siloTitle)
                     .fixedSize(horizontal: false, vertical: true)
                 if let platform = request.platformLabel {
@@ -113,7 +109,7 @@ struct TVApprovalCard: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Check that your TV shows").font(.siloCaption).foregroundStyle(.secondary)
+                Text(.signInTvCheckCode).font(.siloCaption).foregroundStyle(.secondary)
                 Text(request.code)
                     .font(.siloPIN)
                     .lineLimit(1)
@@ -123,8 +119,8 @@ struct TVApprovalCard: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(signInLine(request)).font(.siloBody).fixedSize(horizontal: false, vertical: true)
-                if onSwitchAccount != nil {
-                    Button(Self.switchAccountLink(model.accountSwitch)) { confirmsSwitchAccount = true }
+                if offersAnotherAccount {
+                    Button(.tvPairApprovalNotYou) { choosesAccount = true }
                         .font(.siloCaption)
                         .disabled(busy)
                 }
@@ -147,7 +143,7 @@ struct TVApprovalCard: View {
             } label: {
                 HStack {
                     if busy && !declining { ProgressView().tint(Color.siloBackground) }
-                    Text("Sign in TV").font(.siloHeadline)
+                    Text(.signInTvApprove).font(.siloHeadline)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
@@ -160,7 +156,7 @@ struct TVApprovalCard: View {
             } label: {
                 HStack {
                     if declining { ProgressView() }
-                    Text("Not now")
+                    Text(.signInTvNotNow)
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 6)
             }
@@ -173,20 +169,22 @@ struct TVApprovalCard: View {
     /// "Requested 2 min ago from 192.168.1.x", with whichever parts the
     /// server sent.
     private func requestedLine(_ request: TVApprovalRequest) -> String? {
-        let when = request.requestedAt.map { Self.relative.localizedString(for: $0, relativeTo: Date()) }
+        let when = request.requestedAt.map { Self.relative().localizedString(for: $0, relativeTo: Date()) }
         switch (when, request.networkHint) {
-        case let (when?, hint?): return "Requested \(when) from \(hint)"
-        case let (when?, nil): return "Requested \(when)"
-        case let (nil, hint?): return "Requested from \(hint)"
+        case let (when?, hint?): return AppLanguage.string(.tvPairApprovalRequestedFrom(when, hint))
+        case let (when?, nil): return AppLanguage.string(.signInTvRequested(when))
+        case let (nil, hint?): return AppLanguage.string(.signInTvNetwork(hint))
         case (nil, nil): return nil
         }
     }
 
-    private static let relative: RelativeDateTimeFormatter = {
+    /// Made per use, in the app's language.
+    private static func relative() -> RelativeDateTimeFormatter {
         let formatter = RelativeDateTimeFormatter()
+        formatter.locale = AppLanguage.formattingLocale
         formatter.unitsStyle = .full
         return formatter
-    }()
+    }
 
     private func signInLine(_ request: TVApprovalRequest) -> String {
         Self.signInLine(serverName: request.serverName, serverHost: request.serverHost, accountName: request.accountName)
@@ -195,23 +193,23 @@ struct TVApprovalCard: View {
     /// Which server and account approving signs the TV in to. Shared with
     /// the nearby-TV confirm card.
     static func signInLine(serverName: String, serverHost: String, accountName: String?) -> String {
-        let server = "\(serverName) (\(serverHost))"
+        let server = AppLanguage.string(.signInTvServerWithHost(serverName, serverHost))
         if let accountName {
-            return "You'll sign it in to \(server) as \(accountName)."
+            return AppLanguage.string(.signInTvServerAccount(server, accountName))
         }
-        return "You'll sign it in to \(server) with your account."
+        return AppLanguage.string(.signInTvServerOnly(server))
     }
 
-    static let profilesLine = "Anyone using this TV can pick from your profiles. Profiles with a PIN stay locked."
-    static let onlyApproveInFrontLine = "Only approve a TV that's in front of you right now."
+    static let profilesLine: LocalizedStringResource = .signInTvProfilesNote
+    static let onlyApproveInFrontLine: LocalizedStringResource = .signInTvWarning
 
     private func notFound(serverName: String) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             result(symbol: "questionmark.circle", tint: .orange,
-                   title: "We couldn't find that code on \(serverName).",
-                   detail: "Check the code on your TV. The TV shows its server's name at the top of its screen.")
+                   title: Text(.tvPairApprovalNotFoundOn(serverName)),
+                   detail: Text(.tvPairApprovalNotFoundDetail))
             if !otherServers.isEmpty {
-                Text("Try another server").font(.siloCaption).foregroundStyle(.secondary)
+                Text(.tvPairApprovalTryAnotherServer).font(.siloCaption).foregroundStyle(.secondary)
                 ForEach(otherServers) { server in
                     Button {
                         onChooseServer(server)
@@ -224,26 +222,26 @@ struct TVApprovalCard: View {
             }
             if let onEnterAnotherCode {
                 Button(action: onEnterAnotherCode) {
-                    Text("Enter another code").font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
+                    Text(.tvPairApprovalEnterAnotherCode).font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
                 }
                 .pairingPrimaryButton()
             }
-            closeButton("Close")
+            closeButton(.companionClose)
         }
     }
 
-    private func result(symbol: String, tint: Color, title: String, detail: String?) -> some View {
+    private func result(symbol: String, tint: Color, title: Text, detail: Text?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Image(systemName: symbol).font(.system(size: 36)).foregroundStyle(tint).accessibilityHidden(true)
-            Text(title).font(.siloHeadline).fixedSize(horizontal: false, vertical: true)
+            title.font(.siloHeadline).fixedSize(horizontal: false, vertical: true)
             if let detail {
-                Text(detail).font(.siloCaption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                detail.font(.siloCaption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement(children: .combine)
     }
 
-    private func closeButton(_ title: String) -> some View {
+    private func closeButton(_ title: LocalizedStringResource) -> some View {
         Button(action: onClose) {
             Text(title).font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
         }

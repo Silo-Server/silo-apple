@@ -20,15 +20,21 @@ struct SiloControlMiniBar: View {
             HStack(spacing: 12) {
                 thumb
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(controller.isReconnecting
-                         ? "Reconnecting…"
-                         : (controller.state?.title ?? "Connected"))
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
+                    Group {
+                        if controller.isReconnecting {
+                            Text(.castReconnecting)
+                        } else if let title = controller.state?.title {
+                            Text(title)
+                        } else {
+                            Text(.castMiniBarConnected)
+                        }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
                     if !isInline {
-                        Text(controller.isReconnecting
-                             ? "to \(targetName)"
-                             : "Playing on \(targetName)")
+                        (controller.isReconnecting
+                         ? Text(.castMiniBarToTv(targetName))
+                         : Text(.castPlayingOn(targetName)))
                             .font(.caption)
                             .foregroundStyle(Color.siloSecondaryText)
                             .lineLimit(1)
@@ -46,7 +52,7 @@ struct SiloControlMiniBar: View {
                             .frame(width: 32, height: 32)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Stop reconnecting")
+                    .accessibilityLabel(Text(.remoteMiniBarStopReconnecting))
                 } else {
                     Button {
                         controller.togglePlayPauseOptimistic()
@@ -56,7 +62,7 @@ struct SiloControlMiniBar: View {
                             .frame(width: 32, height: 32)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(controller.clock.isPlaying() ? "Pause" : "Play")
+                    .accessibilityLabel(controller.clock.isPlaying() ? Text(.playerAudioPause) : Text(.playerAudioPlay))
                 }
             }
             .padding(.horizontal, 14)

@@ -4,7 +4,7 @@ import XCTest
 @testable import Silo
 
 /// The iPhone Duo's folded screen is 466 x 678pt with the time and connection
-/// status in an 84pt column down its right side and no inset across the top.
+/// status in an 84pt column down its right side.
 final class StatusColumnLayoutTests: XCTestCase {
     func testFoldedDuoScreenGetsTheColumn() throws {
         let layout = try XCTUnwrap(StatusColumnLayout(
@@ -12,6 +12,16 @@ final class StatusColumnLayoutTests: XCTestCase {
         ))
         XCTAssertEqual(layout.edge, .trailing)
         XCTAssertEqual(layout.width, 84)
+    }
+
+    /// A detail page showing its navigation bar in the column gains a small
+    /// top inset; it still sits beside the column.
+    func testPageWithANavigationBarStillGetsTheColumn() throws {
+        let layout = try XCTUnwrap(StatusColumnLayout(
+            safeArea: EdgeInsets(top: 16, leading: 0, bottom: 0, trailing: 76)
+        ))
+        XCTAssertEqual(layout.edge, .trailing)
+        XCTAssertEqual(layout.width, 76)
     }
 
     /// Right-to-left layouts report the same physical column as leading.
@@ -22,8 +32,8 @@ final class StatusColumnLayoutTests: XCTestCase {
         XCTAssertEqual(layout.edge, .leading)
     }
 
-    /// Portrait phones and iPads have a status bar across the top, and
-    /// landscape phones inset both sides; all keep the bottom tab bar.
+    /// Portrait phones and iPads inset neither side, and landscape phones
+    /// inset both; all keep the bottom tab bar.
     func testOtherWindowsKeepTheTabBar() {
         let windows = [
             EdgeInsets(top: 62, leading: 0, bottom: 34, trailing: 0),
