@@ -298,6 +298,20 @@ final class PlayerSettings {
         )
     }
 
+    /// The pair playback asks for on the current connection, as an id: what
+    /// a detail page's Auto ranks files with, so Play starts the file the
+    /// page shows on mobile data too. Observable through
+    /// ``PlaybackConnection``, so the page follows a change of connection.
+    var connectionPreferredQuality: String {
+        preferredQuality(onMeteredNetwork: PlaybackConnection.shared.isMetered)
+    }
+
+    /// The pair playback asks for on a metered or unmetered connection, as an id.
+    func preferredQuality(onMeteredNetwork: Bool) -> String {
+        let axes = playbackQualityAxes(onMeteredNetwork: onMeteredNetwork)
+        return AppleQualityAxes.join(resolution: axes.resolution, bitrateKbps: axes.bitrateKbps)
+    }
+
     /// The shared preset the stored pair corresponds to, or nil when the pair
     /// is a combination no preset covers — set through the API, or written by a
     /// client whose ladder has a rung this table does not. The settings picker

@@ -164,6 +164,8 @@ struct PhonePlaybackSelectorRow: View {
     var subtitleSignature: SubtitleTrackSignature? = nil
     var showForcedSubtitles = true
     let onSelectVersion: (Int?) -> Void
+    /// Takes a `PlaybackEditions.Edition.id`; Version stays on Auto.
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
 
@@ -221,6 +223,7 @@ struct PhonePlaybackSelectorRow: View {
             selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
             preferredSubtitleLanguage: profilePrefs.preferredSubtitleLanguage,
             onSelectVersion: { closeDropDown(); onSelectVersion($0) },
+            onSelectEdition: { closeDropDown(); onSelectEdition($0) },
             onSelectAudioTrack: { closeDropDown(); onSelectAudioTrack($0) },
             onSelectSubtitleTrack: { closeDropDown(); onSelectSubtitleTrack($0) }
         )
@@ -475,6 +478,7 @@ private struct PhonePlaybackSelectorOptions: View {
     let selectedSubtitleTrackIndex: Int?
     let preferredSubtitleLanguage: String?
     let onSelectVersion: (Int?) -> Void
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
 
@@ -569,13 +573,7 @@ private struct PhonePlaybackSelectorOptions: View {
                         detail: AppLanguage.string(.detailEditionVersionCount(edition.versions.count), locale: locale),
                         isSelected: currentEdition?.id == edition.id
                     ) {
-                        let best = DetailVersionSelection.displayVersion(
-                            versions: edition.versions,
-                            selectedFileId: nil,
-                            lastFileId: nil,
-                            preferredQualityId: PlayerSettings.shared.preferredQuality
-                        )
-                        onSelectVersion(best?.fileId)
+                        onSelectEdition(edition.id)
                     }
                 }
             }

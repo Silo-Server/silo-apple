@@ -157,7 +157,8 @@ final class DetailVersionSelectionTests: XCTestCase {
         let selected = DetailVersionSelection.displayVersion(
             versions: versions,
             selectedFileId: nil,
-            lastFileId: nil
+            lastFileId: nil,
+            lastFileInProgress: false
         )
 
         XCTAssertTrue(
@@ -167,19 +168,31 @@ final class DetailVersionSelectionTests: XCTestCase {
     }
 
     #if !os(tvOS)
-    func testAutoDownloadPinsTheDisplayedLastPlayedVersion() {
-        // Auto displays the last-played 720p file (the one with the sidecar
-        // subtitles); sending nil let the server pick the 1080p file instead.
-        let versions = [
-            version(fileId: 1, resolution: "720p"),
-            version(fileId: 2, resolution: "1080p")
+    func testAutoDownloadPinsTheDisplayedVersion() {
+        // Auto displays the best file of the last-played edition; sending nil
+        // let the server pick its own default, another cut's file.
+        let versions = decodedVersions("""
+        [
+          { "file_id": 1, "edition_raw": "Extended", "edition_key": "extended", "resolution": "2160p" },
+          { "file_id": 2, "edition_raw": "Theatrical", "edition_key": "theatrical", "resolution": "720p" },
+          { "file_id": 3, "edition_raw": "Theatrical", "edition_key": "theatrical", "resolution": "1080p" }
         ]
+        """)
 
         XCTAssertEqual(DownloadRequestOptions.fileId(
             versions: versions,
             selectedFileId: nil,
-            lastFileId: 1,
+            lastFileId: 2,
+            lastFileInProgress: false,
             preferredQualityId: nil
+        ), 3)
+        XCTAssertEqual(DownloadRequestOptions.fileId(
+            versions: versions,
+            selectedFileId: nil,
+            lastFileId: 2,
+            lastFileInProgress: false,
+            preferredQualityId: nil,
+            editionId: "extended"
         ), 1)
     }
 
@@ -193,6 +206,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             versions: versions,
             selectedFileId: 2,
             lastFileId: 1,
+            lastFileInProgress: false,
             preferredQualityId: nil
         ), 2)
     }
@@ -202,6 +216,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             versions: [],
             selectedFileId: nil,
             lastFileId: 1,
+            lastFileInProgress: false,
             preferredQualityId: nil
         ))
     }

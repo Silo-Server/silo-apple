@@ -7311,9 +7311,10 @@ class PlayerViewModel {
             shuffleState = PlayerShuffleState(shuffle: shuffle)
         }
         // Another version of the title playing now is a quality change the
-        // viewer chose.
+        // viewer chose. Detail pages send the file they show on every Play,
+        // so only a pinned one is a choice.
         var switchesVersion = false
-        if let preferredFileId, lastLoadRequest?.contentId == contentId,
+        if pinsVersion, let preferredFileId, lastLoadRequest?.contentId == contentId,
            let playing = currentSelectedVersion?.fileId, playing != preferredFileId {
             switchesVersion = true
         }

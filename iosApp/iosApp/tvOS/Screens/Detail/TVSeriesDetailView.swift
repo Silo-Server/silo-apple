@@ -200,6 +200,8 @@ struct TVSeriesDetailView: View {
     let hierarchyError: String?
     let onRetryHierarchy: () async -> Void
     let selectedNextUpFileId: Int?
+    /// The edition picked for the selected episode on this visit.
+    let selectedNextUpEditionId: String?
     let selectedNextUpAudioTrackIndex: Int?
     let selectedNextUpSubtitleTrackIndex: Int?
     let nextUpPlaybackDetail: ItemDetail?
@@ -223,6 +225,7 @@ struct TVSeriesDetailView: View {
     let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> PersonalStateOutcome
     let onSetEpisodeWatchlist: (_ contentId: String, _ inWatchlist: Bool) async -> PersonalStateOutcome
     let onSelectNextUpVersion: (Int?) -> Void
+    let onSelectNextUpEdition: (String) -> Void
     let onSelectNextUpAudioTrack: (Int?) -> Void
     let onSelectNextUpSubtitleTrack: (Int?) -> Void
     let onToggleFavorite: () -> Void
@@ -551,6 +554,7 @@ struct TVSeriesDetailView: View {
                     showForcedSubtitles: matchingPlaybackDetail?.showsForcedSubtitles ?? true,
                     preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                     onSelectVersion: onSelectNextUpVersion,
+                    onSelectEdition: onSelectNextUpEdition,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack,
                     focusedAction: focusedAction
@@ -563,8 +567,15 @@ struct TVSeriesDetailView: View {
     private func showPlayTitle(for episode: EpisodeListItem) -> String {
         let season = LocaleFormat.codeNumber(episode.seasonNumber)
         let number = LocaleFormat.codeNumber(episode.episodeNumber)
+        // A position saved on another edition than the one shown isn't
+        // resumed: Play starts the shown one at 0.
+        let shown = matchingPlaybackDetail?.contentId == episode.contentId ? effectiveNextUpVersion : nil
+        let resumes = episode.userData?.isInProgress == true
+            && DetailVersionSelection.savedPositionIsInEdition(
+                of: shown, in: nextUpVersions, userData: episode.userData
+            )
         return AppLanguage.string(
-            episode.userData?.isInProgress == true
+            resumes
                 ? .detailResumeEpisode(season, number)
                 : .detailPlayEpisode(season, number),
             locale: locale
@@ -1044,7 +1055,7 @@ struct TVSeriesDetailView: View {
                 case .watchParty:
                     if let episode = displayedEpisode {
                         WatchPartyEntry.open(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode", // i18n-ignore: watch-party payload (D44)
-                            fileId: selectedFileId(for: episode), libraryId: partyLibraryId,
+                            fileId: watchPartyFileId(for: episode), libraryId: partyLibraryId,
                             preview: WatchPartySelectedItem(previewing: episode, series: detail, seasons: seasons),
                             router: partyRouter)
                     }
@@ -1103,8 +1114,21 @@ struct TVSeriesDetailView: View {
             versions: nextUpVersions,
             selectedFileId: selectedNextUpFileId,
             lastFileId: matchingPlaybackDetail?.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            lastFileInProgress: matchingPlaybackDetail?.userData?.hasResumePoint ?? false,
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: selectedNextUpEditionId,
+            lastEditionKey: matchingPlaybackDetail?.userData?.lastEditionKey,
+            variants: matchingPlaybackDetail?.playbackVariants
         )
+    }
+
+    /// The file a party starts from: the one the page shows once the viewer
+    /// picked an edition or a version for this episode, else the server's.
+    private func watchPartyFileId(for episode: EpisodeListItem) -> Int? {
+        if let pinned = selectedFileId(for: episode) { return pinned }
+        guard selectedNextUpEditionId != nil,
+              matchingPlaybackDetail?.contentId == episode.contentId else { return nil }
+        return effectiveNextUpVersion?.fileId
     }
 
     private func selectedFileId(for episode: EpisodeListItem) -> Int? {
