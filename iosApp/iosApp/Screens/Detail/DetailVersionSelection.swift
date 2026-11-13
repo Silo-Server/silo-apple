@@ -111,12 +111,9 @@ enum DetailVersionSelection {
             return .unresolved(resumePosition: resumePosition)
         }
         let lastFile = versions.first { $0.fileId == watchState?.lastFileId }
-        let playedEdition = PlaybackEditions.edition(forFileId: lastFile?.fileId, in: versions)?.id
-            ?? PlaybackEditions.edition(forKey: watchState?.lastEditionKey, in: versions)?.id
-        let otherEdition = playedEdition != nil && playedEdition != shownEdition
-        let position = !startFromBeginning && (otherEdition || !positionCarries(from: lastFile, to: start))
-            ? 0
-            : resumePosition
+        let applies = savedPositionIsInEdition(of: start, in: versions, userData: watchState)
+            && positionCarries(from: lastFile, to: start)
+        let position = !startFromBeginning && !applies ? 0 : resumePosition
         guard start.fileId != shown?.fileId else {
             return PageStart(
                 fileId: start.fileId,
@@ -131,6 +128,22 @@ enum DetailVersionSelection {
             subtitleTrackIndex: DetailPlaybackFormatting.subtitleIndexAfterFileChange(subtitleTrackIndex) { nil },
             resumePosition: position
         )
+    }
+
+    /// Whether the position in `userData` was saved in the edition of
+    /// `file`, the file the page shows or Play starts. When it wasn't, Play
+    /// starts at 0 (`pageStart`), so the page offers Play, not Resume. True
+    /// when either side is unknown.
+    static func savedPositionIsInEdition(
+        of file: FileVersion?,
+        in versions: [FileVersion],
+        userData: LeafItemUserData?
+    ) -> Bool {
+        guard let file else { return true }
+        let played = PlaybackEditions.edition(forFileId: userData?.lastFileId, in: versions)
+            ?? PlaybackEditions.edition(forKey: userData?.lastEditionKey, in: versions)
+        guard let played else { return true }
+        return played.id == PlaybackEditions.edition(forFileId: file.fileId, in: versions)?.id
     }
 
     /// Whether a position saved on `last` means anything on `start`. A

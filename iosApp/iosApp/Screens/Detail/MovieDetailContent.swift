@@ -165,7 +165,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
         VStack(spacing: 14) {
             PhonePrimaryPillButton(
                 icon: "play.fill",
-                title: DetailPlayLabel.item(detail.userData),
+                title: DetailPlayLabel.item(detail.userData, shown: effectiveVersion, in: availableVersions),
                 action: handlePlayTap,
                 fullWidth: true
             )
@@ -262,7 +262,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
             guard !Task.isCancelled else { return }
             resumeLookupTask = nil
             let watchState = state.userData(cached: detail.userData)
-            if let position = state.resumePosition(cached: detail.userData) {
+            // A position saved on another edition than the one shown isn't
+            // offered: Play starts the shown one at 0.
+            if let position = state.resumePosition(cached: detail.userData),
+               DetailVersionSelection.savedPositionIsInEdition(
+                   of: effectiveVersion, in: availableVersions, userData: watchState
+               ) {
                 pendingResumeWatchState = watchState
                 pendingResumePosition = position
             } else {
