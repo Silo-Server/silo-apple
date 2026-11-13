@@ -1139,16 +1139,16 @@ private struct ItemDetailPhoneContent: View {
 
     /// After a Version or Edition pick moved the page off `previous`: a
     /// subtitle index names a stream of that file, so it becomes the shown
-    /// file's matching track.
+    /// file's matching track. `preferredSubtitleTrackFileId` keeps the file
+    /// the pick was made on.
     private func carrySubtitle(in detail: ItemDetail, from previous: FileVersion?) {
-        let next = effectiveVersion(for: detail, versionFileId: preferredVersionFileId)
         preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
             for: detail,
             versionFileId: preferredVersionFileId,
             candidate: DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
                 preferredSubtitleTrackIndex,
                 movingFrom: previous,
-                to: next,
+                to: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
                 isManualPick: preferredSubtitleTrackWasManuallySelected,
                 signature: detail.effectiveSubtitleTrackSignature,
                 mode: detail.effectiveSubtitleMode,
@@ -1156,7 +1156,6 @@ private struct ItemDetailPhoneContent: View {
                 usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
             )
         )
-        preferredSubtitleTrackFileId = next?.fileId
     }
 
     /// `selectEdition` for the selected episode.
