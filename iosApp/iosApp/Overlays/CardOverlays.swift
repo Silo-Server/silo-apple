@@ -1,5 +1,8 @@
 import NukeUI
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// Renders the enabled overlay badges for an item where the profile's prefs
 /// place them: the top-left corner, the two bottom corners, and a rail
@@ -47,6 +50,8 @@ struct CardOverlays: View {
     /// the row rises clear of it.
     var hasProgressBar = false
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     enum Variant {
         case poster      // standard 2:3 poster card
         case wide        // backdrop card (continue watching, hero) — leaves
@@ -62,7 +67,12 @@ struct CardOverlays: View {
         let rightRail = resolve(.rightEdge, preset: preset, limit: Self.maxBadgesPerRail)
 
         GeometryReader { proxy in
-            let scale = variant == .poster ? proxy.size.width / Self.posterReferenceWidth : 1
+            let scale = OverlayScale.value(
+                cardWidth: proxy.size.width,
+                variant: variant,
+                posterSize: UICustomizationPreferences.shared.cardPresentation.posterSize,
+                dynamicTypeSize: dynamicTypeSize
+            )
             let context = BadgeContext(preset: preset, scale: scale)
             let inset = Self.edgeInset * scale
             // Poster cards keep the top-right corner clear for the
@@ -156,6 +166,62 @@ struct CardOverlays: View {
             startPoint: edge == .top ? .top : .bottom,
             endPoint: edge == .top ? .bottom : .top
         )
+    }
+}
+
+// MARK: - Scale
+
+/// How large a card's overlay layer draws: every badge length and the
+/// watch-status corner are their reference points times this.
+///
+/// It is the card's scale times the viewer's text size, so badges grow with
+/// the card and with Larger Text the way the card's title does.
+enum OverlayScale {
+    /// Badges grow with text size up to this much; past it they would cover
+    /// a small poster. Smaller-than-default text never shrinks them.
+    static let maxTextFactor: CGFloat = 1.35
+
+    static func value(
+        cardWidth: CGFloat,
+        variant: CardOverlays.Variant,
+        posterSize: CardPosterSize,
+        dynamicTypeSize: DynamicTypeSize
+    ) -> CGFloat {
+        cardScale(cardWidth: cardWidth, variant: variant, posterSize: posterSize)
+            * textFactor(dynamicTypeSize)
+    }
+
+    /// A poster card's scale, which the card's width already sizes.
+    static func poster(cardWidth: CGFloat, dynamicTypeSize: DynamicTypeSize) -> CGFloat {
+        value(cardWidth: cardWidth, variant: .poster, posterSize: .standard, dynamicTypeSize: dynamicTypeSize)
+    }
+
+    /// A wide card's scale, which does not depend on its width. Used by the
+    /// wide cards' own watched checks so they match the badges beside them.
+    static func wide(posterSize: CardPosterSize, dynamicTypeSize: DynamicTypeSize) -> CGFloat {
+        posterSize.scale * textFactor(dynamicTypeSize)
+    }
+
+    /// A poster's lengths are measured on the web's 185-point card and scale
+    /// with its width. A wide card's are drawn at their reference size on a
+    /// standard-size card and follow the card-size setting from there.
+    static func cardScale(cardWidth: CGFloat, variant: CardOverlays.Variant, posterSize: CardPosterSize) -> CGFloat {
+        switch variant {
+        case .poster: cardWidth / CardOverlays.posterReferenceWidth
+        case .wide: posterSize.scale
+        }
+    }
+
+    /// How much body text has grown from the default text size, held to
+    /// `1...maxTextFactor`. Only iPhone and iPad have a text-size setting.
+    static func textFactor(_ size: DynamicTypeSize) -> CGFloat {
+        #if os(iOS)
+        let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(size))
+        let grown = UIFontMetrics(forTextStyle: .body).scaledValue(for: 100, compatibleWith: traits) / 100
+        return min(max(grown, 1), maxTextFactor)
+        #else
+        return 1
+        #endif
     }
 }
 
