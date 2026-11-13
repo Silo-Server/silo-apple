@@ -893,6 +893,7 @@ actor PlaybackSessionBridge {
             lastFileId: watchDetail.userData?.lastFileId,
             lastFileInProgress: watchDetail.userData?.hasResumePoint ?? false,
             lastEditionKey: watchDetail.userData?.lastEditionKey,
+            variants: watchDetail.playbackVariants,
             prefersLastUsedVersion: prefersLastUsedVersion,
             pinsRequestedVersion: pinsVersion,
             // Start Over on a later part restarts its presentation.
@@ -2457,6 +2458,7 @@ actor PlaybackSessionBridge {
         lastFileId: Int?,
         lastFileInProgress: Bool,
         lastEditionKey: String? = nil,
+        variants: [PlaybackVariant]? = nil,
         prefersLastUsedVersion: Bool,
         pinsRequestedVersion: Bool = false,
         startsAtFirstPart: Bool,
@@ -2487,7 +2489,8 @@ actor PlaybackSessionBridge {
                 lastFileId: lastFileId,
                 lastFileInProgress: lastFileInProgress,
                 preferredQualityId: quality.preferredQuality,
-                lastEditionKey: lastEditionKey
+                lastEditionKey: lastEditionKey,
+                variants: variants
             ) ?? versions[0]
             source = .ranked
         }

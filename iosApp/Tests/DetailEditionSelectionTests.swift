@@ -111,6 +111,42 @@ final class DetailEditionSelectionTests: XCTestCase {
         XCTAssertEqual(tie(nil), 5, "versions order without variants")
     }
 
+    /// A start without a page reads `playback_variants` from the watch
+    /// response, so it breaks the last tie between cuts as the page does.
+    func testAStartWithoutThePageBreaksTheEditionTieLikeThePage() throws {
+        func file(_ id: Int, _ key: String) -> String {
+            """
+            { "file_id": "\(id)", "edition_key": "\(key)", "edition_raw": "\(key.uppercased())",
+              "resolution": "1080p", "hdr": false, "file_size": 1, "bitrate": 1, "duration_seconds": 1,
+              "codec_audio": "aac", "codec_video": "h264", "container": "mkv" }
+            """
+        }
+        let json = """
+        { "content_id": "m1", "type": "movie", "title": "M", "subtitles": [],
+          "versions": [\(file(5, "b")), \(file(6, "a"))],
+          "playback_variants": [
+            { "variant_id": "a", "edition_key": "a", "part_count": 1,
+              "parts": [{ "part_index": 1, "versions": [\(file(6, "a"))] }] },
+            { "variant_id": "b", "edition_key": "b", "part_count": 1,
+              "parts": [{ "part_index": 1, "versions": [\(file(5, "b"))] }] }
+          ] }
+        """
+        let watch = try WatchDetail(v2: HTTPClient.makeJSONDecoder().decode(
+            APIv2CatalogRead.WatchDetail.self, from: Data(json.utf8)
+        ))
+        let start = PlaybackSessionBridge.startSelection(
+            versions: watch.versions, requestedFileId: nil, lastFileId: nil, lastFileInProgress: false,
+            variants: watch.playbackVariants, prefersLastUsedVersion: false, startsAtFirstPart: false,
+            preferredQualityOverride: nil, settingsQuality: .auto
+        )
+        let page = DetailVersionSelection.displayVersion(
+            versions: watch.versions, selectedFileId: nil, lastFileId: nil, lastFileInProgress: false,
+            preferredQualityId: "auto", variants: watch.playbackVariants
+        )
+        XCTAssertEqual(start.version.fileId, 6)
+        XCTAssertEqual(page?.fileId, 6)
+    }
+
     /// The unnamed edition is its own cut, apart from one keyed `standard`:
     /// each gets an Edition row, and Auto stays on the unnamed one.
     func testTheUnnamedEditionIsNotTheStandardOne() {

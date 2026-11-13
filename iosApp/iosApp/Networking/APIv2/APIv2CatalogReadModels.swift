@@ -358,6 +358,27 @@ enum APIv2CatalogRead {
         let effectiveSubtitleMode: String?
         let effectiveShowForcedSubtitles: Bool?
         let effectiveSubtitleTrackSignature: WatchSubtitleSignature?
+        /// Absent from servers that predate it.
+        let playbackVariants: [WatchPlaybackVariant]?
+    }
+
+    struct WatchPlaybackVariant: Decodable {
+        let variantId: String
+        let editionRaw: String?
+        let editionKey: String?
+        let presentationKind: String?
+        let presentationGroupKey: String?
+        let partCount: Int64
+        let totalDurationSeconds: Int64?
+        let defaultFileId: String?
+        let parts: [WatchPlaybackVariantPart]
+    }
+
+    struct WatchPlaybackVariantPart: Decodable {
+        let partIndex: Int64
+        let defaultFileId: String?
+        let totalDurationSeconds: Int64?
+        let versions: [WatchFileVersion]
     }
 
     struct ItemExtraInfo: Decodable {
