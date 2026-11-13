@@ -211,8 +211,8 @@ struct PhonePlaybackSelectorRow: View {
 
     private func selectorPresentation(
         for kind: PhonePlaybackSelectorKind
-    ) -> PhonePlaybackSelectorSheet {
-        PhonePlaybackSelectorSheet(
+    ) -> PhonePlaybackSelectorOptions {
+        PhonePlaybackSelectorOptions(
             kind: kind,
             versions: versions,
             currentVersion: currentVersion,
@@ -346,6 +346,9 @@ struct PhonePlaybackSelectorRow: View {
             } label: {
                 content()
             }
+            // Keep Auto at the top even when the menu opens upward.
+            .menuOrder(.fixed)
+            .menuStyle(.button)
             .buttonStyle(.plain)
             .accessibilityLabel(Text(kind.spokenLabel(value(for: kind))))
             #else
@@ -460,7 +463,10 @@ struct PhonePlaybackSelectorRow: View {
         }
     }
 }
-private struct PhonePlaybackSelectorSheet: View {
+
+/// A selector's options: the items of the row's menu on iOS, and the
+/// drop-down's rows on the Mac.
+private struct PhonePlaybackSelectorOptions: View {
     let kind: PhonePlaybackSelectorKind
     let versions: [FileVersion]
     let currentVersion: FileVersion?
