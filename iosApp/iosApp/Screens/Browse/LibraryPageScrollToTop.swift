@@ -5,6 +5,10 @@ extension EnvironmentValues {
     /// again, which scrolls that library page back to its top. Nil where no
     /// dock asks, so other hosts of the pages are untouched.
     @Entry var libraryPageScrollToTopRequest: Int? = nil
+
+    /// Told when a library page is pulled to refresh, so the iPhone
+    /// Libraries header reads its count again. Nil elsewhere.
+    @Entry var libraryPageDidRefresh: (@MainActor () -> Void)? = nil
 }
 
 extension View {

@@ -156,8 +156,12 @@ struct LibrariesTabView: View {
         uniqueKeysWithValues: LibraryPageTab.allCases.map { ($0, PageChromeScrollState()) }
     )
     @State private var scrollToTopRequests: [LibraryPageTab: Int] = [:]
-    /// Exact sizes by library and Movies/Series scope, for the header caption.
+    /// Exact sizes by server, profile, library and Movies/Series scope, for
+    /// the header caption.
     @State private var libraryCounts: [String: Int] = [:]
+    /// Bumped when a page or the library list is refreshed, to read the
+    /// header's count again.
+    @State private var countRefreshes = 0
     @State private var isDockVisible = false
     @Environment(LibraryDockHost.self) private var dockHost: LibraryDockHost?
     @Environment(SiloControlClient.self) private var siloControl
@@ -410,7 +414,11 @@ struct LibrariesTabView: View {
             .onChange(of: activeLibrary) { showInDock(activeLibrary) }
             .onChange(of: visibleLibraries) { dock.libraries = visibleLibraries }
             .task(id: activeLibrary.id) { await loadCollectionPresence(libraryId: activeLibrary.id) }
-            .task(id: id) { await loadLibraryCount(activeLibrary, key: id) }
+            // Read each time the library becomes active and after a refresh;
+            // a newer read cancels an older one before it can land.
+            .task(id: "\(countKey(for: activeLibrary))#\(countRefreshes)") {
+                await loadLibraryCount(activeLibrary, key: countKey(for: activeLibrary))
+            }
     }
 
     /// Every page shown so far, stacked; only the selected one is visible
@@ -427,6 +435,7 @@ struct LibrariesTabView: View {
                         .background(LibraryPageScrollClaim(isActive: isSelected))
                         .environment(pageChromeStates[tab] ?? chromeScrollState)
                         .environment(\.libraryPageScrollToTopRequest, scrollToTopRequests[tab, default: 0])
+                        .environment(\.libraryPageDidRefresh) { countRefreshes += 1 }
                         .opacity(isSelected ? 1 : 0)
                         .allowsHitTesting(isSelected)
                         .accessibilityHidden(!isSelected)
@@ -476,15 +485,21 @@ struct LibrariesTabView: View {
 
     /// The library's size once known, else its kind.
     private func dockCaption(for library: Library) -> LocalizedStringResource {
-        if let count = libraryCounts[pageID(for: library)] {
+        if let count = libraryCounts[countKey(for: library)] {
             return libraryCountLabel(count, library: library, scope: videoScope(for: library))
         }
         if library.isAudiobookLibrary { return .libraryKindAudiobooks }
         if library.isMixedLibrary { return .libraryKindMixed }
         if library.isSeriesLibrary { return .libraryKindSeries }
-        if library.type == "movies" { return .libraryKindMovies }
-        if library.type == "music" { return .libraryKindMusic }
+        if library.isMovieLibrary { return .libraryKindMovies }
+        if library.isMusicLibrary { return .libraryKindMusic }
         return .libraryTypeGeneric
+    }
+
+    /// Names a count by the acting server and profile as well as the library
+    /// and scope, so a reused view never shows another session's count.
+    private func countKey(for library: Library) -> String {
+        "\(libraryRootScopeID(fixedLibraryId: fixedLibraryId, authority: libraryAuthority))|\(pageID(for: library))"
     }
 
     /// The tab bar shows the dock in its accessory slot (iOS 26.1 and
@@ -501,9 +516,15 @@ struct LibrariesTabView: View {
     private func showInDock(_ library: Library) {
         dock.library = library
         dock.hasCollections = LibraryCollectionPresence.remembered(
-            serverId: libraryAuthority?.serverId,
+            authority: libraryAuthority,
             libraryId: library.id
         )
+        // A library without the Collections segment never opens on that
+        // page, which would leave no segment selected.
+        if !dock.hasCollections, selectedTab == .collections {
+            selectedTab = .recommended
+            dock.selectedTab = .recommended
+        }
     }
 
     private func configureDock(activeLibrary: Library) {
@@ -532,7 +553,7 @@ struct LibrariesTabView: View {
         ResponseCache.shared.set(resolved, for: "library:\(libraryId):collections")
         LibraryCollectionPresence.remember(
             resolved.contains { !$0.collections.isEmpty },
-            serverId: libraryAuthority?.serverId,
+            authority: libraryAuthority,
             libraryId: libraryId
         )
     }
@@ -540,7 +561,6 @@ struct LibrariesTabView: View {
     /// The library's exact size under its Movies/Series scope, for the
     /// header caption. A server that can't count exactly leaves the kind.
     private func loadLibraryCount(_ library: Library, key: String) async {
-        guard libraryCounts[key] == nil else { return }
         var query = CatalogQueryBuilder.libraryProbe(libraryId: library.id)
         query.skipTotal = false
         query.type = videoScope(for: library)?.rawValue
@@ -635,6 +655,9 @@ struct LibrariesTabView: View {
         if let selectedLibraryId {
             StartupContentPrefetcher.prefetchLibraryLanding(libraryId: selectedLibraryId)
         }
+        #if os(iOS)
+        countRefreshes += 1
+        #endif
     }
 
     /// Preserve the stored selection if it still exists; otherwise fall
@@ -878,24 +901,31 @@ private struct LibraryPickerRow: View {
 }
 
 #if os(iOS)
-/// Whether each library had collections the last time it loaded, by server
-/// and library, so the iPhone dock shows the right segments on its first
-/// frame. Unknown libraries show Collections.
+/// Whether each library had collections the last time it loaded, by server,
+/// acting profile and library, so the iPhone dock shows the right segments on
+/// its first frame. The collections include the profile's own, so one
+/// profile's answer never decides another's. Unknown libraries, including
+/// entries saved without a profile, show Collections.
 private enum LibraryCollectionPresence {
     private static let storageKey = "librariesTabHasCollections"
 
-    private static func key(serverId: String?, libraryId: Int) -> String {
-        "\(serverId ?? "none"):\(libraryId)"
+    private static func key(authority: MainTabLibraryAuthority?, libraryId: Int) -> String {
+        "\(authority?.serverId ?? "none"):\(authority?.profileId ?? "none"):\(libraryId)"
     }
 
-    static func remembered(serverId: String?, libraryId: Int, defaults: UserDefaults = .standard) -> Bool {
+    static func remembered(authority: MainTabLibraryAuthority?, libraryId: Int, defaults: UserDefaults = .standard) -> Bool {
         let stored = defaults.dictionary(forKey: storageKey) as? [String: Bool]
-        return stored?[key(serverId: serverId, libraryId: libraryId)] ?? true
+        return stored?[key(authority: authority, libraryId: libraryId)] ?? true
     }
 
-    static func remember(_ hasCollections: Bool, serverId: String?, libraryId: Int, defaults: UserDefaults = .standard) {
+    static func remember(
+        _ hasCollections: Bool,
+        authority: MainTabLibraryAuthority?,
+        libraryId: Int,
+        defaults: UserDefaults = .standard
+    ) {
         var stored = defaults.dictionary(forKey: storageKey) as? [String: Bool] ?? [:]
-        let key = key(serverId: serverId, libraryId: libraryId)
+        let key = key(authority: authority, libraryId: libraryId)
         guard stored[key] != hasCollections else { return }
         stored[key] = hasCollections
         defaults.set(stored, forKey: storageKey)

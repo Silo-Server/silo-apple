@@ -534,6 +534,7 @@ struct LibraryCollectionsView: View {
     let libraryId: Int
     var mediaScope: LibraryVideoScope? = nil
 
+    @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
     @State private var viewModel = LibraryCollectionsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
@@ -590,6 +591,7 @@ struct LibraryCollectionsView: View {
         }
         .refreshable {
             await viewModel.loadCollections(libraryId: libraryId)
+            pageDidRefresh?()
         }
     }
 

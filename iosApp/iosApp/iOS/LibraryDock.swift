@@ -120,6 +120,10 @@ enum LibraryDockStyle: Hashable {
         isFloating ? .siloCaption : .caption2
     }
 
+    /// `labelFont`'s text style and default size, for measuring the labels.
+    var labelTextStyle: UIFont.TextStyle { isFloating ? .caption1 : .caption2 }
+    var labelBaseSize: CGFloat { isFloating ? 12 : 11 }
+
     /// The smaller size tried before icons when the labels can't fit (a
     /// narrow phone, a long translation).
     static let fallbackPointSize: CGFloat = 10
@@ -261,6 +265,11 @@ struct LibraryDock: View {
                 .frame(maxWidth: .infinity, minHeight: Self.floatingHeight)
                 .siloGlass(in: Capsule())
         }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.width
+        } action: { width in
+            noteAvailableWidth(width - Self.floatingHeight - SiloTheme.smallPadding - 2 * edgeInset)
+        }
     }
 
     // MARK: In the slot
@@ -283,11 +292,23 @@ struct LibraryDock: View {
         // Any width the button doesn't take becomes outer room on the
         // leading side, so the last segment keeps its trailing inset.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.height
-        } action: { height in
-            slotHeight = height
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { size in
+            slotHeight = size.height
+            // Expanded, the segments sit as a tight group, so their room is
+            // the row less the library button at its least width and the
+            // hairline's gaps.
+            if !style.segmentsFillWidth {
+                noteAvailableWidth(size.width - expandedLeadingWidth - edgeInset)
+            }
         }
+    }
+
+    /// The expanded slot's leading cluster at its least width.
+    private var expandedLeadingWidth: CGFloat {
+        (style.leadingInset ?? edgeInset) + style.iconBox
+            + (style.gapBeforeHairline ?? edgeInset) + 1 + (style.gapAfterHairline ?? edgeInset)
     }
 
     // MARK: Switcher
@@ -306,7 +327,8 @@ struct LibraryDock: View {
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
-            noteSwitcherWidth(width)
+            // Inline, the segments fill their room, so their width is it.
+            if style.segmentsFillWidth { noteAvailableWidth(width) }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text(verbatim: LibraryDockPendingText.sectionsLabel))
@@ -314,9 +336,10 @@ struct LibraryDock: View {
 
     private enum LabelVariant { case regular, smaller, icons }
 
-    /// Only the inline slot can be too narrow for the labels.
+    /// The labels' treatment for the room the segments have once the
+    /// placement has settled; full size until that is known.
     private var labelVariant: LabelVariant {
-        guard style.segmentsFillWidth, !usesIcons, let width = settledWidths[style] else { return .regular }
+        guard !usesIcons, let width = settledWidths[style] else { return .regular }
         if labelsFit(in: width, pointSize: nil) { return .regular }
         if labelsFit(in: width, pointSize: LibraryDockStyle.fallbackPointSize) { return .smaller }
         return .icons
@@ -330,6 +353,8 @@ struct LibraryDock: View {
             total + LibraryDockLabelWidths.width(
                 of: AppLanguage.string(tab.dockTitle, locale: locale),
                 pointSize: pointSize,
+                textStyle: style.labelTextStyle,
+                baseSize: style.labelBaseSize,
                 dynamicTypeSize: dynamicTypeSize
             )
         }
@@ -337,11 +362,10 @@ struct LibraryDock: View {
         return labels + room <= width + 0.5
     }
 
-    /// Record the switcher's width once it holds still. A placement's first
+    /// Record the segments' room once it holds still. A placement's first
     /// settle may change the labels' size once, at once; later placement
     /// changes reuse it.
-    private func noteSwitcherWidth(_ width: CGFloat) {
-        guard style.segmentsFillWidth else { return }
+    private func noteAvailableWidth(_ width: CGFloat) {
         let placement = style
         widthSettle?.cancel()
         widthSettle = Task { @MainActor in
@@ -685,9 +709,9 @@ private enum LibraryDockLibraryGroup: CaseIterable, Hashable {
     /// Libraries of a kind the app does not know yet fall under Watch, so a
     /// library is never dropped from the menu.
     init(library: Library) {
-        if library.isAudiobookLibrary || LibraryDockLibraryIcon.isMusic(library) {
+        if library.isAudiobookLibrary || library.isMusicLibrary {
             self = .listen
-        } else if LibraryDockLibraryIcon.isBooks(library) {
+        } else if library.isBookLibrary {
             self = .read
         } else {
             self = .watch
@@ -719,21 +743,25 @@ private enum LibraryDockLibraryIcon {
         if library.isMixedLibrary { return "square.stack.3d.up" }
         if library.isSeriesLibrary { return "tv" }
         if library.isMovieLibrary { return "film" }
-        if isMusic(library) { return "music.note" }
-        if isBooks(library) { return "books.vertical" }
+        if library.isMusicLibrary { return "music.note" }
+        if library.isBookLibrary { return "books.vertical" }
         return "square.stack.3d.up"
     }
+}
 
-    static func isMusic(_ library: Library) -> Bool {
-        library.type == "music"
+extension Library {
+    /// The server's library kind, trimmed and lowercased once, as
+    /// `SiloMediaType` compares it.
+    private var normalizedKind: String {
+        type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    static func isBooks(_ library: Library) -> Bool {
-        switch library.type.lowercased() {
-        case "book", "books", "ebook", "ebooks":
-            return true
-        default:
-            return false
+    var isMusicLibrary: Bool { normalizedKind == "music" }
+
+    var isBookLibrary: Bool {
+        switch normalizedKind {
+        case "book", "books", "ebook", "ebooks": return true
+        default: return false
         }
     }
 }
@@ -761,7 +789,14 @@ struct LibraryPageScrollClaim: UIViewRepresentable {
 }
 
 final class LibraryPageScrollClaimView: UIView {
-    var isActive = false
+    var isActive = false {
+        didSet { if isActive != oldValue { attemptsLeft = Self.maxAttempts } }
+    }
+    /// A page still loading may not have its scroll view yet (Collections
+    /// before its first answer); the claim tries again a few times.
+    private static let maxAttempts = 30
+    private static let retryInterval: TimeInterval = 0.2
+    private var attemptsLeft = maxAttempts
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -782,7 +817,15 @@ final class LibraryPageScrollClaimView: UIView {
     }
 
     private func claim() {
-        guard isActive, window != nil, let scrollView = pageScrollView() else { return }
+        guard isActive, window != nil else { return }
+        guard let scrollView = pageScrollView() else {
+            guard attemptsLeft > 0 else { return }
+            attemptsLeft -= 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.retryInterval) { [weak self] in
+                self?.claim()
+            }
+            return
+        }
         var responder: UIResponder? = scrollView
         while let next = responder {
             if let controller = next as? UIViewController, controller.parent is UITabBarController {
@@ -856,12 +899,19 @@ func libraryCountLabel(_ count: Int, library: Library, scope: LibraryVideoScope?
 private enum LibraryDockLabelWidths {
     private static var cache: [String: CGFloat] = [:]
 
-    /// `pointSize` nil is the caption-2 size scaled for `dynamicTypeSize`.
-    static func width(of text: String, pointSize: CGFloat?, dynamicTypeSize: DynamicTypeSize) -> CGFloat {
-        let key = "\(text)|\(pointSize ?? 0)|\(dynamicTypeSize)"
+    /// `pointSize` nil is `baseSize` in `textStyle`, scaled for
+    /// `dynamicTypeSize`.
+    static func width(
+        of text: String,
+        pointSize: CGFloat?,
+        textStyle: UIFont.TextStyle,
+        baseSize: CGFloat,
+        dynamicTypeSize: DynamicTypeSize
+    ) -> CGFloat {
+        let key = "\(text)|\(pointSize ?? 0)|\(textStyle.rawValue)|\(baseSize)|\(dynamicTypeSize)"
         if let width = cache[key] { return width }
-        let size = pointSize ?? UIFontMetrics(forTextStyle: .caption2).scaledValue(
-            for: 11,
+        let size = pointSize ?? UIFontMetrics(forTextStyle: textStyle).scaledValue(
+            for: baseSize,
             compatibleWith: UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
         )
         let font = UIFont.systemFont(ofSize: size, weight: .bold)
