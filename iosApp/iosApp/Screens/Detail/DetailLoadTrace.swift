@@ -74,6 +74,8 @@ enum DetailLoadTrace {
     /// Hero artwork named by a fetched detail, as opposed to a card seed.
     /// Only this counts toward `backdropFull`.
     private static var fullHeroArtwork: Set<String> = []
+    /// Hero artwork this visit has drawn at the size it is shown.
+    private static var shownFullSize: Set<String> = []
     /// True from a tap until its page closes.
     private static var isVisitOpen = false
     /// Artwork detail visits and the prewarmer loaded since the last cold
@@ -90,6 +92,7 @@ enum DetailLoadTrace {
         visitedContentIds.insert(contentId)
         heroArtwork = []
         fullHeroArtwork = []
+        shownFullSize = []
         reached = []
         self.contentId = contentId
         start = ContinuousClock.now
@@ -215,7 +218,12 @@ enum DetailLoadTrace {
            seedArtworkAtTap[identity] == nil {
             seedArtworkAtTap[identity] = (parsed, decodesInMemory(of: parsed).map(\.size))
         }
-        if !isProvisional { fullHeroArtwork.insert(identity) }
+        if !isProvisional {
+            fullHeroArtwork.insert(identity)
+            // The fetched detail kept the artwork the seed already drew at
+            // full size, so its view reports nothing more.
+            if shownFullSize.contains(identity) { mark(.backdropFull) }
+        }
     }
 
     /// The display decodes of `url` in memory, by pixel size.
@@ -237,6 +245,7 @@ enum DetailLoadTrace {
         if isFullSize, let request, !isSeedArtwork { loadedArtwork.append(request) }
         guard heroArtwork.contains(identity) else { return }
         mark(.backdropFirst)
+        if isFullSize { shownFullSize.insert(identity) }
         if isFullSize, fullHeroArtwork.contains(identity) { mark(.backdropFull) }
     }
 

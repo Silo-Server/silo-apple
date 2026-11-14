@@ -145,6 +145,39 @@ final class DetailPrewarmerTests: XCTestCase {
         try await waitUntil { self.cachedDetail(self.target("skip-busy")) != nil }
     }
 
+    func testAConnectionThatTurnsMeteredStopsTheRestOfAPrewarm() async throws {
+        let prewarmer = makePrewarmer()
+        let item = target("metered-midway")
+        await gates.close([item.contentId])
+        offer(item, to: prewarmer)
+        try await waitUntil { await self.calls.details == [item.contentId] }
+        metered = true
+        await gates.open(item.contentId)
+        try await waitUntil { prewarmer.trackedTargets == [item] }
+
+        XCTAssertNotNil(cachedDetail(item))
+        let watched = await calls.watchDetails
+        XCTAssertEqual(watched, [])
+    }
+
+    func testEvictingOneOfTwoTargetsForASeriesKeepsWhatTheOtherShares() async throws {
+        let prewarmer = makePrewarmer(limits: .init(settle: .milliseconds(20), maxTracked: 1))
+        let fromRow = target("shared-series")
+        var fromResume = fromRow
+        fromResume.resumeSeasonNumber = 2
+        // Both start before either has cached the detail.
+        await gates.close([fromRow.contentId])
+        offer(fromRow, to: prewarmer)
+        offer(fromResume, to: prewarmer)
+        try await waitUntil { prewarmer.runningTargets == [fromRow, fromResume] }
+        await gates.open(fromRow.contentId)
+        try await waitUntil { prewarmer.trackedTargets.count == 1 && prewarmer.runningTargets.isEmpty }
+
+        XCTAssertNotNil(cachedDetail(fromRow))
+        let seasons: SeasonsResponse? = ResponseCache.shared.get(CacheKey.itemSeasons(fromRow.contentId))
+        XCTAssertNotNil(seasons)
+    }
+
     func testNothingLoadsInLowPowerModeOrSignedOut() async throws {
         let prewarmer = makePrewarmer()
         lowPower = true

@@ -471,6 +471,13 @@ final class DetailPrewarmer {
             }
         }
 
+        // The connection or power state can change while the detail loads;
+        // the rest is as speculative as the detail was.
+        guard !environment.isMetered(), !environment.isLowPower() else {
+            if !ownedByPage.contains(id), !opened.contains(id) { track(Tracked(target: target, keys: keys)) }
+            return
+        }
+
         async let artwork = environment.warmArtwork(fetched)
 
         if detail.type == "series" {
@@ -563,8 +570,10 @@ final class DetailPrewarmer {
         tracked.append(entry)
         while tracked.count > limits.maxTracked {
             let evicted = tracked.removeFirst()
-            // Opened items left `tracked` when they opened.
-            for key in evicted.keys { ResponseCache.shared.remove(key) }
+            // Opened items left `tracked` when they opened. A series offered
+            // by two cards shares its detail and seasons between two targets.
+            let retained = Set(tracked.flatMap(\.keys))
+            for key in evicted.keys where !retained.contains(key) { ResponseCache.shared.remove(key) }
             // Its card may well still be on screen; fetching it again now
             // would only evict the next oldest.
             noteAttempted(evicted.target)

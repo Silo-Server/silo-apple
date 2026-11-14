@@ -821,8 +821,11 @@ final class AppRouter {
         #if os(iOS)
         return presentedItemDetail != nil
         #else
-        if case .itemDetail = visiblePushedRoutes.last { return true }
-        return false
+        // The Mac pushes its player as a route.
+        switch visiblePushedRoutes.last {
+        case .itemDetail, .player, .playerWithFile, .offlinePlayer: return true
+        default: return false
+        }
         #endif
     }
     #endif
