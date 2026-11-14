@@ -153,6 +153,7 @@ struct IOSPersonalMediaPosterLayout: View {
                         router.navigate(to: .itemDetail(contentId: item.contentId))
                     },
                     contentId: item.contentId,
+                    detailSeedSource: .browse(item),
                     cardWidthOverride: phoneCardWidthOverride,
                     onUserStateChanged: { state in
                         onUserStateChanged(item, state)
@@ -189,6 +190,7 @@ struct IOSPersonalMediaPosterLayout: View {
                                     router.navigate(to: .itemDetail(contentId: item.contentId))
                                 },
                                 contentId: item.contentId,
+                                detailSeedSource: .browse(item),
                                 onUserStateChanged: { state in
                                     onUserStateChanged(item, state)
                                 }
@@ -442,6 +444,7 @@ struct FavoritesView: View {
                         },
                         playAction: playAction(for: item),
                         contentId: item.contentId,
+                        detailSeedSource: .browse(item),
                         onUserStateChanged: { state in
                             guard !state.isFavorite else { return }
                             withAnimation {
@@ -562,6 +565,7 @@ struct FavoritesView: View {
             },
             playAction: playAction(for: item),
             contentId: item.contentId,
+            detailSeedSource: .browse(item),
             cardWidthOverride: tvCardWidthOverride,
             onUserStateChanged: { state in
                 guard !state.isFavorite else { return }

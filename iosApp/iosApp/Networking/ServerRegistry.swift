@@ -734,6 +734,7 @@ final class ServerRegistry {
             WatchPartySession.shared.leave(forgetRecent: true)
             RequestsFeatureStore.shared.reset()
             ShuffleFeatureStore.shared.reset()
+            RatingSourcesStore.shared.reset()
             CurrentProfileStore.shared.reset()
             SubtitleProvidersStore.shared.reset()
             RequestsEventBus.shared.reset()
@@ -744,6 +745,7 @@ final class ServerRegistry {
             // degrades to disabled on any failure.
             Task { await RequestsFeatureStore.shared.refresh() }
             Task { await ShuffleFeatureStore.shared.refresh() }
+            Task { await RatingSourcesStore.shared.refresh() }
             Task { await SectionItemLimitSupport.shared.refresh() }
             Task { await CurrentProfileStore.shared.refresh() }
             // Same shape: without a re-probe the destination server's

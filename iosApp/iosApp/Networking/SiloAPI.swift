@@ -651,6 +651,12 @@ actor SiloAPI {
         try await apiV2Client.shuffleCapability(auth: try await detailReadAuth())
     }
 
+    // --- Ratings ---
+
+    func shownRatingSources() async throws -> Set<String> {
+        try await apiV2Client.shownRatingSources(auth: try await detailReadAuth())
+    }
+
     /// `non_retryable`: dispatched once. A lost answer leaves an unused
     /// shuffle that the server deletes with other abandoned ones.
     ///

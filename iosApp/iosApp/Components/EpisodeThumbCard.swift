@@ -135,6 +135,7 @@ struct EpisodeThumbCard: View {
             if usesProvidedTapAction {
                 action()
             } else {
+                DetailSeedStore.offer(.section(item), opening: item.contentId)
                 router.presentItemDetail(
                     contentId: item.contentId,
                     libraryId: browseLibraryId,

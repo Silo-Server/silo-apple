@@ -136,6 +136,9 @@ private struct HomeCardTap<Label: View>: View {
     let contentId: String
     let accessibilityLabel: String
     var continueWatchingItem: SectionItem? = nil
+    /// The card's item, offered to the page a tap opens to draw from until
+    /// its own detail loads.
+    var seedItem: SectionItem? = nil
     /// Secondary action surfaced to VoiceOver. The card collapses its
     /// children into one element, so a nested play button would otherwise
     /// vanish from the accessibility tree.
@@ -158,6 +161,7 @@ private struct HomeCardTap<Label: View>: View {
                     zoomSourceID: zoomSourceID
                 )
             } else {
+                DetailSeedStore.offer(seedItem.map(DetailSeedSource.section), opening: contentId)
                 router.presentItemDetail(
                     contentId: contentId,
                     libraryId: browseLibraryId,
@@ -341,6 +345,7 @@ struct HomePosterCard: View {
             contentId: item.contentId,
             accessibilityLabel: accessibilityDescription,
             continueWatchingItem: opensResumeContext ? item : nil,
+            seedItem: item,
             onTap: onTap
         ) {
             VStack(alignment: .leading, spacing: 7) {
@@ -508,6 +513,7 @@ struct HomeStillCard: View {
             contentId: item.contentId,
             accessibilityLabel: accessibilityDescription,
             continueWatchingItem: opensResumeContext ? item : nil,
+            seedItem: item,
             accessibilityPlayAction: isDirectlyPlayable && onTap == nil
                 ? (name: playActionName, perform: playItem)
                 : nil,
