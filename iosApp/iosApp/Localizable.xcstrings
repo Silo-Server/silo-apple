@@ -15854,7 +15854,7 @@
       }
     },
     "common.back" : {
-      "comment" : "Back button that returns to the previous screen or panel. Roku: for example in the Up Next panel and on screens that cannot load content. Android phone: screen reader label of the back chevron in a player menu panel, the ebook reader's back arrow, and back buttons in Remote Control and Downloads. Android TV: the Back button of the player's Up Next panel, the server address screen, and the secondary button of the audiobook player's error screen. Apple iOS and tvOS: button in the subtitle search sheet or panel after a search failed, returning to the language list, and Back button on the player's Up Next screen. Web: back buttons in admin pages such as backup restore and AI providers.",
+      "comment" : "Back button that returns to the previous screen or panel. Roku: for example in the Up Next panel and on screens that cannot load content. Android phone: screen reader label of the back chevron in a player menu panel, the ebook reader's back arrow, and back buttons in Remote Control and Downloads. Android TV: the Back button of the player's Up Next panel, the server address screen, and the secondary button of the audiobook player's error screen. Apple iOS and tvOS: button in the subtitle search sheet or panel after a search failed, returning to the language list. Web: back buttons in admin pages such as backup restore and AI providers.",
       "extractionState" : "manual",
       "localizations" : {
         "ar" : {
@@ -196403,6 +196403,60 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "自动播放已开启"
+          }
+        }
+      }
+    },
+    "upNext.close" : {
+      "comment" : "Apple iOS and tvOS: button on the player's Up Next screen that closes the player and returns to the screen playback started from. The Keep Watching button beside it returns to the video.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "إغلاق"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schließen"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Close"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cerrar"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fermer"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "閉じる"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fechar"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭"
           }
         }
       }

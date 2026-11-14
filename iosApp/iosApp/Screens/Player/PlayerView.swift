@@ -130,10 +130,10 @@ struct PlayerView: View {
                 if viewModel.showNextUpScreen && viewModel.error == nil {
                     PlayerNextUpScreen(
                         viewModel: viewModel,
-                        // Back always leaves the player. Keep Watching is its own
+                        // Close always leaves the player. Keep Watching is its own
                         // pill wherever the screen offers it (`nextUpOffersKeepWatching`).
                         // The tvOS Menu button still keeps watching (onExitCommand).
-                        onBack: { dismissPlayer() },
+                        onClose: { dismissPlayer() },
                         onStopShuffling: {
                             viewModel.stopShuffling()
                             dismissPlayer()
@@ -1062,14 +1062,14 @@ private enum PlayerNextUpFocusTarget: Hashable {
     case playNow
     case pickAnother
     case keepWatching
-    case back
+    case close
     case autoPlay
     case stopShuffling
 }
 
 struct PlayerNextUpScreen: View {
     let viewModel: PlayerViewModel
-    let onBack: () -> Void
+    let onClose: () -> Void
     var onStopShuffling: () -> Void = {}
     @FocusState private var focusedTarget: PlayerNextUpFocusTarget?
     @State private var didRequestInitialActionFocus = false
@@ -1454,19 +1454,20 @@ struct PlayerNextUpScreen: View {
                     .prefersDefaultFocus(!hasNextEpisode, in: defaultFocusNamespace)
                 }
 
-                Button(action: onBack) {
+                Button(action: onClose) {
                     HStack(spacing: 16) {
-                        Image(systemName: "chevron.backward")
-                            .font(.system(size: 26, weight: .semibold))
-                        Text(.commonBack)
+                        Image(systemName: "xmark")
+                            .font(.system(size: 24, weight: .semibold))
+                        Text(.upNextClose)
                             .font(.system(size: 26, weight: .semibold))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                     }
-                    .frame(width: 120)
+                    // Grows for longer translations ("Schließen").
+                    .frame(minWidth: 120)
                 }
                 .buttonStyle(TVPillButtonStyle(kind: .secondary))
-                .focused($focusedTarget, equals: .back)
+                .focused($focusedTarget, equals: .close)
                 .prefersDefaultFocus(!hasNextEpisode && !viewModel.nextUpOffersKeepWatching, in: defaultFocusNamespace)
             }
             .onMoveCommand { direction in
@@ -1512,8 +1513,8 @@ struct PlayerNextUpScreen: View {
                     .frame(minHeight: 44)
                     .disabled(viewModel.isStartingNextUp)
                 }
-                Button(action: onBack) {
-                    Label(.commonBack, systemImage: "chevron.backward")
+                Button(action: onClose) {
+                    Label(.upNextClose, systemImage: "xmark")
                         .frame(minHeight: compact ? 24 : 44)
                 }
                 .siloSecondaryButton()
@@ -1663,7 +1664,7 @@ struct PlayerNextUpScreen: View {
         if viewModel.nextUpOffersKeepWatching {
             return .keepWatching
         }
-        return .back
+        return .close
     }
 
     private func playOnDeckItem(contentId: String) {
