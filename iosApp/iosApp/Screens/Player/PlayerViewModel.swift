@@ -4223,6 +4223,12 @@ class PlayerViewModel {
             // does: the remount has no credits marker until it loads, and a
             // skip the playhead has since left must not finish the item.
             didSkipCreditsToEnd = skippedCreditsToEnd
+            // A download's progress context is gone until the remount
+            // prepares, so a close in between writes nothing locally. Save
+            // where it stopped first, as closing here would have.
+            if let offline = offlinePlaybackContext {
+                recordOfflineProgress(context: offline, position: completionProgressPositionForCurrentItem())
+            }
             remountCurrentPlayback(at: target, origin: .resumeAfterEnd)
         } else if !isPlaying {
             aetherPlaybackController.play()
@@ -8066,6 +8072,8 @@ class PlayerViewModel {
             // replacement seeks here once it is committed. Another item's
             // load is not this item's timeline, so it keeps no seek.
             freshLoadHeldSeek = (clampedTarget, roomCommand)
+            // A Keep Watching remount that has not played retries here too.
+            if pendingResumeAfterEndPosition != nil { pendingResumeAfterEndPosition = clampedTarget }
             currentTime = clampedTarget
             scrubPreviewTime = clampedTarget
             isScrubbing = false
