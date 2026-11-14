@@ -177,12 +177,13 @@ struct TVBrowseSortPanel: View {
                 }
                 .buttonStyle(TVBrowsePanelRowStyle())
                 .focused($focusedSort, equals: key)
-                // On Apple TV the `resetFocus(in:)` in `claimFocus()` decides
-                // where focus lands, so the row `claimFocus()` targets has to
-                // be the scope's preferred default too.
-                .prefersDefaultFocus(key == current, in: sortFocusScope)
             }
         }
+        // `claimFocus()` pulls focus into the panel as it opens, and this
+        // puts it on the current sort. Once the rows can sit in a scroll
+        // view, `prefersDefaultFocus` no longer does: focus went to the top
+        // bar instead.
+        .defaultFocus($focusedSort, current, priority: .userInitiated)
     }
 
     /// The current sort is always listed, so entry focus lands on it.
