@@ -83,6 +83,35 @@ final class PlayerNextUpCompletionPolicyTests: XCTestCase {
         XCTAssertEqual(position, 3_600)
     }
 
+    /// The "Connection lost" postroll shows Next Up too, so a source that
+    /// stopped inside the prompt window has not reached the prompt.
+    func testPrematureEndInsideThePromptWindowKeepsTheResumePoint() {
+        let position = PlayerNextUpCompletionPolicy.progressPosition(
+            isNextUpPresented: true,
+            hasReachedEndOfFile: false,
+            currentTime: 175,
+            duration: 200,
+            promptSeconds: 30,
+            endedPrematurely: true
+        )
+
+        XCTAssertEqual(position, 175)
+    }
+
+    func testSkippedCreditsStillFinalizeAPrematureEnd() {
+        XCTAssertTrue(
+            PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
+                isNextUpPresented: true,
+                hasReachedEndOfFile: false,
+                currentTime: 175,
+                duration: 200,
+                promptSeconds: 30,
+                skippedCredits: true,
+                endedPrematurely: true
+            )
+        )
+    }
+
     func testSkippedCreditsFinalizeAtDurationWhileCreditsStillPlay() {
         let position = PlayerNextUpCompletionPolicy.progressPosition(
             isNextUpPresented: true,
