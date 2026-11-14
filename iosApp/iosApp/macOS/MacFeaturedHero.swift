@@ -145,11 +145,15 @@ struct MacFeaturedHero: View {
 
             title(for: item)
 
-            if let metadata = Self.metadataLine(for: item) {
-                Text(metadata)
-                    .font(.siloBody.weight(.semibold))
-                    .foregroundStyle(Color.siloOnSurface)
-                    .lineLimit(1)
+            if let metadata = Self.metadata(for: item) {
+                // On a slide change the old and new lines crossfade in place,
+                // so the rating doesn't slide sideways, and the ZStack keeps
+                // the line moving with the title and overview around it.
+                ZStack(alignment: .leading) {
+                    metadataLine(metadata)
+                        .id(item.contentId)
+                        .transition(.opacity)
+                }
             }
 
             overview(for: item)
@@ -403,6 +407,23 @@ struct MacFeaturedHero: View {
         )
     }
 
+    /// The facts line. The rating keeps its full width; the text truncates.
+    private func metadataLine(_ metadata: Metadata) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            if let rating = metadata.rating {
+                Text(verbatim: metadata.lead.map { $0 + " · " }.joined())
+                RatingEntryView(rating: rating, size: 13)
+                Text(verbatim: metadata.trailing.map { " · " + $0 }.joined())
+            } else {
+                Text(verbatim: (metadata.lead + metadata.trailing).joined(separator: " · "))
+            }
+        }
+        .font(.siloBody.weight(.semibold))
+        .foregroundStyle(Color.siloOnSurface)
+        .lineLimit(1)
+        .accessibilityElement(children: .combine)
+    }
+
     private func openDetail(_ item: SectionItem) {
         let route = Route.itemDetail(destinationContentId: item.contentId, sectionItem: item)
         if case .itemDetail(let contentId, _, _, _) = route {
@@ -417,20 +438,29 @@ struct MacFeaturedHero: View {
         value < 10 ? "0\(value)" : "\(value)"
     }
 
-    /// "2015 · 2h 1m · IMDb 8.1 · Action · Adventure · R", skipping whatever
-    /// the item does not carry.
-    static func metadataLine(for item: SectionItem) -> String? {
-        var parts: [String] = []
-        if let year = item.year { parts.append(LocaleFormat.integer(year)) }
-        if let runtime = MediaTextFormatting.runtime(minutes: item.runtime) { parts.append(runtime) }
-        if let rating = item.ratingImdb, rating > 0 {
-            parts.append("IMDb " + String(format: "%.1f", rating))
-        }
-        parts.append(contentsOf: (item.genres ?? []).prefix(2))
+    /// "2015 · 2h 1m · IMDb 8.1 · Action · Adventure · R", split around the
+    /// rating so it can be drawn as its source's mark and score.
+    private struct Metadata {
+        let lead: [String]
+        let rating: DisplayRating?
+        let trailing: [String]
+    }
+
+    /// The facts line's parts, skipping whatever the item does not carry.
+    /// Episodes show no rating.
+    private static func metadata(for item: SectionItem) -> Metadata? {
+        var lead: [String] = []
+        if let year = item.year { lead.append(LocaleFormat.integer(year)) }
+        if let runtime = MediaTextFormatting.runtime(minutes: item.runtime) { lead.append(runtime) }
+        let rating = item.isEpisodeItem
+            ? nil
+            : DisplayRating.primaryCard(imdb: item.ratingImdb, tmdb: item.ratingTmdb)
+        var trailing = Array((item.genres ?? []).prefix(2))
         if let contentRating = item.contentRating, !contentRating.isEmpty {
-            parts.append(contentRating)
+            trailing.append(contentRating)
         }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        guard !lead.isEmpty || rating != nil || !trailing.isEmpty else { return nil }
+        return Metadata(lead: lead, rating: rating, trailing: trailing)
     }
 }
 
