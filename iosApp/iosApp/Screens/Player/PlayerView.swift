@@ -130,7 +130,8 @@ struct PlayerView: View {
                 if viewModel.showNextUpScreen && viewModel.error == nil {
                     PlayerNextUpScreen(
                         viewModel: viewModel,
-                        // Back leaves the player; Keep Watching is its own pill.
+                        // Back always leaves the player. Keep Watching is its own
+                        // pill wherever the screen offers it (`nextUpOffersKeepWatching`).
                         // The tvOS Menu button still keeps watching (onExitCommand).
                         onBack: { dismissPlayer() },
                         onStopShuffling: {
@@ -1435,7 +1436,7 @@ struct PlayerNextUpScreen: View {
             }
 
             HStack(spacing: 20) {
-                if !viewModel.nextUpScreenVideoEnded {
+                if viewModel.nextUpOffersKeepWatching {
                     Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
                         HStack(spacing: 16) {
                             Image(systemName: "rectangle.inset.filled")
@@ -1466,7 +1467,7 @@ struct PlayerNextUpScreen: View {
                 }
                 .buttonStyle(TVPillButtonStyle(kind: .secondary))
                 .focused($focusedTarget, equals: .back)
-                .prefersDefaultFocus(!hasNextEpisode && viewModel.nextUpScreenVideoEnded, in: defaultFocusNamespace)
+                .prefersDefaultFocus(!hasNextEpisode && !viewModel.nextUpOffersKeepWatching, in: defaultFocusNamespace)
             }
             .onMoveCommand { direction in
                 if direction == .down {
@@ -1502,7 +1503,7 @@ struct PlayerNextUpScreen: View {
             }
 
             HStack(spacing: 10) {
-                if !viewModel.nextUpScreenVideoEnded {
+                if viewModel.nextUpOffersKeepWatching {
                     Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
                         Text(.upNextKeepWatching)
                             .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
@@ -1659,7 +1660,7 @@ struct PlayerNextUpScreen: View {
         if viewModel.nextUpEpisode != nil {
             return .playNow
         }
-        if !viewModel.nextUpScreenVideoEnded {
+        if viewModel.nextUpOffersKeepWatching {
             return .keepWatching
         }
         return .back

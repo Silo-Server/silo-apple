@@ -4171,6 +4171,14 @@ class PlayerViewModel {
         cancelNextUpCountdown()
     }
 
+    /// Up Next offers Keep Watching before the end, and after a source that
+    /// stopped early, where it resumes at the stop point. After a natural end
+    /// the item is finished, so the screen offers Back alone.
+    var nextUpOffersKeepWatching: Bool {
+        !nextUpScreenVideoEnded
+            || (endedPrematurely && lastLoadRequest != nil && !serverEndedSessionHandled)
+    }
+
     @discardableResult
     func keepWatchingCurrentEpisode() -> Bool {
         guard !isWatchPartyPlayback else { return false }
@@ -5757,8 +5765,8 @@ class PlayerViewModel {
             // to the next episode short-circuits — `beginNextUpPostroll`
             // checks `!nextUpAutoplayCancelled` before calling
             // `playNextEpisodeNow()`. The user is left on a recoverable
-            // surface where they can retry via Play Now, pick from On Deck,
-            // or hit Back.
+            // surface where they can resume with Keep Watching, retry via
+            // Play Now, pick from On Deck, or hit Back.
             autoplayCancelledByLostSource = !nextUpAutoplayCancelled
             nextUpAutoplayCancelled = true
             cancelNextUpCountdown()
