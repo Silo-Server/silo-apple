@@ -240,6 +240,48 @@ final class BrowseViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.isLoading)
     }
 
+    func testFiltersReportHowManyTitlesTheyLeave() async throws {
+        let stub = APIv2TestStub()
+        let api = try await stubbedAPI(stub)
+        stub.sequence([
+            .json(200, Self.page(["movie:alien"], nextCursor: "c", total: 1284)),
+            .json(200, Self.page(["movie:alien"], nextCursor: "c", total: 42)),
+            .json(200, Self.page(["movie:alien"], nextCursor: "c", total: 500, exact: false)),
+            .json(200, Self.page(["movie:alien"], nextCursor: "c", total: 1284)),
+        ])
+        let unfiltered = CatalogFilterState.none
+        var drama = unfiltered
+        drama.genres = ["Drama"]
+        var dramaOrComedy = drama
+        dramaOrComedy.genres = ["Drama", "Comedy"]
+        defer {
+            for state in [unfiltered, drama, dramaOrComedy] {
+                ResponseCache.shared.remove(CacheKey.browse(libraryId: 812, filterKey: state.cacheKeyFragment))
+            }
+        }
+        let viewModel = BrowseViewModel(
+            readFirstPage: { libraryId, state, mediaScope in
+                try await api.catalogPage(CatalogQueryBuilder.build(
+                    state, libraryId: libraryId, mediaType: .movie, limit: 60, includeType: false, enforcedScope: mediaScope
+                ))
+            },
+            readPage: { try await api.catalogPage($0) },
+            readLetters: { _ in nil }
+        )
+        await viewModel.configure(libraryId: 812, libraryType: "movies")
+        await viewModel.loadItems(reset: true)
+        XCTAssertNil(viewModel.filteredTotal, "the header counts the whole library itself")
+
+        await viewModel.apply(drama)
+        XCTAssertEqual(viewModel.filteredTotal, .exact(42))
+
+        await viewModel.apply(dramaOrComedy)
+        XCTAssertEqual(viewModel.filteredTotal, .uncounted, "an estimate is not shown as the count")
+
+        await viewModel.clearFilters()
+        XCTAssertNil(viewModel.filteredTotal)
+    }
+
     private func stubbedAPI(_ stub: APIv2TestStub) async throws -> SiloAPI {
         let name = "BrowseViewModelTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
@@ -252,10 +294,10 @@ final class BrowseViewModelTests: XCTestCase {
         return SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
     }
 
-    private static func page(_ ids: [String], nextCursor: String? = nil) -> String {
+    private static func page(_ ids: [String], nextCursor: String? = nil, total: Int? = nil, exact: Bool = true) -> String {
         let items = ids.map { #"{"content_id":"\#($0)","type":"movie","title":"\#($0)"}"# }.joined(separator: ",")
         let page = nextCursor.map { #"{"has_more":true,"next_cursor":"\#($0)"}"# } ?? #"{"has_more":false}"#
-        return #"{"items":[\#(items)],"page":\#(page),"total":\#(ids.count),"total_exact":true,"window_cursor":"w"}"#
+        return #"{"items":[\#(items)],"page":\#(page),"total":\#(total ?? ids.count),"total_exact":\#(exact),"window_cursor":"w"}"#
     }
 
     func testConfigureUsesInitialMixedLibraryType() async {
