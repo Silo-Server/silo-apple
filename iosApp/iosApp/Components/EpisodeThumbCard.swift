@@ -39,6 +39,7 @@ struct EpisodeThumbCard: View {
     @Environment(\.locale) private var locale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var personalState = MediaCardPersonalState()
+    @State private var zoomSourceID = UUID()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
     @State private var continueWatchingMetadata = TVContinueWatchingPlaybackMetadataStore.shared
@@ -134,11 +135,15 @@ struct EpisodeThumbCard: View {
             if usesProvidedTapAction {
                 action()
             } else {
-                router.presentItemDetail(contentId: item.contentId, libraryId: browseLibraryId)
+                router.presentItemDetail(
+                    contentId: item.contentId,
+                    libraryId: browseLibraryId,
+                    zoomSourceID: zoomSourceID
+                )
             }
         } label: {
             VStack(alignment: .leading, spacing: 6) {
-                thumbnail
+                thumbnail.detailZoomSource(zoomSourceID)
                 Text(displayTitle)
                     .font(.siloCardTitle)
                     .foregroundStyle(Color.siloOnSurface)
