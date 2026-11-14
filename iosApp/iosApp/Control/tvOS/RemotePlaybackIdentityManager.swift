@@ -381,7 +381,7 @@ final class RemotePlaybackIdentityManager {
         // The persistent scope owns the credential slot again and the gate is
         // open, so this probes the restored identity. See the helper for why
         // it can't be folded into `clearCachesForTemporaryIdentityChange(temporaryIdentityActive:)`.
-        refreshSubtitleProvidersAfterIdentityChange()
+        refreshProbesAfterIdentityChange()
         return ended
     }
 
@@ -444,7 +444,7 @@ final class RemotePlaybackIdentityManager {
             let rolledBack = await releaseIdentityTransition(transitionLease, returning: false)
             // Rollback restored (or cleared) the previous scope above, so the
             // identity that is live now is whatever `activeIdentity` reflects.
-            refreshSubtitleProvidersAfterIdentityChange()
+            refreshProbesAfterIdentityChange()
             return rolledBack
         }
         activeIdentity = ActiveIdentity(
@@ -466,18 +466,21 @@ final class RemotePlaybackIdentityManager {
         // earlier (e.g. at the `clearCachesForTemporaryIdentityChange(temporaryIdentityActive:)` call
         // above, which runs *before* `beginTemporaryScope`) would answer for
         // the outgoing identity and cache that answer against the new one.
-        refreshSubtitleProvidersAfterIdentityChange()
+        refreshProbesAfterIdentityChange()
         return activated
     }
 
-    /// Re-probes subtitle-provider availability after a temporary-identity
-    /// transition settles. `clearCachesForTemporaryIdentityChange(temporaryIdentityActive:)` resets
-    /// `SubtitleProvidersStore` to its fail-open `true`, and an identity swap
-    /// fires no other probe (same reason as `refreshFeaturesAfterServerSwitch()`).
-    /// Call only once the scope is installed or restored and the transition
-    /// lease is released; earlier, the outgoing identity answers. Fire-and-forget.
-    private func refreshSubtitleProvidersAfterIdentityChange() {
+    /// Re-probes subtitle-provider availability and the shown rating sources
+    /// after a temporary-identity transition settles.
+    /// `clearCachesForTemporaryIdentityChange(temporaryIdentityActive:)` resets
+    /// `SubtitleProvidersStore` to its fail-open `true` and empties
+    /// `RatingSourcesStore`, and an identity swap fires no other probe (same
+    /// reason as `refreshFeaturesAfterServerSwitch()`). Call only once the scope
+    /// is installed or restored and the transition lease is released; earlier,
+    /// the outgoing identity answers. Fire-and-forget.
+    private func refreshProbesAfterIdentityChange() {
         Task { await SubtitleProvidersStore.shared.refresh() }
+        Task { await RatingSourcesStore.shared.refresh() }
     }
 
     private func releaseIdentityTransition(

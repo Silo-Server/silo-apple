@@ -624,6 +624,7 @@ struct ContentView: View {
         async let imageSize: Void = ImageSizeCapability.shared.refresh()
         async let requests: Void = RequestsFeatureStore.shared.refresh()
         async let shuffle: Void = ShuffleFeatureStore.shared.refresh()
+        async let ratingSources: Void = RatingSourcesStore.shared.refresh()
         async let subtitles: Void = SubtitleProvidersStore.shared.refresh()
         async let sectionItemLimit: Void = SectionItemLimitSupport.shared.refresh()
         async let profile: Void = CurrentProfileStore.shared.refresh()
@@ -633,8 +634,8 @@ struct ContentView: View {
         async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
         async let themeMusic: Void = ThemeMusicPreferences.shared.refresh()
         async let appLanguage: Void = AppLanguagePreferences.shared.refresh()
-        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, sectionItemLimit, profile, customization, seek,
-                   titleArt, spoilers, themeMusic, appLanguage)
+        _ = await (overlay, ai, imageSize, requests, shuffle, ratingSources, subtitles, sectionItemLimit, profile,
+                   customization, seek, titleArt, spoilers, themeMusic, appLanguage)
     }
 
     @MainActor

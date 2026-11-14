@@ -308,32 +308,8 @@ struct BrowseView: View {
     // MARK: - Control bar (Sort + Filter + Shuffle)
 
     private var controlBar: some View {
-        // At accessibility text sizes the chips no longer fit side by
-        // side and SwiftUI broke their labels mid-word; stack them instead.
-        // Longer translations can miss one row by a few points on a narrow
-        // phone, so try sort above filter and shuffle before a full stack.
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 9) {
-                sortMenu
-                filterButton
-                shuffleButton
-                Spacer(minLength: 0)
-            }
-            VStack(alignment: .leading, spacing: 9) {
-                sortMenu
-                HStack(spacing: 9) {
-                    filterButton
-                    shuffleButton
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .leading, spacing: 9) {
-                sortMenu
-                filterButton
-                shuffleButton
-            }
-        }
-        .padding(.horizontal, SiloTheme.padding)
+        BrowseControlBarLayout(sort: sortMenu, filter: filterButton, shuffle: shuffleButton)
+            .padding(.horizontal, SiloTheme.padding)
     }
 
     /// The library a Shuffle chip plays from; nil where Shuffle isn't offered.
@@ -373,7 +349,14 @@ struct BrowseView: View {
 
     private var sortMenu: some View {
         Menu {
-            ForEach(CatalogSortKey.available(for: viewModel.mediaType), id: \.self) { key in
+            ForEach(
+                CatalogSortKey.available(
+                    for: CatalogSortKey.sortMediaType(viewModel.mediaType, filter: viewModel.filterState),
+                    shownRatingSources: RatingSourcesStore.shared.shown,
+                    current: viewModel.filterState.sort
+                ),
+                id: \.self
+            ) { key in
                 Button {
                     Task { await viewModel.setSort(key) }
                 } label: {
@@ -403,13 +386,18 @@ struct BrowseView: View {
                 .font(.system(size: 13, weight: .semibold))
             Text(text)
                 .font(.siloBody)
+                .lineLimit(1)
+                .truncationMode(.tail)
             if let trailing {
                 Text(trailing)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
+                    .lineLimit(1)
+                    .fixedSize()
             }
             if let badge, badge > 0 {
                 Text("\(badge)")
+                    .fixedSize()
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.siloBackground)
                     .padding(.horizontal, 5)
@@ -774,5 +762,53 @@ struct LibraryRecommendedView: View {
             Button(.commonRetry) { Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) } }
         }
         .padding(SiloTheme.padding)
+    }
+}
+
+/// Lays out the library's Sort, Filter and Shuffle chips. It reads the text
+/// size itself: on iPhone the row sits in the grid's collection-view header,
+/// which isn't rebuilt with `BrowseView`, so a text-size change made while the
+/// page is open has to reach the layout here.
+private struct BrowseControlBarLayout<Sort: View, Filter: View, Shuffle: View>: View {
+    let sort: Sort
+    let filter: Filter
+    let shuffle: Shuffle
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            // At accessibility text sizes the chips no longer fit side by
+            // side and SwiftUI broke their labels mid-word (#625); stack them
+            // along the page's leading edge instead.
+            VStack(alignment: .leading, spacing: 9) {
+                sort
+                filter
+                shuffle
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            // One row when the chips fit. A long sort name ("Latest Episode
+            // Air Date") or a longer translation takes its own line, with
+            // Filter and Shuffle wrapped below it along the leading edge
+            // (#899). Only a name too long for a line of its own ends in an
+            // ellipsis.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 9) {
+                    sort
+                    filter
+                    shuffle
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: 9) {
+                    sort
+                    HStack(spacing: 9) {
+                        filter
+                        shuffle
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
     }
 }
