@@ -11510,7 +11510,7 @@
       }
     },
     "catalog.sort.latestEpisodeAdded" : {
-      "comment" : "Sort option in a library's sort menu on Apple iOS, iPadOS, macOS and tvOS, Android phone and TV, and Roku: order series by when their newest episode was added to the library. Offered for TV libraries.",
+      "comment" : "Sort option in a library's sort menu on Apple iOS, iPadOS, macOS and tvOS, Android phone and TV, and Roku: order series by when their newest episode was added to the library. Offered for TV libraries. Roku's sort menu row has room for about 30 characters.",
       "extractionState" : "manual",
       "localizations" : {
         "ar" : {
@@ -11564,7 +11564,7 @@
       }
     },
     "catalog.sort.latestEpisodeAirDate" : {
-      "comment" : "Sort option in a library's sort menu on Apple iOS, iPadOS, macOS and tvOS, Android phone and TV, and Roku: order series by the air date of their newest episode. Offered for TV libraries.",
+      "comment" : "Sort option in a library's sort menu on Apple iOS, iPadOS, macOS and tvOS, Android phone and TV, and Roku: order series by the air date of their newest episode. Offered for TV libraries. Roku's sort menu row has room for about 30 characters.",
       "extractionState" : "manual",
       "localizations" : {
         "ar" : {
@@ -11576,7 +11576,7 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ausstrahlung der neuesten Folge"
+            "value" : "Sendedatum der neuesten Folge"
           }
         },
         "en" : {
@@ -11588,13 +11588,13 @@
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Fecha de emisión del último episodio"
+            "value" : "Emisión del último episodio"
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Date de diffusion du dernier épisode"
+            "value" : "Diffusion du dernier épisode"
           }
         },
         "ja" : {
@@ -11606,7 +11606,7 @@
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Data de exibição do último episódio"
+            "value" : "Exibição do último episódio"
           }
         },
         "zh-Hans" : {
