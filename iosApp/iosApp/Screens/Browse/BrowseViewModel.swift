@@ -14,8 +14,16 @@ class BrowseViewModel {
     /// empty; set before that load finishes so the wrong message never shows.
     private(set) var emptyReason: BrowseEmptyReason = .libraryEmpty
     /// How many titles match the filters or letter. Nil for the unfiltered
-    /// library, whose size the Libraries header reads on its own.
-    private(set) var filteredTotal: FilteredTotal?
+    /// library, whose size the Libraries header reads on its own. Derived
+    /// from the filters, so a list narrowed by any path (applied, restored
+    /// from saved filters) is never counted as the whole library.
+    var filteredTotal: FilteredTotal? {
+        guard isNarrowed else { return nil }
+        return listTotal.map(FilteredTotal.exact) ?? .uncounted
+    }
+    /// The exact size of the list page 1 was read from; nil until it is
+    /// read or when the server can't count it exactly.
+    private var listTotal: Int?
 
     enum FilteredTotal: Equatable {
         case exact(Int)
@@ -173,7 +181,7 @@ class BrowseViewModel {
             startsOver = startsOver || page.startsOver
             if startsOver {
                 items = page.response.items
-                filteredTotal = filteredTotal(of: page.response)
+                listTotal = Self.exactTotal(of: page.response)
                 // These titles are fresher than any the pager read before:
                 // they replace its pages from the top.
                 if windowStart == 0 { pager?.replaceFromTop(items) }
@@ -215,7 +223,7 @@ class BrowseViewModel {
         filterState = scopedState
         BrowsePrefsStore.shared.saveState(scopedState, libraryId: libraryId, mediaScope: mediaScope?.rawValue)
         items = []
-        filteredTotal = isNarrowed ? .uncounted : nil
+        listTotal = nil
         // The old positions point into the old list.
         letterIndex = nil
         dropPager()
@@ -500,16 +508,14 @@ class BrowseViewModel {
         }
         items = cached.items
         hasMore = cached.hasMore ?? false
-        filteredTotal = filteredTotal(of: cached)
+        listTotal = Self.exactTotal(of: cached)
         refineMediaType(from: cached)
     }
 
     private var isNarrowed: Bool { filterState.hasActiveFilters || filterState.namePrefix != nil }
 
-    private func filteredTotal(of response: CatalogResponse) -> FilteredTotal? {
-        guard isNarrowed else { return nil }
-        guard response.totalExact != false, let total = response.total else { return .uncounted }
-        return .exact(total)
+    private static func exactTotal(of response: CatalogResponse) -> Int? {
+        response.totalExact == false ? nil : response.total
     }
 
     private func invalidatePages() {
@@ -519,7 +525,7 @@ class BrowseViewModel {
         letterIndex = nil
         dropPager()
         items = []
-        filteredTotal = nil
+        listTotal = nil
         hasMore = true
         hasLoaded = false
         isLoading = false

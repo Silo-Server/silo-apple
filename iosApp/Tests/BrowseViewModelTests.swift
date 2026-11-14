@@ -282,6 +282,37 @@ final class BrowseViewModelTests: XCTestCase {
         XCTAssertNil(viewModel.filteredTotal)
     }
 
+    func testRestoredFiltersNeverShowTheWholeLibraryCount() async throws {
+        // Saved filters are kept per account; give this run one, then put
+        // back whatever the host had.
+        let defaults = SharedDefaults.shared
+        let keys = [SharedStorage.activeServerIdKey, SharedStorage.activeAccountKey, SharedStorage.profileIdKey]
+        let saved = keys.map { defaults.object(forKey: $0) }
+        addTeardownBlock {
+            for (key, value) in zip(keys, saved) {
+                if let value { defaults.setObject(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+        }
+        let selection = AccountSelection(serverId: "browse-restore", localAccountId: UUID().uuidString)
+        defaults.set("browse-restore", forKey: SharedStorage.activeServerIdKey)
+        defaults.set(try JSONEncoder().encode(selection), forKey: SharedStorage.activeAccountKey)
+        defaults.set("profile-one", forKey: SharedStorage.profileIdKey)
+        var drama = CatalogFilterState.none
+        drama.genres = ["Drama"]
+        BrowsePrefsStore.shared.saveState(drama, libraryId: 813)
+        defer { BrowsePrefsStore.shared.clearState(libraryId: 813) }
+
+        let viewModel = BrowseViewModel(
+            readFirstPage: { _, _, _ in throw URLError(.notConnectedToInternet) },
+            readLetters: { _ in nil }
+        )
+        await viewModel.configure(libraryId: 813, libraryType: "movies")
+        XCTAssertEqual(viewModel.filterState.genres, ["Drama"])
+        XCTAssertEqual(viewModel.filteredTotal, .uncounted, "loading")
+        await viewModel.loadItems(reset: true)
+        XCTAssertEqual(viewModel.filteredTotal, .uncounted, "the first page failed")
+    }
+
     private func stubbedAPI(_ stub: APIv2TestStub) async throws -> SiloAPI {
         let name = "BrowseViewModelTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
