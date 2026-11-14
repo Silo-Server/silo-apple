@@ -84,15 +84,6 @@ struct BrowseLetterIndex: View {
             }
         }
         .frame(width: Self.railWidth, height: height)
-        .background {
-            if touched != nil {
-                Color.clear
-                    .siloGlass(in: Capsule())
-                    .padding(.horizontal, -3)
-                    .padding(.vertical, -8)
-                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
-            }
-        }
         .overlay(alignment: .topTrailing) {
             if let touched, let target {
                 bubble(for: target)
