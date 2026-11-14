@@ -404,9 +404,11 @@ struct MacFeaturedHero: View {
     }
 
     private func openDetail(_ item: SectionItem) {
-        router.navigate(
-            to: .itemDetail(destinationContentId: item.contentId, sectionItem: item)
-        )
+        let route = Route.itemDetail(destinationContentId: item.contentId, sectionItem: item)
+        if case .itemDetail(let contentId, _, _, _) = route {
+            DetailSeedStore.offer(.section(item), opening: contentId)
+        }
+        router.navigate(to: route)
     }
 
     // MARK: - Formatting

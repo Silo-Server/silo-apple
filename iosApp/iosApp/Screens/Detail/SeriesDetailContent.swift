@@ -72,6 +72,12 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// Reference-backed scroll state observed only by the small parallax and
     /// pinned-chrome views, keeping the native ScrollView's body stable.
     let scrollState: PhoneDetailScrollState
+    /// `detail` is the tapped card's seed: it has no watch state or credits
+    /// yet, so the series-level actions wait in their loading form. Seasons,
+    /// episodes and Play come from their own requests and work meanwhile.
+    var isProvisional = false
+    /// The artwork the seed drew, kept on screen while `detail`'s loads.
+    var seedArtwork: DetailSeedArtwork? = nil
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
@@ -110,12 +116,13 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             backdropURL: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
             enablesArtworkGlass: true,
-            keepsSideSafeArea: true
+            keepsSideSafeArea: true,
+            fallbackBackdropURL: seedArtwork?.backdrop
         ) {
             PhoneDetailPageLayout(scrollState: scrollState) {
                 VStack(alignment: .leading, spacing: heroToContentSpacing) {
                     hero()
-                    belowFold
+                    PhoneDetailBelowFold { belowFold }
                 }
                 .padding(.bottom, 40)
             } paneArtwork: {
@@ -216,11 +223,15 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
             factsLine: PhoneHeroMetadata.seriesFactsLine(from: detail, seasons: seasons),
-            ratings: detail.displayRatings,
+            // A card carries only some of the ratings row; it waits for the
+            // detail rather than growing under the viewer.
+            ratings: isProvisional ? [] : detail.displayRatings,
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
             enablesArtworkParallax: true,
             pane: pane,
+            fallbackArtworkUrl: seedArtwork?.hero,
+            fallbackPosterUrl: seedArtwork?.poster,
             actions: { actionStack },
             // Match MovieDetailContent exactly through the playback controls:
             // Play/actions, show overview and credits, translation affordance,
@@ -308,6 +319,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     overflowMenuItems
                 }
             }
+            // More marks the series watched from its watch state and finds
+            // trailers against its trailer list, neither of which a seed has;
+            // the seed's favorite and watchlist flags are the card's.
+            .disabled(isProvisional)
 
             AutoDownloadBanner(
                 seriesId: detail.seriesId ?? detail.contentId,
@@ -611,8 +626,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 castSection(cast: cast)
             }
             trailersSection
-            detailsSection
-                .padding(.horizontal, SiloTheme.safePadding)
+            // A seed's facts are a partial list; show the detail's whole one.
+            if !isProvisional {
+                detailsSection
+                    .padding(.horizontal, SiloTheme.safePadding)
+            }
             similarSection
             PhoneMediaInfoSection(version: mediaInfoVersion, episode: nextUpEpisode, isExpanded: $showsMediaInfo)
         }

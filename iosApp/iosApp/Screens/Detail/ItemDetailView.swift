@@ -56,6 +56,28 @@ private struct ControlRequestBox: Identifiable {
     init(_ request: SiloControlPlaybackRequest) { self.request = request }
 }
 
+/// What the detail page's Remote button does when tapped.
+enum DetailRemoteControlAction: Equatable {
+    /// Cast the page's item to a TV.
+    case playOnTV
+    /// Open the remote for the TV already playing.
+    case showRemote
+    /// Pick a TV to control.
+    case pickTV
+
+    /// A fetched movie or episode leaf casts itself; its primary item maps to
+    /// a single playback request. Series, season and audiobook containers
+    /// have no single item to cast. A card seed has no files or tracks, so
+    /// until the fetched detail replaces it the page acts as if it had none.
+    static func forTap(detail: ItemDetail?, isProvisional: Bool, remotePlaybackEngaged: Bool) -> Self {
+        if let detail, !isProvisional,
+           !detail.isAudiobook, detail.type != "season", detail.type != "series" {
+            return .playOnTV
+        }
+        return remotePlaybackEngaged ? .showRemote : .pickTV
+    }
+}
+
 /// Scroll offsets (as folded by `phoneDetailScrollTracking`) over which the
 /// floating chrome's backing strip fades in, the per-button glass fades out
 /// onto that strip, and the compact title fades in. The strip keeps scrolled
@@ -110,6 +132,7 @@ struct PhoneDetailTopChrome: View {
     @Environment(\.locale) private var locale
     /// The chrome spans the detail page, so its width is the hero's width.
     @State private var pageWidth: CGFloat = 0
+    @Environment(\.detailPageWidthHint) private var pageWidthHint
     #if os(iOS)
     @State private var statusColumn: StatusColumnLayout?
     #endif
@@ -119,10 +142,15 @@ struct PhoneDetailTopChrome: View {
     private var scrollGlass: PhoneDetailScrollGlassTiming? {
         guard isScrollGlassEnabled, !isBesideStatusColumn else { return nil }
         return .forHero(isExpanded: PhoneDetailHeroLayout.usesExpandedLayout(
-            availableWidth: pageWidth,
+            availableWidth: layoutWidth,
             horizontalSizeClass: horizontalSizeClass,
             verticalSizeClass: verticalSizeClass
         ))
+    }
+
+    /// The measured width, else the presenter's hint until it is measured.
+    private var layoutWidth: CGFloat {
+        pageWidth > 0 ? pageWidth : pageWidthHint
     }
 
     var body: some View {
@@ -162,7 +190,9 @@ struct PhoneDetailTopChrome: View {
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
-            guard abs(width - pageWidth) > 1 else { return }
+            // As in `PhoneDetailHero`: a width matching the hint the first
+            // layout used changes nothing.
+            guard abs(width - layoutWidth) > 1 else { return }
             pageWidth = width
         }
         #if os(iOS)
@@ -398,8 +428,34 @@ private struct ItemDetailPhoneContent: View {
         let viewModel = ItemDetailViewModel(libraryId: libraryId)
         viewModel.initialResumeSeasonNumber = resumeContext?.seasonNumber
         viewModel.hydrateFromCache(contentId: contentId)
+        #if DEBUG
+        DetailLoadTrace.mark(.viewInit)
+        #endif
         _viewModel = State(initialValue: viewModel)
         _selectedSeriesEpisodeId = State(initialValue: resumeContext?.episodeContentId)
+        // As `loadNextUpWatchDetail` will set it for the episode a cached
+        // series opens on, so the first frame draws what that load leaves
+        // and the page is not built twice before it appears.
+        _isLoadingNextUpWatchDetail = State(initialValue: Self.initialNextUpIsLoading(
+            viewModel: viewModel, episodeContentId: resumeContext?.episodeContentId, libraryId: libraryId
+        ))
+    }
+
+    /// Mirrors `playbackEpisode(for:)` and `loadNextUpWatchDetail(for:)`.
+    private static func initialNextUpIsLoading(
+        viewModel: ItemDetailViewModel,
+        episodeContentId: String?,
+        libraryId: Int?
+    ) -> Bool {
+        guard viewModel.detail?.type == "series" else { return false }
+        let episodes = viewModel.episodes
+        let episode = episodeContentId.flatMap { id in episodes.first { $0.contentId == id } }
+            ?? episodes.preferredResumeEpisode()
+        guard let episode else { return false }
+        let cached: WatchDetail? = ResponseCache.shared.get(
+            CacheKey.itemWatchDetail(episode.contentId, libraryId: libraryId)
+        )
+        return cached == nil
     }
 
     @State private var viewModel: ItemDetailViewModel
@@ -481,10 +537,15 @@ private struct ItemDetailPhoneContent: View {
 
     var body: some View {
         Group {
-            if let detail = viewModel.detail {
-                content(for: detail)
-            } else if let error = viewModel.error {
+            // A card seed whose detail failed to load gives way to the error:
+            // nothing on it can play until the detail arrives.
+            if let error = viewModel.error, viewModel.detail == nil || viewModel.isDetailProvisional {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadDetail(contentId: contentId) } })
+            } else if let detail = viewModel.detail {
+                content(for: detail)
+                    #if DEBUG
+                    .onAppear { DetailLoadTrace.mark(.contentAppear) }
+                    #endif
             } else {
                 Color.clear
             }
@@ -511,7 +572,7 @@ private struct ItemDetailPhoneContent: View {
             seasonContentId: isSeriesPage ? viewModel.selectedSeason?.contentId : nil,
             // A series page waits for its seasons, so a season that owns a
             // theme never opens on a burst of the series' one.
-            isLoading: viewModel.detail == nil
+            isLoading: viewModel.detail == nil || viewModel.isDetailProvisional
                 || (isSeriesPage && viewModel.seasons.isEmpty
                     && viewModel.isLoadingSeriesHierarchy)
         )
@@ -568,6 +629,9 @@ private struct ItemDetailPhoneContent: View {
             reseedSubtitleOverride()
         }
         .onAppear {
+            #if DEBUG
+            DetailLoadTrace.mark(.pageAppear)
+            #endif
             isPageVisible = true
             // Coming back from the player (or an extra) resumes a poll that
             // `onDisappear` cancelled — without re-POSTing, since the server
@@ -787,7 +851,14 @@ private struct ItemDetailPhoneContent: View {
     }
 
     private func handleRemoteControlTap() {
-        if let detail = viewModel.detail, isDirectlyPlayable(detail) {
+        let action = DetailRemoteControlAction.forTap(
+            detail: viewModel.detail,
+            isProvisional: viewModel.isDetailProvisional,
+            remotePlaybackEngaged: siloControl.remotePlaybackEngaged
+        )
+        switch action {
+        case .playOnTV:
+            guard let detail = viewModel.detail else { return }
             // The TV resumes from the request's explicit position, so read
             // the server's current one rather than the page's snapshot, and
             // resolve the file from the same state.
@@ -812,18 +883,11 @@ private struct ItemDetailPhoneContent: View {
                     pinsVersion: preferredVersionFileId != nil
                 ))
             }
-        } else if siloControl.remotePlaybackEngaged {
+        case .showRemote:
             isShowingRemoteControl = true
-        } else {
+        case .pickTV:
             isShowingControlPicker = true
         }
-    }
-
-    /// True when the loaded detail is a movie or episode leaf, whose primary
-    /// item maps to a single playback request. Series, season, and audiobook
-    /// containers have no single "this item" to cast.
-    private func isDirectlyPlayable(_ detail: ItemDetail) -> Bool {
-        !detail.isAudiobook && detail.type != "season" && detail.type != "series"
     }
 
     private func playOnTV(_ request: SiloControlPlaybackRequest) {
@@ -973,6 +1037,8 @@ private struct ItemDetailPhoneContent: View {
                 isFindingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 scrollState: detailScrollState,
+                isProvisional: viewModel.isDetailProvisional,
+                seedArtwork: viewModel.seedArtwork,
                 belowOverview: { translationView(for: detail) }
             )
             .task(id: playbackEpisode(for: detail)?.contentId) {
@@ -1054,6 +1120,8 @@ private struct ItemDetailPhoneContent: View {
                 isFindingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 scrollState: detailScrollState,
+                isProvisional: viewModel.isDetailProvisional,
+                seedArtwork: viewModel.seedArtwork,
                 belowOverview: { translationView(for: detail) }
             )
         }

@@ -83,6 +83,7 @@ struct PhoneBoxSetRow: View {
             overlayData: OverlayData.from(movie),
             action: {},
             contentId: isCurrent ? nil : movie.contentId,
+            detailSeedSource: .browse(movie),
             aspect: .poster,
             cardWidthOverride: cardWidthOverride,
             marksCurrentFilm: isCurrent

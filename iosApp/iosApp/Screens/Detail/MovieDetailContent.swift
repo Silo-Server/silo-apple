@@ -50,6 +50,11 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// Reference-backed scroll state observed only by the small parallax and
     /// pinned-chrome views, keeping the native ScrollView's body stable.
     let scrollState: PhoneDetailScrollState
+    /// `detail` is the tapped card's seed: it has no files, watch state or
+    /// credits yet, so Play and the actions wait in their loading form.
+    var isProvisional = false
+    /// The artwork the seed drew, kept on screen while `detail`'s loads.
+    var seedArtwork: DetailSeedArtwork? = nil
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
@@ -72,12 +77,13 @@ struct MovieDetailContent<BelowOverview: View>: View {
             backdropURL: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
             enablesArtworkGlass: SiloMediaType.isMovieLibrary(detail.type),
-            keepsSideSafeArea: true
+            keepsSideSafeArea: true,
+            fallbackBackdropURL: seedArtwork?.backdrop
         ) {
             PhoneDetailPageLayout(scrollState: scrollState) {
                 VStack(alignment: .leading, spacing: heroToContentSpacing) {
                     hero()
-                    belowFold
+                    PhoneDetailBelowFold { belowFold }
                 }
                 .padding(.bottom, 40)
             } paneArtwork: {
@@ -138,11 +144,15 @@ struct MovieDetailContent<BelowOverview: View>: View {
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
             factsLine: PhoneHeroMetadata.movieFactsLine(from: detail, version: effectiveVersion),
-            ratings: detail.displayRatings,
+            // A card carries only some of the ratings row; it waits for the
+            // detail rather than growing under the viewer.
+            ratings: isProvisional ? [] : detail.displayRatings,
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
             enablesArtworkParallax: SiloMediaType.isMovieLibrary(detail.type),
             pane: pane,
+            fallbackArtworkUrl: seedArtwork?.hero,
+            fallbackPosterUrl: seedArtwork?.poster,
             actions: { actionStack },
             belowOverview: { heroExtras }
         )
@@ -165,10 +175,14 @@ struct MovieDetailContent<BelowOverview: View>: View {
         VStack(spacing: 14) {
             PhonePrimaryPillButton(
                 icon: "play.fill",
-                title: DetailPlayLabel.item(detail.userData, shown: effectiveVersion, in: availableVersions),
+                // A seed has no watch state, so neither Play nor Resume is known.
+                title: isProvisional
+                    ? AppLanguage.string(.commonLoading, locale: locale)
+                    : DetailPlayLabel.item(detail.userData, shown: effectiveVersion, in: availableVersions),
                 action: handlePlayTap,
                 fullWidth: true
             )
+            .disabled(isProvisional)
 
             PhoneLabeledActionRow {
                 PhoneLabeledAction(
@@ -221,6 +235,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
                     }
                 }
             }
+            // Watched, Download and More act on state a seed lacks, and the
+            // seed's favorite and watchlist flags are the card's.
+            .disabled(isProvisional)
 
             if let trailerStatusMessage {
                 PhoneTrailerStatusPill(
@@ -332,8 +349,11 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
             similarSection
 
-            detailsSection
-                .padding(.horizontal, SiloTheme.safePadding)
+            // A seed's facts are a partial list; show the detail's whole one.
+            if !isProvisional {
+                detailsSection
+                    .padding(.horizontal, SiloTheme.safePadding)
+            }
 
             PhoneMediaInfoSection(version: effectiveVersion, isExpanded: $showsMediaInfo)
         }

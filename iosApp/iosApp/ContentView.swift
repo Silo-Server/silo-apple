@@ -586,34 +586,7 @@ struct ContentView: View {
             updateProfileAwayStartForBackgroundPlayback()
         }
         #endif
-        .onChange(of: requestsScreensCheck, initial: true) { _, check in
-            guard check.requestsUnavailable else { return }
-            router.closeRequestsScreens()
-        }
-    }
-
-    /// What decides whether open Requests screens must close: the server's
-    /// answer, and the pages in view, so a Requests page that comes back into
-    /// view (Back from a title opened from Requests) closes too.
-    private struct RequestsScreensCheck: Equatable {
-        let requestsUnavailable: Bool
-        let pathCount: Int
-        let detailCardID: UUID?
-        let detailCardPathCount: Int
-    }
-
-    private var requestsScreensCheck: RequestsScreensCheck {
-        // Only an answered probe closes anything: before the first answer,
-        // after a reset, and after a failed probe the store is not "off".
-        let unavailable = router.authState == .authenticated
-            && RequestsFeatureStore.shared.isKnownUnavailable
-        #if os(iOS)
-        return RequestsScreensCheck(requestsUnavailable: unavailable, pathCount: router.path.count,
-            detailCardID: router.presentedItemDetail?.id, detailCardPathCount: router.itemDetailPath.count)
-        #else
-        return RequestsScreensCheck(requestsUnavailable: unavailable, pathCount: router.path.count,
-            detailCardID: nil, detailCardPathCount: 0)
-        #endif
+        .modifier(RequestsScreensCloser(router: router))
     }
 
     /// Overlay hydration is the one post-authentication refresh whose failure
@@ -2377,6 +2350,44 @@ struct MainTabLibrarySnapshot: Equatable {
     }
 }
 
+/// Closes open Requests screens once the server says Requests are off.
+/// Its own modifier, so opening or closing a detail or a page updates only
+/// this check and not the whole app under `ContentView`.
+private struct RequestsScreensCloser: ViewModifier {
+    let router: AppRouter
+
+    /// What decides whether open Requests screens must close: the server's
+    /// answer, and the pages in view, so a Requests page that comes back into
+    /// view (Back from a title opened from Requests) closes too.
+    private struct Check: Equatable {
+        let requestsUnavailable: Bool
+        let pathCount: Int
+        let detailCardID: UUID?
+        let detailCardPathCount: Int
+    }
+
+    private var check: Check {
+        // Only an answered probe closes anything: before the first answer,
+        // after a reset, and after a failed probe the store is not "off".
+        let unavailable = router.authState == .authenticated
+            && RequestsFeatureStore.shared.isKnownUnavailable
+        #if os(iOS)
+        return Check(requestsUnavailable: unavailable, pathCount: router.path.count,
+            detailCardID: router.presentedItemDetail?.id, detailCardPathCount: router.itemDetailPath.count)
+        #else
+        return Check(requestsUnavailable: unavailable, pathCount: router.path.count,
+            detailCardID: nil, detailCardPathCount: 0)
+        #endif
+    }
+
+    func body(content: Content) -> some View {
+        content.onChange(of: check, initial: true) { _, check in
+            guard check.requestsUnavailable else { return }
+            router.closeRequestsScreens()
+        }
+    }
+}
+
 // iOS and macOS only: tvOS builds its shell in `TVMainTabView`.
 #if !os(tvOS)
 struct MainTabView: View {
@@ -2557,18 +2568,7 @@ struct MainTabView: View {
         #if os(iOS)
         .modifier(AudioPlayerPresentationModifier(router: router))
         .modifier(PlayerPresentationModifier(router: router))
-        .sheet(
-            item: itemDetailBinding(coversWindow: false),
-            onDismiss: { router.itemDetailPresentationDidDismiss() }
-        ) { presentation in
-            itemDetail(presentation, zooms: false)
-        }
-        .fullScreenCover(
-            item: itemDetailBinding(coversWindow: true),
-            onDismiss: { router.itemDetailPresentationDidDismiss() }
-        ) { presentation in
-            itemDetail(presentation, zooms: true)
-        }
+        .modifier(ItemDetailPresentationModifier(router: router, zoomNamespace: detailZoomNamespace))
         .onGeometryChange(for: Bool.self) { proxy in
             PhoneDetailHeroLayout.usesSplitLayout(pageSize: proxy.size, verticalSizeClass: vSize)
         } action: { splitsDetail in
@@ -2644,39 +2644,6 @@ struct MainTabView: View {
 
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.verticalSizeClass) private var vSize
-
-    #if os(iOS)
-    /// The open detail, routed to its presentation. An iPhone covers the
-    /// window, so the system's zoom transition owns the drag that closes
-    /// the detail; a sheet has its own pull-down, which competes with it.
-    /// Request details keep the sheet there: their one-column page would
-    /// stretch across the iPhone Duo's open display. iPad keeps the sheet,
-    /// which can fill its window.
-    private func itemDetailBinding(coversWindow: Bool) -> Binding<AppRouter.ItemDetailPresentation?> {
-        func belongsHere(_ presentation: AppRouter.ItemDetailPresentation) -> Bool {
-            (UIDevice.current.userInterfaceIdiom == .phone && presentation.request == nil) == coversWindow
-        }
-        return Binding(
-            get: { router.presentedItemDetail.flatMap { belongsHere($0) ? $0 : nil } },
-            set: { newValue in
-                // The host the detail just left must not close it as it
-                // moves to the other one (see `refitItemDetail`).
-                if newValue == nil, let current = router.presentedItemDetail, !belongsHere(current) {
-                    return
-                }
-                router.presentedItemDetail = newValue
-            }
-        )
-    }
-    #endif
-
-    /// Passes the audio store in explicitly. When the iPad app runs on a Mac,
-    /// presented content doesn't inherit it, and the detail's audio player
-    /// modifier traps reading it as the sheet appears.
-    private func itemDetail(_ presentation: AppRouter.ItemDetailPresentation, zooms: Bool) -> some View {
-        ItemDetailSheet(presentation: presentation, router: router, zoomNamespace: zooms ? detailZoomNamespace : nil)
-            .environment(audioStore)
-    }
     #endif
 
     /// Macs always use the sidebar. iPad uses it only while the app fills the
@@ -3309,6 +3276,66 @@ struct MainTabView: View {
 #endif
 
 #if os(iOS)
+/// Presents the open detail over the tabs. Its own modifier, so opening or
+/// closing a detail updates these presentations and not the tab view, which
+/// would refresh every tab's title and icon in the frame the detail opens in.
+private struct ItemDetailPresentationModifier: ViewModifier {
+    let router: AppRouter
+    /// Links each card's artwork to the detail it opens.
+    let zoomNamespace: Namespace.ID
+
+    @Environment(AudioPlaybackStore.self) private var audioStore
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(
+                item: itemDetailBinding(coversWindow: false),
+                onDismiss: { router.itemDetailPresentationDidDismiss() }
+            ) { presentation in
+                itemDetail(presentation, zooms: false)
+            }
+            .fullScreenCover(
+                item: itemDetailBinding(coversWindow: true),
+                onDismiss: { router.itemDetailPresentationDidDismiss() }
+            ) { presentation in
+                itemDetail(presentation, zooms: true)
+            }
+    }
+
+    /// The open detail, routed to its presentation. An iPhone covers the
+    /// window, so the system's zoom transition owns the drag that closes
+    /// the detail; a sheet has its own pull-down, which competes with it.
+    /// Request details keep the sheet there: their one-column page would
+    /// stretch across the iPhone Duo's open display. iPad keeps the sheet,
+    /// which can fill its window.
+    private func itemDetailBinding(coversWindow: Bool) -> Binding<AppRouter.ItemDetailPresentation?> {
+        func belongsHere(_ presentation: AppRouter.ItemDetailPresentation) -> Bool {
+            (UIDevice.current.userInterfaceIdiom == .phone && presentation.request == nil) == coversWindow
+        }
+        return Binding(
+            get: { router.presentedItemDetail.flatMap { belongsHere($0) ? $0 : nil } },
+            set: { newValue in
+                // The host the detail just left must not close it as it
+                // moves to the other one (see `refitItemDetail`).
+                if newValue == nil, let current = router.presentedItemDetail, !belongsHere(current) {
+                    return
+                }
+                router.presentedItemDetail = newValue
+            }
+        )
+    }
+
+    /// Passes the audio store in explicitly. When the iPad app runs on a Mac,
+    /// presented content doesn't inherit it, and the detail's audio player
+    /// modifier traps reading it as the sheet appears.
+    private func itemDetail(_ presentation: AppRouter.ItemDetailPresentation, zooms: Bool) -> some View {
+        ItemDetailSheet(presentation: presentation, router: router, zoomNamespace: zooms ? zoomNamespace : nil)
+            .environment(audioStore)
+    }
+}
+#endif
+
+#if os(iOS)
 /// The catalog detail: a full-screen cover on iPhone, a sheet on iPad. It
 /// owns a small nested navigation stack for episode and Cast & Crew hops,
 /// while the tab/sidebar navigation underneath remains exactly where the
@@ -3332,11 +3359,13 @@ private struct ItemDetailSheet: View {
     private var sheetContent: some View {
         NavigationStack(path: $router.itemDetailPath) {
             GeometryReader { geometry in
-                rootPage
-                    .frame(
-                        width: geometry.size.width,
-                        height: geometry.size.height + geometry.safeAreaInsets.bottom
-                    )
+                let size = pageSize(geometry)
+                // Equatable, so the frame settling over the presentation's
+                // first passes re-places the page without rebuilding it.
+                ItemDetailSheetRoot(presentation: presentation, router: router)
+                    .equatable()
+                    .frame(width: size.width, height: size.height)
+                    .environment(\.detailPageWidthHint, size.width)
                     .detailSwipeBack(onDismiss: router.dismissItemDetail)
             }
                 .navigationDestination(for: Route.self) { route in
@@ -3367,8 +3396,57 @@ private struct ItemDetailSheet: View {
         .modifier(AudioPlayerPresentationModifier(router: router, detailPresentationID: presentation.id))
     }
 
+    /// The page's frame: the sheet's container, down through the home
+    /// indicator strip. The full-screen cover first lays the page out with
+    /// no size at all, as its zoom transition sets up; the page would build
+    /// every section at a sliver's width and again a moment later. That
+    /// pass gets the size the cover settles at, the window below its top
+    /// safe area, so the page lays out once at the size it is drawn.
+    private func pageSize(_ geometry: GeometryProxy) -> CGSize {
+        let measured = CGSize(
+            width: geometry.size.width,
+            height: geometry.size.height + geometry.safeAreaInsets.bottom
+        )
+        guard zoomNamespace != nil, measured.width <= 0 || geometry.size.height <= 0,
+              let window = UIApplication.shared.connectedScenes
+                  .compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first
+        else { return measured }
+        return CGSize(
+            width: window.bounds.width,
+            height: window.bounds.height - window.safeAreaInsets.top
+        )
+    }
+
     @ViewBuilder
-    private var rootPage: some View {
+    private func destination(for route: Route) -> some View {
+        switch route {
+        case .itemDetail(let contentId, _, let libraryId, let context):
+            ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
+        case .personDetail(let personId):
+            PersonDetailView(personId: personId)
+        case .boxSet(let id, let libraryId):
+            BoxSetDetailView(id: id, libraryId: libraryId)
+        case .requestDetail(let mediaType, let tmdbId):
+            RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
+        case .sectionCatalog(let target):
+            SectionCatalogView(target: target)
+        default:
+            EmptyView()
+        }
+    }
+}
+
+/// The page `ItemDetailSheet` opens on. Its closures all lead to `router`,
+/// so two values with the same presentation and router draw the same page.
+private struct ItemDetailSheetRoot: View, Equatable {
+    let presentation: AppRouter.ItemDetailPresentation
+    let router: AppRouter
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.presentation == rhs.presentation && lhs.router === rhs.router
+    }
+
+    var body: some View {
         if let request = presentation.request {
             RequestDetailView(
                 mediaType: request.mediaType,
@@ -3389,24 +3467,6 @@ private struct ItemDetailSheet: View {
                 // `refitItemDetail`); it reopens on this selection.
                 onSeriesSelection: router.itemDetailSeriesSelectionDidChange
             )
-        }
-    }
-
-    @ViewBuilder
-    private func destination(for route: Route) -> some View {
-        switch route {
-        case .itemDetail(let contentId, _, let libraryId, let context):
-            ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
-        case .personDetail(let personId):
-            PersonDetailView(personId: personId)
-        case .boxSet(let id, let libraryId):
-            BoxSetDetailView(id: id, libraryId: libraryId)
-        case .requestDetail(let mediaType, let tmdbId):
-            RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
-        case .sectionCatalog(let target):
-            SectionCatalogView(target: target)
-        default:
-            EmptyView()
         }
     }
 }

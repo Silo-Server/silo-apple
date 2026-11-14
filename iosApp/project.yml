@@ -410,6 +410,12 @@ targets:
         excludes:
           # UserNotifications and the ApplePush* types (Notifications/, #if os(iOS)).
           - "ApplePushRegistrationTests.swift"
+          # DetailPrewarmer and card seeding (iPhone, iPad and Mac detail pages;
+          # tvOS opens from its route seed and focus-time warm-up).
+          - "DetailPrewarmerTests.swift"
+          - "DetailSeedTests.swift"
+          # DetailFrameCommit (PhoneDetailPageLayout, #if os(iOS)).
+          - "DetailFrameCommitTests.swift"
           # PlayerOrientationCoordinator, AppRouter, DetailDismissalPolicy (iOS player/detail).
           - "DetailDismissalNavigationTests.swift"
           # Unguarded `import UIKit`, UIApplication.shared, phone home-feed rails.

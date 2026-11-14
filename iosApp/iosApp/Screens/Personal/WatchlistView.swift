@@ -158,6 +158,7 @@ struct WatchlistView: View {
                         },
                         playAction: playAction(for: item),
                         contentId: item.contentId,
+                        detailSeedSource: .browse(item),
                         onUserStateChanged: { state in
                             guard !state.inWatchlist else { return }
                             withAnimation {
@@ -202,6 +203,7 @@ struct WatchlistView: View {
                             playAction: playAction(for: item),
                             focusedItemId: $focusedContentId,
                             contentId: item.contentId,
+                            detailSeedSource: .browse(item),
                             cardWidthOverride: tvCardWidthOverride,
                             onUserStateChanged: { state in
                                 guard !state.inWatchlist else { return }
