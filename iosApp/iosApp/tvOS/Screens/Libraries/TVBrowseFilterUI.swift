@@ -183,10 +183,6 @@ struct TVBrowseSortPanel: View {
                 .prefersDefaultFocus(key == current, in: sortFocusScope)
             }
         }
-        // The rows lay out after the panel appears (and inside a scroll view
-        // for a long list), so the focus state alone does not catch: seed
-        // entry focus on the current sort.
-        .defaultFocus($focusedSort, current, priority: .userInitiated)
     }
 
     /// The current sort is always listed, so entry focus lands on it.
