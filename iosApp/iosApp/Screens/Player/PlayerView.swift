@@ -130,11 +130,9 @@ struct PlayerView: View {
                 if viewModel.showNextUpScreen && viewModel.error == nil {
                     PlayerNextUpScreen(
                         viewModel: viewModel,
-                        onBack: {
-                            if !viewModel.keepWatchingCurrentEpisode() {
-                                dismissPlayer()
-                            }
-                        },
+                        // Back leaves the player; Keep Watching is its own pill.
+                        // The tvOS Menu button still keeps watching (onExitCommand).
+                        onBack: { dismissPlayer() },
                         onStopShuffling: {
                             viewModel.stopShuffling()
                             dismissPlayer()
