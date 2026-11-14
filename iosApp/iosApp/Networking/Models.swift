@@ -459,6 +459,23 @@ struct ResolvedSection: Codable, Identifiable {
     /// Whether this section is featured (defaults to false if nil).
     var isFeatured: Bool { featured ?? false }
 
+    /// The section with `items` in place of its own.
+    func replacingItems(_ items: [SectionItem]) -> ResolvedSection {
+        ResolvedSection(
+            id: id,
+            sectionType: sectionType,
+            title: title,
+            featured: featured,
+            itemLimit: itemLimit,
+            totalCount: totalCount,
+            isCustom: isCustom,
+            customized: customized,
+            items: items,
+            titleKey: titleKey,
+            titleArgs: titleArgs
+        )
+    }
+
     /// The title in the language `locale` shows: the catalog's translation of
     /// the server's own title, else `title` as sent.
     func displayTitle(in locale: Locale) -> String {
@@ -538,19 +555,7 @@ struct SectionsResponse: Codable {
                 SiloMediaType.isSupportedSectionItem($0.type)
             }
             guard kept.count != section.items.count else { return section }
-            return ResolvedSection(
-                id: section.id,
-                sectionType: section.sectionType,
-                title: section.title,
-                featured: section.featured,
-                itemLimit: section.itemLimit,
-                totalCount: section.totalCount,
-                isCustom: section.isCustom,
-                customized: section.customized,
-                items: kept,
-                titleKey: section.titleKey,
-                titleArgs: section.titleArgs
-            )
+            return section.replacingItems(kept)
         }
     }
 }

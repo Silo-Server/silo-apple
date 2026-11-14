@@ -170,7 +170,7 @@ struct LibrariesTabView: View {
     /// header's count again.
     @State private var countRefreshes = 0
     @State private var isDockVisible = false
-    @Environment(LibraryDockHost.self) private var dockHost: LibraryDockHost?
+    @Environment(PageDockHost.self) private var dockHost: PageDockHost?
     @Environment(SiloControlClient.self) private var siloControl
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -397,7 +397,7 @@ struct LibrariesTabView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 // Exactly one dock shows: here, or in the tab bar's slot.
                 if !dockIsInSlot {
-                    LibraryDock(model: dock)
+                    PageDock(model: dock)
                 }
             }
             .onAppear {
@@ -528,7 +528,7 @@ struct LibrariesTabView: View {
     /// The tab bar shows the dock in its accessory slot (iOS 26.1 and
     /// later) unless a now-playing bar holds the slot.
     private var dockIsInSlot: Bool {
-        guard LibraryDockHost.slotIsAvailable, isDockVisible,
+        guard PageDockHost.slotIsAvailable, isDockVisible,
               let dockHost, dockHost.dock === dock else { return false }
         return !NowPlayingShelf.hasActiveAccessory(control: siloControl, audio: audioStore)
     }

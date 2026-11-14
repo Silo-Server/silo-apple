@@ -2383,8 +2383,9 @@ struct MainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedDestinationID: MainTabDestinationID = .app(.home)
     #if os(iOS)
-    /// Passes the iPhone library page's dock to the tab bar's accessory slot.
-    @State private var libraryDockHost = LibraryDockHost()
+    /// Passes the dock of the iPhone tab on screen (Libraries, For You) to
+    /// the tab bar's accessory slot.
+    @State private var pageDockHost = PageDockHost()
     #endif
     /// The local audiobook opt-in; it hides audiobook libraries.
     @State private var navPrefs = AppNavPreferences.shared
@@ -2793,7 +2794,7 @@ struct MainTabView: View {
             .siloTabBarMinimizeOnScroll()
             .modifier(NowPlayingShelfAttachment(showsCard: statusColumn != nil))
             // Outside the attachment, so the slot and every tab read it.
-            .environment(libraryDockHost)
+            .environment(pageDockHost)
             // Outside the shelf's bottom inset, which would otherwise shorten
             // the column and push its actions up into the system status.
             .overlay {

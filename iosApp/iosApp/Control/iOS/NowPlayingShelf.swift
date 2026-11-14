@@ -45,9 +45,9 @@ struct NowPlayingShelf: View {
 /// iOS 26 uses the native Liquid Glass accessory; iOS 18 uses the card-styled
 /// shelf in a safe-area inset. Nothing is attached while playback is idle.
 ///
-/// On iOS 26.1 and later the same slot shows the iPhone Libraries tab's dock
-/// while that tab is on screen and nothing is playing, so the dock shrinks
-/// with the tab bar. Now playing always keeps priority; the dock then stays
+/// On iOS 26.1 and later the same slot shows the dock of the iPhone tab on
+/// screen (Libraries, For You) while nothing is playing, so the dock
+/// shrinks with the tab bar. Now playing always keeps priority; the dock then stays
 /// in its page.
 struct NowPlayingShelfAttachment: ViewModifier {
     /// Shows the shelf as a card above the page instead of the tab bar
@@ -56,14 +56,14 @@ struct NowPlayingShelfAttachment: ViewModifier {
 
     @Environment(SiloControlClient.self) private var siloControl
     @Environment(AudioPlaybackStore.self) private var audioStore
-    @Environment(LibraryDockHost.self) private var dockHost: LibraryDockHost?
+    @Environment(PageDockHost.self) private var dockHost: PageDockHost?
 
     private var isActive: Bool {
         NowPlayingShelf.hasActiveAccessory(control: siloControl, audio: audioStore)
     }
 
-    /// The library dock to show in the slot, when the slot is free for it.
-    private var slotDock: LibraryDockModel? {
+    /// The page dock to show in the slot, when the slot is free for it.
+    private var slotDock: (any PageDockModel)? {
         guard !isActive, !showsCard else { return nil }
         return dockHost?.dock
     }
@@ -71,8 +71,8 @@ struct NowPlayingShelfAttachment: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.1, *) {
             // Toggling `isEnabled` keeps the TabView's structural identity, so
-            // tabs keep their state when playback starts or stops, when the
-            // Libraries tab comes and goes, or when the layout switches
+            // tabs keep their state when playback starts or stops, when a
+            // tab with a dock comes and goes, or when the layout switches
             // between the accessory and the card.
             content
                 .tabViewBottomAccessory(isEnabled: (isActive && !showsCard) || slotDock != nil) {
@@ -80,7 +80,7 @@ struct NowPlayingShelfAttachment: ViewModifier {
                         if isActive {
                             NowPlayingShelf(style: .accessory)
                         } else if let slotDock {
-                            LibraryDockAccessory(model: slotDock)
+                            slotDock.accessory()
                         }
                     }
                     .modifier(NowPlayingAccessoryPlacementReader())
