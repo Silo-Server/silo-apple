@@ -885,12 +885,12 @@ private extension Person {
 
 private func personFilmographyCountLabel(total: Int?, loaded: Int, hasMore: Bool) -> LocalizedStringResource? {
     if let total {
-        return .libraryTitleCount(count: total, LocaleFormat.integer(total))
+        return .libraryTitleCount(count: total, LocaleFormat.groupedCount(total))
     }
     guard loaded > 0 else { return nil }
     return hasMore
-        ? .libraryTitleCountMore(count: loaded, LocaleFormat.integer(loaded))
-        : .libraryTitleCount(count: loaded, LocaleFormat.integer(loaded))
+        ? .libraryTitleCountMore(count: loaded, LocaleFormat.groupedCount(loaded))
+        : .libraryTitleCount(count: loaded, LocaleFormat.groupedCount(loaded))
 }
 
 private func clean(_ value: String?) -> String? {

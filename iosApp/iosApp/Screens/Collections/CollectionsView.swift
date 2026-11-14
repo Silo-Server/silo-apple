@@ -9,7 +9,7 @@ func libraryCollectionAccessibilityLabel(
         ? AppLanguage.string(.collectionsUserCollection, locale: locale)
         : collection.collectionType?.capitalized ?? AppLanguage.string(.collectionsCollection, locale: locale)
     let count = if let itemCount = collection.itemCount {
-        AppLanguage.string(.collectionsItemCount(count: itemCount, LocaleFormat.integer(itemCount, locale: locale)), locale: locale)
+        AppLanguage.string(.collectionsItemCount(count: itemCount, LocaleFormat.groupedCount(itemCount, locale: locale)), locale: locale)
     } else {
         AppLanguage.string(.collectionsTypeSmart, locale: locale)
     }
@@ -241,7 +241,7 @@ struct CollectionsView: View {
         let kind = collection.collectionType?.capitalized
             ?? AppLanguage.string(.collectionsTypeCustom, locale: locale)
         if let count = collection.itemCount, count > 0 {
-            return AppLanguage.string(.collectionsRowKindCount(count: count, LocaleFormat.integer(count, locale: locale), kind), locale: locale)
+            return AppLanguage.string(.collectionsRowKindCount(count: count, LocaleFormat.groupedCount(count, locale: locale), kind), locale: locale)
         }
         return kind
     }
@@ -748,7 +748,7 @@ private struct LibraryCollectionCard: View {
 
     private var countLabel: String {
         if let itemCount = collection.itemCount {
-            return "\(itemCount)"
+            return LocaleFormat.groupedCount(itemCount, locale: locale)
         }
         return AppLanguage.string(.collectionsTypeSmart, locale: locale)
     }
