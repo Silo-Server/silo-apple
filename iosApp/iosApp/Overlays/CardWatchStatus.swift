@@ -5,8 +5,9 @@ import SwiftUI
 /// so a library of untouched shows is not covered in numbers.
 ///
 /// No badge is ever placed in this corner (see `CardOverlays`), and it shows
-/// whether or not badges are on. It is sized from the card width the same way
-/// the badges are. Mirrors `web/src/components/overlays/CardWatchStatus.tsx`.
+/// whether or not badges are on. It is sized from the card width and text size
+/// the same way the badges are (`OverlayScale`). Mirrors
+/// `web/src/components/overlays/CardWatchStatus.tsx`.
 /// Wide cards do not draw it.
 struct CardWatchStatus: View {
     /// The indicator's diameter at the reference card width. The top badge
@@ -24,9 +25,10 @@ struct CardWatchStatus: View {
     let cardWidth: CGFloat
 
     @Environment(\.locale) private var locale
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        let scale = cardWidth / CardOverlays.posterReferenceWidth
+        let scale = OverlayScale.poster(cardWidth: cardWidth, dynamicTypeSize: dynamicTypeSize)
         let size = Self.size * scale
         Group {
             if played {

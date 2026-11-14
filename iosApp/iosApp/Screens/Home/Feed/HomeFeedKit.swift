@@ -262,13 +262,19 @@ private struct HomeCardMenu: ViewModifier {
 // MARK: - Watched check
 
 /// Top-trailing watched indicator on the Home still card. The poster card
-/// draws `CardWatchStatus` instead.
+/// draws `CardWatchStatus` instead. Sized with the card's overlay badges.
 private struct HomeWatchedCheck: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
+        let scale = OverlayScale.wide(
+            posterSize: UICustomizationPreferences.shared.cardPresentation.posterSize,
+            dynamicTypeSize: dynamicTypeSize
+        )
         Image(systemName: "checkmark")
-            .font(.system(size: 9, weight: .bold))
+            .font(.system(size: 9 * scale, weight: .bold))
             .foregroundStyle(Color.siloBackground)
-            .frame(width: 18, height: 18)
+            .frame(width: 18 * scale, height: 18 * scale)
             .background(Circle().fill(Color.siloOnSurface))
     }
 }

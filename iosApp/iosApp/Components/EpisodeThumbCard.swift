@@ -37,6 +37,7 @@ struct EpisodeThumbCard: View {
 
     @Environment(\.browseLibraryId) private var browseLibraryId
     @Environment(\.locale) private var locale
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
@@ -210,10 +211,10 @@ struct EpisodeThumbCard: View {
                     ZStack {
                         Circle()
                             .fill(Color.siloOnSurface)
-                            .frame(width: checkBadgeSize, height: checkBadgeSize)
+                            .frame(width: checkBadgeSize * checkScale, height: checkBadgeSize * checkScale)
                             .shadow(color: .black.opacity(0.3), radius: 4)
                         Image(systemName: "checkmark")
-                            .font(.system(size: checkIconSize, weight: .bold))
+                            .font(.system(size: checkIconSize * checkScale, weight: .bold))
                             .foregroundColor(Color.siloBackground)
                     }
                 }
@@ -328,6 +329,14 @@ struct EpisodeThumbCard: View {
         #else
         return 20
         #endif
+    }
+
+    /// The watched check grows with the card's overlay badges.
+    private var checkScale: CGFloat {
+        OverlayScale.wide(
+            posterSize: UICustomizationPreferences.shared.cardPresentation.posterSize,
+            dynamicTypeSize: dynamicTypeSize
+        )
     }
 
     private var checkIconSize: CGFloat {
