@@ -146,9 +146,14 @@ struct MacFeaturedHero: View {
             title(for: item)
 
             if let metadata = Self.metadata(for: item) {
-                metadataLine(metadata)
-                    // Snap on a slide change rather than sliding the rating.
-                    .animation(nil, value: item.contentId)
+                // On a slide change the old and new lines crossfade in place,
+                // so the rating doesn't slide sideways, and the ZStack keeps
+                // the line moving with the title and overview around it.
+                ZStack(alignment: .leading) {
+                    metadataLine(metadata)
+                        .id(item.contentId)
+                        .transition(.opacity)
+                }
             }
 
             overview(for: item)
