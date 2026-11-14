@@ -15,6 +15,11 @@ extension EnvironmentValues {
     /// Told when a library page is pulled to refresh, so the iPhone
     /// Libraries header reads its count again. Nil elsewhere.
     @Entry var libraryPageDidRefresh: (@MainActor () -> Void)? = nil
+
+    /// Told how many titles the Browse page's filters leave (nil when it
+    /// shows the whole library), so the iPhone Libraries header counts
+    /// what the grid shows. Nil elsewhere.
+    @Entry var libraryPageFilteredCount: (@MainActor (BrowseViewModel.FilteredTotal?) -> Void)? = nil
 }
 
 extension View {

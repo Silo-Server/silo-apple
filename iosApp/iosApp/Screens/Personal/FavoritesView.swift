@@ -24,9 +24,7 @@ enum PersonalMediaSection: CaseIterable, Identifiable {
         case .movies:
             return SiloMediaType.isMovieLibrary(type)
         case .tvShows:
-            return SiloMediaType.isSeries(type)
-                || type.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .localizedCaseInsensitiveCompare("episode") == .orderedSame
+            return SiloMediaType.isSeries(type) || SiloMediaType.isEpisode(type)
         }
     }
 }
@@ -75,7 +73,7 @@ enum PersonalMediaFilter: String, CaseIterable, Identifiable {
 
     /// "9 movies", "6 shows", "14 titles": how many titles are showing.
     func countLabel(_ count: Int) -> LocalizedStringResource {
-        let text = LocaleFormat.integer(count)
+        let text = LocaleFormat.groupedCount(count)
         switch self {
         case .all: return .libraryTitleCount(count: count, text)
         case .movies: return .libraryCollectionCardMovies(count: count, text)
@@ -261,6 +259,8 @@ struct FavoritesView: View {
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
     @State private var error: ErrorState?
+    /// Counts loads, so a reply overtaken by a later load is dropped.
+    @State private var loadGeneration = 0
     @State private var uiCustomization = UICustomizationPreferences.shared
     #if os(tvOS)
     @State private var selectedSection: PersonalMediaSection = .movies
@@ -606,6 +606,8 @@ struct FavoritesView: View {
     }
 
     private func loadFavorites() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         if items.isEmpty,
            let cached: CatalogResponse = ResponseCache.shared.get(CacheKey.favorites) {
             items = cached.items
@@ -616,9 +618,11 @@ struct FavoritesView: View {
         error = nil
         do {
             let response = try await SiloAPI.shared.favorites()
+            guard generation == loadGeneration else { return }
             ResponseCache.shared.set(response, for: CacheKey.favorites)
             items = response.items
         } catch let err {
+            guard generation == loadGeneration else { return }
             if items.isEmpty {
                 self.error = ErrorState(err)
             }

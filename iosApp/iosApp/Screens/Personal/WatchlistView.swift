@@ -13,6 +13,8 @@ struct WatchlistView: View {
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
     @State private var error: ErrorState?
+    /// Counts loads, so a reply overtaken by a later load is dropped.
+    @State private var loadGeneration = 0
     @State private var uiCustomization = UICustomizationPreferences.shared
     #if os(iOS)
     @State private var selectedSection: PersonalMediaSection = .movies
@@ -290,6 +292,8 @@ struct WatchlistView: View {
     }
 
     private func loadWatchlist() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         if items.isEmpty,
            let cached: CatalogResponse = ResponseCache.shared.get(CacheKey.watchlist) {
             items = cached.items
@@ -300,9 +304,11 @@ struct WatchlistView: View {
         error = nil
         do {
             let response = try await SiloAPI.shared.watchlist()
+            guard generation == loadGeneration else { return }
             ResponseCache.shared.set(response, for: CacheKey.watchlist)
             items = response.items
         } catch let err {
+            guard generation == loadGeneration else { return }
             if items.isEmpty {
                 self.error = ErrorState(err)
             }

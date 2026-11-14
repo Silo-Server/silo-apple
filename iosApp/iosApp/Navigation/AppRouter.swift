@@ -6,6 +6,9 @@ extension EnvironmentValues {
     /// False where picking a title must not start solo playback (the Watch
     /// Party picker). Cards keep Select but drop their Play/Pause action.
     @Entry var allowsDirectPlayback = true
+    /// Shared by the cards and the detail they open, so the detail can
+    /// grow out of the tapped card. Set on iPhone and iPad only.
+    @Entry var detailZoomNamespace: Namespace.ID? = nil
 }
 
 extension Notification.Name {
@@ -237,6 +240,9 @@ final class AppRouter {
         var contentId: String
         let libraryId: Int?
         var resumeContext: SeriesDetailContext?
+        /// The card artwork this detail grows out of and shrinks back into
+        /// (see `detailZoomSource`). Nil zooms from the centre of the screen.
+        var zoomSourceID: UUID?
         /// Set when the card opens on a request detail (a TMDB title) rather
         /// than a catalog item; `contentId` is then only a page identity.
         let request: RequestRoot?
@@ -246,9 +252,8 @@ final class AppRouter {
         /// Set when the card opens on a movie box set; `contentId` is then
         /// only a page identity.
         let boxSet: BoxSetRoot?
-        /// Presented as large as the window instead of as a page sheet: a
-        /// window-sized sheet on iPad, a full-screen cover on iPhone, where
-        /// iOS 27.1 caps sheets well short of the iPhone Duo's open display.
+        /// On iPad, presented as a sheet as large as the window instead of
+        /// as a page sheet. An iPhone covers the window either way.
         /// Set when the detail opens and refit when the window changes shape
         /// (see `refitItemDetail`), once nothing covers the detail.
         var fillsWindow = false
@@ -263,10 +268,16 @@ final class AppRouter {
             let libraryId: Int
         }
 
-        init(contentId: String, libraryId: Int? = nil, resumeContext: SeriesDetailContext? = nil) {
+        init(
+            contentId: String,
+            libraryId: Int? = nil,
+            resumeContext: SeriesDetailContext? = nil,
+            zoomSourceID: UUID? = nil
+        ) {
             self.contentId = contentId
             self.libraryId = libraryId
             self.resumeContext = resumeContext
+            self.zoomSourceID = zoomSourceID
             self.request = nil
             self.section = nil
             self.boxSet = nil
@@ -303,9 +314,6 @@ final class AppRouter {
     #if os(iOS)
     var presentedItemDetail: ItemDetailPresentation?
     var itemDetailPath = NavigationPath()
-    /// How far a sideways swipe has moved the detail card aside, from 0 to
-    /// 1. The glass that hides the page under the card fades to match.
-    var itemDetailSwipeProgress: CGFloat = 0
 
     /// Mirror of `itemDetailPath`, kept like `pushedRoutes`: entries past
     /// `itemDetailPath.count` are stale.
@@ -864,11 +872,14 @@ final class AppRouter {
         path.append(route)
     }
 
-    /// Opens item detail.
+    /// Opens item detail. `zoomSourceID` names the card artwork that was
+    /// tapped, so the detail grows out of it; it applies only when this
+    /// opens the card, not to pages pushed inside one.
     func presentItemDetail(
         contentId: String,
         libraryId: Int? = nil,
-        resumeContext: SeriesDetailContext? = nil
+        resumeContext: SeriesDetailContext? = nil,
+        zoomSourceID: UUID? = nil
     ) {
         #if os(iOS)
         recordScreenBreadcrumb(target: "itemDetail", action: "present")
@@ -877,7 +888,8 @@ final class AppRouter {
             openItemDetail(ItemDetailPresentation(
                 contentId: contentId,
                 libraryId: libraryId,
-                resumeContext: resumeContext
+                resumeContext: resumeContext,
+                zoomSourceID: zoomSourceID
             ))
         } else {
             appendToItemDetail(Route.itemDetail(contentId: contentId, libraryId: libraryId, seriesContext: resumeContext))
@@ -887,14 +899,19 @@ final class AppRouter {
         #endif
     }
 
-    func presentContinueWatchingDetail(for item: SectionItem, libraryId: Int? = nil) {
+    func presentContinueWatchingDetail(for item: SectionItem, libraryId: Int? = nil, zoomSourceID: UUID? = nil) {
         if let context = SeriesDetailContext(item: item) {
-            presentItemDetail(contentId: context.seriesContentId, libraryId: libraryId, resumeContext: context)
+            presentItemDetail(
+                contentId: context.seriesContentId,
+                libraryId: libraryId,
+                resumeContext: context,
+                zoomSourceID: zoomSourceID
+            )
             return
         }
         // Movies, audio and incomplete legacy episode payloads retain their
         // existing destination; a missing parent must not make a card inert.
-        presentItemDetail(contentId: item.contentId, libraryId: libraryId)
+        presentItemDetail(contentId: item.contentId, libraryId: libraryId, zoomSourceID: zoomSourceID)
     }
 
     /// Opens a title picked from another title's "More like this" rail.
@@ -970,7 +987,6 @@ final class AppRouter {
         #if os(iOS)
         presentedItemDetail = nil
         itemDetailPath = NavigationPath()
-        itemDetailSwipeProgress = 0
         #endif
     }
 
@@ -1466,3 +1482,32 @@ private extension Route {
         }
     }
 }
+
+extension View {
+    /// Marks card artwork as the place its detail card grows out of and
+    /// shrinks back into. Pass the same `id` to `presentItemDetail`. Does
+    /// nothing where details are pushed instead (Apple TV, Mac).
+    @ViewBuilder
+    func detailZoomSource(_ id: UUID) -> some View {
+        #if os(iOS)
+        modifier(DetailZoomSource(id: id))
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(iOS)
+private struct DetailZoomSource: ViewModifier {
+    let id: UUID
+    @Environment(\.detailZoomNamespace) private var namespace
+
+    func body(content: Content) -> some View {
+        if let namespace {
+            content.matchedTransitionSource(id: id, in: namespace)
+        } else {
+            content
+        }
+    }
+}
+#endif

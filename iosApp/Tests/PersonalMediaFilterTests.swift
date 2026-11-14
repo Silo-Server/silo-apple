@@ -14,6 +14,7 @@ final class PersonalMediaFilterTests: XCTestCase {
         XCTAssertFalse(PersonalMediaFilter.movies.includes(type: "episode"))
     }
 
+    #if os(iOS)
     @MainActor
     func testDockOpensOnAllThenOnTheTypeUsedLast() throws {
         let suite = "PersonalMediaFilterTests.\(UUID().uuidString)"
@@ -24,10 +25,12 @@ final class PersonalMediaFilterTests: XCTestCase {
         ForYouDockModel(defaults: defaults).mediaFilter = .tvShows
         XCTAssertEqual(ForYouDockModel(defaults: defaults).mediaFilter, .tvShows)
     }
+    #endif
 
     func testTvShowsKeepsSeriesAndEpisodes() {
         XCTAssertTrue(PersonalMediaFilter.tvShows.includes(type: "series"))
         XCTAssertTrue(PersonalMediaFilter.tvShows.includes(type: " Episode "))
+        XCTAssertTrue(PersonalMediaFilter.tvShows.includes(type: "episodes"))
         XCTAssertFalse(PersonalMediaFilter.tvShows.includes(type: "movie"))
     }
 }

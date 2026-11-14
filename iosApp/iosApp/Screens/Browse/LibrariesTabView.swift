@@ -166,6 +166,9 @@ struct LibrariesTabView: View {
     /// Exact sizes by server, profile, library and Movies/Series scope, for
     /// the header caption.
     @State private var libraryCounts: [String: Int] = [:]
+    /// Titles the Browse page's filters leave, by the same keys, while its
+    /// filters or letter narrow the list.
+    @State private var filteredCounts: [String: BrowseViewModel.FilteredTotal] = [:]
     /// Bumped when a page or the library list is refreshed, to read the
     /// header's count again.
     @State private var countRefreshes = 0
@@ -459,6 +462,7 @@ struct LibrariesTabView: View {
                         .environment(\.libraryPageScrollToTopRequest, scrollToTopRequests[tab, default: 0])
                         .environment(\.libraryPageReloadRequest, tab == .library ? browseReloadRequests : nil)
                         .environment(\.libraryPageDidRefresh) { countRefreshes += 1 }
+                        .environment(\.libraryPageFilteredCount, filteredCountReporter(for: tab, library: activeLibrary))
                         .opacity(isSelected ? 1 : 0)
                         .allowsHitTesting(isSelected)
                         .accessibilityHidden(!isSelected)
@@ -506,9 +510,17 @@ struct LibrariesTabView: View {
         }
     }
 
-    /// The library's size once known, else its kind.
+    /// On the Library page, how many titles its filters leave; otherwise
+    /// the library's size once known, else its kind.
     private func dockCaption(for library: Library) -> LocalizedStringResource {
-        if let count = libraryCounts[countKey(for: library)] {
+        let key = countKey(for: library)
+        let count: Int?
+        switch selectedTab == .library ? filteredCounts[key] : nil {
+        case .exact(let filtered): count = filtered
+        case .uncounted: count = nil
+        case nil: count = libraryCounts[key]
+        }
+        if let count {
             return libraryCountLabel(count, library: library, scope: videoScope(for: library))
         }
         if library.isAudiobookLibrary { return .libraryKindAudiobooks }
@@ -517,6 +529,15 @@ struct LibrariesTabView: View {
         if library.isMovieLibrary { return .libraryKindMovies }
         if library.isMusicLibrary { return .libraryKindMusic }
         return .libraryTypeGeneric
+    }
+
+    private func filteredCountReporter(
+        for tab: LibraryPageTab,
+        library: Library
+    ) -> (@MainActor (BrowseViewModel.FilteredTotal?) -> Void)? {
+        guard tab == .library else { return nil }
+        let key = countKey(for: library)
+        return { filteredCounts[key] = $0 }
     }
 
     /// Names a count by the acting server and profile as well as the library

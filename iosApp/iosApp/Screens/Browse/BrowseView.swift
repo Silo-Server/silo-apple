@@ -29,6 +29,7 @@ struct BrowseView: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
     @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
+    @Environment(\.libraryPageFilteredCount) private var reportFilteredCount
 
     @ViewBuilder
     var body: some View {
@@ -104,6 +105,9 @@ struct BrowseView: View {
         // and asks for a reload when it comes back after a title changed.
         .onChange(of: reloadRequest) {
             Task { await viewModel.refresh() }
+        }
+        .onChange(of: viewModel.filteredTotal, initial: true) {
+            reportFilteredCount?(viewModel.filteredTotal)
         }
     }
 

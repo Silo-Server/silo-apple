@@ -377,7 +377,7 @@ final class LibraryPageScrollClaimView: UIView {
 
 /// "1,284 movies": a library's size, named for what it holds.
 func libraryCountLabel(_ count: Int, library: Library, scope: LibraryVideoScope?) -> LocalizedStringResource {
-    let text = LocaleFormat.integer(count)
+    let text = LocaleFormat.groupedCount(count)
     if library.isAudiobookLibrary { return .libraryCollectionCardBooks(count: count, text) }
     switch scope {
     case .movie: return .libraryCollectionCardMovies(count: count, text)

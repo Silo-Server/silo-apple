@@ -134,23 +134,24 @@ struct TVCollectionPosterCard: View {
 
     /// `collectionType` is the server's collection kind (data, D44).
     private func countMessage(for count: Int) -> LocalizedStringResource {
+        let text = LocaleFormat.groupedCount(count)
         switch collection.collectionType?.lowercased() {
         case "movie", "movies":
-            return .libraryCollectionCardMovies(count: count, LocaleFormat.integer(count))
+            return .libraryCollectionCardMovies(count: count, text)
         case "series", "show", "shows", "tvshows":
-            return .libraryCollectionCardShows(count: count, LocaleFormat.integer(count))
+            return .libraryCollectionCardShows(count: count, text)
         case "album", "albums":
-            return .libraryCollectionCardAlbums(count: count, LocaleFormat.integer(count))
+            return .libraryCollectionCardAlbums(count: count, text)
         case "audiobook", "audiobooks", "book", "books":
-            return .libraryCollectionCardBooks(count: count, LocaleFormat.integer(count))
+            return .libraryCollectionCardBooks(count: count, text)
         default:
-            return .collectionsItemCount(count: count, LocaleFormat.integer(count))
+            return .collectionsItemCount(count: count, text)
         }
     }
 
     private var accessibilityLabel: String {
         if let count = collection.itemCount, count > 0 {
-            return AppLanguage.string(.libraryCollectionCardSpokenCount(count: count, LocaleFormat.integer(count, locale: locale), collection.name), locale: locale)
+            return AppLanguage.string(.libraryCollectionCardSpokenCount(count: count, LocaleFormat.groupedCount(count, locale: locale), collection.name), locale: locale)
         }
         return AppLanguage.string(.libraryCollectionCardSpoken(collection.name), locale: locale)
     }

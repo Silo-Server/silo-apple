@@ -9,13 +9,8 @@ extension View {
     /// follows the finger and closes, like the pull-down.
     ///
     /// Apply to the card's root page, inside its navigation stack.
-    /// `onProgress` reports how far the card has moved aside, from 0 to 1,
-    /// so the page underneath can show through.
-    func detailSwipeBack(
-        onProgress: @escaping (CGFloat) -> Void,
-        onDismiss: @escaping () -> Void
-    ) -> some View {
-        background(DetailSwipeBackInstaller(progress: onProgress, dismiss: onDismiss))
+    func detailSwipeBack(onDismiss: @escaping () -> Void) -> some View {
+        background(DetailSwipeBackInstaller(dismiss: onDismiss))
     }
 }
 
@@ -32,7 +27,6 @@ enum DetailSwipeBackPolicy {
 }
 
 private struct DetailSwipeBackInstaller: UIViewRepresentable {
-    let progress: (CGFloat) -> Void
     let dismiss: () -> Void
 
     func makeCoordinator() -> DetailSwipeBackCoordinator {
@@ -47,7 +41,6 @@ private struct DetailSwipeBackInstaller: UIViewRepresentable {
     }
 
     func updateUIView(_ view: InstallerView, context: Context) {
-        context.coordinator.progress = progress
         context.coordinator.dismiss = dismiss
     }
 
@@ -63,7 +56,6 @@ private struct DetailSwipeBackInstaller: UIViewRepresentable {
 }
 
 final class DetailSwipeBackCoordinator: NSObject, UIGestureRecognizerDelegate {
-    var progress: (CGFloat) -> Void = { _ in }
     var dismiss: () -> Void = {}
 
     private weak var navigation: UINavigationController?
@@ -92,10 +84,11 @@ final class DetailSwipeBackCoordinator: NSObject, UIGestureRecognizerDelegate {
 
         var presented: UIViewController = navigation
         while let parent = presented.parent { presented = parent }
-        // A full-screen cover takes the page underneath away, so there is
-        // nothing to reveal; it closes with its Close button instead.
+        // Only a sheet gets the card swipe. A cover is dragged away by the
+        // system's zoom transition, which this would take the swipe from;
+        // that cover reports `.overFullScreen`, not `.fullScreen`.
         guard presented.presentingViewController != nil,
-              presented.modalPresentationStyle != .fullScreen,
+              presented.sheetPresentationController != nil,
               let card = presented.presentationController?.presentedView ?? presented.view else { return }
         self.card = card
         self.presented = presented
@@ -143,11 +136,9 @@ final class DetailSwipeBackCoordinator: NSObject, UIGestureRecognizerDelegate {
         card.subviews.forEach { $0.transform = transform }
     }
 
-    /// Lightens what covers the page underneath as the card moves aside:
-    /// the app's own mask, through `progress`, and the dimming the system
-    /// puts over the presenting page.
+    /// Lightens the dimming the system puts over the presenting page as
+    /// the card moves aside.
     private func reveal(_ fraction: CGFloat) {
-        progress(fraction)
         presentingDimming.forEach { $0.alpha = 1 - fraction }
     }
 
@@ -163,7 +154,6 @@ final class DetailSwipeBackCoordinator: NSObject, UIGestureRecognizerDelegate {
         let remaining = max(card.bounds.width - abs(card.subviews.first?.transform.tx ?? 0), 1)
         let duration = min(max(TimeInterval(remaining / max(velocity, 1)), 0.12), 0.25)
         let offscreen = (card.window?.bounds.width ?? card.bounds.width) * direction
-        withAnimation(.easeOut(duration: duration)) { progress(1) }
         UIView.animate(withDuration: duration, delay: 0, options: .curveEaseOut) {
             self.offset(card, by: offscreen)
             self.presentingDimming.forEach { $0.alpha = 0 }
@@ -176,7 +166,6 @@ final class DetailSwipeBackCoordinator: NSObject, UIGestureRecognizerDelegate {
     }
 
     private func springBack(_ card: UIView) {
-        withAnimation(.spring(duration: 0.35)) { progress(0) }
         UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.85, initialSpringVelocity: 0) {
             self.offset(card, by: 0)
             self.presentingDimming.forEach { $0.alpha = 1 }
