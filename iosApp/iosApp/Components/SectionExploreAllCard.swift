@@ -4,8 +4,10 @@ import SwiftUI
 /// since a row shows at most `SectionRowLimit.cards` cards.
 ///
 /// Drawn at the row's artwork size so it lines up with the cards before it;
-/// it has no caption. Every such row ends with one: Home drops titles another
+/// it has no caption. A short row ends with one too: Home drops titles another
 /// row already shows, so a row can look complete while its page holds more.
+/// Only a Continue Watching row that is known to show its whole page goes
+/// without; see `ResolvedSection.showsWholeSection`.
 struct SectionExploreAllCard: View {
     /// The row's card artwork size.
     let size: CGSize
