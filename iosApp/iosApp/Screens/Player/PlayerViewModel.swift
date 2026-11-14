@@ -261,7 +261,7 @@ class PlayerViewModel {
         category: "Player"
     )
 
-    fileprivate let aetherPlaybackController: AetherPlaybackController
+    let aetherPlaybackController: AetherPlaybackController
     @ObservationIgnored
     private var activeAetherLoadEpoch: AetherPlaybackController.LoadEpoch?
     /// The epoch whose `finishLoad` has returned, i.e. whose engine startup ran
@@ -960,6 +960,10 @@ class PlayerViewModel {
     private var finishedAtEndOfFile: Bool {
         hasReachedEndOfFile && !reachedEndPrematurely
     }
+    /// Parked on an end of stream short of the end of the item.
+    private var endedPrematurely: Bool {
+        hasReachedEndOfFile && reachedEndPrematurely
+    }
     let settings = PlayerSettings.shared
     /// Profile-wide skip intervals. Read at each skip, so a change made while
     /// the player is open applies to the next press.
@@ -1083,6 +1087,10 @@ class PlayerViewModel {
     /// playback resumes without clobbering a newer, unrelated notice.
     private var liveSubtitlePreparingNoticeId: UUID?
     private var remoteDismissTask: Task<Void, Never>?
+    /// A stop from the server or a remote has scheduled the player to close.
+    private var isClosingForRemoteStop: Bool {
+        remoteDismissTask != nil || remoteDismissToken != nil
+    }
     private var progressTask: Task<Void, Never>?
     private var staleSessionRecoveryTask: Task<Void, Never>?
     /// Held so the init-time `refreshSettingsFromServer` call can be cancelled
@@ -1341,6 +1349,7 @@ class PlayerViewModel {
     /// drift corrections never move a displayed finish time.
     var nominalPlaybackSpeed: Double { isWatchPartyPlayback ? 1 : settings.playbackSpeed }
     /// Credits occurrences already skipped in this session, by marker key.
+    /// A Keep Watching remount carries them into its session.
     private var autoSkippedCreditsKeys: Set<String> = []
     /// Recaps already skipped for the current content, by marker key.
     private var autoSkippedRecapKeys: Set<String> = []
@@ -1351,6 +1360,30 @@ class PlayerViewModel {
     private var skippedCreditsToEnd: Bool {
         guard didSkipCreditsToEnd else { return false }
         return markerTimeline.isInFinalCredits(at: currentTime)
+    }
+    /// What the viewer already decided about the playing item. Leaving the
+    /// end-of-playback screen remounts the same item, so it keeps these.
+    struct ViewerChoices: Equatable {
+        let didSkipCreditsToEnd: Bool
+        let autoSkippedCreditsKeys: Set<String>
+        let nextUpPromptDismissed: Bool
+        let nextUpAutoplayCancelled: Bool
+    }
+    var viewerChoices: ViewerChoices {
+        get {
+            ViewerChoices(
+                didSkipCreditsToEnd: didSkipCreditsToEnd,
+                autoSkippedCreditsKeys: autoSkippedCreditsKeys,
+                nextUpPromptDismissed: nextUpPromptDismissed,
+                nextUpAutoplayCancelled: nextUpAutoplayCancelled
+            )
+        }
+        set {
+            didSkipCreditsToEnd = newValue.didSkipCreditsToEnd
+            autoSkippedCreditsKeys = newValue.autoSkippedCreditsKeys
+            nextUpPromptDismissed = newValue.nextUpPromptDismissed
+            nextUpAutoplayCancelled = newValue.nextUpAutoplayCancelled
+        }
     }
     private var staleSessionRecoverySessionId: String?
     struct LoadRequest {
@@ -1521,6 +1554,10 @@ class PlayerViewModel {
         /// survive (§6.2). Failures go back to the reconnect, which waits
         /// for the next attempt or gives up.
         case reconnect
+        /// Keep Watching from the end-of-playback screen remounts the same
+        /// item. Keeps the viewer's choices about it; a failure surfaces like
+        /// a user pick.
+        case resumeAfterEnd
     }
 
     private enum BeginFreshLoadError: Error {
@@ -1528,7 +1565,12 @@ class PlayerViewModel {
     }
 
     private static let autoplayStartSessionTimeout: TimeInterval = 15
-    private var lastLoadRequest: LoadRequest?
+    private(set) var lastLoadRequest: LoadRequest?
+    /// Where a Keep Watching remount resumes, until it shows a frame. Retry
+    /// remounts there as Keep Watching did, keeping the viewer's choices,
+    /// whichever way the load failed. The first frame clears it, as does any
+    /// other load except a reconnect or renewal of this one.
+    private(set) var pendingResumeAfterEndPosition: Double?
     /// The local route the stream on screen was loaded over (`LocalRoute`),
     /// or nil when it came from the saved address.
     private var streamLocalRoute: LocalRoute?
@@ -1552,6 +1594,8 @@ class PlayerViewModel {
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
     private var nextUpAutoplayCancelled = false
     private var stillWatchingGuard = PlayerStillWatchingGuard()
+    /// The source stopping early cancelled autoplay, not the viewer.
+    private var autoplayCancelledByLostSource = false
     /// Set when the user taps Keep Watching; suppresses re-presenting the
     /// pre-end Next Up prompt while the playhead stays inside the prompt
     /// window. Cleared when the playhead leaves the window (seek back) or a
@@ -1561,7 +1605,7 @@ class PlayerViewModel {
     private(set) var contentIdsNeedingDetailRefresh: Set<String> = []
     /// Series of the last episode whose watch detail loaded. Covers the gap
     /// while a replacement episode loads and `currentWatchDetail` is empty.
-    private var lastSeriesPlayback: (seriesId: String, seasonNumber: Int?)?
+    private var lastSeriesPlayback: (episodeId: String, seriesId: String, seasonNumber: Int?)?
     /// `SeriesPlaybackReturnInbox` generation when this player was created.
     private let seriesReturnGeneration: Int
     /// `PlayerCleanupBarrier` generation when this player was created.
@@ -2269,6 +2313,7 @@ class PlayerViewModel {
         guard startedAetherLoadEpoch != epoch else { return }
         startedAetherLoadEpoch = epoch
         viewingHasPlayed = true
+        pendingResumeAfterEndPosition = nil
         handleFileLoaded()
         if let playing = lastLoadRequest?.contentId, shuffleState != nil {
             shuffleState?.markPlayed(playing)
@@ -4136,10 +4181,18 @@ class PlayerViewModel {
         if isAdvancingShuffle { cancelShuffleOperations() }
         // An autoplay load failure may restore the postroll after disposing
         // the old playback pipeline. There is no current episode to resume in
-        // that state, so let the shell fall back to closing the player.
-        guard hasActiveAetherSession, !isNextUpTransitioning else { return false }
+        // that state, so let the shell fall back to closing the player. A
+        // source that stopped early still names its item and resume point, so
+        // it resumes even after its transport is gone.
+        guard hasActiveAetherSession || endedPrematurely, !isNextUpTransitioning else { return false }
 
         let shouldResumeAfterEnd = nextUpScreenVideoEnded || hasReachedEndOfFile
+        // Leaving the end takes a fresh load, which must not bring back a
+        // session an administrator ended or a stop is closing. The load would
+        // also cancel that stop's pending dismiss.
+        if shouldResumeAfterEnd, serverEndedSessionHandled || isClosingForRemoteStop || lastLoadRequest == nil {
+            return false
+        }
         nextUpAutoplayCancelled = true
         nextUpPromptDismissed = true
         showNextUpScreen = false
@@ -4148,17 +4201,29 @@ class PlayerViewModel {
 
         if shouldResumeAfterEnd,
            duration.isFinite,
-           duration > 0,
-           hasActiveAetherSession {
-            // Returning from the terminal postroll needs a real playable
-            // position; resuming at exact EOF would immediately present the
-            // postroll again. Replay a short tail of the current episode.
-            hasReachedEndOfFile = false
-            let target = max(0, duration - 10)
-            let reloadsPlaybackPipeline = commitSeek(to: target, source: "nextUpBack")
-            if !reloadsPlaybackPipeline {
-                aetherPlaybackController.play()
+           duration > 0 {
+            // Aether keeps an ended session terminal: it ignores seeks, and
+            // play does not revive it. Remount at a playable position: a
+            // short tail of a finished episode (resuming at exact EOF would
+            // end again at once), or where a lost source stopped.
+            let target = max(0, min(currentTime, duration - 10))
+            if endedPrematurely, autoplayCancelledByLostSource,
+               !PlayerNextUpCompletionPolicy.isInPromptWindow(
+                   currentTime: target,
+                   duration: duration,
+                   promptSeconds: settings.nextUpPromptSeconds
+               ) {
+                // Resumed short of the prompt, the real end offers Next Up
+                // again, even with the prompt turned off. A cancel the viewer
+                // made before the source stopped still holds.
+                nextUpAutoplayCancelled = false
+                nextUpPromptDismissed = false
             }
+            // Resolve the credits latch against the position now, as teardown
+            // does: the remount has no credits marker until it loads, and a
+            // skip the playhead has since left must not finish the item.
+            didSkipCreditsToEnd = skippedCreditsToEnd
+            remountCurrentPlayback(at: target, origin: .resumeAfterEnd)
         } else if !isPlaying {
             aetherPlaybackController.play()
         }
@@ -4513,14 +4578,15 @@ class PlayerViewModel {
         )
     }
 
-    private func completionProgressPositionForCurrentItem() -> Double {
+    func completionProgressPositionForCurrentItem() -> Double {
         PlayerNextUpCompletionPolicy.progressPosition(
             isNextUpPresented: showNextUpScreen,
             hasReachedEndOfFile: finishedAtEndOfFile,
             currentTime: progressReportPosition,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds,
-            skippedCredits: skippedCreditsToEnd
+            skippedCredits: skippedCreditsToEnd,
+            endedPrematurely: endedPrematurely
         )
     }
 
@@ -4538,7 +4604,7 @@ class PlayerViewModel {
               let rawSeriesId = detail.seriesId else { return }
         let seriesId = rawSeriesId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !seriesId.isEmpty else { return }
-        lastSeriesPlayback = (seriesId, detail.seasonNumber)
+        lastSeriesPlayback = (detail.contentId, seriesId, detail.seasonNumber)
         contentIdsNeedingDetailRefresh.insert(seriesId)
         if let seasonNumber = detail.seasonNumber {
             contentIdsNeedingDetailRefresh.insert("\(seriesId)-S\(seasonNumber)")
@@ -4564,7 +4630,9 @@ class PlayerViewModel {
         // The player closed while the next episode was still loading. Autoplay
         // keeps that episode's season in `nextUpEpisode`; otherwise assume the
         // previous episode's season. An On Deck pick belongs to its own
-        // series, or to none, not to the one that just finished.
+        // series, or to none, not to the one that just finished. A remount of
+        // the same episode, such as Keep Watching after the end, still knows
+        // whether it was finished.
         guard let loadingId = lastLoadRequest?.contentId else { return nil }
         let queued = nextUpEpisode?.contentId == loadingId ? nextUpEpisode : nil
         let seriesId = queued?.isFromOnDeck == true ? queued?.seriesId : lastSeriesPlayback?.seriesId
@@ -4573,7 +4641,7 @@ class PlayerViewModel {
             episodeContentId: loadingId,
             seriesContentId: seriesId,
             seasonNumber: queued?.seasonNumber ?? lastSeriesPlayback?.seasonNumber,
-            completed: false
+            completed: loadingId == lastSeriesPlayback?.episodeId && completed
         )
     }
 
@@ -5671,7 +5739,7 @@ class PlayerViewModel {
             )
             // Not a finish: the reload must not record the item as completed.
             hasReachedEndOfFile = false
-            if remountWatchPartyPlayback(at: observedPosition) { return }
+            if remountCurrentPlayback(at: observedPosition) { return }
             hasReachedEndOfFile = true
         }
 
@@ -5685,6 +5753,7 @@ class PlayerViewModel {
             // `playNextEpisodeNow()`. The user is left on a recoverable
             // surface where they can retry via Play Now, pick from On Deck,
             // or hit Back.
+            autoplayCancelledByLostSource = !nextUpAutoplayCancelled
             nextUpAutoplayCancelled = true
             cancelNextUpCountdown()
         }
@@ -5961,6 +6030,7 @@ class PlayerViewModel {
         nextUpScreenVideoEnded = false
         nextUpPresentationSource = .automatic
         nextUpAutoplayCancelled = false
+        autoplayCancelledByLostSource = false
         nextUpPromptDismissed = false
         audioTracks = []
         subtitleTracks = []
@@ -6235,6 +6305,13 @@ class PlayerViewModel {
         isNextUpTransitioning = origin == .autoplay && showNextUpScreen
         freshLoadPlayIntent = nil
         freshLoadHeldSeek = nil
+        // A reconnect or renewal of a Keep Watching remount that has not
+        // played yet continues that remount: same choices, same retry.
+        let continuesResumeAfterEnd = pendingResumeAfterEndPosition != nil
+            && (origin == .reconnect || origin == .recovery)
+            && lastLoadRequest?.contentId == request.contentId
+        let resumesAfterEnd = origin == .resumeAfterEnd || continuesResumeAfterEnd
+        let carriedViewerChoices = resumesAfterEnd ? viewerChoices : nil
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
@@ -6273,6 +6350,11 @@ class PlayerViewModel {
             lastEndReconnect = nil
         }
         lastLoadRequest = request
+        if origin == .resumeAfterEnd {
+            pendingResumeAfterEndPosition = resumePositionOverride
+        } else if !continuesResumeAfterEnd {
+            pendingResumeAfterEndPosition = nil
+        }
         offlinePlaybackContext = nil
         contentIdsNeedingDetailRefresh.insert(request.contentId)
         hasReachedEndOfFile = false
@@ -6301,6 +6383,7 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: request.preferredSidecarSubtitleTrackId,
             preferredProtocolV3SubtitleIndex: request.preferredProtocolV3SubtitleIndex
         )
+        if let carriedViewerChoices { viewerChoices = carriedViewerChoices }
         // No engine event arrives while the replacement session is prepared,
         // so hand the pill the stall now. A same-content reload keeps the
         // `always` undo, and its timer must hold through the spinner.
@@ -6456,7 +6539,8 @@ class PlayerViewModel {
                         probeEstimateKbps: probeEstimateKbps,
                         // A Restore this start displaced: its clear rides here.
                         learnedLimit: self.takeOwedBufferingLearnedLimitClear(),
-                        timeout: origin == .userInitiated ? nil : Self.autoplayStartSessionTimeout
+                        timeout: origin == .userInitiated || origin == .resumeAfterEnd
+                            ? nil : Self.autoplayStartSessionTimeout
                     )
                 }
                 try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
@@ -6527,6 +6611,8 @@ class PlayerViewModel {
                         self.loadNextUpOnDeckItems(for: prepared.watchDetail)
                     }
                 }
+                // The session and Next Up setup above reset these for a new item.
+                if let carriedViewerChoices { self.viewerChoices = carriedViewerChoices }
                 self.qualityOptions = ApplePlaybackQuality.playbackOptions(
                     serverQualities: prepared.protocolV3?.plan.availableQualities ?? [],
                     bandwidthLimit: prepared.protocolV3?.plan.bandwidthLimit
@@ -6657,7 +6743,11 @@ class PlayerViewModel {
                 Self.logger.error(
                     "Load failed: \(MediaLogRedactor.sanitize(error), privacy: .public)"
                 )
-                self.handleBeginFreshLoadFailure(error: error, origin: origin)
+                // A failed renewal of a Keep Watching remount offers Retry,
+                // as the remount itself does.
+                let failureOrigin: LoadOrigin = origin == .recovery && continuesResumeAfterEnd
+                    ? .resumeAfterEnd : origin
+                self.handleBeginFreshLoadFailure(error: error, origin: failureOrigin)
             }
         }
         syncBufferingQualitySignals()
@@ -6791,7 +6881,7 @@ class PlayerViewModel {
         }()
 
         switch origin {
-        case .userInitiated:
+        case .userInitiated, .resumeAfterEnd:
             finalizeTerminalPlaybackError(
                 diagnosticMessage,
                 displayMessage: message,
@@ -7026,15 +7116,16 @@ class PlayerViewModel {
 
     /// A start request for the current item that keeps what the viewer is
     /// watching: the same version and the current audio and subtitle choice
-    /// (subtitles that are off stay off).
-    private func makeRecoveryLoadRequest() -> LoadRequest? {
+    /// (subtitles that are off stay off). `keepingDownload` keeps a local
+    /// download local; a server session cannot be built from it.
+    private func makeRecoveryLoadRequest(keepingDownload: Bool = false) -> LoadRequest? {
         guard let lastLoadRequest else { return nil }
         return lastLoadRequest.copyForRecovery(
             preferredFileId: currentSelectedVersion?.fileId ?? lastLoadRequest.preferredFileId,
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
             preferredSubtitleTrackIndex: resolvedSubtitleTrackIndexForResume(),
             preferredSidecarSubtitleTrackId: resolvedSidecarSubtitleTrackIdForResume(),
-            offlineDownloadId: nil,
+            offlineDownloadId: keepingDownload ? lastLoadRequest.offlineDownloadId : nil,
             serverSubtitlesDisabled: hasDisabledServerSubtitlesForResume
         )
     }
@@ -7364,6 +7455,16 @@ class PlayerViewModel {
         }
         guard let last = lastLoadRequest else { return }
         Self.logger.info("Retrying playback for contentId=\(last.contentId, privacy: .public)")
+        if let position = pendingResumeAfterEndPosition {
+            beginFreshLoad(
+                request: last,
+                progressPosition: nil,
+                resumePositionOverride: position,
+                allowNearEndResume: true,
+                origin: .resumeAfterEnd
+            )
+            return
+        }
         beginFreshLoad(
             request: last,
             progressPosition: currentTime,
@@ -7952,6 +8053,8 @@ class PlayerViewModel {
             // The transport is dead, or its replacement is not installed
             // yet; the reconnect resumes where the viewer wants to be.
             reconnectCycle.updatePosition(clampedTarget)
+            // A Keep Watching remount that has not played retries here too.
+            if pendingResumeAfterEndPosition != nil { pendingResumeAfterEndPosition = clampedTarget }
             currentTime = clampedTarget
             scrubPreviewTime = clampedTarget
             isScrubbing = false
@@ -8356,12 +8459,15 @@ class PlayerViewModel {
         return "\(contentId):\(fileId):\(range.start):\(range.end)"
     }
 
+    /// Names the marker, not the session, like the intro key: a remount
+    /// keeps the latch under a new session, and every other load clears it.
     private func currentCreditsSkipKey(for range: TimeRange) -> String? {
-        guard let sessionId = activePlaybackSessionId,
+        guard activePlaybackSessionId != nil,
+              let contentId = currentWatchDetail?.contentId,
               let fileId = currentSelectedVersion?.fileId else {
             return nil
         }
-        return "\(sessionId):\(fileId):credits:\(range.start):\(range.end)"
+        return "\(contentId):\(fileId):credits:\(range.start):\(range.end)"
     }
 
     /// Names the marker, not the session, like the intro key: a protocol-v3
@@ -9658,7 +9764,8 @@ class PlayerViewModel {
             currentTime: reportedPosition,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds,
-            skippedCredits: skippedCreditsToEnd
+            skippedCredits: skippedCreditsToEnd,
+            endedPrematurely: endedPrematurely
         )
         recordCurrentPlaybackMutation()
         // The server counts an episode watched past its threshold, which is
@@ -9784,7 +9891,8 @@ class PlayerViewModel {
                 currentTime: currentTime,
                 duration: duration,
                 promptSeconds: settings.nextUpPromptSeconds,
-                skippedCredits: skippedCreditsToEnd
+                skippedCredits: skippedCreditsToEnd,
+                endedPrematurely: endedPrematurely
             )
             // Strong capture on purpose: this is the last write of the
             // resume point and must not be dropped because the VM was
@@ -10147,7 +10255,7 @@ class PlayerViewModel {
     /// The server ended this session for good: an administrator stopped it
     /// while the player could not be told over the control socket. Leave the
     /// way an administrator stop does, instead of renewing into a new session.
-    private func leaveServerEndedSession() {
+    func leaveServerEndedSession() {
         guard !isDisposed, !serverEndedSessionHandled else { return }
         serverEndedSessionHandled = true
         cancelReconnect()
@@ -12395,19 +12503,21 @@ extension PlayerViewModel {
     }
 
     /// Aether keeps an ended session terminal: it ignores seeks, and play does
-    /// not revive it. Moving a member off the end therefore takes a fresh
-    /// load at the target, mounted paused like any other party load.
+    /// not revive it. Moving off the end therefore takes a fresh load of the
+    /// current item at the target, on the version, audio and subtitles
+    /// playing now. A Watch Party load mounts paused like any other party
+    /// load.
     @discardableResult
-    private func remountWatchPartyPlayback(at position: Double) -> Bool {
-        guard isWatchPartyPlayback, !isDisposed,
-              let request = lastLoadRequest,
-              position.isFinite, position >= 0 else { return false }
+    private func remountCurrentPlayback(at position: Double, origin: LoadOrigin = .recovery) -> Bool {
+        guard !isDisposed,
+              position.isFinite, position >= 0,
+              let request = makeRecoveryLoadRequest(keepingDownload: true) else { return false }
         beginFreshLoad(
             request: request,
             progressPosition: nil,
             resumePositionOverride: position,
             allowNearEndResume: true,
-            origin: .recovery
+            origin: origin
         )
         publishWatchPartySnapshot()
         return true
@@ -12721,7 +12831,7 @@ extension PlayerViewModel {
             }
             guard position.isFinite, position >= 0 else { throw WatchPartyPlaybackError.notReady }
             if hasReachedEndOfFile {
-                guard remountWatchPartyPlayback(at: position) else { throw WatchPartyPlaybackError.notReady }
+                guard remountCurrentPlayback(at: position) else { throw WatchPartyPlaybackError.notReady }
             } else {
                 commitSeek(to: position, source: "watchParty", roomCommand: true)
             }
