@@ -2,6 +2,7 @@ import SwiftUI
 import XCTest
 @testable import Silo
 
+#if os(iOS)
 @MainActor
 final class BrowseCollectionGridTests: XCTestCase {
     private static func titles(_ positions: Range<Int>) -> [BrowseItem] {
@@ -132,6 +133,7 @@ final class BrowseCollectionGridTests: XCTestCase {
         XCTAssertEqual(pad.cardWidth * 6 + pad.spacing * 5, 1000, accuracy: 0.01, "iPad cards fill the row")
     }
 }
+#endif
 
 /// The Mac grid lays its posters out in one adaptive column; jumps and the
 /// titles read above a jump need the number of cards it fits in a row.
