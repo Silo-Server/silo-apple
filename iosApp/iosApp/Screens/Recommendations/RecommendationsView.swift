@@ -21,6 +21,16 @@ struct RecommendationsView: View {
     #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
+    #if os(iOS)
+    @Environment(\.statusColumn) private var statusColumn
+
+    /// iPhone, outside the iPhone Duo's cover screen, shows recommendations,
+    /// the watchlist and favorites as pages switched from a dock, as the
+    /// Libraries tab does. iPad and Mac keep the shortcut row.
+    private var usesDockLayout: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone && statusColumn == nil
+    }
+    #endif
 
     init(
         focusRequest: Int = 0,
@@ -54,9 +64,32 @@ struct RecommendationsView: View {
         tvOSPageContent
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #else
-        // Content scrolls under the pinned header, which sits in a top
-        // safe-area inset with the shared glass strip behind it (same
-        // structure as `LibrariesTabView`).
+        shortcutOrDockLayout
+            .siloPageBackground()
+        #if os(iOS)
+        .toolbar(.hidden, for: .navigationBar)
+        #endif
+        #endif
+    }
+
+    #if !os(tvOS)
+    @ViewBuilder
+    private var shortcutOrDockLayout: some View {
+        #if os(iOS)
+        if usesDockLayout {
+            ForYouDockedView(viewModel: viewModel)
+        } else {
+            shortcutLayout
+        }
+        #else
+        shortcutLayout
+        #endif
+    }
+
+    /// Content scrolls under the pinned header, which sits in a top
+    /// safe-area inset with the shared glass strip behind it (same
+    /// structure as `LibrariesTabView`).
+    private var shortcutLayout: some View {
         pageContent
             .environment(chromeScrollState)
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -65,14 +98,8 @@ struct RecommendationsView: View {
                         PageChromeGlass(scrollState: chromeScrollState)
                     }
             }
-        .siloPageBackground()
-        #if os(iOS)
-        .toolbar(.hidden, for: .navigationBar)
-        #endif
-        #endif
     }
 
-    #if !os(tvOS)
     private var topChrome: some View {
         HStack(spacing: 12) {
             SidebarToggleButton()

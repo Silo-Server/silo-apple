@@ -16,15 +16,82 @@ enum PersonalMediaSection: CaseIterable, Identifiable {
     }
 
     func includes(_ item: BrowseItem) -> Bool {
+        includes(type: item.type)
+    }
+
+    func includes(type: String) -> Bool {
         switch self {
         case .movies:
-            return SiloMediaType.isMovieLibrary(item.type)
+            return SiloMediaType.isMovieLibrary(type)
         case .tvShows:
-            return SiloMediaType.isSeries(item.type)
-                || item.type.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .localizedCaseInsensitiveCompare("episode") == .orderedSame
+            return SiloMediaType.isSeries(type) || SiloMediaType.isEpisode(type)
         }
     }
+}
+
+/// All / Movies / TV Shows: what the iPhone For You tab's dock narrows its
+/// pages to.
+enum PersonalMediaFilter: String, CaseIterable, Identifiable {
+    case all
+    case movies
+    case tvShows
+
+    var id: Self { self }
+
+    var label: LocalizedStringResource {
+        switch self {
+        case .all: .searchFilterAll
+        case .movies: .personalFilterMovies
+        case .tvShows: .personalFilterTvShows
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all: "square.stack.3d.up"
+        case .movies: "film"
+        case .tvShows: "tv"
+        }
+    }
+
+    /// The Movies / TV Shows split this narrows to; nil keeps everything.
+    private var section: PersonalMediaSection? {
+        switch self {
+        case .all: nil
+        case .movies: .movies
+        case .tvShows: .tvShows
+        }
+    }
+
+    func includes(type: String) -> Bool {
+        section?.includes(type: type) ?? true
+    }
+
+    func includes(_ item: BrowseItem) -> Bool {
+        includes(type: item.type)
+    }
+
+    /// "9 movies", "6 shows", "14 titles": how many titles are showing.
+    func countLabel(_ count: Int) -> LocalizedStringResource {
+        let text = LocaleFormat.groupedCount(count)
+        switch self {
+        case .all: return .libraryTitleCount(count: count, text)
+        case .movies: return .libraryCollectionCardMovies(count: count, text)
+        case .tvShows: return .libraryCollectionCardShows(count: count, text)
+        }
+    }
+}
+
+/// Makes a saved list a page of the iPhone For You tab: the tab's dock
+/// picks the type, so the list shows no picker of its own, and the tab's
+/// header shows the count the list reports.
+struct PersonalListDockPage {
+    let filter: PersonalMediaFilter
+    /// Bumped each time the page is switched to, so the list reads again,
+    /// as a screen pushed afresh would.
+    let reloadRequest: Int
+    /// How many titles are showing; nil until the list has loaded.
+    let onCount: (Int?) -> Void
 }
 
 #if os(iOS)
@@ -186,10 +253,14 @@ struct FavoritesView: View {
     var focusRequest: Int
     var isTopMenuFocused: Bool
     var onTopMenuFocusRequest: (() -> Void)?
+    /// Set when the list is a page of the iPhone For You tab.
+    var dockPage: PersonalListDockPage?
 
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
     @State private var error: ErrorState?
+    /// Counts loads, so a reply overtaken by a later load is dropped.
+    @State private var loadGeneration = 0
     @State private var uiCustomization = UICustomizationPreferences.shared
     #if os(tvOS)
     @State private var selectedSection: PersonalMediaSection = .movies
@@ -222,8 +293,10 @@ struct FavoritesView: View {
         usesTVTopMenu: Bool = false,
         focusRequest: Int = 0,
         isTopMenuFocused: Bool = false,
-        onTopMenuFocusRequest: (() -> Void)? = nil
+        onTopMenuFocusRequest: (() -> Void)? = nil,
+        dockPage: PersonalListDockPage? = nil
     ) {
+        self.dockPage = dockPage
         self.showsNavigationTitle = showsNavigationTitle
         self.usesTVTopMenu = usesTVTopMenu
         self.focusRequest = focusRequest
@@ -236,7 +309,9 @@ struct FavoritesView: View {
         ScrollView {
             VStack(spacing: 16) {
                 let visibleItems = filteredIOSItems
-                IOSPersonalMediaSectionPicker(selection: $selectedSection)
+                if dockPage == nil {
+                    IOSPersonalMediaSectionPicker(selection: $selectedSection)
+                }
 
                 if visibleItems.isEmpty {
                     iosSelectedSectionEmptyState
@@ -252,15 +327,29 @@ struct FavoritesView: View {
             .padding(SiloTheme.padding)
         }
         .reportsPageChromeScroll()
+        .scrollsToTopOnLibraryDockRequest()
     }
 
     private var filteredIOSItems: [BrowseItem] {
-        items.filter(selectedSection.includes)
+        if let dockPage { return items.filter(dockPage.filter.includes) }
+        return items.filter(selectedSection.includes)
+    }
+
+    /// Movies or TV Shows, whichever the picker or the dock narrows to.
+    private var iosShowsMovies: Bool {
+        if let dockPage { return dockPage.filter == .movies }
+        return selectedSection == .movies
+    }
+
+    /// The count for the For You tab's header; nil until the list loads.
+    private var dockCount: Int? {
+        guard dockPage != nil, !items.isEmpty || (!isLoading && error == nil) else { return nil }
+        return filteredIOSItems.count
     }
 
     private var iosSelectedSectionEmptyState: some View {
         ContentUnavailableView {
-            Label(iosEmptyTitle, systemImage: selectedSection == .movies ? "film" : "tv")
+            Label(iosEmptyTitle, systemImage: iosShowsMovies ? "film" : "tv")
         } description: {
             Text(.personalFavoritesEmptyBody)
         }
@@ -268,7 +357,7 @@ struct FavoritesView: View {
     }
 
     private var iosEmptyTitle: LocalizedStringResource {
-        selectedSection == .movies ? .personalFavoritesEmptyMoviesTitle : .personalFavoritesEmptyTvShowsTitle
+        iosShowsMovies ? .personalFavoritesEmptyMoviesTitle : .personalFavoritesEmptyTvShowsTitle
     }
     #endif
 
@@ -317,6 +406,14 @@ struct FavoritesView: View {
         .refreshable {
             await loadFavorites()
         }
+        #if os(iOS)
+        .onChange(of: dockPage?.reloadRequest) {
+            Task { await loadFavorites() }
+        }
+        .onChange(of: dockCount, initial: true) {
+            dockPage?.onCount(dockCount)
+        }
+        #endif
         #if os(tvOS)
         .onChange(of: items.map(\.contentId)) { _, _ in applyFocusRequest(focusRequest) }
         #endif
@@ -509,6 +606,8 @@ struct FavoritesView: View {
     }
 
     private func loadFavorites() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         if items.isEmpty,
            let cached: CatalogResponse = ResponseCache.shared.get(CacheKey.favorites) {
             items = cached.items
@@ -519,9 +618,11 @@ struct FavoritesView: View {
         error = nil
         do {
             let response = try await SiloAPI.shared.favorites()
+            guard generation == loadGeneration else { return }
             ResponseCache.shared.set(response, for: CacheKey.favorites)
             items = response.items
         } catch let err {
+            guard generation == loadGeneration else { return }
             if items.isEmpty {
                 self.error = ErrorState(err)
             }

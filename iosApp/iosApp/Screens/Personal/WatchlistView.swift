@@ -7,10 +7,14 @@ struct WatchlistView: View {
     var focusRequest: Int
     var isTopMenuFocused: Bool
     var onTopMenuFocusRequest: (() -> Void)?
+    /// Set when the list is a page of the iPhone For You tab.
+    var dockPage: PersonalListDockPage?
 
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
     @State private var error: ErrorState?
+    /// Counts loads, so a reply overtaken by a later load is dropped.
+    @State private var loadGeneration = 0
     @State private var uiCustomization = UICustomizationPreferences.shared
     #if os(iOS)
     @State private var selectedSection: PersonalMediaSection = .movies
@@ -43,8 +47,10 @@ struct WatchlistView: View {
         usesTVTopMenu: Bool = false,
         focusRequest: Int = 0,
         isTopMenuFocused: Bool = false,
-        onTopMenuFocusRequest: (() -> Void)? = nil
+        onTopMenuFocusRequest: (() -> Void)? = nil,
+        dockPage: PersonalListDockPage? = nil
     ) {
+        self.dockPage = dockPage
         self.showsNavigationTitle = showsNavigationTitle
         self.usesTVTopMenu = usesTVTopMenu
         self.focusRequest = focusRequest
@@ -93,6 +99,14 @@ struct WatchlistView: View {
         .refreshable {
             await loadWatchlist()
         }
+        #if os(iOS)
+        .onChange(of: dockPage?.reloadRequest) {
+            Task { await loadWatchlist() }
+        }
+        .onChange(of: dockCount, initial: true) {
+            dockPage?.onCount(dockCount)
+        }
+        #endif
         #if os(tvOS)
         .onChange(of: items.map(\.contentId)) { _, _ in applyFocusRequest(focusRequest) }
         #endif
@@ -106,7 +120,9 @@ struct WatchlistView: View {
         ScrollView {
             VStack(spacing: 16) {
                 let visibleItems = filteredIOSItems
-                IOSPersonalMediaSectionPicker(selection: $selectedSection)
+                if dockPage == nil {
+                    IOSPersonalMediaSectionPicker(selection: $selectedSection)
+                }
 
                 if visibleItems.isEmpty {
                     iosSelectedSectionEmptyState
@@ -122,6 +138,7 @@ struct WatchlistView: View {
             .padding(SiloTheme.padding)
         }
         .reportsPageChromeScroll()
+        .scrollsToTopOnLibraryDockRequest()
         #else
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
@@ -229,12 +246,25 @@ struct WatchlistView: View {
     }
     #elseif os(iOS)
     private var filteredIOSItems: [BrowseItem] {
-        items.filter(selectedSection.includes)
+        if let dockPage { return items.filter(dockPage.filter.includes) }
+        return items.filter(selectedSection.includes)
+    }
+
+    /// Movies or TV Shows, whichever the picker or the dock narrows to.
+    private var iosShowsMovies: Bool {
+        if let dockPage { return dockPage.filter == .movies }
+        return selectedSection == .movies
+    }
+
+    /// The count for the For You tab's header; nil until the list loads.
+    private var dockCount: Int? {
+        guard dockPage != nil, !items.isEmpty || (!isLoading && error == nil) else { return nil }
+        return filteredIOSItems.count
     }
 
     private var iosSelectedSectionEmptyState: some View {
         ContentUnavailableView {
-            Label(iosEmptyTitle, systemImage: selectedSection == .movies ? "film" : "tv")
+            Label(iosEmptyTitle, systemImage: iosShowsMovies ? "film" : "tv")
         } description: {
             Text(.personalWatchlistEmptyBody)
         }
@@ -242,7 +272,7 @@ struct WatchlistView: View {
     }
 
     private var iosEmptyTitle: LocalizedStringResource {
-        selectedSection == .movies ? .personalWatchlistEmptyMoviesTitle : .personalWatchlistEmptyTvShowsTitle
+        iosShowsMovies ? .personalWatchlistEmptyMoviesTitle : .personalWatchlistEmptyTvShowsTitle
     }
     #endif
 
@@ -262,6 +292,8 @@ struct WatchlistView: View {
     }
 
     private func loadWatchlist() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         if items.isEmpty,
            let cached: CatalogResponse = ResponseCache.shared.get(CacheKey.watchlist) {
             items = cached.items
@@ -272,9 +304,11 @@ struct WatchlistView: View {
         error = nil
         do {
             let response = try await SiloAPI.shared.watchlist()
+            guard generation == loadGeneration else { return }
             ResponseCache.shared.set(response, for: CacheKey.watchlist)
             items = response.items
         } catch let err {
+            guard generation == loadGeneration else { return }
             if items.isEmpty {
                 self.error = ErrorState(err)
             }
