@@ -216,7 +216,26 @@ final class DetailPrewarmerTests: XCTestCase {
         prewarmer.reofferVisible()
         try await waitUntil { self.cachedDetail(old) != nil }
         let fetched = await calls.details
-        XCTAssertEqual(fetched, [old.contentId, newer.contentId, old.contentId])
+        // The read after the invalidation never joins a request that may
+        // have been sent before it.
+        XCTAssertEqual(fetched, [old.contentId, newer.contentId, "fresh:\(old.contentId)"])
+    }
+
+    func testOnlyTheFirstPrewarmAfterAnInvalidationReadsFresh() async throws {
+        let prewarmer = makePrewarmer(limits: .init(settle: .milliseconds(20), maxTracked: 1))
+        let item = target("fresh-once")
+        let other = target("fresh-once-other")
+        ResponseCache.shared.removeItemMetadata(contentId: item.contentId)
+        offer(item, to: prewarmer)
+        try await waitUntil { prewarmer.trackedTargets == [item] }
+        // Evicted by a newer item, then warmed again after its cool-down.
+        offer(other, to: prewarmer)
+        try await waitUntil { prewarmer.trackedTargets == [other] }
+        clock = clock.advanced(by: .seconds(600))
+        prewarmer.reofferVisible()
+        try await waitUntil { self.cachedDetail(item) != nil }
+        let fetched = await calls.details
+        XCTAssertEqual(fetched, ["fresh:\(item.contentId)", other.contentId, item.contentId])
     }
 
     // MARK: - Eviction
@@ -446,7 +465,19 @@ final class DetailPrewarmerTests: XCTestCase {
             },
             isLowPower: { [unowned self] in self.lowPower },
             isDisabled: { false },
-            now: { [unowned self] in self.clock }
+            now: { [unowned self] in self.clock },
+            fresh: .init(
+                fetchDetail: { id, _ in
+                    await calls.detail("fresh:\(id)")
+                    return try PrewarmFixtures.movie(id)
+                },
+                fetchSeasons: { _, _ in try PrewarmFixtures.seasons([1, 2]) },
+                fetchEpisodes: { id, season, _ in try PrewarmFixtures.episodes(seriesId: id, season: season) },
+                fetchWatchDetail: { id, _ in
+                    await calls.watchDetail("fresh:\(id)")
+                    return PrewarmFixtures.watchDetail(id)
+                }
+            )
         )
         return DetailPrewarmer(environment: environment, limits: limits)
     }

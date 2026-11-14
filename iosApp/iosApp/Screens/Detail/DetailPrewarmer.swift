@@ -53,6 +53,18 @@ struct DetailPrewarmEnvironment {
     var isLowPower: @MainActor () -> Bool
     var isDisabled: @MainActor () -> Bool
     var now: @MainActor () -> ContinuousClock.Instant = { .now }
+    /// Reads that never join a request already in flight. Used for the first
+    /// prewarm of an item after its metadata was invalidated, since a shared
+    /// request may have been sent before the write that invalidated it. Nil
+    /// reads through the fetchers above.
+    var fresh: Fresh?
+
+    struct Fresh {
+        var fetchDetail: @Sendable (_ contentId: String, _ libraryId: Int?) async throws -> ItemDetail
+        var fetchSeasons: @Sendable (_ seriesId: String, _ libraryId: Int?) async throws -> SeasonsResponse
+        var fetchEpisodes: @Sendable (_ seriesId: String, _ season: Int, _ libraryId: Int?) async throws -> EpisodesResponse
+        var fetchWatchDetail: @Sendable (_ contentId: String, _ libraryId: Int?) async throws -> WatchDetail
+    }
 
     static var live: Self {
         Self(
@@ -69,9 +81,15 @@ struct DetailPrewarmEnvironment {
                     ImagePipeline.shared.cache.removeCachedImage(for: request, caches: .memory)
                 }
             },
-            // Covers mobile data, expensive hotspots and Low Data Mode on
-            // iPhone and iPad; a Mac always reads unmetered.
-            isMetered: { PlaybackNetworkMonitor.shared.isMetered },
+            // Mobile data, expensive hotspots and Low Data Mode.
+            isMetered: {
+                #if os(macOS)
+                // `PlaybackNetworkMonitor` runs only on iPhone and iPad.
+                DetailPrewarmPathMonitor.shared.isMetered
+                #else
+                PlaybackNetworkMonitor.shared.isMetered
+                #endif
+            },
             isLowPower: { ProcessInfo.processInfo.isLowPowerModeEnabled },
             isDisabled: {
                 #if DEBUG
@@ -79,10 +97,42 @@ struct DetailPrewarmEnvironment {
                 #else
                 false
                 #endif
-            }
+            },
+            fresh: Fresh(
+                fetchDetail: { try await SiloAPI.shared.itemDetail(contentId: $0, libraryId: $1) },
+                fetchSeasons: { try await SiloAPI.shared.seasons(seriesId: $0, libraryId: $1) },
+                fetchEpisodes: {
+                    try await SiloAPI.shared.episodes(seriesId: $0, seasonNumber: $1, libraryId: $2)
+                },
+                fetchWatchDetail: { try await SiloAPI.shared.watchDetail(contentId: $0, libraryId: $1) }
+            )
         )
     }
 }
+
+#if os(macOS)
+import Network
+
+/// Whether the Mac's connection costs data: an expensive path such as a
+/// phone hotspot, or Low Data Mode.
+final class DetailPrewarmPathMonitor: @unchecked Sendable {
+    static let shared = DetailPrewarmPathMonitor()
+
+    private let monitor = NWPathMonitor()
+    private let lock = NSLock()
+    private var metered = false
+
+    private init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            self.lock.withLock { self.metered = path.isExpensive || path.isConstrained }
+        }
+        monitor.start(queue: DispatchQueue(label: "org.siloserver.silo.detail-prewarm-path"))
+    }
+
+    var isMetered: Bool { lock.withLock { metered } }
+}
+#endif
 
 /// Fetches the detail page of cards that stay on screen into the caches the
 /// page hydrates from, so a tap paints the fetched detail, its seasons and
@@ -173,6 +223,9 @@ final class DetailPrewarmer {
     /// Evicted or failed items, and when. Oldest first, at most
     /// `maxAttempted`.
     private var attempted: [(target: DetailPrewarmTarget, at: ContinuousClock.Instant)] = []
+    /// Items whose metadata was invalidated and not prewarmed since.
+    private var needsFreshRead: Set<String> = []
+    private static let maxFreshReads = 200
     /// Items whose page opened while their prewarm ran. That prewarm writes
     /// nothing more: the page adopts the joined responses itself.
     private var ownedByPage: Set<String> = []
@@ -188,7 +241,13 @@ final class DetailPrewarmer {
         self.limits = limits
         observers = CacheObservers(
             familyDropped: { [weak self] in self?.resetBookkeeping() },
-            itemRemoved: { [weak self] contentId in self?.attempted.removeAll { $0.target.contentId == contentId } }
+            itemRemoved: { [weak self] contentId in
+                guard let self else { return }
+                self.attempted.removeAll { $0.target.contentId == contentId }
+                // Requests already in flight may predate the write.
+                if self.needsFreshRead.count >= Self.maxFreshReads { self.needsFreshRead.removeAll() }
+                self.needsFreshRead.insert(contentId)
+            }
         )
     }
 
@@ -276,6 +335,7 @@ final class DetailPrewarmer {
         opened = []
         attempted = []
         ownedByPage = []
+        needsFreshRead = []
     }
 
     private func forget(_ target: DetailPrewarmTarget) {
@@ -373,6 +433,11 @@ final class DetailPrewarmer {
         guard let owner = await environment.captureOwner(), owner.profileId != nil else { return }
         let id = target.contentId
         let libraryId = target.libraryId
+        let fresh = needsFreshRead.remove(id) == nil ? nil : environment.fresh
+        let fetchDetail = fresh?.fetchDetail ?? environment.fetchDetail
+        let fetchSeasons = fresh?.fetchSeasons ?? environment.fetchSeasons
+        let fetchEpisodes = fresh?.fetchEpisodes ?? environment.fetchEpisodes
+        let fetchWatchDetail = fresh?.fetchWatchDetail ?? environment.fetchWatchDetail
         var requests = 0
         var keys: [String] = []
         defer { stats.jsonRequests += requests }
@@ -380,7 +445,7 @@ final class DetailPrewarmer {
         requests += 1
         let fetched: ItemDetail
         do {
-            fetched = try await environment.fetchDetail(id, libraryId)
+            fetched = try await fetchDetail(id, libraryId)
         } catch {
             // Not for a reset or a page that took the item over.
             if !Task.isCancelled, !ownedByPage.contains(id) { noteAttempted(target) }
@@ -410,7 +475,7 @@ final class DetailPrewarmer {
 
         if detail.type == "series" {
             requests += 1
-            if let seasons = try? await environment.fetchSeasons(id, libraryId),
+            if let seasons = try? await fetchSeasons(id, libraryId),
                await mayWrite(id, owner: owner) {
                 let seasonsKey = CacheKey.itemSeasons(id, libraryId: libraryId)
                 if write(seasons, for: seasonsKey, token: token) { keys.append(seasonsKey) }
@@ -423,7 +488,7 @@ final class DetailPrewarmer {
                 } ?? sorted.preferredResumeSeason()
                 if let season {
                     requests += 1
-                    if let episodes = try? await environment.fetchEpisodes(id, season.seasonNumber, libraryId),
+                    if let episodes = try? await fetchEpisodes(id, season.seasonNumber, libraryId),
                        await mayWrite(id, owner: owner) {
                         let episodesKey = CacheKey.itemEpisodes(
                             seriesId: id, seasonNumber: season.seasonNumber, libraryId: libraryId
@@ -434,7 +499,7 @@ final class DetailPrewarmer {
             }
         } else if detail.supportsPlaybackMetadata {
             requests += 1
-            if let watchDetail = try? await environment.fetchWatchDetail(id, libraryId),
+            if let watchDetail = try? await fetchWatchDetail(id, libraryId),
                await mayWrite(id, owner: owner) {
                 let watchKey = CacheKey.itemWatchDetail(id, libraryId: libraryId)
                 if write(watchDetail, for: watchKey, token: token) {
