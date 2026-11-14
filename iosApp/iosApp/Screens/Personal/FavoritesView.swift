@@ -33,7 +33,7 @@ enum PersonalMediaSection: CaseIterable, Identifiable {
 
 /// All / Movies / TV Shows: what the iPhone For You tab's dock narrows its
 /// pages to.
-enum PersonalMediaFilter: CaseIterable, Identifiable {
+enum PersonalMediaFilter: String, CaseIterable, Identifiable {
     case all
     case movies
     case tvShows

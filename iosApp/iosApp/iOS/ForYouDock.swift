@@ -33,12 +33,24 @@ enum ForYouPage: String, CaseIterable, Identifiable, PageDockSegment {
 
 /// The iPhone For You tab's dock: which page is on screen, and the type
 /// (All, Movies, TV Shows) every page is narrowed to. The tab owns it.
+/// The type opens on All, then on the one used last.
 @Observable
 @MainActor
 final class ForYouDockModel: PageDockModel {
     private(set) var selectedTab: ForYouPage = .forYou
-    var mediaFilter: PersonalMediaFilter = .all
+    var mediaFilter: PersonalMediaFilter {
+        didSet { defaults.set(mediaFilter.rawValue, forKey: Self.mediaFilterKey) }
+    }
     private(set) var feedbackCount = 0
+
+    @ObservationIgnored private let defaults: UserDefaults
+    private static let mediaFilterKey = "forYou.mediaFilter"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        mediaFilter = defaults.string(forKey: Self.mediaFilterKey)
+            .flatMap(PersonalMediaFilter.init(rawValue:)) ?? .all
+    }
 
     @ObservationIgnored var onScrollToTop: (ForYouPage) -> Void = { _ in }
 
