@@ -10,10 +10,11 @@ import Foundation
 /// translates: `auto` mode starts its job once per item and language when it
 /// comes on screen, and `button` mode offers a Translate action. While a job
 /// runs, the card's item detail is re-read until it no longer reports the
-/// language missing (or ~45 s pass). The localized text then replaces the
-/// card's while the card still reports that language missing, so the hero
-/// shows it without reloading the whole section; a reloaded card that is no
-/// longer missing it, or is missing another language, shows its own text.
+/// language missing: every few seconds for ~45 s, then every 10 s for
+/// 5 min. The localized text then replaces the card's while the card still
+/// reports that language missing, so the hero shows it without reloading the
+/// whole section; a reloaded card that is no longer missing it, or is missing
+/// another language, shows its own text.
 @MainActor
 @Observable
 final class CardDescriptionTranslation {
@@ -38,7 +39,7 @@ final class CardDescriptionTranslation {
 
     private(set) var localized: [String: Localized] = [:]
     /// One coordinator per item, so a run keeps going while the hero moves
-    /// on to the next card; each run ends on its own within its cap.
+    /// on to the next card; each run ends on its own within about 5 min.
     @ObservationIgnored private var coordinators: [String: DescriptionTranslationCoordinator] = [:]
     /// Coordinator lookups are not observed, so views re-read through this.
     private var revision = 0
