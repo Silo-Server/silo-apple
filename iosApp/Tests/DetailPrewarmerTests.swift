@@ -146,18 +146,28 @@ final class DetailPrewarmerTests: XCTestCase {
     }
 
     func testAConnectionThatTurnsMeteredStopsTheRestOfAPrewarm() async throws {
-        let prewarmer = makePrewarmer()
+        let prewarmer = makePrewarmer(limits: .init(settle: .milliseconds(20), heldBackRetry: .milliseconds(50)))
         let item = target("metered-midway")
         await gates.close([item.contentId])
         offer(item, to: prewarmer)
         try await waitUntil { await self.calls.details == [item.contentId] }
         metered = true
         await gates.open(item.contentId)
-        try await waitUntil { prewarmer.trackedTargets == [item] }
+        try await waitUntil { prewarmer.runningTargets.isEmpty }
 
-        XCTAssertNotNil(cachedDetail(item))
-        let watched = await calls.watchDetails
+        // Nothing more went out, and the item does not count as prewarmed.
+        XCTAssertNil(cachedDetail(item))
+        XCTAssertEqual(prewarmer.trackedTargets, [])
+        var watched = await calls.watchDetails
         XCTAssertEqual(watched, [])
+
+        // Once the connection clears, the cards on screen are tried again
+        // without being offered, and the item is prewarmed whole.
+        metered = false
+        try await waitUntil { prewarmer.trackedTargets == [item] }
+        XCTAssertNotNil(cachedDetail(item))
+        watched = await calls.watchDetails
+        XCTAssertEqual(watched, [item.contentId])
     }
 
     func testEvictingOneOfTwoTargetsForASeriesKeepsWhatTheOtherShares() async throws {

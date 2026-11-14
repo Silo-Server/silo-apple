@@ -176,6 +176,10 @@ final class DetailPrewarmer {
         /// Cards remembered as on screen, as a guard against an appear
         /// without its disappear.
         var maxVisible = 48
+        /// How often cards that were held back are offered again. Nothing
+        /// reports a player closing, the connection clearing or Low Power
+        /// Mode ending, so the cards still on screen are tried again.
+        var heldBackRetry: Duration = .seconds(5)
         /// How long an evicted or failed item is left alone. Long enough
         /// that scrolling back over the same rows, usually seconds to a
         /// minute apart, sends nothing, and that an unreachable server is
@@ -214,6 +218,7 @@ final class DetailPrewarmer {
     /// Oldest first; mirrors `visible`'s keys.
     private var visibleOrder: [DetailPrewarmTarget] = []
     private var settling: [DetailPrewarmTarget: Task<Void, Never>] = [:]
+    private var heldBackRetry: Task<Void, Never>?
     /// Oldest first; the newest starts first.
     private(set) var pending: [DetailPrewarmTarget] = []
     private var running: [DetailPrewarmTarget: (id: UUID, task: Task<Void, Never>)] = [:]
@@ -327,6 +332,8 @@ final class DetailPrewarmer {
     func resetBookkeeping() {
         for task in settling.values { task.cancel() }
         settling = [:]
+        heldBackRetry?.cancel()
+        heldBackRetry = nil
         for entry in running.values { entry.task.cancel() }
         running = [:]
         pending = []
@@ -374,11 +381,22 @@ final class DetailPrewarmer {
             if isHeldBack(target) {
                 // The cards are offered again once nothing holds them back.
                 pending = []
+                retryHeldBackLater()
                 return
             }
             pending.removeLast()
             guard !isCached(target), !isCoolingDown(target) else { continue }
             start(target)
+        }
+    }
+
+    private func retryHeldBackLater() {
+        guard heldBackRetry == nil else { return }
+        heldBackRetry = Task { [weak self, interval = limits.heldBackRetry] in
+            try? await Task.sleep(for: interval)
+            guard let self, !Task.isCancelled else { return }
+            self.heldBackRetry = nil
+            self.reofferVisible()
         }
     }
 
@@ -472,9 +490,13 @@ final class DetailPrewarmer {
         }
 
         // The connection or power state can change while the detail loads;
-        // the rest is as speculative as the detail was.
+        // the rest is as speculative as the detail was. The detail goes too,
+        // so the item is not taken for prewarmed and is tried again whole.
         guard !environment.isMetered(), !environment.isLowPower() else {
-            if !ownedByPage.contains(id), !opened.contains(id) { track(Tracked(target: target, keys: keys)) }
+            if !ownedByPage.contains(id), !opened.contains(id) {
+                for key in keys { ResponseCache.shared.remove(key) }
+                retryHeldBackLater()
+            }
             return
         }
 
