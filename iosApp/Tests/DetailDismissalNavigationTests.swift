@@ -733,6 +733,15 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertEqual(reopened.resumePosition, original.resumePosition)
     }
 
+    func testDetailRemembersTheCardThatOpenedItAndPushedPagesDoNotReplaceIt() throws {
+        let router = AppRouter()
+        let card = UUID()
+        router.presentItemDetail(contentId: "series", zoomSourceID: card)
+        router.presentItemDetail(contentId: "episode", zoomSourceID: UUID())
+        XCTAssertEqual(router.presentedItemDetail?.zoomSourceID, card)
+        XCTAssertEqual(router.itemDetailPath.count, 1)
+    }
+
     func testActorPullGoesBackOnePageWithoutClosingTheSheet() throws {
         let router = AppRouter()
         router.presentItemDetail(contentId: "series")

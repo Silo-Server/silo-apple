@@ -146,17 +146,26 @@ private struct HomeCardTap<Label: View>: View {
 
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
+    @State private var zoomSourceID = UUID()
 
     var body: some View {
         Button {
             if let onTap { onTap(); return }
             if let continueWatchingItem {
-                router.presentContinueWatchingDetail(for: continueWatchingItem, libraryId: browseLibraryId)
+                router.presentContinueWatchingDetail(
+                    for: continueWatchingItem,
+                    libraryId: browseLibraryId,
+                    zoomSourceID: zoomSourceID
+                )
             } else {
-                router.presentItemDetail(contentId: contentId, libraryId: browseLibraryId)
+                router.presentItemDetail(
+                    contentId: contentId,
+                    libraryId: browseLibraryId,
+                    zoomSourceID: zoomSourceID
+                )
             }
         } label: {
-            label()
+            label().detailZoomSource(zoomSourceID)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)

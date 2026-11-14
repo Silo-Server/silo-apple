@@ -157,6 +157,10 @@ struct MediaCard: View {
         }
     }
 
+    /// This card's own artwork, so the detail zooms from the card that was
+    /// tapped even when the same title is in two rows.
+    @State private var zoomSourceID = UUID()
+
     var body: some View {
         cardBody.mediaActionFeedback(personalState.feedback)
     }
@@ -214,10 +218,15 @@ struct MediaCard: View {
                         router.presentItemDetail(
                             contentId: seriesContext.seriesContentId,
                             libraryId: browseLibraryId,
-                            resumeContext: seriesContext
+                            resumeContext: seriesContext,
+                            zoomSourceID: zoomSourceID
                         )
                     } else {
-                        router.presentItemDetail(contentId: contentId, libraryId: browseLibraryId)
+                        router.presentItemDetail(
+                            contentId: contentId,
+                            libraryId: browseLibraryId,
+                            zoomSourceID: zoomSourceID
+                        )
                     }
                 } label: {
                     cardContent
@@ -310,7 +319,7 @@ struct MediaCard: View {
 
     private var cardContent: some View {
         VStack(alignment: .leading, spacing: 4) {
-            posterImage
+            posterImage.detailZoomSource(zoomSourceID)
             titleText
             yearText
         }

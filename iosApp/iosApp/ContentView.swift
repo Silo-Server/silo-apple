@@ -2385,6 +2385,8 @@ struct MainTabView: View {
     #if os(iOS)
     /// Passes the iPhone library page's dock to the tab bar's accessory slot.
     @State private var libraryDockHost = LibraryDockHost()
+    /// Links each card's artwork to the detail it opens.
+    @Namespace private var detailZoomNamespace
     #endif
     /// The local audiobook opt-in; it hides audiobook libraries.
     @State private var navPrefs = AppNavPreferences.shared
@@ -2454,23 +2456,7 @@ struct MainTabView: View {
         #endif
         .tint(.siloOnSurface)
         #if os(iOS)
-        .overlay {
-            if router.presentedItemDetail != nil {
-                // Native sheets intentionally leave a narrow safe-area strip
-                // above their largest detent. Mask the live tab content there
-                // with dense glass so no logo, row or poster leaks around the
-                // rounded detail card while it is open.
-                Rectangle()
-                    .fill(.ultraThickMaterial)
-                    .overlay(Color.siloGlassStrong.opacity(0.92))
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-                    // A sideways swipe on the card reveals the page it returns to.
-                    .opacity(1 - router.itemDetailSwipeProgress)
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeOut(duration: 0.14), value: router.presentedItemDetail != nil)
+        .environment(\.detailZoomNamespace, detailZoomNamespace)
         #endif
         .task(id: currentLibraryAuthority) {
             await loadVisibleLibraries(for: currentLibraryAuthority)
@@ -2574,13 +2560,13 @@ struct MainTabView: View {
             item: itemDetailBinding(coversWindow: false),
             onDismiss: { router.itemDetailPresentationDidDismiss() }
         ) { presentation in
-            itemDetail(presentation)
+            itemDetail(presentation, zooms: false)
         }
         .fullScreenCover(
             item: itemDetailBinding(coversWindow: true),
             onDismiss: { router.itemDetailPresentationDidDismiss() }
         ) { presentation in
-            itemDetail(presentation)
+            itemDetail(presentation, zooms: true)
         }
         .onGeometryChange(for: Bool.self) { proxy in
             PhoneDetailHeroLayout.usesSplitLayout(pageSize: proxy.size, verticalSizeClass: vSize)
@@ -2659,13 +2645,15 @@ struct MainTabView: View {
     @Environment(\.verticalSizeClass) private var vSize
 
     #if os(iOS)
-    /// The open detail, routed to the presentation it opened in. iOS 27.1
-    /// caps an iPhone sheet at about 650pt wide, so a detail that should
-    /// fill the window (the iPhone Duo's open display) opens as a cover
-    /// there. iPad sheets fill the window, so iPad keeps the sheet.
+    /// The open detail, routed to its presentation. An iPhone covers the
+    /// window, so the system's zoom transition owns the drag that closes
+    /// the detail; a sheet has its own pull-down, which competes with it.
+    /// Request details keep the sheet there: their one-column page would
+    /// stretch across the iPhone Duo's open display. iPad keeps the sheet,
+    /// which can fill its window.
     private func itemDetailBinding(coversWindow: Bool) -> Binding<AppRouter.ItemDetailPresentation?> {
         func belongsHere(_ presentation: AppRouter.ItemDetailPresentation) -> Bool {
-            (presentation.fillsWindow && UIDevice.current.userInterfaceIdiom == .phone) == coversWindow
+            (UIDevice.current.userInterfaceIdiom == .phone && presentation.request == nil) == coversWindow
         }
         return Binding(
             get: { router.presentedItemDetail.flatMap { belongsHere($0) ? $0 : nil } },
@@ -2684,8 +2672,8 @@ struct MainTabView: View {
     /// Passes the audio store in explicitly. When the iPad app runs on a Mac,
     /// presented content doesn't inherit it, and the detail's audio player
     /// modifier traps reading it as the sheet appears.
-    private func itemDetail(_ presentation: AppRouter.ItemDetailPresentation) -> some View {
-        ItemDetailSheet(presentation: presentation, router: router)
+    private func itemDetail(_ presentation: AppRouter.ItemDetailPresentation, zooms: Bool) -> some View {
+        ItemDetailSheet(presentation: presentation, router: router, zoomNamespace: zooms ? detailZoomNamespace : nil)
             .environment(audioStore)
     }
     #endif
@@ -3320,14 +3308,27 @@ struct MainTabView: View {
 #endif
 
 #if os(iOS)
-/// Native bottom-presented catalog detail card. The sheet owns a small nested
-/// navigation stack for episode and Cast & Crew hops, while the tab/sidebar
-/// navigation underneath remains exactly where the user left it.
+/// The catalog detail: a full-screen cover on iPhone, a sheet on iPad. It
+/// owns a small nested navigation stack for episode and Cast & Crew hops,
+/// while the tab/sidebar navigation underneath remains exactly where the
+/// user left it.
 private struct ItemDetailSheet: View {
     let presentation: AppRouter.ItemDetailPresentation
     @Bindable var router: AppRouter
+    /// Set for the iPhone's full-screen cover, nil for a sheet.
+    let zoomNamespace: Namespace.ID?
 
     var body: some View {
+        sheetContent
+            .modifier(DetailZoomTransition(
+                // With no card to grow from, as for a deep link, the zoom
+                // starts from the centre and the drag still closes it.
+                sourceID: presentation.zoomSourceID ?? presentation.id,
+                namespace: zoomNamespace
+            ))
+    }
+
+    private var sheetContent: some View {
         NavigationStack(path: $router.itemDetailPath) {
             GeometryReader { geometry in
                 rootPage
@@ -3335,10 +3336,7 @@ private struct ItemDetailSheet: View {
                         width: geometry.size.width,
                         height: geometry.size.height + geometry.safeAreaInsets.bottom
                     )
-                    .detailSwipeBack(
-                        onProgress: { router.itemDetailSwipeProgress = $0 },
-                        onDismiss: router.dismissItemDetail
-                    )
+                    .detailSwipeBack(onDismiss: router.dismissItemDetail)
             }
                 .navigationDestination(for: Route.self) { route in
                     destination(for: route)
@@ -3355,9 +3353,10 @@ private struct ItemDetailSheet: View {
         // A page-sized sheet avoids the narrow form-card treatment on iPad,
         // while the large detent raises the rounded card to the top safe area.
         // A wide, short iPad window gets a sheet as large as the window
-        // instead, so the split page has room; an iPhone in that shape gets a
-        // full-screen cover (see `itemDetailBinding`). Native pull-down
-        // dismissal returns to the exact source page.
+        // instead, so the split page has room. These apply to a sheet; an
+        // iPhone presents catalog details in a full-screen cover (see
+        // `itemDetailBinding`). Nothing is drawn over the source page, so it
+        // stays in view behind the card as it is pulled away.
         .presentationSizing(ItemDetailSheetSizing(fillsWindow: presentation.fillsWindow))
         .presentationDetents([.large])
         // Nested pages handle a top pull as Back. The sheet's native dismiss
@@ -3407,6 +3406,21 @@ private struct ItemDetailSheet: View {
             SectionCatalogView(target: target)
         default:
             EmptyView()
+        }
+    }
+}
+
+/// Grows the detail out of the card that opened it. The same transition
+/// lets a drag carry it away and back into that card.
+private struct DetailZoomTransition: ViewModifier {
+    let sourceID: UUID
+    let namespace: Namespace.ID?
+
+    func body(content: Content) -> some View {
+        if let namespace {
+            content.navigationTransition(.zoom(sourceID: sourceID, in: namespace))
+        } else {
+            content
         }
     }
 }
