@@ -16,6 +16,13 @@ enum LocaleFormat {
         Int(value).formatted(.number.grouping(.never).locale(locale))
     }
 
+    /// A count grouped by the locale's thousands separator, in its digits:
+    /// "1,234" in English, "1.234" in German. For counts that can run large:
+    /// a library's or collection's size, a person's title count.
+    static func groupedCount(_ value: some BinaryInteger, locale: Locale = AppLanguage.formattingLocale) -> String {
+        Int(value).formatted(.number.grouping(.automatic).locale(locale))
+    }
+
     /// A season or episode number inside a code ("S2", "E05", "S2021E01"),
     /// in ASCII digits in every language: codes are technical (D78).
     static func codeNumber(_ value: some BinaryInteger) -> String {

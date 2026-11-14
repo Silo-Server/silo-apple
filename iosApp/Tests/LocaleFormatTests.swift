@@ -94,6 +94,15 @@ final class LocaleFormatTests: XCTestCase {
         XCTAssertEqual(LocaleFormat.integer(1234, locale: japanese), "1234")
     }
 
+    /// A library's size uses the locale's thousands separator and digits.
+    func testGroupedCountsUseTheLocalesSeparator() {
+        XCTAssertEqual(LocaleFormat.groupedCount(999, locale: english), "999")
+        XCTAssertEqual(LocaleFormat.groupedCount(1284, locale: english), "1,284")
+        XCTAssertEqual(LocaleFormat.groupedCount(1_234_567, locale: english), "1,234,567")
+        XCTAssertEqual(LocaleFormat.groupedCount(1284, locale: german), "1.284")
+        XCTAssertEqual(LocaleFormat.groupedCount(1284, locale: arabic), "١٬٢٨٤")
+    }
+
     // MARK: Years and decades (D77)
 
     /// A decade chip writes its year in the format locale's digits: Arabic-
