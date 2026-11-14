@@ -4171,6 +4171,14 @@ class PlayerViewModel {
         cancelNextUpCountdown()
     }
 
+    /// Up Next offers Keep Watching before the end, and after a source that
+    /// stopped early, where it resumes at the stop point. After a natural end
+    /// the item is finished, so the screen offers Close alone.
+    var nextUpOffersKeepWatching: Bool {
+        !nextUpScreenVideoEnded
+            || (endedPrematurely && lastLoadRequest != nil && !serverEndedSessionHandled)
+    }
+
     @discardableResult
     func keepWatchingCurrentEpisode() -> Bool {
         guard !isWatchPartyPlayback else { return false }
@@ -5757,8 +5765,8 @@ class PlayerViewModel {
             // to the next episode short-circuits — `beginNextUpPostroll`
             // checks `!nextUpAutoplayCancelled` before calling
             // `playNextEpisodeNow()`. The user is left on a recoverable
-            // surface where they can retry via Play Now, pick from On Deck,
-            // or hit Back.
+            // surface where they can resume with Keep Watching, retry via
+            // Play Now, pick from On Deck, or Close.
             autoplayCancelledByLostSource = !nextUpAutoplayCancelled
             nextUpAutoplayCancelled = true
             cancelNextUpCountdown()
@@ -6854,7 +6862,7 @@ class PlayerViewModel {
     /// User-initiated loads keep the historical full-screen error wall.
     /// Autoplay and interruption-recovery loads instead restore the Next Up
     /// postroll with `nextUpStartError` set so the user can pick something
-    /// from On Deck or hit Back without the player being taken hostage by an
+    /// from On Deck or Close without the player being taken hostage by an
     /// `error` overlay.
     private func handleBeginFreshLoadFailure(error: Error, origin: LoadOrigin) {
         watchPartyAdapter?.onFailure?((error as? PlaybackV3TerminalFailure)?.reason, error.localizedDescription)

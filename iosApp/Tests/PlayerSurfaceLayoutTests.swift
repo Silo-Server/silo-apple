@@ -27,7 +27,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
                 ZStack {
                     Color.black.ignoresSafeArea()
                     if presentation.preview, let nextUpModel {
-                        PlayerNextUpScreen(viewModel: nextUpModel, onBack: {})
+                        PlayerNextUpScreen(viewModel: nextUpModel, onClose: {})
                     } else if presentation.preview && presentation.hasPreviewBounds {
                         Color.clear
                             .frame(width: 240, height: 135)
@@ -110,7 +110,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.preview = $0 }
             } panel: { compact in
                 // Measure the real production metadata/buttons.
-                PlayerNextUpScreen(viewModel: model, onBack: {}).mobileNextUpPanel(compact: compact)
+                PlayerNextUpScreen(viewModel: model, onClose: {}).mobileNextUpPanel(compact: compact)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.panel = $0 }
             }
             let viewport = layout
@@ -196,7 +196,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         let presentation: Presentation
         let model: PlayerViewModel
         var body: some View {
-            PlayerNextUpScreen(viewModel: model, onBack: {})
+            PlayerNextUpScreen(viewModel: model, onClose: {})
                 .frame(width: presentation.viewport?.width, height: presentation.viewport?.height)
         }
     }
