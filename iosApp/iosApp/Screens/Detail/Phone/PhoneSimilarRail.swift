@@ -134,6 +134,7 @@ struct PhonePosterRailCards: View {
             LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: 12) {
                 ForEach(items) { item in
                     Button {
+                        DetailSeedStore.offer(item.card.map(DetailSeedSource.browse), opening: item.contentId)
                         onSelect(item.contentId)
                     } label: {
                         PhonePosterCard(
@@ -174,9 +175,12 @@ struct SimilarPosterItem: Identifiable, Hashable {
     /// otherwise the rail's `placeholderSymbol` applies.
     let placeholderSymbol: String?
     let accessibilityDescription: String
+    /// The catalog card, offered to the page a tap opens.
+    let card: BrowseItem?
     var id: String { contentId }
 
     init(card: BrowseItem) {
+        self.card = card
         self.contentId = card.contentId
         self.title = card.title
         self.posterUrl = card.posterUrl
@@ -190,6 +194,7 @@ struct SimilarPosterItem: Identifiable, Hashable {
     }
 
     init(audiobook item: AudiobookRelatedItem) {
+        self.card = nil
         self.contentId = item.contentId
         self.title = item.title
         self.posterUrl = item.posterUrl

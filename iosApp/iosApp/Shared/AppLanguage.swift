@@ -141,8 +141,20 @@ enum AppLanguage {
     static func string(_ resource: LocalizedStringResource, locale: Locale) -> String {
         var resource = resource
         resource.locale = locale
+        #if os(tvOS)
         return String(localized: resource)
+        #else
+        return resolvedStrings.value(for: resource) { String(localized: $0) }
+        #endif
     }
+
+    #if !os(tvOS)
+    /// `String(localized:)` reads the string table from disk again on every
+    /// call that names a locale, and a detail page resolves a few dozen
+    /// labels in the frame that opens it. A resource always resolves to the
+    /// same text, so each is resolved once.
+    static let resolvedStrings = ResolvedStringCache()
+    #endif
 
     /// Wraps a title or name in first-strong isolates (FSI…PDI) when the
     /// interface reads right to left, so text of the other direction keeps
@@ -209,6 +221,45 @@ enum AppLanguage {
         return value == missing ? nil : value
     }
 }
+
+#if !os(tvOS)
+/// Strings `AppLanguage.string(_:locale:)` has resolved, by resource: its
+/// key, arguments, table, bundle and locale. Safe to use from any thread.
+final class ResolvedStringCache: @unchecked Sendable {
+    /// Resources that share a key, table and locale, told apart by their
+    /// arguments. Each list keeps its newest entries, so a label that counts
+    /// (a percentage, a number of episodes) cannot grow it without bound.
+    private var buckets: [String: [(resource: LocalizedStringResource, value: String)]] = [:]
+    private let lock = NSLock()
+    private let entriesPerKey: Int
+
+    init(entriesPerKey: Int = 32) {
+        self.entriesPerKey = entriesPerKey
+    }
+
+    func value(
+        for resource: LocalizedStringResource,
+        resolve: (LocalizedStringResource) -> String
+    ) -> String {
+        let key = "\(resource.key)\u{1F}\(resource.table ?? "")\u{1F}\(resource.locale.identifier)"
+        lock.lock()
+        let cached = buckets[key]?.last { $0.resource == resource }?.value
+        lock.unlock()
+        if let cached { return cached }
+        // Resolved outside the lock: a miss reads from disk.
+        let value = resolve(resource)
+        lock.lock()
+        var bucket = buckets[key] ?? []
+        if !bucket.contains(where: { $0.resource == resource }) {
+            if bucket.count >= entriesPerKey { bucket.removeFirst() }
+            bucket.append((resource, value))
+            buckets[key] = bucket
+        }
+        lock.unlock()
+        return value
+    }
+}
+#endif
 
 extension LocalizedStringResource {
     /// Text shown as is where an API takes catalog text: a name, a number, a

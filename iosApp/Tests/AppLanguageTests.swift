@@ -55,6 +55,54 @@ final class AppLanguageMatchingTests: XCTestCase {
     }
 }
 
+#if !os(tvOS)
+final class ResolvedStringCacheTests: XCTestCase {
+    /// Each resource resolves once; another argument or locale is another
+    /// resource, never an earlier one's text.
+    func testResolvesEachResourceOnceAndKeepsArgumentsAndLocalesApart() {
+        let cache = ResolvedStringCache()
+        var resolved: [String] = []
+        func value(_ resource: LocalizedStringResource) -> String {
+            cache.value(for: resource) { resource in
+                let text = String(localized: resource)
+                resolved.append(text)
+                return text
+            }
+        }
+        var english: LocalizedStringResource = "\(45) left"
+        english.locale = Locale(identifier: "en")
+        var other: LocalizedStringResource = "\(46) left"
+        other.locale = Locale(identifier: "en")
+        var french = english
+        french.locale = Locale(identifier: "fr")
+
+        XCTAssertEqual(value(english), "45 left")
+        XCTAssertEqual(value(english), "45 left")
+        XCTAssertEqual(value(other), "46 left")
+        _ = value(french)
+        XCTAssertEqual(resolved.count, 3)
+    }
+
+    /// A key whose argument keeps changing keeps only its newest entries.
+    func testKeepsTheNewestEntriesPerKey() {
+        let cache = ResolvedStringCache(entriesPerKey: 2)
+        var resolutions = 0
+        func value(_ number: Int) -> String {
+            var resource: LocalizedStringResource = "\(number) left"
+            resource.locale = Locale(identifier: "en")
+            return cache.value(for: resource) { resolutions += 1; return String(localized: $0) }
+        }
+        _ = value(1)
+        _ = value(2)
+        _ = value(3)
+        XCTAssertEqual(value(3), "3 left")
+        XCTAssertEqual(resolutions, 3)
+        XCTAssertEqual(value(1), "1 left")
+        XCTAssertEqual(resolutions, 4)
+    }
+}
+#endif
+
 final class AppLanguageReconcilerTests: XCTestCase {
     private typealias R = AppLanguageReconciler
     private typealias Ledger = AppLanguageLedger

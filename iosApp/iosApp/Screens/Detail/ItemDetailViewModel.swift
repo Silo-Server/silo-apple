@@ -15,7 +15,30 @@ class ItemDetailViewModel {
         self.seasonDescriptionTranslation = seasonDescriptionTranslation ?? DescriptionTranslationCoordinator()
     }
 
-    var detail: ItemDetail?
+    var detail: ItemDetail? {
+        didSet {
+            let provisional = isAdoptingSeed && detail != nil
+            if isDetailProvisional != provisional { isDetailProvisional = provisional }
+            #if DEBUG
+            guard let detail else { return }
+            DetailLoadTrace.registerHeroArtwork(
+                detail.backdropUrl.flatMap { $0.isEmpty ? nil : $0 } ?? detail.posterUrl,
+                isProvisional: provisional
+            )
+            DetailLoadTrace.mark(.detailFirst)
+            #endif
+        }
+    }
+    /// True while `detail` is the seed built from the tapped card rather
+    /// than a fetched detail. It has no files, watch state, cast or crew, so
+    /// the page shows those parts in their loading form until any fetched
+    /// detail replaces it, which clears this.
+    private(set) var isDetailProvisional = false
+    @ObservationIgnored private var isAdoptingSeed = false
+    /// The artwork the card seed drew, kept after the fetched detail replaces
+    /// the seed so the hero can show it until the detail's larger artwork
+    /// has loaded. Nil when the page did not start from a seed.
+    private(set) var seedArtwork: DetailSeedArtwork?
     var error: ErrorState?
     /// The movie's box set, drawn as a row after the extras. Nil while it
     /// loads, for a movie in no box set, and for anything but a movie.
@@ -25,7 +48,16 @@ class ItemDetailViewModel {
     // Catalog metadata and the hierarchy finish independently. An empty array
     // is only an empty result after its request has succeeded.
     enum HierarchyLoadState { case idle, loading, loaded, failed }
-    var seasonsLoadState: HierarchyLoadState = .idle
+    var seasonsLoadState: HierarchyLoadState = .idle {
+        didSet {
+            let failed = seasonsLoadState == .failed
+            if seasonsLoadFailed != failed { seasonsLoadFailed = failed }
+        }
+    }
+    /// `seasonsLoadState == .failed`, stored apart so a page reading only
+    /// whether it failed is not redrawn by a silent refresh moving the state
+    /// from loaded to loading and back.
+    private(set) var seasonsLoadFailed = false
     var episodesLoadFailed = false
     private var failedEpisodeSeasonNumber: Int?
     private var seasonsLoadGeneration = 0
@@ -47,12 +79,16 @@ class ItemDetailViewModel {
         if seasons.isEmpty {
             return seasonsLoadState == .idle || seasonsLoadState == .loading
         }
-        return isLoadingEpisodes
-            || (selectedSeason == nil && seasonsLoadState == .loading)
+        if isLoadingEpisodes { return true }
+        // With a season selected the load state can't change the answer.
+        // Not reading it keeps the page from redrawing while seasons it
+        // already shows refresh.
+        guard selectedSeason == nil else { return false }
+        return seasonsLoadState == .loading
     }
 
     var seriesLoadErrorMessage: String? {
-        if seasonsLoadState == .failed { return AppLanguage.string(.detailErrorLoadSeasons) }
+        if seasonsLoadFailed { return AppLanguage.string(.detailErrorLoadSeasons) }
         if episodesLoadFailed { return AppLanguage.string(.detailErrorLoadEpisodes) }
         return nil
     }
@@ -86,6 +122,9 @@ class ItemDetailViewModel {
     // Series-specific state
     var seasons: [Season] = [] {
         didSet {
+            #if DEBUG
+            if !seasons.isEmpty { DetailLoadTrace.mark(.seasons) }
+            #endif
             #if os(tvOS)
             updateSeriesEpisodeWindow()
             #endif
@@ -102,7 +141,13 @@ class ItemDetailViewModel {
     /// instead of the default pick. Cleared once that season's page loads or
     /// the user picks another.
     @ObservationIgnored var initialResumeSeasonNumber: Int?
-    var episodes: [EpisodeListItem] = []
+    var episodes: [EpisodeListItem] = [] {
+        didSet {
+            #if DEBUG
+            if !episodes.isEmpty { DetailLoadTrace.mark(.episodes) }
+            #endif
+        }
+    }
     /// Route-scoped pages already loaded while browsing seasons. This keeps
     /// chip taps and iPad page swipes instant when the user comes back to a
     /// season, while `ResponseCache` remains the longer-lived cold-start tier.
@@ -234,26 +279,22 @@ class ItemDetailViewModel {
         contentId: String,
         preserveSeasonSelection: Bool = false,
         coalescesMetadataRequests: Bool = true,
-        fetchDetail: (@Sendable (String) async throws -> ItemDetail)? = nil
+        fetchDetail: (@Sendable (String) async throws -> ItemDetail)? = nil,
+        fetchSeasons: (@Sendable (String) async throws -> SeasonsResponse)? = nil,
+        fetchEpisodes: (@Sendable (String, Int) async throws -> EpisodesResponse)? = nil
     ) async {
         guard !Task.isCancelled else { return }
+        #if DEBUG
+        defer { DetailLoadTrace.mark(.loadDone) }
+        #endif
         detailLoadGeneration += 1
         let loadGeneration = detailLoadGeneration
         if let detail, detail.contentId != contentId {
             boxSetTask?.cancel()
             boxSet = nil
-            seasonsLoadGeneration += 1
-            episodeLoadGeneration += 1
             self.detail = nil
-            seriesContentId = nil
-            seasons = []
-            selectedSeason = nil
-            episodes = []
-            episodesBySeason = [:]
-            loadedSeasonNumber = nil
-            seasonsLoadState = .idle
-            episodesLoadFailed = false
-            isLoadingEpisodes = false
+            seedArtwork = nil
+            resetSeriesState()
         }
         if detail?.contentId != contentId {
             #if !os(tvOS)
@@ -275,11 +316,13 @@ class ItemDetailViewModel {
         let cachedDetailForRelatedStructure = detail?.contentId == contentId
             ? detail
             : nil
-        async let cachedRelatedStructureLoad: Void = loadRelatedStructureFromCacheIfAvailable(
+        async let cachedRelatedStructureLoad: Void = loadRelatedStructureIfKnown(
             cachedDetailForRelatedStructure,
             contentId: contentId,
             preserveSeasonSelection: preserveSeasonSelection,
-            coalescesMetadataRequests: coalescesMetadataRequests
+            coalescesMetadataRequests: coalescesMetadataRequests,
+            fetchSeasons: fetchSeasons,
+            fetchEpisodes: fetchEpisodes
         )
         #endif
 
@@ -296,7 +339,23 @@ class ItemDetailViewModel {
         async let resumeStructure = loadContinueWatchingStructure(
             contentId: contentId,
             seasonNumber: resumeSeason,
-            detailGeneration: generation
+            detailGeneration: generation,
+            fetchSeasons: fetchSeasons,
+            fetchEpisodes: fetchEpisodes
+        )
+        // A page already known to be a series, from the card seed or a
+        // cached detail, starts its seasons alongside the catalog too. The
+        // resume path above covers its own series.
+        let earlySeriesDetail = resumeSeason == nil && detail?.contentId == contentId
+            && detail?.type == "series" ? detail : nil
+        let seededAsSeries = isDetailProvisional && detail?.type == "series"
+        async let earlySeriesStructure: Void = loadRelatedStructureIfKnown(
+            earlySeriesDetail,
+            contentId: contentId,
+            preserveSeasonSelection: preserveSeasonSelection,
+            coalescesMetadataRequests: coalescesMetadataRequests,
+            fetchSeasons: fetchSeasons,
+            fetchEpisodes: fetchEpisodes
         )
         #endif
 
@@ -356,11 +415,20 @@ class ItemDetailViewModel {
                     for: enriched,
                     contentId: contentId,
                     preserveSeasonSelection: preserveSeasonSelection,
-                    coalescesMetadataRequests: coalescesMetadataRequests
+                    coalescesMetadataRequests: coalescesMetadataRequests,
+                    fetchSeasons: fetchSeasons,
+                    fetchEpisodes: fetchEpisodes
                 )
             }
             #else
-            if resumeSeason != nil {
+            if seededAsSeries, enriched.type != "series" {
+                // The card said series and the server says otherwise. Drop
+                // what the seed started; the structure loads left unawaited
+                // here are cancelled when this scope ends.
+                resetSeriesState()
+            } else if earlySeriesDetail != nil {
+                await earlySeriesStructure
+            } else if resumeSeason != nil {
                 let didLoadResumeStructure = await resumeStructure
                 // The catalog and hierarchy must both succeed before consuming
                 // the entry intent. A catalog error retries loadDetail directly.
@@ -383,16 +451,39 @@ class ItemDetailViewModel {
                     for: enriched,
                     contentId: contentId,
                     preserveSeasonSelection: preserveSeasonSelection,
-                    coalescesMetadataRequests: coalescesMetadataRequests
+                    coalescesMetadataRequests: coalescesMetadataRequests,
+                    fetchSeasons: fetchSeasons,
+                    fetchEpisodes: fetchEpisodes
                 )
             }
             #endif
         } catch let err {
             guard !Task.isCancelled, loadGeneration == detailLoadGeneration else { return }
-            if detail == nil {
+            // A card seed is not a loaded page: without the fetched detail
+            // nothing on it can play, so the error and its Retry replace it.
+            if detail == nil || isDetailProvisional {
                 self.error = ErrorState(err)
             }
         }
+    }
+
+    /// Forget the season and episode structure, invalidating loads in flight.
+    private func resetSeriesState() {
+        seasonsLoadGeneration += 1
+        episodeLoadGeneration += 1
+        seriesContentId = nil
+        seasons = []
+        selectedSeason = nil
+        episodes = []
+        episodesBySeason = [:]
+        loadedSeasonNumber = nil
+        seasonsLoadState = .idle
+        episodesLoadFailed = false
+        isLoadingEpisodes = false
+        #if !os(tvOS)
+        seasonEpisodePrefetchTask?.cancel()
+        seasonEpisodePrefetchTask = nil
+        #endif
     }
 
     /// Reads the movie's box set beside the page's own refresh, so watched
@@ -459,19 +550,24 @@ class ItemDetailViewModel {
         #endif
 
         let initial: ItemDetail
-        if supportsPlaybackMetadata(item),
+        if item.supportsPlaybackMetadata,
            let cachedWatchDetail: WatchDetail = ResponseCache.shared.get(
                CacheKey.itemWatchDetail(contentId, libraryId: libraryId)
            ) {
-            initial = applyingPlaybackMetadata(cachedWatchDetail, to: item)
+            initial = item.applyingPlaybackMetadata(cachedWatchDetail)
         } else {
             initial = item
         }
 
         detail = initial
+        #if DEBUG
+        DetailLoadTrace.mark(.detailNetwork)
+        #endif
         ResponseCache.shared.set(initial, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
+        // The fetched detail supersedes the card's, which may be older.
+        DetailSeedStore.discard(contentId: contentId)
 
-        guard supportsPlaybackMetadata(item) else { return initial }
+        guard item.supportsPlaybackMetadata else { return initial }
 
         playbackEnrichmentTask = Task { [weak self] in
             guard let self,
@@ -484,6 +580,9 @@ class ItemDetailViewModel {
                   generation == self.detailGeneration else { return }
 
             self.detail = enriched
+            #if DEBUG
+            DetailLoadTrace.mark(.playbackMetadata)
+            #endif
             ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
             self.playbackEnrichmentTask = nil
         }
@@ -498,7 +597,9 @@ class ItemDetailViewModel {
         for enriched: ItemDetail,
         contentId: String,
         preserveSeasonSelection: Bool,
-        coalescesMetadataRequests: Bool = true
+        coalescesMetadataRequests: Bool = true,
+        fetchSeasons: (@Sendable (String) async throws -> SeasonsResponse)? = nil,
+        fetchEpisodes: (@Sendable (String, Int) async throws -> EpisodesResponse)? = nil
     ) async {
         if enriched.type == "series" {
             seriesContentId = contentId
@@ -507,7 +608,9 @@ class ItemDetailViewModel {
             await loadSeasons(
                 seriesId: contentId,
                 autoSelectInitial: keepSeason == nil,
-                coalescesMetadataRequest: coalescesMetadataRequests
+                coalescesMetadataRequest: coalescesMetadataRequests,
+                fetchSeasons: fetchSeasons,
+                fetchEpisodes: fetchEpisodes
             )
             if let keepSeason, selectionGeneration == episodeLoadGeneration, !Task.isCancelled {
                 // Re-point at the freshly-loaded instance of the same
@@ -519,22 +622,26 @@ class ItemDetailViewModel {
         }
     }
 
-    #if os(tvOS)
-    private func loadRelatedStructureFromCacheIfAvailable(
-        _ cachedDetail: ItemDetail?,
+    /// Start the structure a detail already in hand implies, before the
+    /// catalog refresh answers. Nil does nothing.
+    private func loadRelatedStructureIfKnown(
+        _ knownDetail: ItemDetail?,
         contentId: String,
         preserveSeasonSelection: Bool,
-        coalescesMetadataRequests: Bool
+        coalescesMetadataRequests: Bool,
+        fetchSeasons: (@Sendable (String) async throws -> SeasonsResponse)?,
+        fetchEpisodes: (@Sendable (String, Int) async throws -> EpisodesResponse)?
     ) async {
-        guard let cachedDetail else { return }
+        guard let knownDetail else { return }
         await loadRelatedStructure(
-            for: cachedDetail,
+            for: knownDetail,
             contentId: contentId,
             preserveSeasonSelection: preserveSeasonSelection,
-            coalescesMetadataRequests: coalescesMetadataRequests
+            coalescesMetadataRequests: coalescesMetadataRequests,
+            fetchSeasons: fetchSeasons,
+            fetchEpisodes: fetchEpisodes
         )
     }
-    #endif
 
     /// Adopt a detail payload the caller already has in hand, taking the
     /// same path a `loadDetail` response would — enrichment, cache write,
@@ -575,6 +682,10 @@ class ItemDetailViewModel {
     /// Paint every cached fragment the screen knows how to render so a
     /// returning visit never starts from a blank state.
     func hydrateFromCache(contentId: String) {
+        #if !os(tvOS)
+        // The page owns this item's cache entries from here on.
+        DetailPrewarmer.shared.noteOpened(contentId: contentId)
+        #endif
         if detail == nil,
            let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(contentId, libraryId: libraryId)) {
             #if os(tvOS)
@@ -583,12 +694,41 @@ class ItemDetailViewModel {
             PosterImageCache.prefetchVisibleMovieCast(for: cached)
             #endif
             detail = cached
+            #if DEBUG
+            // A cached detail that already carries `/watch` (an earlier visit
+            // or a prewarm) shows versions and tracks on its first frame.
+            if cached.hasWatchDetailSubtitlePolicy == true { DetailLoadTrace.mark(.playbackMetadata) }
+            #endif
             isWatched = cached.userData?.played ?? false
 
             if cached.type == "series" {
                 seriesContentId = contentId
             }
         }
+        #if !os(tvOS)
+        // A first visit draws the card it was opened from until the catalog
+        // answers. Never written to `CacheKey.itemDetail`: `adoptDetail` is
+        // the only path that caches, and only fetched payloads reach it.
+        #if DEBUG
+        let seedsFromCard = !DetailLoadTrace.seedDisabled
+        #else
+        let seedsFromCard = true
+        #endif
+        if seedsFromCard, detail == nil, let seed = DetailSeedStore.seed(for: contentId) {
+            isAdoptingSeed = true
+            detail = seed
+            isAdoptingSeed = false
+            seedArtwork = DetailSeedArtwork(seed)
+            if let userState = seed.userState {
+                isFavorite = userState.isFavorite
+                inWatchlist = userState.inWatchlist
+                isWatched = userState.played
+            }
+            if seed.type == "series" {
+                seriesContentId = contentId
+            }
+        }
+        #endif
         if let state: UserItemState = ResponseCache.shared.get(CacheKey.itemUserState(contentId)) {
             isFavorite = state.isFavorite
             inWatchlist = state.inWatchlist
@@ -643,96 +783,10 @@ class ItemDetailViewModel {
                 watchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId)
             }
             ResponseCache.shared.set(watchDetail, for: CacheKey.itemWatchDetail(contentId, libraryId: libraryId))
-            return applyingPlaybackMetadata(watchDetail, to: item)
+            return item.applyingPlaybackMetadata(watchDetail)
         } catch {
             return nil
         }
-    }
-
-    private func supportsPlaybackMetadata(_ item: ItemDetail) -> Bool {
-        item.type != "series" && item.type != "season" && item.type != "episode"
-    }
-
-    private func applyingPlaybackMetadata(
-        _ watchDetail: WatchDetail,
-        to item: ItemDetail
-    ) -> ItemDetail {
-        ItemDetail(
-                contentId: item.contentId,
-                type: item.type,
-                status: item.status,
-                title: item.title,
-                sortTitle: item.sortTitle,
-                originalTitle: item.originalTitle,
-                originalLanguage: item.originalLanguage,
-                showStatus: item.showStatus,
-                year: item.year,
-                overview: item.overview,
-                tagline: item.tagline,
-                runtime: item.runtime,
-                contentRating: item.contentRating,
-                advisoryAge: item.advisoryAge,
-                advisorySource: item.advisorySource,
-                genres: item.genres,
-                ratingImdb: item.ratingImdb,
-                ratingTmdb: item.ratingTmdb,
-                ratingRtCritic: item.ratingRtCritic,
-                ratingRtAudience: item.ratingRtAudience,
-                ratings: item.ratings,
-                imdbId: item.imdbId,
-                tmdbId: item.tmdbId,
-                tvdbId: item.tvdbId,
-                cast: item.cast,
-                crew: item.crew,
-                studios: item.studios,
-                networks: item.networks,
-                countries: item.countries,
-                releaseDate: item.releaseDate,
-                firstAirDate: item.firstAirDate,
-                lastAirDate: item.lastAirDate,
-                posterIsEpisodeStill: item.posterIsEpisodeStill,
-                backdropIsEpisodeStill: item.backdropIsEpisodeStill,
-                posterUrl: item.posterUrl,
-                posterThumbhash: item.posterThumbhash,
-                backdropUrl: item.backdropUrl,
-                backdropThumbhash: item.backdropThumbhash,
-                seriesPosterUrl: item.seriesPosterUrl,
-                seriesPosterThumbhash: item.seriesPosterThumbhash,
-                seriesBackdropUrl: item.seriesBackdropUrl,
-                seriesBackdropThumbhash: item.seriesBackdropThumbhash,
-                seasonPosterUrl: item.seasonPosterUrl,
-                seasonPosterThumbhash: item.seasonPosterThumbhash,
-                logoUrl: item.logoUrl,
-                seasonCount: item.seasonCount,
-                seriesId: item.seriesId,
-                seriesTitle: item.seriesTitle,
-                seasonNumber: item.seasonNumber,
-                episodeNumber: item.episodeNumber,
-                episodeCount: item.episodeCount,
-                airDate: item.airDate,
-                isSpecials: item.isSpecials,
-                userData: item.userData,
-                versions: watchDetail.versions,
-                playbackVariants: item.playbackVariants,
-                subtitles: watchDetail.subtitles,
-                intro: watchDetail.intro,
-                credits: watchDetail.credits,
-                effectiveSubtitleLanguage: watchDetail.effectiveSubtitleLanguage,
-                hasWatchDetailSubtitlePolicy: true,
-                effectiveSubtitleMode: watchDetail.effectiveSubtitleMode,
-                effectiveShowForcedSubtitles: watchDetail.effectiveShowForcedSubtitles,
-                effectiveSubtitleTrackSignature: watchDetail.effectiveSubtitleTrackSignature,
-                overlaySummary: item.overlaySummary,
-                audiobook: item.audiobook,
-                pendingTranslationLanguage: item.pendingTranslationLanguage,
-                // Catalog-only fields: the watch detail knows nothing about
-                // them, so they must be carried across or the trailers rail
-                // would disappear the moment enrichment succeeds.
-                videos: item.videos,
-                extras: item.extras,
-                machineTranslatedFields: item.machineTranslatedFields,
-                themes: item.themes
-            )
     }
 
     // MARK: - Trailer fetch
@@ -1854,5 +1908,94 @@ struct UserItemState {
 private extension EpisodesResponse {
     var sortedEpisodes: [EpisodeListItem] {
         episodes.sorted { $0.episodeNumber < $1.episodeNumber }
+    }
+}
+
+extension ItemDetail {
+    /// Whether `/watch` adds versions and tracks to this item's page. Series,
+    /// seasons and episodes carry theirs on the episode rows instead.
+    var supportsPlaybackMetadata: Bool {
+        type != "series" && type != "season" && type != "episode"
+    }
+
+    /// This catalog payload with the playback-only fields of `watchDetail`
+    /// folded in, as a detail page shows it once `/watch` answers.
+    func applyingPlaybackMetadata(_ watchDetail: WatchDetail) -> ItemDetail {
+        ItemDetail(
+            contentId: contentId,
+            type: type,
+            status: status,
+            title: title,
+            sortTitle: sortTitle,
+            originalTitle: originalTitle,
+            originalLanguage: originalLanguage,
+            showStatus: showStatus,
+            year: year,
+            overview: overview,
+            tagline: tagline,
+            runtime: runtime,
+            contentRating: contentRating,
+            advisoryAge: advisoryAge,
+            advisorySource: advisorySource,
+            genres: genres,
+            ratingImdb: ratingImdb,
+            ratingTmdb: ratingTmdb,
+            ratingRtCritic: ratingRtCritic,
+            ratingRtAudience: ratingRtAudience,
+            ratings: ratings,
+            imdbId: imdbId,
+            tmdbId: tmdbId,
+            tvdbId: tvdbId,
+            cast: cast,
+            crew: crew,
+            studios: studios,
+            networks: networks,
+            countries: countries,
+            releaseDate: releaseDate,
+            firstAirDate: firstAirDate,
+            lastAirDate: lastAirDate,
+            posterIsEpisodeStill: posterIsEpisodeStill,
+            backdropIsEpisodeStill: backdropIsEpisodeStill,
+            posterUrl: posterUrl,
+            posterThumbhash: posterThumbhash,
+            backdropUrl: backdropUrl,
+            backdropThumbhash: backdropThumbhash,
+            seriesPosterUrl: seriesPosterUrl,
+            seriesPosterThumbhash: seriesPosterThumbhash,
+            seriesBackdropUrl: seriesBackdropUrl,
+            seriesBackdropThumbhash: seriesBackdropThumbhash,
+            seasonPosterUrl: seasonPosterUrl,
+            seasonPosterThumbhash: seasonPosterThumbhash,
+            logoUrl: logoUrl,
+            seasonCount: seasonCount,
+            seriesId: seriesId,
+            seriesTitle: seriesTitle,
+            seasonNumber: seasonNumber,
+            episodeNumber: episodeNumber,
+            episodeCount: episodeCount,
+            airDate: airDate,
+            isSpecials: isSpecials,
+            userData: userData,
+            versions: watchDetail.versions,
+            playbackVariants: playbackVariants,
+            subtitles: watchDetail.subtitles,
+            intro: watchDetail.intro,
+            credits: watchDetail.credits,
+            effectiveSubtitleLanguage: watchDetail.effectiveSubtitleLanguage,
+            hasWatchDetailSubtitlePolicy: true,
+            effectiveSubtitleMode: watchDetail.effectiveSubtitleMode,
+            effectiveShowForcedSubtitles: watchDetail.effectiveShowForcedSubtitles,
+            effectiveSubtitleTrackSignature: watchDetail.effectiveSubtitleTrackSignature,
+            overlaySummary: overlaySummary,
+            audiobook: audiobook,
+            pendingTranslationLanguage: pendingTranslationLanguage,
+            // Catalog-only fields: the watch detail knows nothing about
+            // them, so they must be carried across or the trailers rail
+            // would disappear the moment enrichment succeeds.
+            videos: videos,
+            extras: extras,
+            machineTranslatedFields: machineTranslatedFields,
+            themes: themes
+        )
     }
 }

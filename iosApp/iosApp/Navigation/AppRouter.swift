@@ -804,6 +804,26 @@ final class AppRouter {
         guard presentedItemDetail == nil else { return }
         itemDetailPath = NavigationPath()
         itemDetailShowsControl = false
+        #if DEBUG
+        DetailLoadTrace.detailDismissed()
+        #endif
+        // Cards offered while the page was up were held back; the screen
+        // under it is the one the next tap comes from.
+        DetailPrewarmer.shared.reofferVisible()
+    }
+    #endif
+
+    #if !os(tvOS)
+    /// A detail page or the player is in front of the screen that offered
+    /// cards to `DetailPrewarmer`, whose requests would compete with it.
+    var isShowingDetailOrPlayer: Bool {
+        if presentedPlayer != nil { return true }
+        #if os(iOS)
+        return presentedItemDetail != nil
+        #else
+        if case .itemDetail = visiblePushedRoutes.last { return true }
+        return false
+        #endif
     }
     #endif
 
@@ -881,8 +901,11 @@ final class AppRouter {
         resumeContext: SeriesDetailContext? = nil,
         zoomSourceID: UUID? = nil
     ) {
+        #if DEBUG
+        DetailLoadTrace.begin(contentId: contentId, libraryId: libraryId)
+        #endif
         #if os(iOS)
-        recordScreenBreadcrumb(target: "itemDetail", action: "present")
+        recordScreenBreadcrumbInBackground(target: "itemDetail", action: "present")
         if presentedItemDetail == nil {
             itemDetailPath = NavigationPath()
             openItemDetail(ItemDetailPresentation(
@@ -901,6 +924,7 @@ final class AppRouter {
 
     func presentContinueWatchingDetail(for item: SectionItem, libraryId: Int? = nil, zoomSourceID: UUID? = nil) {
         if let context = SeriesDetailContext(item: item) {
+            DetailSeedStore.offer(.section(item), opening: context.seriesContentId)
             presentItemDetail(
                 contentId: context.seriesContentId,
                 libraryId: libraryId,
@@ -911,6 +935,7 @@ final class AppRouter {
         }
         // Movies, audio and incomplete legacy episode payloads retain their
         // existing destination; a missing parent must not make a card inert.
+        DetailSeedStore.offer(.section(item), opening: item.contentId)
         presentItemDetail(contentId: item.contentId, libraryId: libraryId, zoomSourceID: zoomSourceID)
     }
 
@@ -1322,6 +1347,30 @@ final class AppRouter {
         )
         #endif
     }
+
+    #if os(iOS)
+    /// As `recordScreenBreadcrumb`, stamped now but written off the main
+    /// thread: on a detail tap, the journal's file write held up the frame
+    /// the detail opens in.
+    private func recordScreenBreadcrumbInBackground(target: String, action: String) {
+        let timestamp = Date()
+        Self.breadcrumbQueue.async {
+            DiagnosticsCoordinator.recordBreadcrumb(
+                category: .focus,
+                tag: "Navigation",
+                message: "screen changed",
+                attrs: [
+                    "target": .string(target),
+                    "action": .string(action),
+                ],
+                timestamp: timestamp
+            )
+        }
+    }
+
+    /// Serial, so these breadcrumbs keep their order.
+    private static let breadcrumbQueue = DispatchQueue(label: "org.siloserver.silo.navigation-breadcrumbs", qos: .utility)
+    #endif
 
     /// The auth-state timeline (essential tier): the new state and the router
     /// action that caused it, with no account, profile, or server identity.

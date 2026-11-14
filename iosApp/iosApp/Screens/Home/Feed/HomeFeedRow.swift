@@ -13,6 +13,7 @@ struct HomeFeedRow: View {
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     @State private var visibleItemId: String?
     @Environment(AppRouter.self) private var router
+    @Environment(\.browseLibraryId) private var browseLibraryId
     /// The app language, so a switch re-renders the title.
     @Environment(\.locale) private var locale
 
@@ -121,7 +122,11 @@ struct HomeFeedRow: View {
                         }
                     }
                     .id(item.contentId)
-                    .onAppear { warmCards(after: item) }
+                    .onAppear {
+                        warmCards(after: item)
+                        DetailPrewarmer.shared.offer(prewarmTarget(for: item), router: router)
+                    }
+                    .onDisappear { DetailPrewarmer.shared.withdraw(prewarmTarget(for: item)) }
                 }
                 if let exploreAll, !section.items.isEmpty {
                     SectionExploreAllCard(
@@ -146,6 +151,11 @@ struct HomeFeedRow: View {
     private func warmCards(after item: SectionItem) {
         guard let index = section.items.firstIndex(where: { $0.id == item.id }) else { return }
         ArtworkLookahead.warmCards(after: index, in: section.items) { Self.cardArtwork(for: $0, in: section) }
+    }
+
+    /// The page this row's card opens, as `HomeCardTap` opens it.
+    private func prewarmTarget(for item: SectionItem) -> DetailPrewarmTarget? {
+        .homeCard(item, opensResumeContext: isResume, libraryId: browseLibraryId)
     }
 
     private func validSelectionId(preferred: String?) -> String? {

@@ -18,6 +18,10 @@ enum MediaRowLayout {
 /// icon) and safe-area leading padding.
 struct MediaRow: View {
     @Environment(\.locale) private var locale
+    #if !os(tvOS)
+    @Environment(AppRouter.self) private var router
+    @Environment(\.browseLibraryId) private var browseLibraryId
+    #endif
     let title: String
     let items: [SectionItem]
     let onItemTap: (String) -> Void
@@ -420,6 +424,13 @@ struct MediaRow: View {
                             if let index = items.firstIndex(where: { $0.id == item.id }) {
                                 warmCards(after: index)
                             }
+                            // The card opens its own page in this library.
+                            DetailPrewarmer.shared.offer(
+                                .rowCard(item, libraryId: browseLibraryId), router: router
+                            )
+                        }
+                        .onDisappear {
+                            DetailPrewarmer.shared.withdraw(.rowCard(item, libraryId: browseLibraryId))
                         }
                         #endif
                 }
@@ -527,6 +538,7 @@ struct MediaRow: View {
                 playAction: playAction(for: item),
                 focusedItemId: rowFocusBinding,
                 contentId: item.contentId,
+                detailSeedSource: .section(item),
                 contextPlayTitle: contextPlayTitle(for: item),
                 contextDetailTitle: contextDetailTitle(for: item),
                 onOpenContextDetail: contextDetailAction(for: item),
