@@ -14,7 +14,8 @@ struct DownloadActionButton: View {
         case movie
         case episode
         /// A single-file book, saved as it is: no quality or version choice.
-        case audiobook(fileId: Int)
+        /// The server's resume point and book length seed offline resume.
+        case audiobook(fileId: Int, resumePosition: Double?, duration: Double?)
     }
 
     private let contentId: String
@@ -89,7 +90,11 @@ struct DownloadActionButton: View {
     /// `title` is the page's cleaned title and `author` the row subtitle.
     init(audiobook detail: ItemDetail, part: FileVersion, title: String, author: String?) {
         contentId = detail.contentId
-        kind = .audiobook(fileId: part.fileId)
+        kind = .audiobook(
+            fileId: part.fileId,
+            resumePosition: detail.userData?.positionSeconds,
+            duration: detail.audiobook?.totalDurationSeconds.map(Double.init)
+        )
         seriesId = nil
         displayTitle = title
         displaySubtitle = author
@@ -326,13 +331,15 @@ struct DownloadActionButton: View {
         Task {
             do {
                 switch kind {
-                case .audiobook(let fileId):
+                case let .audiobook(fileId, resumePosition, duration):
                     try await manager.downloadAudiobook(
                         contentId: contentId,
                         fileId: fileId,
                         displayTitle: displayTitle,
                         author: displaySubtitle,
-                        posterThumbhash: posterThumbhash
+                        posterThumbhash: posterThumbhash,
+                        resumePosition: resumePosition,
+                        bookDuration: duration
                     )
                 case .episode:
                     try await manager.downloadEpisode(

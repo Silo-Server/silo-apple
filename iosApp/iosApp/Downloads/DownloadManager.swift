@@ -1303,13 +1303,16 @@ final class DownloadManager {
     /// book on a device, so a book split into several files can't be saved
     /// whole and the detail page doesn't offer it. Audio files are always
     /// served as they are: the quality presets are video bitrate classes.
-    /// `author` is the row's subtitle.
+    /// `author` is the row's subtitle; `resumePosition` and `bookDuration`
+    /// are the server's, seeding the offline resume point.
     func downloadAudiobook(
         contentId: String,
         fileId: Int,
         displayTitle: String?,
         author: String?,
-        posterThumbhash: String?
+        posterThumbhash: String?,
+        resumePosition: Double?,
+        bookDuration: Double?
     ) async throws {
         try await requestDownload(
             contentId: contentId,
@@ -1320,6 +1323,7 @@ final class DownloadManager {
             displaySubtitle: author,
             posterThumbhash: posterThumbhash
         )
+        seedLocalProgress(mediaItemId: contentId, position: resumePosition, duration: bookDuration)
         // A create that ended in a conflict or without an answer adopts the
         // registry's row, which knows nothing of the book; label it here so
         // it lists and plays as one before its manifest arrives.
@@ -4026,27 +4030,42 @@ final class DownloadManager {
         }
     }
 
-    /// The flush every caller shares, so two never claim the same queue at
-    /// once. It runs on its own task: a caller that is cancelled (a newer
-    /// play replacing the start that asked for it) doesn't cut its upload
-    /// off mid-request, which would leave the entries held.
-    private var progressFlushTask: Task<Void, Never>?
+    /// The flush every caller in one scope shares, so two never claim the
+    /// same queue at once. It runs on its own task: a caller that is
+    /// cancelled (a newer play replacing the start that asked for it)
+    /// doesn't cut its upload off mid-request, which would leave the entries
+    /// held. A flush belongs to the scope it started in; after a profile or
+    /// server switch, a caller starts its own instead of joining it.
+    private var progressFlush: (id: UUID, scope: ScopeKey, task: Task<Void, Never>)?
 
-    /// Uploads queued offline progress, joining a flush already running.
+    /// Uploads queued offline progress, joining a flush already running in
+    /// the current scope.
     func flushOfflineProgress() async {
-        guard downloadsEnabled else { return }
-        if let running = progressFlushTask {
-            await running.value
+        guard downloadsEnabled, let scope = loadedScope else { return }
+        if let running = progressFlush, running.scope == scope {
+            await running.task.value
             return
         }
-        // The task clears its own handle, so a caller arriving after it ends
-        // starts a new flush instead of joining a finished one.
+        // The task clears its own handle, and only while it is still the
+        // current one, so a caller arriving after it ends starts a new flush.
+        let id = UUID()
         let flush = Task {
             await self.flushProgressQueue()
-            self.progressFlushTask = nil
+            if self.progressFlush?.id == id { self.progressFlush = nil }
         }
-        progressFlushTask = flush
+        progressFlush = (id, scope, flush)
         await flush.value
+    }
+
+    /// Seeds a downloaded book's local resume point from the server's, so a
+    /// book downloaded and then opened offline before the next progress read
+    /// starts where the listener left off. Leaves an existing entry alone.
+    private func seedLocalProgress(mediaItemId: String, position: Double?, duration: Double?) {
+        guard file.localProgress[mediaItemId] == nil, let position, position > 0,
+              updateLocalProgress(mediaItemId: mediaItemId, position: position, duration: duration ?? 0,
+                                  completed: false, at: Date(), latchesCompleted: false) != nil
+        else { return }
+        persist()
     }
 
     /// Offline progress entries whose upload outcome is unknown. They are

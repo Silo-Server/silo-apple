@@ -993,15 +993,27 @@ final class AudioPlayerViewModel {
         return url
     }
 
-    /// The book from the server. While listening this device did offline
-    /// is unsent or on its way, the local resume point wins over the
-    /// server's, which is older, and the queue is sent without holding up
-    /// playback.
+    /// How long a start waits for listening done offline to reach the
+    /// server before reading the server's resume point.
+    private static let offlineProgressSyncWait: Duration = .seconds(3)
+
+    /// The book from the server. Listening this device did offline is sent
+    /// first, briefly, so the server can keep the newer of it and progress
+    /// made elsewhere since; its resume point is then the reconciled one.
+    /// When the send doesn't land in time, the local resume point wins over
+    /// the server's, which is older than this device's unsent listening.
     private func onlineContext(contentId: String, libraryId: Int?, hasDownload: Bool) async throws -> AudiobookPlaybackContext {
         let downloads = DownloadManager.shared
-        let localIsNewer = hasDownload && downloads.hasUnsentProgress(forMediaItemId: contentId)
-        if localIsNewer {
+        var localIsNewer = false
+        if hasDownload, downloads.hasUnsentProgress(forMediaItemId: contentId) {
+            // Its own task, so a newer start cancelling this one can't cut
+            // the upload off mid-request.
             Task { await downloads.flushOfflineProgress() }
+            let deadline = ContinuousClock.now.advanced(by: Self.offlineProgressSyncWait)
+            while downloads.hasUnsentProgress(forMediaItemId: contentId), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            localIsNewer = downloads.hasUnsentProgress(forMediaItemId: contentId)
         }
         let detail = try await api.itemDetail(contentId: contentId, libraryId: libraryId)
         guard let context = AudiobookPlaybackContext(detail: detail) else {
