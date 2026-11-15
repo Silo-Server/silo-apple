@@ -782,7 +782,7 @@ private struct LibrariesTopBar: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            SidebarToggleButton()
+            SidebarToggleButton(chromeScrollState: chromeScrollState)
 
             LibrarySelectorButton(
                 library: activeLibrary,
@@ -793,6 +793,8 @@ private struct LibrariesTopBar: View {
                 scrollState: chromeScrollState,
                 sideOutset: (leading: 10, trailing: 14)
             )
+            // Keeps this pill clear of the sidebar button's.
+            .padding(.leading, 8)
 
             Spacer(minLength: 8)
 

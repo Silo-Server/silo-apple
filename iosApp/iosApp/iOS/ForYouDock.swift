@@ -186,6 +186,11 @@ struct ForYouDockedView: View {
                 }
                 mountedPages.insert(selectedPage)
             }
+            .onChange(of: visibleSections.isEmpty) { _, isEmpty in
+                // The empty state has no scroll view to report an offset,
+                // so the last one would keep the title faded out.
+                if isEmpty { pageChromeStates[.forYou]?.update(0) }
+            }
     }
 
     /// The tab bar shows the dock in its accessory slot (iOS 26.1 and

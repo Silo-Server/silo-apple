@@ -133,7 +133,7 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack(alignment: .center, spacing: 12) {
-                SidebarToggleButton()
+                SidebarToggleButton(chromeScrollState: chromeScrollState)
                 // The wordmark is pinned with the utilities so it stays put
                 // over the glass strip instead of scrolling away with the feed.
                 // It occupies the same 44pt row as the icon buttons so its

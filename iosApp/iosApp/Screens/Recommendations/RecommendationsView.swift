@@ -102,7 +102,7 @@ struct RecommendationsView: View {
 
     private var topChrome: some View {
         HStack(spacing: 12) {
-            SidebarToggleButton()
+            SidebarToggleButton(chromeScrollState: chromeScrollState)
 
             Text(.forYouRecommendations)
                 .font(.siloTitle)

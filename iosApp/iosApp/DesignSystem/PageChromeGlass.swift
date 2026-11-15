@@ -146,9 +146,9 @@ extension View {
         #endif
     }
 
-    /// A glass pill behind one header control (the action cluster, the
-    /// iPad library selector) on iPhone and iPad, where the page's backing
-    /// is a soft edge with no bar to hold it. It fades in on the soft
+    /// A glass pill behind one header control (the action cluster, and on
+    /// iPad the library selector and the sidebar button) on iPhone and
+    /// iPad, where the page's backing is a soft edge with no bar to hold it. It fades in on the soft
     /// edge's schedule, like the glass circles on the Detail page's
     /// buttons. Beside the iPhone Duo's status column `pageChromeBacking`
     /// draws the glass instead.
@@ -267,9 +267,8 @@ private struct PageChromeTitleFade: ViewModifier {
                 to: PageChromeGlass.fadeEnd
             )
             : 0
-        content
-            .opacity(1 - progress)
-            .accessibilityHidden(progress > 0.5)
+        // Opacity only: the title stays the page's heading for VoiceOver.
+        content.opacity(1 - progress)
     }
 }
 #endif

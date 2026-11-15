@@ -26,6 +26,10 @@ struct SidebarToggleAction: Equatable {
 /// header content does not shift. Styled to match the circular icon buttons
 /// used by `TabTopBarActions`.
 struct SidebarToggleButton: View {
+    /// The page's scroll state, on pages whose header has no bar: the
+    /// button gets a glass circle once content scrolls under it.
+    var chromeScrollState: PageChromeScrollState? = nil
+
     @Environment(\.sidebarToggle) private var toggle
     @Environment(\.reservesSidebarToggleSpace) private var reservesSpace
 
@@ -41,6 +45,7 @@ struct SidebarToggleButton: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(.shellSidebarOpen)
+            .pageChromePill(scrollState: chromeScrollState, sideOutset: (leading: 4, trailing: 4))
         } else if reservesSpace {
             Color.clear
                 .frame(
