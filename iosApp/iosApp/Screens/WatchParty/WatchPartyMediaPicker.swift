@@ -779,6 +779,7 @@ private struct WatchPartySearchPage: View {
             .padding(.top, SiloTheme.padding)
             .siloFormWidth(1600)
         }
+        .tvCatalogGridWidthFitting()
         .siloPageBackground()
         .safeAreaPadding(.horizontal, 110)
         .navigationTitle(.watchPartyPickerSearchPage)

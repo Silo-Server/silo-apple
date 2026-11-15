@@ -11,9 +11,11 @@ import SwiftUI
 ///   warm a bounded nearby window. The grid does not touch the image cache.
 /// - Columns: caller picks `columnCount` (default 6). Drop to 5 when a
 ///   side-rail (alphabet jumper etc.) eats horizontal space, or the
-///   fixed `posterCardWidth` cards start overlapping each other.
+///   fixed `posterCardWidth` cards start overlapping each other. Under
+///   `tvCatalogGridWidthFitting()` it also shows no more columns than fit.
 struct TVCatalogGrid: View {
     @Environment(\.locale) private var locale
+    @Environment(\.tvCatalogGridAvailableWidth) private var availableWidth
     let items: [BrowseItem]
     let isLoading: Bool
     let hasMore: Bool
@@ -46,10 +48,16 @@ struct TVCatalogGrid: View {
     private let prefetchRowsRemaining: Int = 8
 
     private var resolvedColumnCount: Int {
-        AdaptiveColumns.tvPosterCount(
-            standardCount: columnCount,
-            posterSize: uiCustomization.cardPresentation.posterSize
-        )
+        let posterSize = uiCustomization.cardPresentation.posterSize
+        let count = AdaptiveColumns.tvPosterCount(standardCount: columnCount, posterSize: posterSize)
+        guard let availableWidth,
+              let fit = AdaptiveColumns.widthFittedPosters(
+                  containerWidth: availableWidth,
+                  minimumCardWidth: cardWidth * posterSize.scale,
+                  spacing: columnSpacing,
+                  minimumColumns: 1
+              ) else { return count }
+        return min(count, fit.columnCount)
     }
 
     private var rowStartIndices: [Int] {
@@ -187,6 +195,32 @@ struct TVCatalogGrid: View {
         guard let firstItemId = items.first?.contentId else { return }
         lastAppliedFocusRequest = request
         focusedItemId = firstItemId
+    }
+}
+
+extension EnvironmentValues {
+    /// Set by `tvCatalogGridWidthFitting()`. Nil keeps a grid at its
+    /// requested column count.
+    @Entry var tvCatalogGridAvailableWidth: CGFloat? = nil
+}
+
+extension View {
+    /// Fits a tvOS search page's result grids to the width the system gives
+    /// the page. Beside the Grid keyboard that is about 1030pt. Six poster
+    /// columns don't fit there; their rows widen the scroll view, which is
+    /// then centered under the keyboard with its last column off-screen.
+    ///
+    /// The width comes from a `GeometryReader` because that is the proposal,
+    /// which doesn't grow with the content as the scroll view does. Columns
+    /// fit that width, so a full row can still reach into the page's
+    /// horizontal padding, as six columns always have. The fixed frame keeps
+    /// the page centered when it does; a reader alone would pin it leading.
+    func tvCatalogGridWidthFitting() -> some View {
+        GeometryReader { proxy in
+            self
+                .environment(\.tvCatalogGridAvailableWidth, proxy.size.width)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+        }
     }
 }
 #endif

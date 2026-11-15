@@ -59,6 +59,9 @@ struct SearchView: View {
             .siloFormWidth(tvSearchContentWidth)
 #endif
         }
+        #if os(tvOS)
+        .tvCatalogGridWidthFitting()
+        #endif
         .siloPageBackground()
         #if os(tvOS)
         .safeAreaPadding(.horizontal, tvSearchSafeHorizontalPadding)
