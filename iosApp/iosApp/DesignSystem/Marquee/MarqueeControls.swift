@@ -494,6 +494,7 @@ struct MarqueeServerCard: View {
 }
 
 struct MarqueeBadge: View {
+    @Environment(\.locale) private var locale
     let text: String
     var systemImage: String?
     var warning: Bool = false
@@ -501,7 +502,7 @@ struct MarqueeBadge: View {
     var body: some View {
         HStack(spacing: 5) {
             if let systemImage { Image(systemName: systemImage).font(.system(size: font - 1, weight: .bold)) }
-            Text(text.uppercased())
+            Text(text.uppercased(with: locale))
         }
         .font(.system(size: font, weight: .semibold))
         .kerning(0.8)

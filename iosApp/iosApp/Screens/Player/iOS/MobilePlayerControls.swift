@@ -311,7 +311,7 @@ struct MobilePlayerControls: View {
             parts.append(LocaleFormat.integer(year, locale: locale))
         }
         guard !parts.isEmpty else { return nil }
-        return parts.joined(separator: " · ").uppercased()
+        return parts.joined(separator: " · ").uppercased(with: locale)
     }
 
     private var heroTitle: String {

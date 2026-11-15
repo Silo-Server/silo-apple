@@ -622,7 +622,7 @@ private struct InfoPane: View {
                 HStack(alignment: .top, spacing: 48) {
                 PaneColumn(.playerHudTitle) {
                     if let series = viewModel.metadata.seriesTitle, !series.isEmpty {
-                        Text(series.uppercased())
+                        Text(series.uppercased(with: locale))
                             .font(.system(size: 16, weight: .semibold))
                             .tracking(1.8)
                             .foregroundStyle(.white.opacity(0.6))

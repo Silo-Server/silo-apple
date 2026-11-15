@@ -18,13 +18,17 @@ enum AppLanguage {
     }()
 
     /// The shipped language a tag selects, matched the way the system matches
-    /// the device language list (`es-MX` → `es`, `zh-CN` → `zh-Hans`), or nil
-    /// when nothing matches (`it`, `zh-TW` with only `zh-Hans`).
+    /// the device language list (`es-MX` → `es`, `zh-CN` → `zh-Hans`,
+    /// `zh-TW` → `zh-Hant`, `no` and `nn` → `nb`), or nil when nothing
+    /// matches (`is`, or `it` in a build without it).
     static func match(_ tag: String, shipped: [String] = shipped) -> String? {
         guard let best = Bundle.preferredLocalizations(from: shipped, forPreferences: [tag]).first else {
             return nil
         }
-        // With no match the system falls back to the first shipped language.
+        // Any other language is the system's choice, including its own
+        // fallbacks between related languages (`no` → `nb`), whose codes
+        // differ. Only the first shipped language can be a no-match fallback.
+        if best != shipped.first { return best }
         let wanted = Locale.Language(identifier: tag).languageCode
         return wanted != nil && Locale.Language(identifier: best).languageCode == wanted ? best : nil
     }

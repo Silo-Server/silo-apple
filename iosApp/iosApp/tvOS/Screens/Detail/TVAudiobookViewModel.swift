@@ -112,7 +112,7 @@ struct TVAudiobookViewModel {
 
     var eyebrow: String {
         if let genre = detail.genres?.first, !genre.isEmpty {
-            return AppLanguage.string(.detailAudiobookLabelWithGenre(genre.uppercased()))
+            return AppLanguage.string(.detailAudiobookLabelWithGenre(genre.uppercased(with: AppLanguage.formattingLocale)))
         }
         return AppLanguage.string(.detailAudiobookLabel)
     }
