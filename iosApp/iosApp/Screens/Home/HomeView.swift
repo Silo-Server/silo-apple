@@ -159,7 +159,8 @@ struct HomeView: View {
                     onSwitchProfile: {
                         router.switchProfile()
                     },
-                    onSignOut: { router.signOutAndReset() }
+                    onSignOut: { router.signOutAndReset() },
+                    chromeScrollState: chromeScrollState
                 )
             }
             .clearsWindowControls()

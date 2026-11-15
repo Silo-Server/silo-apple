@@ -19,6 +19,9 @@ struct TabTopBarActions: View {
     let onSignOut: () -> Void
     /// Vertical in the iPhone Duo's status column (`StatusColumnBar`).
     var axis: Axis = .horizontal
+    /// The page's chrome scroll state. With one, the cluster sits in a glass
+    /// pill once content scrolls under it (`pageChromePill`).
+    var chromeScrollState: PageChromeScrollState? = nil
 
     /// Shared session cache so switching pages never refetches or flashes
     /// the avatar fallback.
@@ -81,6 +84,7 @@ struct TabTopBarActions: View {
                 onSignOut: onSignOut
             )
         }
+        .pageChromePill(scrollState: axis == .horizontal ? chromeScrollState : nil)
         #if os(iOS)
         .sheet(isPresented: $isShowingControlPicker) {
             SiloControlTargetPickerView(request: nil, controller: siloControl)

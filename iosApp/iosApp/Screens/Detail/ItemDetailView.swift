@@ -79,20 +79,18 @@ enum DetailRemoteControlAction: Equatable {
 }
 
 /// Scroll offsets (as folded by `phoneDetailScrollTracking`) over which the
-/// floating chrome's backing strip fades in, the per-button glass fades out
-/// onto that strip, and the compact title fades in. The strip keeps scrolled
-/// content, such as the season chips, from sliding under the floating
-/// buttons while still being tappable.
+/// floating chrome's soft top edge and the compact title fade in. The soft
+/// edge blurs and dims scrolled content, such as the season chips, as it
+/// nears the floating buttons and the status bar, so it never reads as
+/// tappable under them. The buttons keep their own glass throughout.
 struct PhoneDetailScrollGlassTiming: Equatable {
     var strip: ClosedRange<CGFloat>
-    var controlGlass: ClosedRange<CGFloat>
     var title: ClosedRange<CGFloat>
 
     /// Compact (phone-width) hero: tall artwork with the title on its lower
     /// edge, so the chrome waits until the artwork has mostly scrolled away.
     static let compact = PhoneDetailScrollGlassTiming(
         strip: 200...360,
-        controlGlass: 150...260,
         title: 400...480
     )
 
@@ -101,7 +99,6 @@ struct PhoneDetailScrollGlassTiming: Equatable {
     /// earliest offset the folded tracking reports.
     static let expanded = PhoneDetailScrollGlassTiming(
         strip: 150...250,
-        controlGlass: 150...250,
         title: 250...330
     )
 
@@ -115,7 +112,7 @@ struct PhoneDetailScrollGlassTiming: Equatable {
 /// Shared with the request detail card, which has no trailing control.
 struct PhoneDetailTopChrome: View {
     let title: String
-    /// False keeps the buttons on their own glass with no backing strip.
+    /// False leaves the buttons floating with no soft edge or title.
     let isScrollGlassEnabled: Bool
     let scrollState: PhoneDetailScrollState
     let leadingSystemName: String?
@@ -132,13 +129,15 @@ struct PhoneDetailTopChrome: View {
     @Environment(\.locale) private var locale
     /// The chrome spans the detail page, so its width is the hero's width.
     @State private var pageWidth: CGFloat = 0
+    /// The status bar's height, which the soft edge covers above the buttons.
+    @State private var topSafeAreaInset: CGFloat = 0
     @Environment(\.detailPageWidthHint) private var pageWidthHint
     #if os(iOS)
     @State private var statusColumn: StatusColumnLayout?
     #endif
 
-    /// Follows the hero's own compact/expanded choice, so the strip and the
-    /// title arrive as that hero's title scrolls away.
+    /// Follows the hero's own compact/expanded choice, so the soft edge and
+    /// the title arrive as that hero's title scrolls away.
     private var scrollGlass: PhoneDetailScrollGlassTiming? {
         guard isScrollGlassEnabled, !isBesideStatusColumn else { return nil }
         return .forHero(isExpanded: PhoneDetailHeroLayout.usesExpandedLayout(
@@ -157,6 +156,7 @@ struct PhoneDetailTopChrome: View {
         ZStack(alignment: .top) {
             PhoneDetailTopGlass(
                 timing: scrollGlass,
+                topSafeAreaInset: topSafeAreaInset,
                 scrollState: scrollState
             )
 
@@ -195,6 +195,11 @@ struct PhoneDetailTopChrome: View {
             guard abs(width - layoutWidth) > 1 else { return }
             pageWidth = width
         }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.safeAreaInsets.top
+        } action: { inset in
+            topSafeAreaInset = inset
+        }
         #if os(iOS)
         .onGeometryChange(for: StatusColumnLayout?.self) { proxy in
             StatusColumnLayout(safeArea: proxy.safeAreaInsets)
@@ -228,9 +233,8 @@ struct PhoneDetailTopChrome: View {
         isBesideStatusColumn && horizontalSizeClass == .compact
     }
 
-    /// Beside the iPhone Duo's status column the buttons keep their own
-    /// glass and no strip runs across the top: a strip there ends at the
-    /// column in a hard edge.
+    /// Beside the iPhone Duo's status column no soft edge runs across the
+    /// top: it would end at the column in a hard edge.
     private var isBesideStatusColumn: Bool {
         #if os(iOS)
         statusColumn != nil
@@ -252,10 +256,8 @@ struct PhoneDetailTopChrome: View {
 
     private func controlIcon(systemName: String, size: CGFloat) -> some View {
         ZStack {
-            PhoneDetailControlGlass(
-                timing: scrollGlass,
-                scrollState: scrollState
-            )
+            PhoneDetailStaticControlGlass()
+                .equatable()
 
             Image(systemName: systemName)
                 .font(.system(size: size, weight: .semibold))
@@ -273,6 +275,7 @@ struct PhoneDetailTopChrome: View {
 /// node is equatable and retained while only its compositor alpha changes.
 private struct PhoneDetailTopGlass: View {
     let timing: PhoneDetailScrollGlassTiming?
+    let topSafeAreaInset: CGFloat
     let scrollState: PhoneDetailScrollState
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -280,7 +283,10 @@ private struct PhoneDetailTopGlass: View {
     @ViewBuilder
     var body: some View {
         if let timing {
-            PhoneDetailStaticGlassStrip(reduceTransparency: reduceTransparency)
+            PhoneDetailStaticSoftEdge(
+                topSafeAreaInset: topSafeAreaInset,
+                reduceTransparency: reduceTransparency
+            )
                 .equatable()
                 .opacity(phoneDetailSmoothProgress(scrollState.offset, over: timing.strip))
                 .allowsHitTesting(false)
@@ -289,21 +295,47 @@ private struct PhoneDetailTopGlass: View {
     }
 }
 
-private struct PhoneDetailStaticGlassStrip: View, Equatable {
+/// The page blurred and dimmed from the top of the screen, through the status
+/// bar and the buttons' row, fading out below them with no edge of its own.
+private struct PhoneDetailStaticSoftEdge: View, Equatable {
+    /// The layer is drawn this far above the chrome, up to the screen's top.
+    let topSafeAreaInset: CGFloat
     let reduceTransparency: Bool
 
+    /// The buttons' row: their 9pt top inset, the buttons, and 9pt below.
+    private static let rowHeight: CGFloat = SiloTheme.topBarIconHitSize + 18
+    /// How far below the buttons' row the blur and dim reach before they
+    /// have faded out completely.
+    private static let fadeTail: CGFloat = 56
+    /// The fade starts this far into the buttons' row, so it has run a long
+    /// way by the row's lower edge and no line shows there.
+    private static let fadeStart: CGFloat = 14
+
+    private var height: CGFloat {
+        topSafeAreaInset + Self.rowHeight + Self.fadeTail
+    }
+
+    private var fade: LinearGradient {
+        LinearGradient(
+            stops: [
+                .init(color: .black, location: 0),
+                .init(color: .black, location: (topSafeAreaInset + Self.fadeStart) / height),
+                .init(color: .clear, location: 1),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
     var body: some View {
-        Group {
-            if reduceTransparency {
-                Color(white: 0.16).opacity(0.98)
-            } else {
-                Color.clear
-                    .siloGlass(in: Rectangle(), tint: Color.black.opacity(0.10))
-                    .overlay(Color.white.opacity(0.025))
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: SiloTheme.topBarIconHitSize + 18)
+        SiloSoftEdgeSurface(reduceTransparency: reduceTransparency)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .mask(fade)
+            // Fixed geometry, not `ignoresSafeArea`: that moved a fixed-height
+            // layer up without growing it, which cut the fade off in a line.
+            .offset(y: -topSafeAreaInset)
+            .frame(height: Self.rowHeight, alignment: .top)
     }
 }
 
@@ -332,20 +364,6 @@ private struct PhoneDetailScrollTitle: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(progress < 0.5)
         }
-    }
-}
-
-private struct PhoneDetailControlGlass: View {
-    let timing: PhoneDetailScrollGlassTiming?
-    let scrollState: PhoneDetailScrollState
-
-    var body: some View {
-        PhoneDetailStaticControlGlass()
-            .equatable()
-            .opacity(
-                timing.map { 1 - phoneDetailSmoothProgress(scrollState.offset, over: $0.controlGlass) }
-                    ?? 1
-            )
     }
 }
 
@@ -815,7 +833,7 @@ private struct ItemDetailPhoneContent: View {
         return AudiobookDetailFormatting.cleanTitle(detail.title, seriesName: detail.audiobook?.series?.name)
     }
 
-    /// Phone and iPad alike: without the strip, the season chips and other
+    /// Phone and iPad alike: without the soft edge, the season chips and other
     /// controls scroll under the floating Close button on an iPad sheet. A
     /// split movie or series page needs none: its content pane starts below
     /// the buttons, and the hero pane beside it never scrolls away.

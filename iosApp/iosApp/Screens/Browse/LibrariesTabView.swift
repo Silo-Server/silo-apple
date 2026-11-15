@@ -352,7 +352,8 @@ struct LibrariesTabView: View {
                 onSwitchProfile: {
                     router.switchProfile()
                 },
-                onSignOut: { router.signOutAndReset() }
+                onSignOut: { router.signOutAndReset() },
+                chromeScrollState: chromeScrollState
             )
             .padding(.horizontal, SiloTheme.padding)
             .padding(.top, centersHeader ? SiloTheme.padding : SiloTheme.smallPadding)
@@ -489,6 +490,10 @@ struct LibrariesTabView: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isHeader)
+                .pageChromePill(
+                    scrollState: pageChromeStates[selectedTab] ?? chromeScrollState,
+                    sideOutset: (leading: 10, trailing: 14)
+                )
 
                 Spacer(minLength: 8)
 
@@ -497,7 +502,8 @@ struct LibrariesTabView: View {
                     onOpenSettings: { router.navigate(to: .settings) },
                     onOpenRequests: { router.navigate(to: .requestsHub) },
                     onSwitchProfile: { router.switchProfile() },
-                    onSignOut: { router.signOutAndReset() }
+                    onSignOut: { router.signOutAndReset() },
+                    chromeScrollState: pageChromeStates[selectedTab] ?? chromeScrollState
                 )
             }
             .padding(.horizontal, SiloTheme.padding)
@@ -775,6 +781,7 @@ private struct LibrariesTopBar: View {
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
     let onSignOut: () -> Void
+    let chromeScrollState: PageChromeScrollState
 
     var body: some View {
         HStack(spacing: 12) {
@@ -785,6 +792,10 @@ private struct LibrariesTopBar: View {
                 canSwitch: canSwitch,
                 onTap: onLibraryTap
             )
+            .pageChromePill(
+                scrollState: chromeScrollState,
+                sideOutset: (leading: 10, trailing: 14)
+            )
 
             Spacer(minLength: 8)
 
@@ -793,7 +804,8 @@ private struct LibrariesTopBar: View {
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
-                onSignOut: onSignOut
+                onSignOut: onSignOut,
+                chromeScrollState: chromeScrollState
             )
         }
         .clearsWindowControls()

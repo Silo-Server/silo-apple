@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Scroll offset published by a page's vertical `ScrollView` so its pinned
-/// top chrome can fade in a glass strip once content passes underneath.
+/// top chrome can fade in its backing once content passes underneath.
 /// Reference-backed like `PhoneDetailScrollState`, so only the small strip
 /// re-evaluates while the scroll view's body stays stable.
 @Observable
@@ -19,16 +19,26 @@ final class PageChromeScrollState {
     }
 }
 
-/// Full-width Liquid Glass strip that fades in behind pinned page chrome as
-/// the page scrolls. Mirrors the Detail page's `PhoneDetailTopGlass`: the
-/// native glass node is equatable and retained while only its alpha changes.
-/// Place it as the chrome's `background` and let it ignore the top safe area
-/// so it also covers the status-bar region.
+/// Full-width backing that fades in behind pinned page chrome as the page
+/// scrolls. On iPhone and iPad it is a soft edge: the page blurs and dims
+/// from the top of the screen and fades out below the chrome with no line,
+/// as on the Detail page (`PhoneDetailTopGlass`). The Mac keeps a Liquid
+/// Glass strip. Either node is equatable and retained while only its alpha
+/// changes. Place it as the chrome's `background`; it ignores the top safe
+/// area so it also covers the status-bar region.
 struct PageChromeGlass: View {
     /// Offset at which the strip starts to appear.
     static let fadeStart: CGFloat = 8
     /// Offset at which the strip is fully opaque.
     static let fadeEnd: CGFloat = 56
+    /// The height of every header pill (`pageChromePill`), whatever it
+    /// holds: a one-line title, a title with a caption, or the actions.
+    static let pillHeight: CGFloat = 52
+    /// How far below the chrome the soft edge reaches before it is gone.
+    private static let softEdgeTail: CGFloat = 48
+    /// The length of the soft edge's fade. Longer than the tail, so the
+    /// fade is already under way at the chrome's lower edge.
+    private static let softEdgeFadeLength: CGFloat = 70
 
     let scrollState: PageChromeScrollState
 
@@ -60,9 +70,19 @@ struct PageChromeGlass: View {
     }
 
     #if !os(tvOS)
-    private var strip: some View {
+    @ViewBuilder
+    private var stripSurface: some View {
+        #if os(iOS)
+        SiloSoftEdgeSurface(reduceTransparency: reduceTransparency)
+            .equatable()
+        #else
         PageChromeStaticGlass(reduceTransparency: reduceTransparency)
             .equatable()
+        #endif
+    }
+
+    private var strip: some View {
+        stripSurface
             .opacity(
                 pageChromeSmoothProgress(
                     scrollState.offset,
@@ -90,6 +110,18 @@ struct PageChromeGlass: View {
             // straight edge beside the sidebar's rounded panel.
             .ignoresSafeArea(edges: [.top, .leading])
             #else
+            .padding(.bottom, -Self.softEdgeTail)
+            .mask {
+                VStack(spacing: 0) {
+                    Color.black
+                    LinearGradient(
+                        colors: [.black, .clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: Self.softEdgeFadeLength)
+                }
+            }
             .ignoresSafeArea(edges: .top)
             #endif
             .allowsHitTesting(false)
@@ -107,7 +139,38 @@ extension View {
     func pageChromeBacking(scrollState: PageChromeScrollState, outset: EdgeInsets) -> some View {
         #if os(iOS)
         background {
-            PageChromeBackingGlass(scrollState: scrollState, outset: outset)
+            PageChromeBackingGlass(scrollState: scrollState, outset: outset, besideStatusColumn: true)
+        }
+        #else
+        self
+        #endif
+    }
+
+    /// A glass pill behind one header item (the title, the action cluster)
+    /// on iPhone and iPad, where the page's backing is a soft edge with no
+    /// bar to hold the item. It fades in on the soft edge's schedule, like
+    /// the glass circles on the Detail page's buttons. Beside the iPhone
+    /// Duo's status column `pageChromeBacking` draws the glass instead.
+    /// Every pill is `PageChromeGlass.pillHeight` tall, centred on the item,
+    /// so pills match across pages and beside each other; one grows only
+    /// when its item is taller, as at large text sizes. `sideOutset` extends
+    /// the pill past the item's sides without moving it.
+    @ViewBuilder
+    func pageChromePill(
+        scrollState: PageChromeScrollState?,
+        sideOutset: (leading: CGFloat, trailing: CGFloat) = (0, 0)
+    ) -> some View {
+        #if os(iOS)
+        if let scrollState {
+            background {
+                PageChromeBackingGlass(
+                    scrollState: scrollState,
+                    outset: EdgeInsets(top: 0, leading: sideOutset.leading, bottom: 0, trailing: sideOutset.trailing),
+                    besideStatusColumn: false
+                )
+            }
+        } else {
+            self
         }
         #else
         self
@@ -119,12 +182,15 @@ extension View {
 private struct PageChromeBackingGlass: View {
     let scrollState: PageChromeScrollState
     let outset: EdgeInsets
+    /// Which layout draws this glass: the folded iPhone Duo's, beside its
+    /// status column, or every other.
+    let besideStatusColumn: Bool
 
     @Environment(\.statusColumn) private var statusColumn
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        if statusColumn != nil {
+        if (statusColumn != nil) == besideStatusColumn {
             PageChromeStaticGlass(reduceTransparency: reduceTransparency, cornerRadius: 28)
                 .equatable()
                 .padding(EdgeInsets(
@@ -133,6 +199,7 @@ private struct PageChromeBackingGlass: View {
                     bottom: -outset.bottom,
                     trailing: -outset.trailing
                 ))
+                .frame(minHeight: besideStatusColumn ? nil : PageChromeGlass.pillHeight)
                 .opacity(
                     pageChromeSmoothProgress(
                         scrollState.offset,
@@ -142,6 +209,25 @@ private struct PageChromeBackingGlass: View {
                 )
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
+        }
+    }
+}
+#endif
+
+#if os(iOS)
+/// The blurred, dimmed fill of a soft top edge. Callers mask it with a
+/// gradient so it fades out downwards.
+struct SiloSoftEdgeSurface: View, Equatable {
+    let reduceTransparency: Bool
+
+    var body: some View {
+        if reduceTransparency {
+            Color(white: 0.10)
+        } else {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .environment(\.colorScheme, .dark)
+                .overlay(Color.black.opacity(0.22))
         }
     }
 }

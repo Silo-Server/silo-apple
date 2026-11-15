@@ -321,6 +321,10 @@ struct ForYouDockedView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
+            .pageChromePill(
+                scrollState: pageChromeStates[selectedPage],
+                sideOutset: (leading: 10, trailing: 14)
+            )
 
             Spacer(minLength: 8)
 
@@ -329,7 +333,8 @@ struct ForYouDockedView: View {
                 onOpenSettings: { router.navigate(to: .settings) },
                 onOpenRequests: { router.navigate(to: .requestsHub) },
                 onSwitchProfile: { router.switchProfile() },
-                onSignOut: { router.signOutAndReset() }
+                onSignOut: { router.signOutAndReset() },
+                chromeScrollState: pageChromeStates[selectedPage]
             )
         }
         .padding(.horizontal, SiloTheme.padding)
