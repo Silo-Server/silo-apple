@@ -80,7 +80,7 @@ struct TVLibraryCollectionsView: View {
                         if !section.name.isEmpty {
                             // §6.3 mono group header — same grammar as the
                             // cascade/dropdown section headers, at grid scale.
-                            Text(section.name.uppercased(with: locale))
+                            Text(section.name.uppercased())
                                 .font(.system(
                                     size: SiloTheme.Skyline.collectionGridGroupHeaderSize,
                                     design: .monospaced

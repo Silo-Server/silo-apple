@@ -172,7 +172,7 @@ struct TVAudiobookDetailView: View {
                 .padding(.top, 16)
 
             if let series = model.seriesLine {
-                Text(series.uppercased(with: locale))
+                Text(series.uppercased())
                     .font(.system(size: 22, weight: .bold))
                     .tracking(4)
                     .foregroundColor(TVAudiobookStyle.gold)

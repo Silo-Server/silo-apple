@@ -272,7 +272,7 @@ struct TVCascadeSelector: View {
 
     private func singleLevelPanel(for library: Library) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            panelHeader(library.name.uppercased(with: locale))
+            panelHeader(library.name.uppercased())
 
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(pills, id: \.self) { pill in
@@ -358,7 +358,7 @@ struct TVCascadeSelector: View {
 
     private func flyoutHeader(_ text: String) -> some View {
         TVSkylinePanelHeader(
-            text: text.uppercased(with: locale),
+            text: text.uppercased(),
             size: SiloTheme.Skyline.flyoutHeaderSize,
             horizontalPadding: 14,
             topPadding: 6,

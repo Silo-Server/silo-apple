@@ -1454,7 +1454,6 @@ private struct PhoneDetailCoverArtwork: View {
 // MARK: - Titles
 
 private struct PhoneHeroTitle: View {
-    @Environment(\.locale) private var locale
     let title: String
     let textAlignment: TextAlignment
 
@@ -1468,7 +1467,7 @@ private struct PhoneHeroTitle: View {
                 .multilineTextAlignment(textAlignment)
                 .fixedSize(horizontal: false, vertical: true)
             if let subtitle = parts.subtitle {
-                Text(subtitle.uppercased(with: locale))
+                Text(subtitle.uppercased())
                     .siloScaledFont(size: 13, weight: .heavy, relativeTo: .footnote)
                     .tracking(1.2)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.80))

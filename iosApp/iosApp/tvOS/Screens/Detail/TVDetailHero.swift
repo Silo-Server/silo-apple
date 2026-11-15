@@ -480,20 +480,19 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
 /// smaller, still-heavy underline, matching the Apple TV wordmark
 /// treatment.
 private struct TVHeroTitle: View {
-    @Environment(\.locale) private var locale
     let title: String
 
     var body: some View {
         let parts = split(title)
         VStack(alignment: .leading, spacing: 4) {
-            Text(parts.primary.uppercased(with: locale))
+            Text(parts.primary.uppercased())
                 .font(primaryFont)
                 .foregroundColor(.white)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
             if let subtitle = parts.subtitle {
-                Text(subtitle.uppercased(with: locale))
+                Text(subtitle.uppercased())
                     .font(subtitleFont)
                     .foregroundColor(Color.white.opacity(0.95))
                     .tracking(1.5)

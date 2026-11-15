@@ -116,7 +116,7 @@ struct TVAccountsSettingsView: View {
 
     @ViewBuilder
     private func serverSection(_ server: ServerEntry) -> some View {
-        TVSettingsSectionHeader(.verbatim(server.displayName.uppercased(with: locale)))
+        TVSettingsSectionHeader(.verbatim(server.displayName.uppercased()))
             .accessibilityAddTraits(.isHeader)
 
         ForEach(directory.accounts(onServer: server.id)) { account in
