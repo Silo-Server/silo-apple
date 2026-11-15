@@ -656,16 +656,17 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// edge under the sidebar and the content pane.
     private var paneArtwork: some View {
         Group {
-            if case .cover(let aspectRatio, let placeholderSymbol) = artworkStyle,
-               let splitCoverSlot, splitCoverSlot.upperBound - splitCoverSlot.lowerBound >= 120 {
+            if case .cover(let aspectRatio, let placeholderSymbol) = artworkStyle, let splitCoverSlot {
                 // A cover is the whole artwork, so it sits above the sections
-                // rather than fading under them as a backdrop does.
+                // rather than fading under them as a backdrop does. A slot too
+                // short for a legible cover keeps only the wash.
+                let slotHeight = splitCoverSlot.upperBound - splitCoverSlot.lowerBound
                 PhoneDetailCoverArtwork(
                     url: resolvedArtworkURL,
                     thumbhash: resolvedArtworkThumbhash,
                     aspectRatio: aspectRatio,
                     placeholderSymbol: placeholderSymbol,
-                    coverHeight: splitCoverSlot.upperBound - splitCoverSlot.lowerBound,
+                    coverHeight: slotHeight >= 80 ? slotHeight : 0,
                     coverTopInset: splitCoverSlot.lowerBound,
                     fallbackUrl: resolvedFallbackArtworkURL
                 )
@@ -1397,8 +1398,11 @@ private struct PhoneDetailCoverArtwork: View {
     var body: some View {
         ZStack(alignment: coverTopInset == nil ? .center : .top) {
             wash
-            cover
-                .padding(.top, coverTopInset ?? 0)
+            // Zero draws the wash alone.
+            if coverHeight > 0 {
+                cover
+                    .padding(.top, coverTopInset ?? 0)
+            }
         }
     }
 
