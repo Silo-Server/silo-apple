@@ -228,8 +228,9 @@ extension Library {
 /// the views SwiftUI places after it, and passes it to the view controller
 /// the tab bar controller holds for the tab. It looks when the page is
 /// selected, when it reaches the window, and when the page's scroll view
-/// appears later (a page still loading has none yet), which the page's
-/// `LibraryPageScrollViewMarker` reports through `link`.
+/// appears later (a page still loading has none yet) or goes away (a list
+/// emptied by a filter), which the page's `LibraryPageScrollViewMarker`
+/// reports through `link`.
 struct LibraryPageScrollClaim: UIViewRepresentable {
     let isActive: Bool
     let link: LibraryPageScrollClaimLink
@@ -249,12 +250,13 @@ struct LibraryPageScrollClaim: UIViewRepresentable {
     }
 }
 
-/// Connects a page's scroll view, when it appears, to the page's claim.
+/// Connects a page's scroll view, when it appears or goes away, to the
+/// page's claim.
 @MainActor
 final class LibraryPageScrollClaimLink {
     fileprivate weak var claimView: LibraryPageScrollClaimView?
 
-    func scrollViewAppeared() {
+    func scrollViewChanged() {
         claimView?.claimSoon()
     }
 }
@@ -266,8 +268,9 @@ extension EnvironmentValues {
 }
 
 extension View {
-    /// Tells the Libraries tab when this page's scroll view appears, so the
-    /// tab bar can follow it. Does nothing outside the Libraries tab.
+    /// Tells the Libraries tab when this page's scroll view appears or goes
+    /// away, so the tab bar can follow it. Does nothing outside the
+    /// Libraries tab.
     func reportsLibraryPageScrollView() -> some View {
         background { LibraryPageScrollViewMarker() }
     }
@@ -297,7 +300,7 @@ private struct LibraryPageScrollViewMarker: UIViewRepresentable {
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            if window != nil { link?.scrollViewAppeared() }
+            link?.scrollViewChanged()
         }
     }
 }
