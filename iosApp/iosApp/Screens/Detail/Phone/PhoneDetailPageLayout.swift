@@ -273,13 +273,20 @@ private struct SplitPageArtwork<Artwork: View>: View {
     let artwork: () -> Artwork
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    /// The artwork is a cover that ends above the sections (see
+    /// `detailSplitCoverSlot`), which the lower shade must not darken.
+    @State private var hasCoverAboveSections = false
 
     var body: some View {
         let progress = scroll.progress
-        // The lower shade reaches full strength just above the sections.
-        let shadeStart = max(contentStart - 0.26, 0.05)
-        let shadeFull = max(contentStart - 0.04, shadeStart + 0.01)
+        // The lower shade reaches full strength just above the sections, or
+        // just below where they start when a cover ends above them.
+        let shadeStart = hasCoverAboveSections ? contentStart : max(contentStart - 0.26, 0.05)
+        let shadeFull = hasCoverAboveSections
+            ? min(contentStart + 0.06, 1)
+            : max(contentStart - 0.04, shadeStart + 0.01)
         artwork()
+            .onPreferenceChange(SplitCoverAboveSectionsKey.self) { hasCoverAboveSections = $0 }
             .frame(width: size.width, height: size.height)
             .clipped()
             // Shifted right, the artwork leaves the window's leading edge
@@ -556,6 +563,16 @@ extension View {
                 )
             }
         }
+    }
+}
+
+/// Set by artwork that draws a cover in `detailSplitCoverSlot`, so the split
+/// page keeps its lower shade off the cover.
+struct SplitCoverAboveSectionsKey: PreferenceKey {
+    static let defaultValue = false
+
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
     }
 }
 

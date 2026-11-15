@@ -669,6 +669,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                     coverTopInset: splitCoverSlot.lowerBound,
                     fallbackUrl: resolvedFallbackArtworkURL
                 )
+                .preference(key: SplitCoverAboveSectionsKey.self, value: true)
             } else {
                 artwork
             }
