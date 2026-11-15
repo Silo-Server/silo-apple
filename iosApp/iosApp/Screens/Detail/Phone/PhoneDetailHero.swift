@@ -328,7 +328,8 @@ private struct PhoneDetailParallaxArtwork: View {
                 aspectRatio: aspectRatio,
                 placeholderSymbol: placeholderSymbol,
                 coverHeight: min(max(height * 0.48, 190), 250),
-                coverTopInset: 100
+                coverTopInset: 100,
+                fallbackUrl: fallbackUrl
             )
         }
     }
@@ -483,6 +484,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.detailSplitCoverSlot) private var splitCoverSlot
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.locale) private var locale
     #if os(iOS)
@@ -578,7 +580,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 height: compactArtworkHeight,
                 isEnabled: enablesArtworkParallax,
                 style: artworkStyle,
-                fallbackUrl: fallbackArtworkUrl
+                fallbackUrl: resolvedFallbackArtworkURL
             )
 
             LinearGradient(
@@ -653,9 +655,28 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// The artwork the page spreads across the whole window, from edge to
     /// edge under the sidebar and the content pane.
     private var paneArtwork: some View {
-        artwork
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        Group {
+            if case .cover(let aspectRatio, let placeholderSymbol) = artworkStyle, let splitCoverSlot {
+                // A cover is the whole artwork, so it sits above the sections
+                // rather than fading under them as a backdrop does. A slot too
+                // short for a legible cover keeps only the wash.
+                let slotHeight = splitCoverSlot.upperBound - splitCoverSlot.lowerBound
+                PhoneDetailCoverArtwork(
+                    url: resolvedArtworkURL,
+                    thumbhash: resolvedArtworkThumbhash,
+                    aspectRatio: aspectRatio,
+                    placeholderSymbol: placeholderSymbol,
+                    coverHeight: slotHeight >= 80 ? slotHeight : 0,
+                    coverTopInset: splitCoverSlot.lowerBound,
+                    fallbackUrl: resolvedFallbackArtworkURL
+                )
+                .preference(key: SplitCoverAboveSectionsKey.self, value: true)
+            } else {
+                artwork
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     // MARK: - Expanded iPad layout
@@ -982,7 +1003,8 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                     aspectRatio: aspectRatio,
                     placeholderSymbol: placeholderSymbol,
                     coverHeight: geometry.size.height * 0.68,
-                    coverTopInset: nil
+                    coverTopInset: nil,
+                    fallbackUrl: resolvedFallbackArtworkURL
                 )
             }
         }
@@ -993,6 +1015,12 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     private var resolvedArtworkURL: String? {
         if case .cover = artworkStyle { return nonEmpty(posterUrl) }
         return nonEmpty(backdropUrl) ?? nonEmpty(posterUrl)
+    }
+
+    /// The card seed's artwork for the slot `resolvedArtworkURL` fills.
+    private var resolvedFallbackArtworkURL: String? {
+        if case .cover = artworkStyle { return fallbackPosterUrl }
+        return fallbackArtworkUrl
     }
 
     private var resolvedArtworkThumbhash: String? {
@@ -1364,12 +1392,17 @@ private struct PhoneDetailCoverArtwork: View {
     let placeholderSymbol: String
     let coverHeight: CGFloat
     let coverTopInset: CGFloat?
+    /// See `AsyncImageView.fallbackUrl`.
+    var fallbackUrl: String? = nil
 
     var body: some View {
         ZStack(alignment: coverTopInset == nil ? .center : .top) {
             wash
-            cover
-                .padding(.top, coverTopInset ?? 0)
+            // Zero draws the wash alone.
+            if coverHeight > 0 {
+                cover
+                    .padding(.top, coverTopInset ?? 0)
+            }
         }
     }
 
@@ -1382,7 +1415,8 @@ private struct PhoneDetailCoverArtwork: View {
                         url: url,
                         thumbhash: thumbhash,
                         targetSize: CGSize(width: 420, height: 420),
-                        contentMode: .fill
+                        contentMode: .fill,
+                        fallbackUrl: fallbackUrl
                     )
                     .scaleEffect(1.25)
                     .saturation(1.2)
@@ -1403,7 +1437,8 @@ private struct PhoneDetailCoverArtwork: View {
             targetSize: CGSize(width: width, height: coverHeight),
             contentMode: .fill,
             placeholderStyle: .artwork,
-            placeholderSymbol: placeholderSymbol
+            placeholderSymbol: placeholderSymbol,
+            fallbackUrl: fallbackUrl
         )
         .frame(width: width, height: coverHeight)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

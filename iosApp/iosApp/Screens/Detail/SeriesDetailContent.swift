@@ -82,7 +82,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
 
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.locale) private var locale
     @Environment(AppRouter.self) private var router
     @State private var shuffleLauncher = ShuffleLauncher()
@@ -112,43 +111,26 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @State private var showsMediaInfo = false
 
     var body: some View {
-        PhoneDetailPageSurface(
+        PhoneDetailPage(
             backdropURL: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
             enablesArtworkGlass: true,
-            keepsSideSafeArea: true,
-            fallbackBackdropURL: seedArtwork?.backdrop
-        ) {
-            PhoneDetailPageLayout(scrollState: scrollState) {
-                VStack(alignment: .leading, spacing: heroToContentSpacing) {
-                    hero()
-                    PhoneDetailBelowFold { belowFold }
-                }
-                .padding(.bottom, 40)
-            } paneArtwork: {
-                hero(pane: .artwork)
-            } paneSidebar: {
-                VStack(spacing: 16) {
-                    hero(pane: .sidebar)
-                    playbackSelectors
-                }
-            } paneContent: {
-                VStack(alignment: .leading, spacing: 32) {
-                    VStack(spacing: 14) {
-                        hero(pane: .overview)
-                        belowOverview()
-                    }
-                    .padding(.horizontal, SiloTheme.safePadding)
-                    belowFold
-                }
-                .padding(.bottom, 40)
-            }
-            #if os(iOS)
-            .environment(\.watchPartyEpisodePreview) { [detail, seasons] episode in
-                WatchPartySelectedItem(previewing: episode, series: detail, seasons: seasons)
-            }
-            #endif
+            fallbackBackdropURL: seedArtwork?.backdrop,
+            scrollState: scrollState
+        ) { pane in
+            hero(pane: pane)
+        } sidebarExtras: {
+            playbackSelectors
+        } belowOverview: {
+            belowOverview()
+        } belowFold: {
+            belowFold
         }
+        #if os(iOS)
+        .environment(\.watchPartyEpisodePreview) { [detail, seasons] episode in
+            WatchPartySelectedItem(previewing: episode, series: detail, seasons: seasons)
+        }
+        #endif
         .siloResumePlaybackAlert(
             isPresented: Binding(
                 get: { pendingResume != nil },
@@ -204,13 +186,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         .shuffleFailureAlert(shuffleLauncher)
     }
 
-    private var heroToContentSpacing: CGFloat {
-        horizontalSizeClass == .regular ? 16 : 32
-    }
-
     // MARK: - Hero
 
-    private func hero(pane: PhoneDetailHeroPane? = nil) -> some View {
+    private func hero(pane: PhoneDetailHeroPane?) -> some View {
         PhoneDetailHero(
             title: detail.title,
             logoUrl: detail.logoUrl,

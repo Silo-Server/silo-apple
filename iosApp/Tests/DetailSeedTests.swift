@@ -8,10 +8,11 @@ final class DetailSeedTests: XCTestCase {
     private let movieId = "detail-seed-movie"
     private let seriesId = "detail-seed-series"
     private let episodeId = "detail-seed-episode"
+    private let audiobookId = "detail-seed-audiobook"
 
     override func tearDown() async throws {
         ResponseCache.shared.remove(CacheKey.itemDetailSeed)
-        for id in [movieId, seriesId, episodeId] {
+        for id in [movieId, seriesId, episodeId, audiobookId] {
             ResponseCache.shared.removeItemMetadata(contentId: id)
         }
         try await super.tearDown()
@@ -48,6 +49,43 @@ final class DetailSeedTests: XCTestCase {
         XCTAssertEqual(seed.showStatus, "Continuing")
     }
 
+    func testAudiobookCardSeedsItsOwnPage() throws {
+        let card = try section(
+            #"{"contentId":"detail-seed-audiobook","type":"book","title":"Project Hail Mary","year":2021,"#
+                + #""overview":"A lone astronaut.","genres":["Science Fiction"],"#
+                + #""posterUrl":"https://example.test/cover.jpg","posterThumbhash":"ph","#
+                + #""userState":{"played":false,"isFavorite":true,"inWatchlist":true}}"#
+        )
+        let seed = try XCTUnwrap(ItemDetail.seed(from: card, opening: audiobookId))
+        // The page draws it as the audiobook page, as it will the fetched detail.
+        XCTAssertEqual(seed.type, "audiobook")
+        XCTAssertTrue(seed.isAudiobook)
+        XCTAssertEqual(seed.title, "Project Hail Mary")
+        XCTAssertEqual(seed.year, 2021)
+        XCTAssertEqual(seed.posterUrl, "https://example.test/cover.jpg")
+        XCTAssertEqual(seed.userState?.inWatchlist, true)
+        // No parts, listening progress, authors or narrators are invented.
+        XCTAssertNil(seed.versions)
+        XCTAssertNil(seed.userData)
+        XCTAssertNil(seed.audiobook)
+    }
+
+    func testAudiobookRailBookSeedsTheBookItOpens() throws {
+        let related = AudiobookRelatedItem(
+            contentId: "detail-seed-audiobook",
+            title: "The Martian",
+            year: 2014,
+            posterUrl: "https://example.test/martian.jpg",
+            seriesIndex: nil
+        )
+        let rail = SimilarPosterItem(audiobook: related)
+        let card = try XCTUnwrap(rail.card)
+        let seed = try XCTUnwrap(ItemDetail.seed(from: DetailSeedSource.browse(card).sectionItem, opening: audiobookId))
+        XCTAssertTrue(seed.isAudiobook)
+        XCTAssertEqual(seed.title, "The Martian")
+        XCTAssertEqual(seed.posterUrl, "https://example.test/martian.jpg")
+    }
+
     func testEpisodeCardSeedsItsSeriesFromParentFieldsOnly() throws {
         let card = try section(
             #"{"contentId":"detail-seed-episode","type":"episode","title":"Pilot","seriesId":"detail-seed-series","#
@@ -77,8 +115,8 @@ final class DetailSeedTests: XCTestCase {
         let episode = try section(#"{"contentId":"detail-seed-episode","type":"episode","title":"Pilot","seriesId":"detail-seed-series"}"#)
         XCTAssertNil(ItemDetail.seed(from: episode, opening: episodeId))
         XCTAssertNil(ItemDetail.seed(from: episode, opening: seriesId))
-        let audiobook = try section(#"{"contentId":"detail-seed-movie","type":"audiobook","title":"Dune"}"#)
-        XCTAssertNil(ItemDetail.seed(from: audiobook, opening: movieId))
+        let ebook = try section(#"{"contentId":"detail-seed-movie","type":"ebook","title":"Dune"}"#)
+        XCTAssertNil(ItemDetail.seed(from: ebook, opening: movieId))
         let untitled = try section(#"{"contentId":"detail-seed-movie","type":"movie","title":"  "}"#)
         XCTAssertNil(ItemDetail.seed(from: untitled, opening: movieId))
         let other = try section(#"{"contentId":"detail-seed-movie","type":"movie","title":"Heat"}"#)

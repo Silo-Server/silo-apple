@@ -914,8 +914,10 @@ private struct ItemDetailPhoneContent: View {
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
                 onPersonTap: { openPerson($0) },
-                onNavigateToItem: { openItem($0) },
+                onNavigateToItem: { router.openRelatedTitle(contentId: $0) },
                 scrollState: detailScrollState,
+                isProvisional: viewModel.isDetailProvisional,
+                seedArtwork: viewModel.seedArtwork,
                 belowOverview: { translationView(for: detail) }
             )
         } else if detail.type == "season" || detail.type == "episode" {
@@ -1634,10 +1636,6 @@ private struct ItemDetailPhoneContent: View {
         if !personId.isEmpty {
             router.navigate(to: .personDetail(personId: personId))
         }
-    }
-
-    private func openItem(_ contentId: String) {
-        router.navigate(to: .itemDetail(contentId: contentId))
     }
 
     private func translationView(for detail: ItemDetail) -> DescriptionTranslationView {
