@@ -263130,7 +263130,7 @@
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Il server ha cambiato il percorso o la modalità di riproduzione durante il riancoraggio V3 della ricerca."
+            "value" : "Il server ha cambiato il percorso o la modalità di riproduzione durante il riancoraggio V3 dello spostamento."
           }
         },
         "ja" : {
@@ -294636,7 +294636,7 @@
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ricerca"
+            "value" : "Spostamento"
           }
         },
         "ja" : {
@@ -294690,7 +294690,7 @@
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Konum aranıyor"
+            "value" : "Sarılıyor"
           }
         },
         "uk" : {
@@ -320590,7 +320590,7 @@
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Silo può saltare “Chi sta guardando?” e aprire questo profilo all’avvio su questa Apple TV. Puoi modificare questa scelta in seguito in Impostazioni > Generali > Selezione profilo."
+            "value" : "Silo può saltare la schermata “Chi sta guardando?” e aprire questo profilo all’avvio su questa Apple TV. Puoi modificare questa scelta in seguito in Impostazioni > Generali > Selezione del profilo."
           }
         },
         "ja" : {
@@ -388052,7 +388052,7 @@
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Cache di ricerca"
+            "value" : "Cache di spostamento"
           }
         },
         "ja" : {
@@ -388070,7 +388070,7 @@
         "nb" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Søkebuffer"
+            "value" : "Spolebuffer"
           }
         },
         "nl" : {
@@ -431450,7 +431450,7 @@
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Cache di ricerca"
+            "value" : "Cache di spostamento"
           }
         },
         "ja" : {
@@ -490428,7 +490428,7 @@
         "fi" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Linkki viittaa palvelimeen, jota tämä laite ei voi vahvistaa. Syötä tv:n koodi sen sijaan kohdassa Asetukset > Kirjaa tv sisään."
+            "value" : "Linkki viittaa palvelimeen, jota tämä laite ei voi vahvistaa. Syötä tv:n koodi sen sijaan kohdassa Asetukset > Tv:n kirjautuminen."
           }
         },
         "fr" : {
@@ -490446,7 +490446,7 @@
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Il link indica un server che questo dispositivo non può verificare. Inserisci invece il codice della TV in Impostazioni > Accedi su una TV."
+            "value" : "Il link indica un server che questo dispositivo non può confermare. Inserisci invece il codice della TV in Impostazioni > Accesso su una TV."
           }
         },
         "ja" : {
@@ -490458,7 +490458,7 @@
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "이 링크에 지정된 서버를 이 기기에서 확인할 수 없어요. 대신 설정 > TV 로그인에서 TV의 코드를 입력하세요."
+            "value" : "이 링크에 지정된 서버를 이 기기에서 확인할 수 없어요. 대신 설정 > TV에 로그인에서 TV의 코드를 입력하세요."
           }
         },
         "nb" : {
@@ -490476,7 +490476,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ten link wskazuje serwer, którego to urządzenie nie może potwierdzić. Zamiast tego wpisz kod telewizora w sekcji Ustawienia > Zaloguj telewizor."
+            "value" : "Ten link wskazuje serwer, którego to urządzenie nie może potwierdzić. Zamiast tego wpisz kod telewizora w sekcji Ustawienia > Logowanie telewizora."
           }
         },
         "pt-BR" : {
