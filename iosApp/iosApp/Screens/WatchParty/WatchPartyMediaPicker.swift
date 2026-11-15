@@ -780,11 +780,14 @@ private struct WatchPartySearchPage: View {
             .siloFormWidth(1600)
         }
         .tvCatalogGridWidthFitting()
-        .siloPageBackground()
         .safeAreaPadding(.horizontal, 110)
         .navigationTitle(.watchPartyPickerSearchPage)
         .siloNavigationTitleDisplayMode(.inline)
         .siloSearchable(text: $viewModel.query, prompt: AppLanguage.string(.watchPartyPickerSearchPromptTv))
+        // Outside `.searchable`, so it also covers the keyboard and the space
+        // above the results. The search screen is otherwise transparent, and
+        // the party screen under this full-screen cover showed through.
+        .siloPageBackground()
         .onAppear { viewModel.audiobooksEnabled = false }
         .onChange(of: viewModel.query) { _, _ in viewModel.onQueryChanged() }
     }
