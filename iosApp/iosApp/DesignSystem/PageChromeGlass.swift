@@ -267,8 +267,10 @@ private struct PageChromeTitleFade: ViewModifier {
                 to: PageChromeGlass.fadeEnd
             )
             : 0
-        // Opacity only: the title stays the page's heading for VoiceOver.
-        content.opacity(1 - progress)
+        // The title stays the page's heading for VoiceOver, so the fade
+        // stops just short of zero: SwiftUI drops a fully transparent view
+        // from the accessibility tree.
+        content.opacity(max(1 - progress, 0.001))
     }
 }
 #endif
