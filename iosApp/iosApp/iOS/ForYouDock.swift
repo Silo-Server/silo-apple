@@ -321,10 +321,7 @@ struct ForYouDockedView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
-            .pageChromePill(
-                scrollState: pageChromeStates[selectedPage],
-                sideOutset: (leading: 10, trailing: 14)
-            )
+            .pageChromeTitleFadesOut(scrollState: pageChromeStates[selectedPage])
 
             Spacer(minLength: 8)
 

@@ -490,10 +490,7 @@ struct LibrariesTabView: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isHeader)
-                .pageChromePill(
-                    scrollState: pageChromeStates[selectedTab] ?? chromeScrollState,
-                    sideOutset: (leading: 10, trailing: 14)
-                )
+                .pageChromeTitleFadesOut(scrollState: pageChromeStates[selectedTab] ?? chromeScrollState)
 
                 Spacer(minLength: 8)
 

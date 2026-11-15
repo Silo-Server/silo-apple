@@ -32,7 +32,7 @@ struct PageChromeGlass: View {
     /// Offset at which the strip is fully opaque.
     static let fadeEnd: CGFloat = 56
     /// The height of every header pill (`pageChromePill`), whatever it
-    /// holds: a one-line title, a title with a caption, or the actions.
+    /// holds.
     static let pillHeight: CGFloat = 52
     /// How far below the chrome the soft edge reaches before it is gone.
     private static let softEdgeTail: CGFloat = 48
@@ -146,11 +146,12 @@ extension View {
         #endif
     }
 
-    /// A glass pill behind one header item (the title, the action cluster)
-    /// on iPhone and iPad, where the page's backing is a soft edge with no
-    /// bar to hold the item. It fades in on the soft edge's schedule, like
-    /// the glass circles on the Detail page's buttons. Beside the iPhone
-    /// Duo's status column `pageChromeBacking` draws the glass instead.
+    /// A glass pill behind one header control (the action cluster, the
+    /// iPad library selector) on iPhone and iPad, where the page's backing
+    /// is a soft edge with no bar to hold it. It fades in on the soft
+    /// edge's schedule, like the glass circles on the Detail page's
+    /// buttons. Beside the iPhone Duo's status column `pageChromeBacking`
+    /// draws the glass instead.
     /// Every pill is `PageChromeGlass.pillHeight` tall, centred on the item,
     /// so pills match across pages and beside each other; one grows only
     /// when its item is taller, as at large text sizes. `sideOutset` extends
@@ -229,6 +230,46 @@ struct SiloSoftEdgeSurface: View, Equatable {
                 .environment(\.colorScheme, .dark)
                 .overlay(Color.black.opacity(0.22))
         }
+    }
+}
+#endif
+
+extension View {
+    /// Fades a header's title out as content scrolls under the header, on
+    /// the soft edge's schedule, so no text sits over the scrolling page.
+    /// iPhone and iPad only, and not beside the iPhone Duo's status column,
+    /// where `pageChromeBacking` keeps the title on glass.
+    @ViewBuilder
+    func pageChromeTitleFadesOut(scrollState: PageChromeScrollState?) -> some View {
+        #if os(iOS)
+        if let scrollState {
+            modifier(PageChromeTitleFade(scrollState: scrollState))
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(iOS)
+private struct PageChromeTitleFade: ViewModifier {
+    let scrollState: PageChromeScrollState
+
+    @Environment(\.statusColumn) private var statusColumn
+
+    func body(content: Content) -> some View {
+        let progress = statusColumn == nil
+            ? pageChromeSmoothProgress(
+                scrollState.offset,
+                from: PageChromeGlass.fadeStart,
+                to: PageChromeGlass.fadeEnd
+            )
+            : 0
+        content
+            .opacity(1 - progress)
+            .accessibilityHidden(progress > 0.5)
     }
 }
 #endif
