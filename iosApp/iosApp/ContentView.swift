@@ -2173,7 +2173,9 @@ private struct RemotePlaybackPrompts: ViewModifier {
                 Text(.remoteReplaceTitle),
                 isPresented: Binding(
                     get: { isActive && router.pendingReplaceRemotePlayback != nil },
-                    set: { if !$0 { router.pendingReplaceRemotePlayback = nil } }
+                    // A prompt that closes because a detail opened over it
+                    // stays pending for the detail to ask.
+                    set: { if !$0, isActive { router.pendingReplaceRemotePlayback = nil } }
                 ),
                 titleVisibility: .visible,
                 presenting: router.pendingReplaceRemotePlayback
@@ -2187,7 +2189,7 @@ private struct RemotePlaybackPrompts: ViewModifier {
                 Text(.shellRemotePlaybackTvConnected),
                 isPresented: Binding(
                     get: { isActive && router.pendingOfflinePlayChoice != nil },
-                    set: { if !$0 { router.pendingOfflinePlayChoice = nil } }
+                    set: { if !$0, isActive { router.pendingOfflinePlayChoice = nil } }
                 ),
                 titleVisibility: .visible
             ) {
@@ -2634,7 +2636,9 @@ struct MainTabView: View {
         .siloRemoteControl(
             isPresented: Binding(
                 get: { siloControl.isShowingRemoteControl && router.presentedItemDetail == nil },
-                set: { if !$0 { siloControl.hideRemoteControl() } }
+                // Closing because a detail took the remote over is not the
+                // user closing it.
+                set: { if !$0, router.presentedItemDetail == nil { siloControl.hideRemoteControl() } }
             ),
             coversWindow: router.presentsItemDetailFullWindow || statusColumn != nil,
             controller: siloControl

@@ -195,11 +195,13 @@ final class SiloControlClient {
             while isReconnecting, ContinuousClock.now < deadline, !Task.isCancelled {
                 await reconnectSettled.nextChange(before: deadline)
             }
+            // The user stopped the reconnect or turned control mode off
+            // while this Play waited. That closed the remote, so the Play
+            // goes with it: reopening the remote on a reconnect error would
+            // undo their choice, and a TV they connected since never asked
+            // for this title.
+            if userEndedSessionCount != endedByUser { return true }
             guard hasActiveSession else {
-                // The user stopped the reconnect or turned control mode off
-                // while this Play waited. That closed the remote; reopening
-                // it on a reconnect error would undo their choice.
-                if userEndedSessionCount != endedByUser { return true }
                 if errorMessage == nil {
                     errorMessage = lastTarget.map { AppLanguage.string(.remoteErrorReconnectFailed($0.name)) }
                         ?? AppLanguage.string(.remoteErrorReconnectFailedUnnamed)
