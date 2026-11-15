@@ -41,6 +41,12 @@
             "value" : "Siloはローカルネットワークを使用して、Siloサーバーを検出したり、Apple TV のSiloを設定・操作したりします。"
           }
         },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo gebruikt je lokale netwerk om Silo-servers te vinden, en om Silo op je Apple TV in te stellen en te bedienen."
+          }
+        },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",

@@ -41,6 +41,12 @@
             "value" : "Siloはローカルネットワークを使用して、Siloサーバーを検出したり、テレビのSiloを設定・検出・操作したりします。"
           }
         },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo gebruikt je lokale netwerk om Silo-servers te vinden, en om Silo op je tv in te stellen, te vinden en te bedienen."
+          }
+        },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",

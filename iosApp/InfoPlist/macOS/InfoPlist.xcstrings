@@ -41,6 +41,12 @@
             "value" : "Siloはローカルネットワークを使用して、Siloサーバーを検出します。"
           }
         },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo gebruikt je lokale netwerk om Silo-servers te vinden."
+          }
+        },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",
