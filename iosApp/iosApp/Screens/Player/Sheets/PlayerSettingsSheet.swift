@@ -28,8 +28,9 @@ private struct RangeSpinner<Value: Strideable>: View {
 
 /// iOS in-player settings sheet, presented from `MobilePlayerControls`.
 /// Changes apply immediately: each row writes one setting through the view
-/// model. Quality and subtitle appearance open sub-pages; route diagnostics
-/// sit on an Advanced page. tvOS uses `TVPlayerInfoHUD` and macOS uses
+/// model. Quality and subtitle appearance open sub-pages; the playback stats
+/// have one section, with the overlay switch and a page of every stat. tvOS
+/// uses `TVPlayerInfoHUD` and macOS uses
 /// `MacPlayerOptionsPanel` instead.
 struct PlayerSettingsSheet: View {
     let viewModel: PlayerViewModel
@@ -46,9 +47,9 @@ struct PlayerSettingsSheet: View {
         NavigationStack {
             List {
                 videoSection
+                playbackSection
                 subtitlesSection
-                sessionSection
-                advancedSection
+                statsSection
             }
             .navigationTitle(Text(.playerSettingsSheetTitle))
             .navigationBarTitleDisplayMode(.inline)
@@ -345,7 +346,8 @@ struct PlayerSettingsSheet: View {
 
     private static let speedOptions: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
 
-    private var sessionSection: some View {
+    /// How the title plays: its speed, what follows it, and when to stop.
+    private var playbackSection: some View {
         Section {
             if !viewModel.isWatchPartyPlayback {
                 Picker(selection: Binding(
@@ -360,7 +362,16 @@ struct PlayerSettingsSheet: View {
                 } label: {
                     Text(.playerSettingsSpeed)
                 }
+
+                Toggle(isOn: Binding(
+                    get: { viewModel.settings.autoPlayNextEpisode },
+                    set: { viewModel.settings.setAutoPlayNextEpisode($0) }
+                )) {
+                    Text(.settingsControlAutoplay)
+                }
+                .tint(.siloSwitchOn)
             }
+
             sleepTimerPicker
 
             if sleepTimer.isActive {
@@ -371,84 +382,67 @@ struct PlayerSettingsSheet: View {
                     Text(.playerSleepTimerRemaining)
                 }
             }
-
-            if !viewModel.isWatchPartyPlayback {
-                Toggle(isOn: Binding(
-                    get: { viewModel.settings.autoPlayNextEpisode },
-                    set: { viewModel.settings.setAutoPlayNextEpisode($0) }
-                )) {
-                    Text(.settingsControlAutoplay)
-                }
-                .tint(.siloSwitchOn)
-            }
         } header: {
-            Text(.playerSettingsSession)
+            Text(.playerHudPlayback)
         }
     }
 
-    private var advancedSection: some View {
+    /// The stats in one place: the switch for the overlay, and a page with
+    /// every row for when the overlay's short list is not enough.
+    private var statsSection: some View {
         Section {
             if let statsOverlayVisible {
                 Toggle(isOn: statsOverlayVisible) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(.optionsTabStats)
-                        Text(.playerStatsOverlayNote)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(.playerStatsOverlayNote)
                 }
                 .tint(.siloSwitchOn)
             }
 
             NavigationLink {
-                advancedPage
+                technicalDetailsPage
             } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(.playerSettingsSectionAdvanced)
-                    Text(.playerSettingsAdvancedNote)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text(.playerHudTechnicalDetails)
             }
+        } header: {
+            Text(.playerStatsTitle)
         }
     }
 
-    private var advancedPage: some View {
-        List {
+    /// Every stat, live, in the sections the other platforms use.
+    private var technicalDetailsPage: some View {
+        let stats = viewModel.playbackStats
+        return List {
+            if stats.hasRows {
+                statsRows(stats.playbackRows, header: .playerHudPlayback)
+                statsRows(stats.streamRows, header: .playerHudStream)
+                statsRows(stats.engineRows, header: .playerStatsSectionEngine)
+            } else {
+                Text(.playerStatsAppearOnceStarted)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle(Text(.playerHudTechnicalDetails))
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private func statsRows(_ rows: [PlaybackStats.Row], header: LocalizedStringResource) -> some View {
+        if !rows.isEmpty {
             Section {
-                ForEach(viewModel.routeStatusRows) { row in
+                ForEach(rows) { row in
                     HStack(alignment: .firstTextBaseline) {
                         Text(row.label)
                         Spacer()
                         Text(row.value)
                             .foregroundStyle(.secondary)
+                            .monospacedDigit()
                             .multilineTextAlignment(.trailing)
                     }
                 }
             } header: {
-                Text(.playerHudRoute)
-            }
-
-            if viewModel.routeDecisionSummary != nil || !viewModel.routeWarnings.isEmpty {
-                Section {
-                    if let summary = viewModel.routeDecisionSummary {
-                        Text(summary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    ForEach(Array(viewModel.routeWarnings.enumerated()), id: \.offset) { _, warning in
-                        Text(warning)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text(.playerSettingsDiagnostics)
-                }
+                Text(header)
             }
         }
-        .navigationTitle(Text(.playerSettingsSectionAdvanced))
-        .navigationBarTitleDisplayMode(.inline)
     }
 
     // MARK: - Sleep timer

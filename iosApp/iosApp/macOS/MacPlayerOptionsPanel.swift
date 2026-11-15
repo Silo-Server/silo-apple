@@ -183,13 +183,10 @@ struct MacPlayerOptionsPanel: View {
                 }
                 .padding(.horizontal, 12)
 
-                routeStatus
-                    .padding(.top, 8)
-
                 // Shared stats rows, single-column for the narrow panel.
                 PlaybackStatsPanel(stats: viewModel.playbackStats)
                     .padding(.horizontal, 12)
-                    .padding(.top, 4)
+                    .padding(.top, 12)
             }
         }
     }
@@ -263,26 +260,6 @@ struct MacPlayerOptionsPanel: View {
                 .foregroundStyle(.white.opacity(0.72))
         }
         .frame(maxWidth: .infinity, minHeight: 180)
-    }
-
-    private var routeStatus: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Route")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.62))
-            ForEach(viewModel.routeStatusRows) { row in
-                HStack {
-                    Text(row.label)
-                        .foregroundStyle(.white.opacity(0.58))
-                    Spacer()
-                    Text(row.value)
-                        .foregroundStyle(.white.opacity(0.86))
-                        .lineLimit(1)
-                }
-                .font(.caption)
-            }
-        }
-        .padding(12)
     }
 
     private var currentChapterIndex: Int? {

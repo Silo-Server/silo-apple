@@ -3,16 +3,45 @@ import Foundation
 /// Host-facing playback diagnostics. Every value is projected from
 /// AetherEngine's public state or from immutable Silo session metadata.
 /// A missing value means the active Aether route cannot measure it.
+///
+/// The rows come in three sections, one per reader, and a fact appears in
+/// exactly one of them:
+///
+/// - `playbackRows`: what is playing and how it reaches the device.
+/// - `streamRows`: whether playback is keeping up right now.
+/// - `engineRows`: Aether's internals, for a bug report.
 struct PlaybackStats: Equatable {
     struct MediaStream: Equatable {
-        var codec: String?
-        var detail: String?
+        /// The stream as the Playback section shows it, without its bitrate:
+        /// "HEVC · 3840×2160 · 23.976 fps", "English · EAC3 5.1".
+        var description: String?
         var bitrateBps: Double?
+        /// What Aether decodes or passes the stream with:
+        /// "VideoToolbox HEVC (HW)", "Stream-copy (EAC3+JOC Atmos)".
+        var decoder: String?
+        /// The stream in a few words, for the surfaces that say what is
+        /// playing rather than measure it: "4K · Dolby Vision".
+        var summary: String?
+    }
+
+    struct Row: Equatable, Identifiable {
+        /// Stable across languages; labels are not unique.
+        let id: String
+        /// In the app's language. Empty on a row that continues the one
+        /// above it.
+        let label: String
+        let value: String
     }
 
     var sampledAt: Date = Date()
 
     // Source/session identity supplied by Silo.
+    /// How the file reaches the device, in viewer terms: "Direct play".
+    var playMethod: String?
+    /// The server's reason for delivering the file this way.
+    var decisionReason: String?
+    /// What the plan gave up, in the server's words.
+    var warnings: [String] = []
     var route: String?
     var source: String?
     var delivery: String?
@@ -52,142 +81,151 @@ struct PlaybackStats: Equatable {
 }
 
 extension PlaybackStats {
-    var allRows: [(String, String)] {
-        sourceRows + mediaRows + bufferRows + networkRows + engineRows
+    var allRows: [Row] {
+        playbackRows + streamRows + engineRows
     }
 
-    /// The short set shown over iPhone video. It intentionally leaves the
-    /// engine-health counters to the paged tvOS panel.
-    var compactRows: [(String, String)] {
-        let compactLabels = Self.compactLabels
-        return allRows.filter { compactLabels.contains($0.0) }
-    }
-
-    /// Row labels as the rows carry them: in the app's language.
-    private static var compactLabels: Set<String> {
-        let labels: [LocalizedStringResource] = [
-            .playerHudRoute, .playerStatsSource, .playerStatsDelivery, .playerStatsContainer,
-            .playerHudVideo, .playerHudAudio, .playerStatsDynamicRange, .playerStatsSubtitles,
-            .playerStatsPlaybackStatus, .playerStatsForwardBuffer, .playerStatsDisplayCushion,
-            .playerStatsDroppedFrames, .playerStatsInstantReadBitrate, .playerStatsNetworkThroughput
-        ]
-        return Set(labels.map { AppLanguage.string($0) })
+    /// What the inert iPhone overlay draws: everything a viewer can act on.
+    /// Aether's internals stay on the pages that scroll.
+    var overlayRows: [Row] {
+        playbackRows + streamRows
     }
 
     var hasRows: Bool { !allRows.isEmpty }
 
-    var sourceRows: [(String, String)] {
-        stringRows([
-            (AppLanguage.string(.playerHudRoute), route),
-            (AppLanguage.string(.playerStatsSource), source),
-            (AppLanguage.string(.playerStatsDelivery), delivery),
-            (AppLanguage.string(.playerStatsContainer), container)
-        ])
-    }
-
-    var mediaRows: [(String, String)] {
-        var rows: [(String, String)] = []
-        if let video = mediaDescription(video) {
-            rows.append((AppLanguage.string(.playerHudVideo), video))
+    /// What is playing and how it reaches the device.
+    var playbackRows: [Row] {
+        var rows: [Row] = []
+        append(&rows, "playback", .playerHudPlayback, joined([playMethod, container]))
+        append(&rows, "video", .playerHudVideo, mediaDescription(video))
+        append(&rows, "dynamicRange", .playerStatsDynamicRange, dynamicRange)
+        append(&rows, "audio", .playerHudAudio, mediaDescription(audio))
+        append(&rows, "subtitles", .playerStatsSubtitles, subtitles)
+        // The speed is a setting the viewer chose; it is a stat only while
+        // it changes what the other rows mean.
+        if let playbackRate, playbackRate.isFinite, playbackRate > 0, abs(playbackRate - 1) > 0.001 {
+            append(&rows, "playbackRate", .playerStatsPlaybackRate, LocaleFormat.rate(playbackRate))
         }
-        if let audio = mediaDescription(audio) {
-            rows.append((AppLanguage.string(.playerHudAudio), audio))
-        }
-        rows.append(contentsOf: stringRows([
-            (AppLanguage.string(.playerStatsDynamicRange), dynamicRange),
-            (AppLanguage.string(.playerStatsSubtitles), subtitles)
-        ]))
-        if let playbackRate, playbackRate.isFinite, playbackRate > 0 {
-            rows.append((AppLanguage.string(.playerStatsPlaybackRate), LocaleFormat.decimal(playbackRate, fractionDigits: 2) + "x"))
+        // The reason and the warnings share one label; only the first row
+        // carries it.
+        let notes = ([decisionReason] + warnings).compactMap { normalized($0) }
+        for (index, note) in notes.enumerated() {
+            rows.append(Row(
+                id: "diagnostics.\(index)",
+                label: index == 0 ? AppLanguage.string(.playerSettingsDiagnostics) : "",
+                value: note
+            ))
         }
         return rows
     }
 
-    var bufferRows: [(String, String)] {
-        var rows = stringRows([(AppLanguage.string(.playerStatsPlaybackStatus), playbackStatus)])
+    /// Whether playback is keeping up right now.
+    var streamRows: [Row] {
+        var rows: [Row] = []
+        append(&rows, "status", .playerStatsPlaybackStatus, playbackStatus)
         if let bufferedAheadSeconds, bufferedAheadSeconds.isFinite {
-            rows.append((AppLanguage.string(.playerStatsForwardBuffer), formatSeconds(bufferedAheadSeconds)))
+            append(&rows, "forwardBuffer", .playerStatsForwardBuffer, formatSeconds(bufferedAheadSeconds))
+        } else if let cushion = displayCushion {
+            // The software route has no forward buffer to report; its
+            // display cushion is the comparable reading.
+            append(&rows, "displayCushion", .playerStatsDisplayCushion, cushion)
         }
-        if let displayCushionSeconds, displayCushionSeconds.isFinite {
-            rows.append((AppLanguage.string(.playerStatsDisplayCushion), formatSeconds(displayCushionSeconds)))
+        if let networkThroughputBps {
+            append(&rows, "networkThroughput", .playerStatsNetworkThroughput, formatBitsPerSecond(networkThroughputBps))
         }
-        if let readerWindowAheadBytes, readerWindowAheadBytes >= 0 {
-            rows.append((AppLanguage.string(.playerStatsReaderRunway), formatBytes(readerWindowAheadBytes)))
-        }
-        if let observedFrameRate, observedFrameRate.isFinite, observedFrameRate > 0 {
-            rows.append((AppLanguage.string(.playerStatsObservedFrameRate), LocaleFormat.decimal(observedFrameRate, fractionDigits: 2) + " fps"))
+        if let instantReadBitrateBps {
+            append(&rows, "instantReadBitrate", .playerStatsInstantReadBitrate, formatBitsPerSecond(instantReadBitrateBps))
         }
         if let droppedVideoFrames, droppedVideoFrames >= 0 {
-            rows.append((AppLanguage.string(.playerStatsDroppedFrames), LocaleFormat.integer(droppedVideoFrames)))
+            append(&rows, "droppedFrames", .playerStatsDroppedFrames, LocaleFormat.integer(droppedVideoFrames))
+        }
+        if let avSyncGapMilliseconds, avSyncGapMilliseconds.isFinite {
+            append(
+                &rows, "avSyncGap", .playerStatsAvSyncGap,
+                LocaleFormat.decimal(avSyncGapMilliseconds, fractionDigits: 1) + " ms"
+            )
+        }
+        return rows
+    }
+
+    /// Aether's internals: the pipeline it chose and its own counters.
+    var engineRows: [Row] {
+        var rows: [Row] = []
+        append(&rows, "route", .playerHudRoute, route)
+        append(&rows, "delivery", .playerStatsDelivery, delivery)
+        append(&rows, "source", .playerStatsSource, source)
+        append(&rows, "videoDecoder", .playerHudVideo, video.decoder)
+        append(&rows, "audioDecoder", .playerHudAudio, audio.decoder)
+        if let bufferedAheadSeconds, bufferedAheadSeconds.isFinite, let cushion = displayCushion {
+            append(&rows, "displayCushion", .playerStatsDisplayCushion, cushion)
+        }
+        if let readerWindowAheadBytes, readerWindowAheadBytes >= 0 {
+            append(&rows, "readerRunway", .playerStatsReaderRunway, LocaleFormat.bytes(readerWindowAheadBytes))
+        }
+        if let observedFrameRate, observedFrameRate.isFinite, observedFrameRate > 0 {
+            append(
+                &rows, "observedFrameRate", .playerStatsObservedFrameRate,
+                LocaleFormat.decimal(observedFrameRate, fractionDigits: 2) + " fps"
+            )
         }
         if let accumulatedFrameDelaySeconds,
            accumulatedFrameDelaySeconds.isFinite,
            accumulatedFrameDelaySeconds >= 0 {
-            rows.append((AppLanguage.string(.playerStatsAccumulatedFrameDelay), formatSeconds(accumulatedFrameDelaySeconds)))
-        }
-        if let avSyncGapMilliseconds, avSyncGapMilliseconds.isFinite {
-            rows.append((AppLanguage.string(.playerStatsAvSyncGap), LocaleFormat.decimal(avSyncGapMilliseconds, fractionDigits: 1) + " ms"))
-        }
-        return rows
-    }
-
-    var networkRows: [(String, String)] {
-        var rows: [(String, String)] = []
-        if let instantReadBitrateBps {
-            rows.append((AppLanguage.string(.playerStatsInstantReadBitrate), formatBitsPerSecond(instantReadBitrateBps)))
+            append(
+                &rows, "accumulatedFrameDelay", .playerStatsAccumulatedFrameDelay,
+                formatSeconds(accumulatedFrameDelaySeconds)
+            )
         }
         if let averageReadBitrateBps {
-            rows.append((AppLanguage.string(.playerStatsAverageReadBitrate), formatBitsPerSecond(averageReadBitrateBps)))
+            append(&rows, "averageReadBitrate", .playerStatsAverageReadBitrate, formatBitsPerSecond(averageReadBitrateBps))
         }
         if let audioBridgeBitrateBps {
-            rows.append((AppLanguage.string(.playerStatsAudioBridgeBitrate), formatBitsPerSecond(audioBridgeBitrateBps)))
-        }
-        if let networkThroughputBps {
-            rows.append((AppLanguage.string(.playerStatsNetworkThroughput), formatBitsPerSecond(networkThroughputBps)))
+            append(&rows, "audioBridgeBitrate", .playerStatsAudioBridgeBitrate, formatBitsPerSecond(audioBridgeBitrateBps))
         }
         if let bytesTransferred, bytesTransferred >= 0 {
-            rows.append((AppLanguage.string(.playerStatsNetworkTransferred), formatBytes(bytesTransferred)))
+            append(&rows, "networkTransferred", .playerStatsNetworkTransferred, LocaleFormat.bytes(bytesTransferred))
         }
         if let cachedBytes, cachedBytes >= 0 {
-            rows.append((AppLanguage.string(.playerStatsAetherCache), formatBytes(cachedBytes)))
+            append(&rows, "aetherCache", .playerStatsAetherCache, LocaleFormat.bytes(cachedBytes))
         }
         if let demuxerBytesFetched, demuxerBytesFetched >= 0 {
-            rows.append((AppLanguage.string(.playerStatsDemuxerRead), formatBytes(demuxerBytesFetched)))
+            append(&rows, "demuxerRead", .playerStatsDemuxerRead, LocaleFormat.bytes(demuxerBytesFetched))
+        }
+        if let producerRestartCount, producerRestartCount > 0 {
+            append(&rows, "producerRestarts", .playerStatsProducerRestarts, LocaleFormat.integer(producerRestartCount))
+        }
+        if let residentMemoryBytes, residentMemoryBytes >= 0 {
+            append(&rows, "residentMemory", .playerStatsResidentMemory, LocaleFormat.bytes(residentMemoryBytes))
         }
         return rows
     }
 
-    var engineRows: [(String, String)] {
-        var rows: [(String, String)] = []
-        if let producerRestartCount, producerRestartCount > 0 {
-            rows.append((AppLanguage.string(.playerStatsProducerRestarts), LocaleFormat.integer(producerRestartCount)))
-        }
-        if let residentMemoryBytes, residentMemoryBytes >= 0 {
-            rows.append((AppLanguage.string(.playerStatsResidentMemory), formatBytes(residentMemoryBytes)))
-        }
-        return rows
+    private var displayCushion: String? {
+        guard let displayCushionSeconds, displayCushionSeconds.isFinite else { return nil }
+        return formatSeconds(displayCushionSeconds)
     }
 
     private func mediaDescription(_ stream: MediaStream) -> String? {
-        var parts: [String] = []
-        if let codec = normalized(stream.codec) {
-            parts.append(formatCodec(codec))
+        let bitrate = stream.bitrateBps.flatMap { bps in
+            bps.isFinite && bps > 0 ? formatBitsPerSecond(bps) : nil
         }
-        if let detail = normalized(stream.detail) {
-            parts.append(detail)
-        }
-        if let bitrateBps = stream.bitrateBps,
-           bitrateBps.isFinite,
-           bitrateBps > 0 {
-            parts.append(formatBitsPerSecond(bitrateBps))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+        return joined([stream.description, bitrate])
     }
 
-    private func stringRows(_ candidates: [(String, String?)]) -> [(String, String)] {
-        candidates.compactMap { label, value in
-            normalized(value).map { (label, $0) }
-        }
+    private func append(
+        _ rows: inout [Row],
+        _ id: String,
+        _ label: LocalizedStringResource,
+        _ value: String?
+    ) {
+        guard let value = normalized(value) else { return }
+        rows.append(Row(id: id, label: AppLanguage.string(label), value: value))
+    }
+
+    /// The non-empty parts joined with " · ", or nil when none are left.
+    private func joined(_ parts: [String?]) -> String? {
+        let present = parts.compactMap { normalized($0) }
+        return present.isEmpty ? nil : present.joined(separator: " · ")
     }
 
     private func normalized(_ value: String?) -> String? {
@@ -196,31 +234,15 @@ extension PlaybackStats {
         return normalized.isEmpty ? nil : normalized
     }
 
-    private func formatCodec(_ codec: String) -> String {
-        switch codec.lowercased() {
-        case "hevc", "hvc1", "hev1": return "HEVC"
-        case "h264", "avc1", "avc3": return "H.264"
-        case "truehd", "mlpa": return "TrueHD"
-        case "eac3", "e-ac-3", "ec-3": return "E-AC-3"
-        case "ac3", "ac-3": return "AC-3"
-        case "aac", "mp4a", "mp4a.40.2": return "AAC"
-        default: return codec
-        }
-    }
-
     private func formatBitsPerSecond(_ bps: Double) -> String {
         guard bps.isFinite, bps > 0 else { return LocaleFormat.integer(0) + " bps" }
         if bps >= 1_000_000 {
-            return LocaleFormat.decimal(bps / 1_000_000, fractionDigits: 2) + " Mbps"
+            return LocaleFormat.decimal(bps / 1_000_000, fractionDigits: 1) + " Mbps"
         }
         return LocaleFormat.decimal(bps / 1_000, fractionDigits: 0) + " Kbps"
     }
 
     private func formatSeconds(_ seconds: Double) -> String {
-        LocaleFormat.decimal(max(0, seconds), fractionDigits: 2) + " s"
-    }
-
-    private func formatBytes(_ bytes: Int64) -> String {
-        LocaleFormat.bytes(bytes)
+        LocaleFormat.decimal(max(0, seconds), fractionDigits: 1) + " s"
     }
 }

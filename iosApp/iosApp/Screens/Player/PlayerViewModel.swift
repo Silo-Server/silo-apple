@@ -864,45 +864,21 @@ class PlayerViewModel {
         )
     }
     /// The route in English: the diagnostics' `play_method` and the logs'
-    /// route (D44).
+    /// route (D44). The screens name the delivery through `playbackStats`.
     var activeRouteLabel: String {
-        AppLanguage.inEnglish { activeRouteDisplayLabel }
-    }
-    /// The route in the app's language, for the screen.
-    var activeRouteDisplayLabel: String {
-        guard let delivery = aetherPlaybackController.activeSpec?.delivery else {
-            return "AetherEngine"
+        AppLanguage.inEnglish {
+            guard let delivery = aetherPlaybackController.activeSpec?.delivery else {
+                return "AetherEngine"
+            }
+            switch delivery {
+            case PlaybackProtocolV3.PlanDelivery.originalHTTP: return AppLanguage.string(.playerStatsDeliveryOriginal)
+            case PlaybackProtocolV3.PlanDelivery.remuxProgressive: return AppLanguage.string(.playerStatsDeliveryServerRemux)
+            case PlaybackProtocolV3.PlanDelivery.remuxHLS: return AppLanguage.string(.playerStatsDeliveryServerRemuxHls)
+            case PlaybackProtocolV3.PlanDelivery.transcodeHLS:
+                return AppLanguage.string(.playerStatsDeliveryServerTranscodeHls)
+            default: return delivery.replacingOccurrences(of: "_", with: " ").capitalized
+            }
         }
-        switch delivery {
-        case PlaybackProtocolV3.PlanDelivery.originalHTTP: return AppLanguage.string(.playerStatsDeliveryOriginal)
-        case PlaybackProtocolV3.PlanDelivery.remuxProgressive: return AppLanguage.string(.playerStatsDeliveryServerRemux)
-        case PlaybackProtocolV3.PlanDelivery.remuxHLS: return AppLanguage.string(.playerStatsDeliveryServerRemuxHls)
-        case PlaybackProtocolV3.PlanDelivery.transcodeHLS:
-            return AppLanguage.string(.playerStatsDeliveryServerTranscodeHls)
-        default: return delivery.replacingOccurrences(of: "_", with: " ").capitalized
-        }
-    }
-    /// One-line, user-facing Aether route description for the player HUD.
-    var playbackRouteDisplay: String {
-        "AetherEngine · \(activeRouteDisplayLabel)"
-    }
-    var routeStatusRows: [PlayerRouteStatusRow] {
-        [
-            PlayerRouteStatusRow(label: AppLanguage.string(.playerHudPlayback), value: activeRouteDisplayLabel),
-            PlayerRouteStatusRow(label: AppLanguage.string(.playerHudEngine), value: "AetherEngine"), // i18n-ignore: engine name
-            PlayerRouteStatusRow(
-                label: AppLanguage.string(.playerHudRoute),
-                value: aetherPlaybackController.engine.videoRoute.rawValue
-            ),
-        ]
-    }
-    var routeDecisionSummary: String? {
-        activePreparedProtocolV3?.plan.decisionReason
-            .replacingOccurrences(of: "_", with: " ")
-            .capitalized
-    }
-    var routeWarnings: [String] {
-        activePreparedProtocolV3?.plan.degradationWarnings.map(\.message) ?? []
     }
     var hasTrackSelectionOptions: Bool { !audioTracks.isEmpty || !subtitleTracks.isEmpty }
     var supportsSecondarySubtitles: Bool { backendCapabilities.supportsSecondarySubtitles }
@@ -2171,6 +2147,12 @@ class PlayerViewModel {
             delivery: spec.delivery,
             container: currentSelectedVersion?.container,
             playbackRate: isHoldFastForwarding ? 2 : effectivePlaybackSpeed,
+            // A transcode names its output codec; a copy leaves the file's.
+            videoCodec: playbackPlan?.effectiveRecipe.videoCodec
+                ?? playbackPlan?.source.videoCodec
+                ?? currentSelectedVersion?.codecVideo,
+            decisionReason: playbackPlan?.decisionReason,
+            warnings: playbackPlan?.degradationWarnings.map(\.message) ?? [],
             secondarySubtitleLabel: secondaryLabel,
             plannedSourceDynamicRange: playbackPlan?.source.dynamicRange,
             plannedOutputDynamicRange: playbackPlan?.effectiveRecipe.dynamicRange,
