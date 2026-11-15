@@ -328,7 +328,15 @@ final class LibraryPageScrollClaimView: UIView {
     }
 
     private func claim() {
-        guard isActive, window != nil, let scrollView = pageScrollView() else { return }
+        guard isActive, window != nil else { return }
+        guard let scrollView = pageScrollView() else {
+            // Nothing to scroll (an empty or loading page), so nothing to
+            // minimise for; otherwise the previous page's answer would stay.
+            claimedScrollView = nil
+            lengthObservations = []
+            dockHost?.setPageIsTooShortToMinimize(true)
+            return
+        }
         observeLength(of: scrollView)
         var responder: UIResponder? = scrollView
         while let next = responder {
