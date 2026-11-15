@@ -484,6 +484,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.detailSplitCoverSlot) private var splitCoverSlot
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.locale) private var locale
     #if os(iOS)
@@ -654,9 +655,26 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// The artwork the page spreads across the whole window, from edge to
     /// edge under the sidebar and the content pane.
     private var paneArtwork: some View {
-        artwork
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        Group {
+            if case .cover(let aspectRatio, let placeholderSymbol) = artworkStyle,
+               let splitCoverSlot, splitCoverSlot.upperBound - splitCoverSlot.lowerBound >= 120 {
+                // A cover is the whole artwork, so it sits above the sections
+                // rather than fading under them as a backdrop does.
+                PhoneDetailCoverArtwork(
+                    url: resolvedArtworkURL,
+                    thumbhash: resolvedArtworkThumbhash,
+                    aspectRatio: aspectRatio,
+                    placeholderSymbol: placeholderSymbol,
+                    coverHeight: splitCoverSlot.upperBound - splitCoverSlot.lowerBound,
+                    coverTopInset: splitCoverSlot.lowerBound,
+                    fallbackUrl: resolvedFallbackArtworkURL
+                )
+            } else {
+                artwork
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     // MARK: - Expanded iPad layout

@@ -184,13 +184,14 @@ private struct PhoneDetailSplitPage<PaneArtwork: View, PaneSidebar: View, PaneCo
         // when the marked lead section would otherwise end below the window.
         let fadeTop = artworkHeight * 0.66
         let leadTop = leadEnd.map { page.size.height - Self.contentPaneBottomInset - $0 } ?? fadeTop
-        let contentTop = max(topSafeArea + Self.contentPaneTopInset, min(fadeTop, leadTop))
+        let paneTop = topSafeArea + Self.contentPaneTopInset
+        let contentTop = max(paneTop, min(fadeTop, leadTop))
         return HStack(alignment: .top, spacing: 0) {
             ScrollView(.vertical, showsIndicators: false) {
                 paneSidebar()
                     .padding(.horizontal, 18)
                     // Clears the Close button, which moves into the sidebar.
-                    .padding(.top, topSafeArea + Self.contentPaneTopInset)
+                    .padding(.top, paneTop)
                     .padding(.bottom, 20)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -234,6 +235,9 @@ private struct PhoneDetailSplitPage<PaneArtwork: View, PaneSidebar: View, PaneCo
                 contentStart: contentTop / max(artworkHeight, 1),
                 artwork: paneArtwork
             )
+            // Between the floating buttons and the sections, where a book
+            // cover stays whole instead of running under the text.
+            .environment(\.detailSplitCoverSlot, paneTop...max(paneTop, contentTop - 24))
             .offset(x: -page.leadingInset)
         }
     }
@@ -524,6 +528,10 @@ extension EnvironmentValues {
     /// The window's top safe area, set by `PhoneDetailPageSurface` for pages
     /// that extend beneath it.
     @Entry var detailPageTopSafeArea: CGFloat = 0
+
+    /// The vertical span of a split page's artwork, from its top, that the
+    /// sections leave clear. Nil outside a split page's artwork.
+    @Entry var detailSplitCoverSlot: ClosedRange<CGFloat>? = nil
 
     /// The width a detail page is presented at, known before its views
     /// measure themselves. Zero when the presenter does not set it.
