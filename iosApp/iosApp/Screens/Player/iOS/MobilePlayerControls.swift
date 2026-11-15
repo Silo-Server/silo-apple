@@ -854,8 +854,6 @@ private struct MobilePlayerTimeline: View {
                         .frame(width: max(width * buffered, barHeight), height: barHeight)
                 }
 
-                markerBands(width: width, height: barHeight)
-
                 // Chapter ticks. Rendered behind the fill so they're visible
                 // in unplayed territory; the fill covers them over played
                 // time, which matches Apple's native transport-bar behavior.
@@ -874,6 +872,14 @@ private struct MobilePlayerTimeline: View {
                     .fill(Color.white)
                     .frame(width: max(width * progress, barHeight), height: barHeight)
                     .shadow(color: .white.opacity(showsPreview ? 0.35 : 0), radius: 8)
+
+                PlayerMarkerBands(
+                    timeline: viewModel.markerTimeline,
+                    duration: viewModel.duration,
+                    width: width,
+                    height: barHeight,
+                    opacity: 0.45
+                )
             }
             .frame(height: 20, alignment: .center)
             .animation(.snappy(duration: 0.22), value: showsPreview)
@@ -985,32 +991,6 @@ private struct MobilePlayerTimeline: View {
         guard let chapter = viewModel.chapters.last(where: { $0.time <= time }) else { return nil }
         return chapter.title
             ?? AppLanguage.string(.optionsChapterNumbered(LocaleFormat.integer(chapter.index + 1, locale: locale)), locale: locale)
-    }
-
-    /// The intro band, and a band for every credits range so a file with two
-    /// credits sequences shows both. Credits use the Android TV and Roku amber.
-    @ViewBuilder
-    private func markerBands(width: CGFloat, height: CGFloat) -> some View {
-        if let introRange = viewModel.introRange {
-            markerBand(introRange, color: .cyan, width: width, height: height)
-        }
-        ForEach(Array(viewModel.markerTimeline.ranges(.credits).enumerated()), id: \.offset) { _, range in
-            markerBand(range, color: Color(hex: "#FFB74D"), width: width, height: height)
-        }
-    }
-
-    @ViewBuilder
-    private func markerBand(_ range: TimeRange, color: Color, width: CGFloat, height: CGFloat) -> some View {
-        if viewModel.duration > 0 {
-            let start = min(max(range.start / viewModel.duration, 0), 1)
-            let end = min(max(range.end / viewModel.duration, 0), 1)
-            if end > start {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(color.opacity(0.4))
-                    .frame(width: width * (end - start), height: height)
-                    .offset(x: width * start)
-            }
-        }
     }
 }
 

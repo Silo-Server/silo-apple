@@ -6,15 +6,23 @@ import Foundation
 ///
 /// Built from `marker_segments` when the server sends it. Older responses
 /// carry only the singular `intro` / `credits` / `recap` fields, which hold
-/// the first occurrence of each kind.
+/// the first occurrence of each kind. Previews come only from
+/// `marker_segments`; they are drawn on the timeline and never skipped.
 struct PlayerMarkerTimeline: Equatable, Sendable {
     enum Kind: String, CaseIterable, Sendable {
-        case intro, credits, recap
+        case intro, credits, recap, preview
     }
 
     struct Occurrence: Equatable, Sendable {
         let kind: Kind
         let range: TimeRange
+    }
+
+    /// One occurrence placed on a timeline, as fractions of the duration.
+    struct Band: Equatable, Sendable {
+        let kind: Kind
+        let start: Double
+        let end: Double
     }
 
     static let empty = PlayerMarkerTimeline(occurrences: [])
@@ -55,6 +63,17 @@ struct PlayerMarkerTimeline: Equatable, Sendable {
         self.occurrences = occurrences
             .filter { Self.isValid($0.range) }
             .sorted { ($0.range.start, $0.range.end) < ($1.range.start, $1.range.end) }
+    }
+
+    /// A band for every occurrence, clamped to the timeline. Overlapping
+    /// occurrences each keep their own band. None without a duration.
+    func bands(duration: Double) -> [Band] {
+        guard duration > 0 else { return [] }
+        return occurrences.compactMap { occurrence in
+            let start = min(max(occurrence.range.start / duration, 0), 1)
+            let end = min(max(occurrence.range.end / duration, 0), 1)
+            return end > start ? Band(kind: occurrence.kind, start: start, end: end) : nil
+        }
     }
 
     func ranges(_ kind: Kind) -> [TimeRange] {

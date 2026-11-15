@@ -91,6 +91,45 @@ final class PlayerMarkerTimelineTests: XCTestCase {
         XCTAssertTrue(PlayerMarkerTimeline.empty.isInFinalCredits(at: 10))
     }
 
+    /// The timeline draws every occurrence of every kind, previews included,
+    /// and overlapping occurrences each keep a band.
+    func testBandsCoverEveryOccurrenceOfEveryKind() {
+        let timeline = PlayerMarkerTimeline(markerSegments: [
+            segment("recap", 0, 100),
+            segment("intro", 100, 200),
+            segment("intro", 500, 600),
+            segment("recap", 550, 650),
+            segment("credits", 800, 850),
+            segment("credits", 900, 950),
+            segment("preview", 950, 1_000),
+        ])
+
+        XCTAssertEqual(timeline.bands(duration: 1_000), [
+            .init(kind: .recap, start: 0, end: 0.1),
+            .init(kind: .intro, start: 0.1, end: 0.2),
+            .init(kind: .intro, start: 0.5, end: 0.6),
+            .init(kind: .recap, start: 0.55, end: 0.65),
+            .init(kind: .credits, start: 0.8, end: 0.85),
+            .init(kind: .credits, start: 0.9, end: 0.95),
+            .init(kind: .preview, start: 0.95, end: 1),
+        ])
+    }
+
+    func testBandsClampToTheTimelineAndNeedADuration() {
+        let timeline = PlayerMarkerTimeline(markerSegments: [
+            segment("intro", 50, 150),
+            segment("credits", 900, 1_200),
+            segment("preview", 1_100, 1_200),
+        ])
+
+        XCTAssertEqual(timeline.bands(duration: 1_000), [
+            .init(kind: .intro, start: 0.05, end: 0.15),
+            .init(kind: .credits, start: 0.9, end: 1),
+        ])
+        XCTAssertEqual(timeline.bands(duration: 0), [])
+        XCTAssertEqual(timeline.bands(duration: .nan), [])
+    }
+
     private func segment(_ kind: String, _ start: Double, _ end: Double) -> PlaybackMarkerSegment {
         PlaybackMarkerSegment(kind: kind, startSeconds: start, endSeconds: end)
     }
