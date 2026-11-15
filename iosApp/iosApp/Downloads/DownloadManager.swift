@@ -1213,6 +1213,7 @@ final class DownloadManager {
         rateSamples.removeAll()
         transferRates.removeAll()
         totalBytesUsed = 0
+        appliedProgressItemIds.removeAll()
     }
 
     private func cancelActiveTasks() {
@@ -4057,6 +4058,31 @@ final class DownloadManager {
         await flush.value
     }
 
+    /// Items whose queued progress the server answered as applied, in the
+    /// active scope. `syncUnsentProgress` clears an item before it sends.
+    private(set) var appliedProgressItemIds: Set<String> = []
+
+    /// Sends the item's queued offline progress and waits until that flush
+    /// ends or `limit` passes, whichever is first. Returns whether the server
+    /// applied it: false for a send that was refused, rejected, deferred,
+    /// unanswered, or still running at the deadline. The flush keeps going
+    /// past the deadline on its own task; `appliedProgressItemIds` shows
+    /// whether it lands later.
+    func syncUnsentProgress(forMediaItemId mediaItemId: String, waitingAtMost limit: Duration) async -> Bool {
+        appliedProgressItemIds.remove(mediaItemId)
+        final class Finished { var value = false }
+        let finished = Finished()
+        Task {
+            await self.flushOfflineProgress()
+            finished.value = true
+        }
+        let deadline = ContinuousClock.now.advanced(by: limit)
+        while !finished.value, ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return appliedProgressItemIds.contains(mediaItemId)
+    }
+
     /// Seeds a downloaded book's local resume point from the server's, so a
     /// book downloaded and then opened offline before the next progress read
     /// starts where the listener left off. Leaves an existing entry alone.
@@ -4131,6 +4157,9 @@ final class DownloadManager {
             OfflineProgressQueue.resolve(&queue, batch: batch, outcome: outcome)
             file.progressQueue = queue
             persist()
+            if case .answered(let results) = outcome {
+                appliedProgressItemIds.formUnion(results.filter(\.succeeded).map(\.mediaItemId))
+            }
             if let failure = outcome.failureSummary {
                 Self.logger.warning("offline progress upload: \(failure, privacy: .public)")
             }

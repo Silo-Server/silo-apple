@@ -1000,22 +1000,26 @@ final class AudioPlayerViewModel {
     /// The book from the server. Listening this device did offline is sent
     /// first, briefly, so the server can keep the newer of it and progress
     /// made elsewhere since; its resume point is then the reconciled one.
-    /// When the send doesn't land in time, the local resume point wins over
-    /// the server's, which is older than this device's unsent listening.
+    /// When the server didn't apply it (refused, deferred, or not answered in
+    /// time), the local resume point wins over the server's, which is older
+    /// than this device's unsent listening.
     private func onlineContext(contentId: String, libraryId: Int?, hasDownload: Bool) async throws -> AudiobookPlaybackContext {
         let downloads = DownloadManager.shared
         var localIsNewer = false
         if hasDownload, downloads.hasUnsentProgress(forMediaItemId: contentId) {
-            // Its own task, so a newer start cancelling this one can't cut
-            // the upload off mid-request.
-            Task { await downloads.flushOfflineProgress() }
-            let deadline = ContinuousClock.now.advanced(by: Self.offlineProgressSyncWait)
-            while downloads.hasUnsentProgress(forMediaItemId: contentId), ContinuousClock.now < deadline {
-                try await Task.sleep(for: .milliseconds(100))
-            }
-            localIsNewer = downloads.hasUnsentProgress(forMediaItemId: contentId)
+            let applied = await downloads.syncUnsentProgress(forMediaItemId: contentId,
+                                                             waitingAtMost: Self.offlineProgressSyncWait)
+            try Task.checkCancellation()
+            localIsNewer = !applied
         }
-        let detail = try await api.itemDetail(contentId: contentId, libraryId: libraryId)
+        var detail = try await api.itemDetail(contentId: contentId, libraryId: libraryId)
+        if localIsNewer, downloads.appliedProgressItemIds.contains(contentId) {
+            // The send landed while the detail was on its way, which may have
+            // read the server before it; read it again rather than let the
+            // local position win over progress made elsewhere.
+            detail = try await api.itemDetail(contentId: contentId, libraryId: libraryId)
+            localIsNewer = false
+        }
         guard let context = AudiobookPlaybackContext(detail: detail) else {
             throw APIError.unsupportedMedia(AppLanguage.string(.audiobookErrorNoPlayableTrack))
         }
