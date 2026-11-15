@@ -1,8 +1,10 @@
 #if os(iOS)
 import SwiftUI
 
-/// "Playing on <TV>" bar for an engaged TV control session. Tapping it opens
-/// the full remote.
+/// The bar for an engaged TV control session: the title and "Playing on
+/// <TV>" while the TV plays, "Connected to <TV>" while it has nothing on, and
+/// "Reconnecting… to <TV>" while the link is down. Tapping it opens the full
+/// remote.
 struct SiloControlMiniBar: View {
     let controller: SiloControlClient
     var style: NowPlayingBarStyle = .card
@@ -12,7 +14,13 @@ struct SiloControlMiniBar: View {
     @Environment(\.nowPlayingAccessoryIsInline) private var isInline
 
     private var targetName: String {
-        controller.activeTarget?.name ?? controller.lastTarget?.name ?? "Silo TV"
+        controller.engagedTargetName ?? "Silo TV"
+    }
+
+    /// The TV is reachable and playing: only then is there a title to show
+    /// and a player for Play/Pause to reach.
+    private var isPlayingTitle: Bool {
+        !controller.isReconnecting && controller.hasRemotePlayback
     }
 
     var body: some View {
@@ -23,8 +31,11 @@ struct SiloControlMiniBar: View {
                     Group {
                         if controller.isReconnecting {
                             Text(.castReconnecting)
-                        } else if let title = controller.state?.title {
+                        } else if isPlayingTitle, let title = controller.state?.title, !title.isEmpty {
                             Text(title)
+                        } else if isInline {
+                            // The one-line slot has no second line to name the TV.
+                            Text(.castRemoteConnectedTo(targetName))
                         } else {
                             Text(.castMiniBarConnected)
                         }
@@ -32,9 +43,9 @@ struct SiloControlMiniBar: View {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     if !isInline {
-                        (controller.isReconnecting
-                         ? Text(.castMiniBarToTv(targetName))
-                         : Text(.castPlayingOn(targetName)))
+                        (isPlayingTitle
+                         ? Text(.castPlayingOn(targetName))
+                         : Text(.castMiniBarToTv(targetName)))
                             .font(.caption)
                             .foregroundStyle(Color.siloSecondaryText)
                             .lineLimit(1)
@@ -53,7 +64,7 @@ struct SiloControlMiniBar: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(Text(.remoteMiniBarStopReconnecting))
-                } else {
+                } else if isPlayingTitle {
                     Button {
                         controller.togglePlayPauseOptimistic()
                     } label: {
@@ -63,6 +74,14 @@ struct SiloControlMiniBar: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(controller.clock.isPlaying() ? Text(.playerAudioPause) : Text(.playerAudioPlay))
+                } else {
+                    // Nothing to pause on an idle TV; the glyph says the bar
+                    // opens the remote.
+                    Image(systemName: "appletvremote.gen4.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .frame(width: 32, height: 32)
+                        .accessibilityHidden(true)
                 }
             }
             .padding(.horizontal, 14)

@@ -306,20 +306,33 @@ final class TVControlReceiver {
         refreshStandbyState()
         broadcastState()
         setPlaybackAdvertised(false)
-        if let endingGeneration,
-           RemotePlaybackIdentityManager.shared.activeIdentity?.generationID == endingGeneration {
+        switch SiloControlReceiverPolicy.playerExit(
+            playerGeneration: endingGeneration,
+            activeGeneration: RemotePlaybackIdentityManager.shared.activeIdentity?.generationID,
+            presentationIsUp: router?.presentedPlayer != nil
+        ) {
+        case .keepIdentity:
+            break
+        case .handToNextPlayer(let generation):
+            pendingPlayerHandoffGeneration = generation
+        case .endIdentity(let endingGeneration):
             Task { @MainActor [weak self, weak viewModel] in
                 await viewModel?.waitForCleanupCompletion()
-                let notifyServer = self?.rejectedPlayerHandoffGeneration != endingGeneration
+                // A launch that arrived during the cleanup plays under this
+                // identity; ending it now would fail that title.
+                guard let self,
+                      self.playerHandoffGeneration != endingGeneration,
+                      self.pendingPlayerHandoffGeneration != endingGeneration else { return }
+                let notifyServer = self.rejectedPlayerHandoffGeneration != endingGeneration
                 guard await RemotePlaybackIdentityManager.shared.end(
                     expectedGenerationID: endingGeneration,
                     notifyServer: notifyServer
                 ) else { return }
-                if self?.rejectedPlayerHandoffGeneration == endingGeneration {
-                    self?.rejectedPlayerHandoffGeneration = nil
+                if self.rejectedPlayerHandoffGeneration == endingGeneration {
+                    self.rejectedPlayerHandoffGeneration = nil
                 }
-                self?.refreshAdvertisement()
-                self?.reconcileAuthorization()
+                self.refreshAdvertisement()
+                self.reconcileAuthorization()
             }
         }
     }

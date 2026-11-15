@@ -122,7 +122,7 @@ struct SiloControlRemoteView: View {
     /// no player to route volume at, so commands come back `player_not_ready`;
     /// interception there would only cost the phone its own volume buttons.
     private var hasActivePlayback: Bool {
-        !(controller.state?.contentId ?? "").isEmpty
+        controller.hasRemotePlayback
     }
 
     /// Hardware-volume interception is live only while the scene is active and

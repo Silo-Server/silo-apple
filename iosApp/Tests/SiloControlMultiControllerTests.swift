@@ -106,6 +106,35 @@ final class SiloControlMultiControllerTests: XCTestCase {
         XCTAssertFalse(canReplace(current, current, party: true))
     }
 
+    /// A launch that lands while the previous title's cover is closing
+    /// mounts its player twice. The first one leaving must not end the
+    /// phone's identity under the second.
+    func testAPlayerLeavingEndsThePhonesIdentityOnlyOnceNothingIsPresented() {
+        let active = UUID()
+        XCTAssertEqual(
+            Policy.playerExit(playerGeneration: active, activeGeneration: active, presentationIsUp: false),
+            .endIdentity(active)
+        )
+        XCTAssertEqual(
+            Policy.playerExit(playerGeneration: active, activeGeneration: active, presentationIsUp: true),
+            .handToNextPlayer(active)
+        )
+        // A player from an earlier handoff, or one the TV started itself,
+        // has no say over the identity now active.
+        XCTAssertEqual(
+            Policy.playerExit(playerGeneration: UUID(), activeGeneration: active, presentationIsUp: false),
+            .keepIdentity
+        )
+        XCTAssertEqual(
+            Policy.playerExit(playerGeneration: nil, activeGeneration: active, presentationIsUp: true),
+            .keepIdentity
+        )
+        XCTAssertEqual(
+            Policy.playerExit(playerGeneration: active, activeGeneration: nil, presentationIsUp: false),
+            .keepIdentity
+        )
+    }
+
     // MARK: - Identity reuse
 
     func testReuseOnTheConnectionThatCompletedTheHandoff() {

@@ -81,6 +81,29 @@ enum SiloControlReceiverPolicy {
             && canLaunch(readyGeneration: playerGeneration, activeGeneration: activeGeneration)
     }
 
+    /// What becomes of the phone's identity when a player leaves the screen.
+    enum PlayerExit: Equatable {
+        /// The player wasn't playing under the active identity.
+        case keepIdentity
+        /// Another player is taking its place and plays under the identity.
+        case handToNextPlayer(UUID)
+        /// The title is over: give the TV its own identity back.
+        case endIdentity(UUID)
+    }
+
+    /// A player that started under the active identity ends it when it
+    /// leaves, unless a title is still presented. A launch that arrives while
+    /// the previous title's cover is closing mounts its player twice: the
+    /// first leaves at once and the second takes its place. Ending the
+    /// identity for the first would fail the second with "the active server
+    /// or profile changed", or start it under the TV's own profile.
+    static func playerExit(
+        playerGeneration: UUID?, activeGeneration: UUID?, presentationIsUp: Bool
+    ) -> PlayerExit {
+        guard let playerGeneration, playerGeneration == activeGeneration else { return .keepIdentity }
+        return presentationIsUp ? .handToNextPlayer(playerGeneration) : .endIdentity(playerGeneration)
+    }
+
     /// Whether an offer that matches the active identity (same server,
     /// profile and device ID) may reuse it without a new approval. Device IDs
     /// are self-reported, so the match alone proves nothing: reuse needs the

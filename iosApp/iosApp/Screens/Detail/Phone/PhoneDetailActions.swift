@@ -1,6 +1,54 @@
 #if !os(tvOS)
 import SwiftUI
 
+// MARK: - Video play
+
+/// Play for a title an engaged TV takes: a movie, an episode, a box set's
+/// next movie. While a TV is engaged on iPhone or iPad, the button carries a
+/// TV glyph and names the TV underneath, so it is plain before the tap that
+/// playback starts there and not on this device.
+struct PhoneVideoPlayButton: View {
+    let title: String
+    let action: () -> Void
+
+    #if os(iOS)
+    /// Optional: the Mac has no TV control, and a preview may omit it.
+    @Environment(SiloControlClient.self) private var siloControl: SiloControlClient?
+    #endif
+
+    var body: some View {
+        VStack(spacing: 8) {
+            PhonePrimaryPillButton(
+                icon: remoteStatus == nil ? "play.fill" : "play.tv.fill",
+                title: title,
+                action: action,
+                fullWidth: true
+            )
+            if let remoteStatus {
+                HStack(spacing: 6) {
+                    Image(systemName: "appletvremote.gen4.fill")
+                    Text(remoteStatus)
+                        .lineLimit(1)
+                }
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.8))
+                .accessibilityElement(children: .combine)
+                .transition(.opacity)
+            }
+        }
+        .animation(.snappy, value: remoteStatus != nil)
+    }
+
+    /// "Connected to Living Room" while a TV is engaged.
+    private var remoteStatus: LocalizedStringResource? {
+        #if os(iOS)
+        siloControl?.engagedStatus
+        #else
+        nil
+        #endif
+    }
+}
+
 // MARK: - Primary play
 
 /// Solid-white capsule play button. Phone-sized — comfortable 52pt

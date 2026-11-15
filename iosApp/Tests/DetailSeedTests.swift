@@ -336,6 +336,11 @@ final class DetailSeedTests: XCTestCase {
             DetailRemoteControlAction.forTap(detail: nil, isProvisional: false, remotePlaybackEngaged: false),
             .pickTV
         )
+        // An engaged TV takes Play, so its Remote button never casts.
+        XCTAssertEqual(
+            DetailRemoteControlAction.forTap(detail: movie, isProvisional: false, remotePlaybackEngaged: true),
+            .showRemote
+        )
         // Containers never cast.
         XCTAssertEqual(
             DetailRemoteControlAction.forTap(detail: series, isProvisional: false, remotePlaybackEngaged: true),
