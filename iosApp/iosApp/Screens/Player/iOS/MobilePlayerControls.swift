@@ -297,21 +297,23 @@ struct MobilePlayerControls: View {
 
     /// "SEVERANCE · S2:E4"-style context line. Series title + episode tag
     /// for episodes, release year for movies, nothing when metadata hasn't
-    /// resolved yet.
+    /// resolved yet. The series title is server data and uppercases without
+    /// a locale; the episode tag comes from the catalog and uppercases in
+    /// the app's language.
     private var titleEyebrow: String? {
         let metadata = viewModel.metadata
         var parts: [String] = []
         if let series = metadata.seriesTitle, !series.isEmpty {
-            parts.append(series)
+            parts.append(series.uppercased())
         }
         if let tag = metadata.episodeTag, !tag.isEmpty {
-            parts.append(tag)
+            parts.append(tag.uppercased(with: locale))
         }
         if parts.isEmpty, let year = metadata.year {
             parts.append(LocaleFormat.integer(year, locale: locale))
         }
         guard !parts.isEmpty else { return nil }
-        return parts.joined(separator: " · ").uppercased()
+        return parts.joined(separator: " · ")
     }
 
     private var heroTitle: String {

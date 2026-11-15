@@ -57,6 +57,7 @@ struct RequestCardRail<Item: Identifiable, Card: View>: View {
 /// grammar (`PhoneSectionHeader` / `TVSectionHeader`): an optional tracked
 /// eyebrow over the title, and an optional trailing link.
 struct RequestsSectionHeader: View {
+    @Environment(\.locale) private var locale
     var label: String? = nil
     let title: String
     var trailing: String? = nil
@@ -66,7 +67,7 @@ struct RequestsSectionHeader: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
                 if let label, !label.isEmpty {
-                    Text(label.uppercased())
+                    Text(label.uppercased(with: locale))
                         .font(.system(size: labelSize, weight: .bold))
                         .tracking(1.6)
                         .foregroundColor(.siloOnSurface.opacity(0.55))

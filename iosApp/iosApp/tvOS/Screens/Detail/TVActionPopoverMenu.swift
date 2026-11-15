@@ -22,6 +22,7 @@ struct TVActionPopoverItem: Identifiable, Equatable {
 /// use the same focus graph. Selection and dismissal return directly to the
 /// trigger without presenting a system context menu.
 struct TVActionPopoverMenu: View {
+    @Environment(\.locale) private var locale
     let title: String
     let items: [TVActionPopoverItem]
     let onSelect: (TVActionPopoverItem) -> Void
@@ -76,7 +77,7 @@ struct TVActionPopoverMenu: View {
     }
 
     private var header: some View {
-        TVSkylinePanelHeader(text: title.uppercased())
+        TVSkylinePanelHeader(text: title.uppercased(with: locale))
             .accessibilityAddTraits(.isHeader)
     }
 
