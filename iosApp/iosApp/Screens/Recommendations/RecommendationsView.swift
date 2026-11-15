@@ -102,7 +102,7 @@ struct RecommendationsView: View {
 
     private var topChrome: some View {
         HStack(spacing: 12) {
-            SidebarToggleButton()
+            SidebarToggleButton(chromeScrollState: chromeScrollState)
 
             Text(.forYouRecommendations)
                 .font(.siloTitle)
@@ -111,6 +111,7 @@ struct RecommendationsView: View {
                     scrollState: chromeScrollState,
                     outset: EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10)
                 )
+                .pageChromeTitleFadesOut(scrollState: chromeScrollState)
 
             Spacer(minLength: 8)
 
@@ -121,7 +122,8 @@ struct RecommendationsView: View {
                 onSwitchProfile: {
                     router.switchProfile()
                 },
-                onSignOut: { router.signOutAndReset() }
+                onSignOut: { router.signOutAndReset() },
+                chromeScrollState: chromeScrollState
             )
         }
         .clearsWindowControls()

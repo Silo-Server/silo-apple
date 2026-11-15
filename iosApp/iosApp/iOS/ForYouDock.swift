@@ -186,6 +186,11 @@ struct ForYouDockedView: View {
                 }
                 mountedPages.insert(selectedPage)
             }
+            .onChange(of: visibleSections.isEmpty) { _, isEmpty in
+                // The empty state has no scroll view to report an offset,
+                // so the last one would keep the title faded out.
+                if isEmpty { pageChromeStates[.forYou]?.update(0) }
+            }
     }
 
     /// The tab bar shows the dock in its accessory slot (iOS 26.1 and
@@ -321,6 +326,7 @@ struct ForYouDockedView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
+            .pageChromeTitleFadesOut(scrollState: pageChromeStates[selectedPage])
 
             Spacer(minLength: 8)
 
@@ -329,7 +335,8 @@ struct ForYouDockedView: View {
                 onOpenSettings: { router.navigate(to: .settings) },
                 onOpenRequests: { router.navigate(to: .requestsHub) },
                 onSwitchProfile: { router.switchProfile() },
-                onSignOut: { router.signOutAndReset() }
+                onSignOut: { router.signOutAndReset() },
+                chromeScrollState: pageChromeStates[selectedPage]
             )
         }
         .padding(.horizontal, SiloTheme.padding)
