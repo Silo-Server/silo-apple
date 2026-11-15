@@ -228,11 +228,14 @@ extension Library {
 /// the views SwiftUI places after it, and passes it to the view controller
 /// the tab bar controller holds for the tab. It looks when the page is
 /// selected, when it reaches the window, and when the page's scroll view
-/// appears later (a page still loading has none yet), which the page's
-/// `LibraryPageScrollViewMarker` reports through `link`.
+/// appears later (a page still loading has none yet) or goes away (a list
+/// emptied by a filter), which the page's `LibraryPageScrollViewMarker`
+/// reports through `link`.
 struct LibraryPageScrollClaim: UIViewRepresentable {
     let isActive: Bool
     let link: LibraryPageScrollClaimLink
+
+    @Environment(PageDockHost.self) private var dockHost: PageDockHost?
 
     func makeUIView(context: Context) -> LibraryPageScrollClaimView {
         LibraryPageScrollClaimView()
@@ -240,18 +243,20 @@ struct LibraryPageScrollClaim: UIViewRepresentable {
 
     func updateUIView(_ view: LibraryPageScrollClaimView, context: Context) {
         link.claimView = view
+        view.dockHost = dockHost
         let becameActive = isActive && !view.isActive
         view.isActive = isActive
         if becameActive { view.claimSoon() }
     }
 }
 
-/// Connects a page's scroll view, when it appears, to the page's claim.
+/// Connects a page's scroll view, when it appears or goes away, to the
+/// page's claim.
 @MainActor
 final class LibraryPageScrollClaimLink {
     fileprivate weak var claimView: LibraryPageScrollClaimView?
 
-    func scrollViewAppeared() {
+    func scrollViewChanged() {
         claimView?.claimSoon()
     }
 }
@@ -263,8 +268,9 @@ extension EnvironmentValues {
 }
 
 extension View {
-    /// Tells the Libraries tab when this page's scroll view appears, so the
-    /// tab bar can follow it. Does nothing outside the Libraries tab.
+    /// Tells the Libraries tab when this page's scroll view appears or goes
+    /// away, so the tab bar can follow it. Does nothing outside the
+    /// Libraries tab.
     func reportsLibraryPageScrollView() -> some View {
         background { LibraryPageScrollViewMarker() }
     }
@@ -294,13 +300,17 @@ private struct LibraryPageScrollViewMarker: UIViewRepresentable {
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            if window != nil { link?.scrollViewAppeared() }
+            link?.scrollViewChanged()
         }
     }
 }
 
 final class LibraryPageScrollClaimView: UIView {
     var isActive = false
+    /// Told whether the page is too short for the tab bar to minimise.
+    weak var dockHost: PageDockHost?
+    private weak var claimedScrollView: UIScrollView?
+    private var lengthObservations: [NSKeyValueObservation] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -321,7 +331,16 @@ final class LibraryPageScrollClaimView: UIView {
     }
 
     private func claim() {
-        guard isActive, window != nil, let scrollView = pageScrollView() else { return }
+        guard isActive, window != nil else { return }
+        guard let scrollView = pageScrollView() else {
+            // Nothing to scroll (an empty or loading page), so nothing to
+            // minimise for; otherwise the previous page's answer would stay.
+            claimedScrollView = nil
+            lengthObservations = []
+            dockHost?.setPageIsTooShortToMinimize(true)
+            return
+        }
+        observeLength(of: scrollView)
         var responder: UIResponder? = scrollView
         while let next = responder {
             if let controller = next as? UIViewController, controller.parent is UITabBarController {
@@ -332,6 +351,34 @@ final class LibraryPageScrollClaimView: UIView {
             }
             responder = next.next
         }
+    }
+
+    /// Follow how far the page scrolls, while it's the page on screen.
+    private func observeLength(of scrollView: UIScrollView) {
+        if claimedScrollView !== scrollView {
+            claimedScrollView = scrollView
+            let report = { [weak self] in
+                DispatchQueue.main.async { self?.reportLength() }
+            }
+            lengthObservations = [
+                scrollView.observe(\.contentSize) { _, _ in report() },
+                scrollView.observe(\.bounds) { _, _ in report() },
+                scrollView.observe(\.contentInset) { _, _ in report() },
+            ]
+        }
+        reportLength()
+    }
+
+    /// A page that scrolls less than its own height is short. Once short,
+    /// it needs a little more to count as long again, so a page at the
+    /// line doesn't flip the tab bar's behaviour as it scrolls.
+    private func reportLength() {
+        guard isActive, window != nil, let scrollView = claimedScrollView, let dockHost else { return }
+        let insets = scrollView.adjustedContentInset
+        let range = scrollView.contentSize.height + insets.top + insets.bottom - scrollView.bounds.height
+        let height = scrollView.bounds.height
+        let isShort = dockHost.pageIsTooShortToMinimize ? range < height + 80 : range < height
+        dockHost.setPageIsTooShortToMinimize(isShort)
     }
 
     /// The first vertical scroll view drawn after this marker and before
