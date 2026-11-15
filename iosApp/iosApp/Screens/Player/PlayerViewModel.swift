@@ -529,7 +529,7 @@ class PlayerViewModel {
     var chapters: [PlayerChapterInfo] = []
     /// Every marker occurrence of the playing file. The three ranges below
     /// follow the playhead through it; see ``resolveMarkerOccurrences()``.
-    private var markerTimeline: PlayerMarkerTimeline = .empty {
+    private(set) var markerTimeline: PlayerMarkerTimeline = .empty {
         didSet { resolveMarkerOccurrences() }
     }
     private(set) var introRange: TimeRange?

@@ -197,7 +197,7 @@ struct TVPlayerScrubber: View {
                     .fill(Color.white.opacity(isTimelineScrubbing ? 0.48 : isFocused ? 0.35 : 0.24))
                     .frame(height: trackHeight)
 
-                introRegion(barWidth: width)
+                markerRegions(barWidth: width)
 
                 // Played / scrub-preview fill.
                 Capsule(style: .continuous)
@@ -240,14 +240,26 @@ struct TVPlayerScrubber: View {
         // periodic observer's cadence) and seek commits snap cleanly.
     }
 
+    /// The intro region, and a region for every credits range so a file with
+    /// two credits sequences shows both. Credits use the Android TV and Roku amber.
     @ViewBuilder
-    private func introRegion(barWidth: CGFloat) -> some View {
-        if let introRange = viewModel.introRange, viewModel.duration > 0 {
-            let start = min(max(introRange.start / viewModel.duration, 0), 1)
-            let end = min(max(introRange.end / viewModel.duration, 0), 1)
+    private func markerRegions(barWidth: CGFloat) -> some View {
+        if let introRange = viewModel.introRange {
+            markerRegion(introRange, color: .cyan, barWidth: barWidth)
+        }
+        ForEach(Array(viewModel.markerTimeline.ranges(.credits).enumerated()), id: \.offset) { _, range in
+            markerRegion(range, color: Color(hex: "#FFB74D"), barWidth: barWidth)
+        }
+    }
+
+    @ViewBuilder
+    private func markerRegion(_ range: TimeRange, color: Color, barWidth: CGFloat) -> some View {
+        if viewModel.duration > 0 {
+            let start = min(max(range.start / viewModel.duration, 0), 1)
+            let end = min(max(range.end / viewModel.duration, 0), 1)
             if end > start {
                 Capsule(style: .continuous)
-                    .fill(Color.cyan.opacity(isTimelineScrubbing || isFocused ? 0.45 : 0.34))
+                    .fill(color.opacity(isTimelineScrubbing || isFocused ? 0.45 : 0.34))
                     .frame(width: barWidth * (end - start), height: trackHeight)
                     .offset(x: barWidth * start)
             }
