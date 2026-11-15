@@ -151,14 +151,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @ViewBuilder
     private var actionStack: some View {
         VStack(spacing: 14) {
-            PhonePrimaryPillButton(
-                icon: "play.fill",
+            PhoneVideoPlayButton(
                 // A seed has no watch state, so neither Play nor Resume is known.
                 title: isProvisional
                     ? AppLanguage.string(.commonLoading, locale: locale)
                     : DetailPlayLabel.item(detail.userData, shown: effectiveVersion, in: availableVersions),
-                action: handlePlayTap,
-                fullWidth: true
+                action: handlePlayTap
             )
             .disabled(isProvisional)
 

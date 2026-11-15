@@ -161,14 +161,12 @@ struct BoxSetDetailView: View {
             fitsRegularHeroToContent: true,
             actions: {
                 if let movie = detail.nextMovie {
-                    PhonePrimaryPillButton(
-                        icon: "play.fill",
+                    PhoneVideoPlayButton(
                         title: AppLanguage.string(
                             detail.isStarted ? .boxSetsContinue(movie.title) : .boxSetsPlay(movie.title),
                             locale: locale
                         ),
-                        action: { play(movie) },
-                        fullWidth: true
+                        action: { play(movie) }
                     )
                 }
             },

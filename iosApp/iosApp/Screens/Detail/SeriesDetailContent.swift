@@ -237,12 +237,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @ViewBuilder
     private var actionStack: some View {
         VStack(spacing: 14) {
-            PhonePrimaryPillButton(
-                icon: "play.fill",
+            PhoneVideoPlayButton(
                 title: nextUpEpisode.map(playButtonLabel)
                     ?? AppLanguage.string(isLoadingEpisodes ? .detailEpisodesLoading : .commonPlay, locale: locale),
-                action: handlePrimaryPlayTap,
-                fullWidth: true
+                action: handlePrimaryPlayTap
             )
             .disabled(nextUpEpisode == nil && !isLoadingEpisodes)
 

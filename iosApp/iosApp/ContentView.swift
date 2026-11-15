@@ -2119,8 +2119,9 @@ private struct FixedPrimarySplitViewWidth: UIViewControllerRepresentable {
 #endif
 
 #if os(iOS)
-/// Routes every iOS streaming play through an engaged TV and asks before a
-/// play would replace the TV's title or bypass it for a download.
+/// Routes every iOS streaming play through an engaged TV, and asks the
+/// prompts a play can raise while no detail is open over the root view. An
+/// open detail asks them itself (`ItemDetailRemotePlaybackPresentation`).
 private struct RemotePlaybackRoutingModifier: ViewModifier {
     let router: AppRouter
     let siloControl: SiloControlClient
@@ -2147,10 +2148,31 @@ private struct RemotePlaybackRoutingModifier: ViewModifier {
                     )
                 }
             }
+            .modifier(RemotePlaybackPrompts(
+                router: router,
+                siloControl: siloControl,
+                isActive: router.presentedItemDetail == nil
+            ))
+    }
+}
+
+/// Asks before a play would replace the engaged TV's title or bypass the TV
+/// for a download.
+///
+/// A view can only present over what is on screen, so the root view and an
+/// open detail each carry these, and `isActive` picks the one on top. Asked
+/// from underneath, a dialog never appears and its request is dropped.
+private struct RemotePlaybackPrompts: ViewModifier {
+    let router: AppRouter
+    let siloControl: SiloControlClient
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        content
             .confirmationDialog(
                 Text(.remoteReplaceTitle),
                 isPresented: Binding(
-                    get: { router.pendingReplaceRemotePlayback != nil },
+                    get: { isActive && router.pendingReplaceRemotePlayback != nil },
                     set: { if !$0 { router.pendingReplaceRemotePlayback = nil } }
                 ),
                 titleVisibility: .visible,
@@ -2164,7 +2186,7 @@ private struct RemotePlaybackRoutingModifier: ViewModifier {
             .confirmationDialog(
                 Text(.shellRemotePlaybackTvConnected),
                 isPresented: Binding(
-                    get: { router.pendingOfflinePlayChoice != nil },
+                    get: { isActive && router.pendingOfflinePlayChoice != nil },
                     set: { if !$0 { router.pendingOfflinePlayChoice = nil } }
                 ),
                 titleVisibility: .visible
@@ -2180,7 +2202,34 @@ private struct RemotePlaybackRoutingModifier: ViewModifier {
             } message: {
                 Text(.shellRemotePlaybackDownloadsPlayHere)
             }
+    }
+}
 
+/// The TV remote and the remote-playback prompts over an open detail. Play
+/// on a detail page sends the title to the engaged TV, and the remote that
+/// reports it has to open over that page; presented from the root view it
+/// would wait, unseen, until the detail closed.
+private struct ItemDetailRemotePlaybackPresentation: ViewModifier {
+    let router: AppRouter
+
+    @Environment(SiloControlClient.self) private var siloControl
+    @State private var statusColumn: StatusColumnLayout?
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: StatusColumnLayout?.self) { proxy in
+                StatusColumnLayout(safeArea: proxy.safeAreaInsets)
+            } action: { statusColumn = $0 }
+            .modifier(RemotePlaybackPrompts(router: router, siloControl: siloControl, isActive: true))
+            .siloRemoteControl(
+                isPresented: Binding(
+                    get: { siloControl.isShowingRemoteControl },
+                    set: { if !$0 { siloControl.hideRemoteControl() } }
+                ),
+                coversWindow: router.presentsItemDetailFullWindow || statusColumn != nil,
+                controller: siloControl,
+                onDismiss: { router.refitItemDetail() }
+            )
     }
 }
 #endif
@@ -2580,9 +2629,11 @@ struct MainTabView: View {
                 router.refitItemDetail()
             }
         }
+        // An open detail presents the remote itself, over its own page
+        // (`ItemDetailRemotePlaybackPresentation`).
         .siloRemoteControl(
             isPresented: Binding(
-                get: { siloControl.isShowingRemoteControl },
+                get: { siloControl.isShowingRemoteControl && router.presentedItemDetail == nil },
                 set: { if !$0 { siloControl.hideRemoteControl() } }
             ),
             coversWindow: router.presentsItemDetailFullWindow || statusColumn != nil,
@@ -3395,6 +3446,7 @@ private struct ItemDetailSheet: View {
         .interactiveDismissDisabled(!router.itemDetailPath.isEmpty)
         .modifier(PlayerPresentationModifier(router: router, detailPresentationID: presentation.id))
         .modifier(AudioPlayerPresentationModifier(router: router, detailPresentationID: presentation.id))
+        .modifier(ItemDetailRemotePlaybackPresentation(router: router))
     }
 
     /// The page's frame: the sheet's container, down through the home

@@ -158,6 +158,22 @@ final class SiloControlClient {
         (hasActiveSession && !isAutoResuming) || isReconnecting
     }
 
+    /// The engaged TV's name, kept through a reconnect.
+    var engagedTargetName: String? {
+        activeTarget?.name ?? lastTarget?.name
+    }
+
+    /// The TV is playing a title. A connected TV with nothing on still
+    /// publishes state, with no content id.
+    var hasRemotePlayback: Bool {
+        !(state?.contentId ?? "").isEmpty
+    }
+
+    /// Counts the times the user ended the session (`disconnect`,
+    /// `cancelReconnect`), so a Play waiting out a reconnect can tell their
+    /// choice from a reconnect that gave up.
+    @ObservationIgnored private var userEndedSessionCount = 0
+
     /// How long a Play tapped during a reconnect waits for the link before
     /// giving up and reporting the failure in the remote cover.
     private static let launchReconnectWait: Duration = .seconds(45)
@@ -174,11 +190,16 @@ final class SiloControlClient {
         guard remotePlaybackEngaged else { return false }
         if isReconnecting {
             isShowingRemoteControl = true
+            let endedByUser = userEndedSessionCount
             let deadline = ContinuousClock.now + Self.launchReconnectWait
             while isReconnecting, ContinuousClock.now < deadline, !Task.isCancelled {
                 await reconnectSettled.nextChange(before: deadline)
             }
             guard hasActiveSession else {
+                // The user stopped the reconnect or turned control mode off
+                // while this Play waited. That closed the remote; reopening
+                // it on a reconnect error would undo their choice.
+                if userEndedSessionCount != endedByUser { return true }
                 if errorMessage == nil {
                     errorMessage = lastTarget.map { AppLanguage.string(.remoteErrorReconnectFailed($0.name)) }
                         ?? AppLanguage.string(.remoteErrorReconnectFailedUnnamed)
@@ -705,6 +726,7 @@ final class SiloControlClient {
     /// User-initiated disconnect: also forgets the persisted target so a
     /// future launch doesn't silently reattach to a TV the user let go of.
     func disconnect() {
+        userEndedSessionCount += 1
         forgetPersistedTarget()
         quietDisconnect()
     }
@@ -714,6 +736,7 @@ final class SiloControlClient {
     func cancelReconnect() {
         guard isReconnecting else { return }
         Self.logger.info("control: reconnect cancelled by user")
+        userEndedSessionCount += 1
         forgetPersistedTarget()
         clearSession()
     }

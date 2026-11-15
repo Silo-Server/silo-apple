@@ -65,16 +65,22 @@ enum DetailRemoteControlAction: Equatable {
     /// Pick a TV to control.
     case pickTV
 
-    /// A fetched movie or episode leaf casts itself; its primary item maps to
-    /// a single playback request. Series, season and audiobook containers
-    /// have no single item to cast. A card seed has no files or tracks, so
-    /// until the fetched detail replaces it the page acts as if it had none.
+    /// An engaged TV already takes the page's Play button, which asks
+    /// before replacing what the TV has on. Its Remote button therefore
+    /// opens the remote and never sends the page's item.
+    ///
+    /// With no TV engaged, a fetched movie or episode leaf casts itself; its
+    /// primary item maps to a single playback request. Series, season and
+    /// audiobook containers have no single item to cast. A card seed has no
+    /// files or tracks, so until the fetched detail replaces it the page
+    /// acts as if it had none.
     static func forTap(detail: ItemDetail?, isProvisional: Bool, remotePlaybackEngaged: Bool) -> Self {
+        if remotePlaybackEngaged { return .showRemote }
         if let detail, !isProvisional,
            !detail.isAudiobook, detail.type != "season", detail.type != "series" {
             return .playOnTV
         }
-        return remotePlaybackEngaged ? .showRemote : .pickTV
+        return .pickTV
     }
 }
 
@@ -120,6 +126,9 @@ struct PhoneDetailTopChrome: View {
     let onLeadingTap: () -> Void
     let trailingSystemName: String?
     let onTrailingTap: (() -> Void)?
+    /// Set while a TV is engaged: the trailing button turns into a solid
+    /// disc that opens this menu instead of running `onTrailingTap`.
+    var trailingEngagedMenu: SiloControlEngagedMenuItems? = nil
     /// Replaces the buttons' usual inset (18pt from the sides, 9pt from the
     /// top) with one distance from both, to sit them in a split page's sidebar.
     var cornerInset: CGFloat? = nil
@@ -245,7 +254,15 @@ struct PhoneDetailTopChrome: View {
 
     @ViewBuilder
     private var trailingButton: some View {
-        if let trailingSystemName, let onTrailingTap {
+        if let trailingSystemName, let trailingEngagedMenu {
+            Menu {
+                trailingEngagedMenu
+            } label: {
+                controlIcon(systemName: trailingSystemName, size: 16, isActive: true)
+            }
+            .menuStyle(.borderlessButton)
+            .siloControlEngagedAccessibility(trailingEngagedMenu.controller)
+        } else if let trailingSystemName, let onTrailingTap {
             Button(action: onTrailingTap) {
                 controlIcon(systemName: trailingSystemName, size: 16)
             }
@@ -254,14 +271,21 @@ struct PhoneDetailTopChrome: View {
         }
     }
 
-    private func controlIcon(systemName: String, size: CGFloat) -> some View {
+    /// `isActive` swaps the glass for a solid disc with a dark glyph, the
+    /// same inverted look the top bar's Remote button takes while a TV is
+    /// engaged.
+    private func controlIcon(systemName: String, size: CGFloat, isActive: Bool = false) -> some View {
         ZStack {
-            PhoneDetailStaticControlGlass()
-                .equatable()
+            if isActive {
+                Circle().fill(Color.white)
+            } else {
+                PhoneDetailStaticControlGlass()
+                    .equatable()
+            }
 
             Image(systemName: systemName)
                 .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(isActive ? Color.black : Color.white)
         }
         .frame(
             width: SiloTheme.topBarIconHitSize,
@@ -536,7 +560,6 @@ private struct ItemDetailPhoneContent: View {
     /// The cast button's in-flight watch-state read. A second tap replaces it.
     @State private var controlResumeLookupTask: Task<Void, Never>?
     @State private var isShowingControlPicker = false
-    @State private var isShowingRemoteControl = false
 
     private var seriesSelection: SeriesDetailContext? {
         guard viewModel.detail?.type == "series" else { return nil }
@@ -547,8 +570,10 @@ private struct ItemDetailPhoneContent: View {
         )
     }
 
+    /// The remote itself is presented by the detail's sheet or the root
+    /// view, whichever is on top (`ItemDetailRemotePlaybackPresentation`).
     private var isShowingControl: Bool {
-        controlRequestBox != nil || isShowingControlPicker || isShowingRemoteControl
+        controlRequestBox != nil || isShowingControlPicker || siloControl.isShowingRemoteControl
     }
     #endif
     @Environment(AppRouter.self) private var router
@@ -781,12 +806,6 @@ private struct ItemDetailPhoneContent: View {
         .sheet(isPresented: $isShowingControlPicker, onDismiss: { router.refitItemDetail() }) {
             SiloControlTargetPickerView(request: nil, controller: siloControl)
         }
-        .siloRemoteControl(
-            isPresented: $isShowingRemoteControl,
-            coversWindow: router.presentsItemDetailFullWindow || isBesideStatusColumn,
-            controller: siloControl,
-            onDismiss: { router.refitItemDetail() }
-        )
         // Refitting the detail would discard these, so it waits for them.
         .onChange(of: isShowingControl) { _, showing in
             router.itemDetailShowsControl = showing
@@ -821,7 +840,19 @@ private struct ItemDetailPhoneContent: View {
                 ? "appletvremote.gen4.fill"
                 : "appletvremote.gen4",
             onTrailingTap: handleRemoteControlTap,
+            trailingEngagedMenu: engagedRemoteMenu,
             cornerInset: isSplitPage ? PhoneDetailHeroLayout.splitCloseButtonInset : nil
+        )
+    }
+
+    /// The Remote button's menu while a TV is engaged; nil otherwise, and
+    /// the button then casts the page's item or opens the TV picker.
+    private var engagedRemoteMenu: SiloControlEngagedMenuItems? {
+        guard siloControl.remotePlaybackEngaged else { return nil }
+        return SiloControlEngagedMenuItems(
+            controller: siloControl,
+            onShowRemote: { siloControl.showRemoteControl() },
+            onChooseTarget: { isShowingControlPicker = true }
         )
     }
 
@@ -845,29 +876,47 @@ private struct ItemDetailPhoneContent: View {
         return detail.isAudiobook
     }
 
-    /// Movie and episode leaves cast the visible item. Containers (series,
-    /// seasons, audiobooks) have no single file, so the button opens the
-    /// connected remote or the TV picker.
     /// The Remote button in the status column, at the bottom where the tab
     /// pages keep their actions. The top of the column belongs to the system
     /// and grows when the Dynamic Island shows an activity.
     private func statusColumnRemoteButton(_ layout: StatusColumnLayout) -> some View {
-        Button(action: handleRemoteControlTap) {
-            Image(systemName: siloControl.remotePlaybackEngaged ? "appletvremote.gen4.fill" : "appletvremote.gen4")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
-                .siloGlass(in: Circle())
-                .contentShape(Circle())
+        Group {
+            if let engagedRemoteMenu {
+                Menu {
+                    engagedRemoteMenu
+                } label: {
+                    Image(systemName: "appletvremote.gen4.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.black)
+                        .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
+                        .background(Circle().fill(Color.white))
+                        .contentShape(Circle())
+                }
+                .menuStyle(.borderlessButton)
+                .siloControlEngagedAccessibility(siloControl)
+            } else {
+                Button(action: handleRemoteControlTap) {
+                    Image(systemName: "appletvremote.gen4")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
+                        .siloGlass(in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(.detailRemoteControl))
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text(.detailRemoteControl))
         .statusColumnCentered(layout)
         .padding(.bottom, StatusColumnBar.bottomMargin)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: layout.edge == .leading ? .bottomLeading : .bottomTrailing)
         .ignoresSafeArea(edges: [layout.edgeSet, .bottom])
     }
 
+    /// With no TV engaged, movie and episode leaves cast the visible item,
+    /// and containers (series, seasons, audiobooks), which have no single
+    /// file, open the TV picker. An engaged TV's button is a menu and never
+    /// gets here, except for a tap that raced the TV engaging.
     private func handleRemoteControlTap() {
         let action = DetailRemoteControlAction.forTap(
             detail: viewModel.detail,
@@ -902,7 +951,7 @@ private struct ItemDetailPhoneContent: View {
                 ))
             }
         case .showRemote:
-            isShowingRemoteControl = true
+            siloControl.showRemoteControl()
         case .pickTV:
             isShowingControlPicker = true
         }
