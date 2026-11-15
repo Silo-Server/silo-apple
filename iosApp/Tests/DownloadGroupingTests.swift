@@ -193,14 +193,14 @@ final class DownloadGroupingTests: XCTestCase {
         XCTAssertEqual(olderDownloads.first?.posterThumbhash, "STILL1")
     }
 
-    func testSeasonsAreNewestFirstWithSpecialsLast() {
+    func testSeasonsAscendWithSpecialsFirst() {
         let records = [
             episode("a", series: "s", season: 1, number: 1, bytes: 1),
             episode("b", series: "s", season: 2, number: 1, bytes: 1),
             episode("c", series: "s", season: 0, number: 1, bytes: 1),
         ]
         let group = groups(records).first
-        XCTAssertEqual(group?.seasons.map(\.seasonNumber), [2, 1, 0])
+        XCTAssertEqual(group?.seasons.map(\.seasonNumber), [0, 1, 2])
     }
 
     func testEpisodesWithinSeasonSortedByNumber() {
@@ -234,9 +234,9 @@ final class DownloadGroupingTests: XCTestCase {
         ]
         let group = groups(records).first
         XCTAssertEqual(group?.totalBytes, 550)
-        XCTAssertEqual(group?.seasons.first?.seasonNumber, 2)
-        XCTAssertEqual(group?.seasons.first?.totalBytes, 250)
-        XCTAssertEqual(group?.seasons.first?.episodeCount, 2)
+        XCTAssertEqual(group?.seasons.last?.seasonNumber, 2)
+        XCTAssertEqual(group?.seasons.last?.totalBytes, 250)
+        XCTAssertEqual(group?.seasons.last?.episodeCount, 2)
     }
 
     // MARK: - Title resolution

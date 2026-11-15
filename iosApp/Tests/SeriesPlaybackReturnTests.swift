@@ -26,9 +26,29 @@ final class SeriesPlaybackReturnTests: XCTestCase {
     }
 
     func testFinishedRegularEpisodeDoesNotContinueIntoSpecials() throws {
-        // Specials sort after the last regular season in the Apple TV window.
+        // Guards lists where a special follows a regular episode, such as a
+        // caller that orders seasons differently from the Apple TV window.
         let episodes = try [episode(2, 1), episode(2, 2), episode(0, 1)]
         XCTAssertNil(playback("s2e2", season: 2, completed: true).episodeToSelect(in: episodes))
+    }
+
+    func testFinishedLastSpecialContinuesIntoTheFirstEpisode() throws {
+        // Specials sort before season 1 in the Apple TV window.
+        let episodes = try [episode(0, 1), episode(0, 2), episode(1, 1), episode(1, 2)]
+        XCTAssertEqual(playback("s0e2", season: 0, completed: true).episodeToSelect(in: episodes), "s1e1")
+    }
+
+    func testFinishedLastSpecialLoadsSeasonOne() async throws {
+        let model = try seriesModel(showing: 0, seasons: [0, 1, 2])
+        defer { clearCache() }
+
+        let selected = await model.prepareSeriesPlaybackReturn(
+            playback("s0e2", season: 0, completed: true),
+            fetchEpisodes: { _, season in try self.page(season, count: 2) }
+        )
+
+        XCTAssertEqual(selected, "s1e1")
+        XCTAssertEqual(model.selectedSeason?.seasonNumber, 1)
     }
 
     func testFinishedFinaleOfTheLastSeasonStaysOnTheFinale() async throws {

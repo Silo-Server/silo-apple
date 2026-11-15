@@ -2,13 +2,13 @@ import XCTest
 @testable import Silo
 
 final class SeriesEpisodeWindowTests: XCTestCase {
-    func testContinuousOrderAndSpecialsLast() throws {
+    func testContinuousOrderAndSpecialsFirst() throws {
         let seasons = try [0, 3, 1, 2].map(season)
         let window = SeriesEpisodeWindow.snapshot(seasons: seasons, selected: 2, pages: [
             0: [try episode(0, 1)], 1: [try episode(1, 2), try episode(1, 1)],
             2: [try episode(2, 1)], 3: [try episode(3, 1)],
         ])
-        XCTAssertEqual(window.episodes.map(\.contentId), ["s1e1", "s1e2", "s2e1", "s3e1", "s0e1"])
+        XCTAssertEqual(window.episodes.map(\.contentId), ["s0e1", "s1e1", "s1e2", "s2e1", "s3e1"])
         XCTAssertNil(window.previousSeason)
         XCTAssertNil(window.nextSeason)
     }

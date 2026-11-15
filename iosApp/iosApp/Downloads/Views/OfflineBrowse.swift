@@ -170,7 +170,8 @@ struct OfflineSeriesBrowseView: View {
            let match = group.seasons.first(where: { $0.seasonNumber == selectedSeasonNumber }) {
             return match
         }
-        return group.seasons.first
+        // Specials list first, but open on the first numbered season.
+        return group.seasons.first { !$0.isSpecials } ?? group.seasons.first
     }
 
     private func heroEyebrow(_ group: DownloadSeriesGroup) -> String {

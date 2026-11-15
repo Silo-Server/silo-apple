@@ -12,14 +12,11 @@ struct SeriesEpisodeWindow {
     /// Series of one-episode seasons need more than the five nearest pages.
     static let minimumEpisodesPerSide = 8
 
+    /// Display order (Specials first, then numbered seasons ascending), one
+    /// entry per season number.
     static func orderedSeasons(_ seasons: [Season]) -> [Season] {
         var seen = Set<Int>()
-        return seasons.sorted {
-            let lhsSpecial = $0.isSpecials == true || $0.seasonNumber == 0
-            let rhsSpecial = $1.isSpecials == true || $1.seasonNumber == 0
-            if lhsSpecial != rhsSpecial { return !lhsSpecial }
-            return $0.seasonNumber < $1.seasonNumber
-        }.filter { seen.insert($0.seasonNumber).inserted }
+        return seasons.sortedForDisplay().filter { seen.insert($0.seasonNumber).inserted }
     }
 
     static func snapshot(

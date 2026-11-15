@@ -21,7 +21,7 @@ struct DownloadSeriesGroup: Identifiable, Hashable, Sendable {
     let seriesId: String
     let title: String
     let posterThumbhash: String?
-    /// Seasons newest-first, Specials last.
+    /// Specials first, then numbered seasons ascending.
     let seasons: [DownloadSeasonGroup]
     let totalBytes: Int64
     let episodeCount: Int
@@ -137,13 +137,7 @@ enum DownloadGroupBuilder {
                     totalBytes: sorted.reduce(0) { $0 + $1.fileSize }
                 )
             }
-            .sorted { lhs, rhs in
-                // Real seasons newest-first; Specials (<= 0) always last.
-                if (lhs.seasonNumber <= 0) != (rhs.seasonNumber <= 0) {
-                    return rhs.seasonNumber <= 0
-                }
-                return lhs.seasonNumber > rhs.seasonNumber
-            }
+            .sorted { $0.seasonNumber < $1.seasonNumber }
 
         let title = records.compactMap(\.seriesTitle).first
             ?? seriesTitle
