@@ -328,7 +328,8 @@ private struct PhoneDetailParallaxArtwork: View {
                 aspectRatio: aspectRatio,
                 placeholderSymbol: placeholderSymbol,
                 coverHeight: min(max(height * 0.48, 190), 250),
-                coverTopInset: 100
+                coverTopInset: 100,
+                fallbackUrl: fallbackUrl
             )
         }
     }
@@ -578,7 +579,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 height: compactArtworkHeight,
                 isEnabled: enablesArtworkParallax,
                 style: artworkStyle,
-                fallbackUrl: fallbackArtworkUrl
+                fallbackUrl: resolvedFallbackArtworkURL
             )
 
             LinearGradient(
@@ -982,7 +983,8 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                     aspectRatio: aspectRatio,
                     placeholderSymbol: placeholderSymbol,
                     coverHeight: geometry.size.height * 0.68,
-                    coverTopInset: nil
+                    coverTopInset: nil,
+                    fallbackUrl: resolvedFallbackArtworkURL
                 )
             }
         }
@@ -993,6 +995,12 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     private var resolvedArtworkURL: String? {
         if case .cover = artworkStyle { return nonEmpty(posterUrl) }
         return nonEmpty(backdropUrl) ?? nonEmpty(posterUrl)
+    }
+
+    /// The card seed's artwork for the slot `resolvedArtworkURL` fills.
+    private var resolvedFallbackArtworkURL: String? {
+        if case .cover = artworkStyle { return fallbackPosterUrl }
+        return fallbackArtworkUrl
     }
 
     private var resolvedArtworkThumbhash: String? {
@@ -1364,6 +1372,8 @@ private struct PhoneDetailCoverArtwork: View {
     let placeholderSymbol: String
     let coverHeight: CGFloat
     let coverTopInset: CGFloat?
+    /// See `AsyncImageView.fallbackUrl`.
+    var fallbackUrl: String? = nil
 
     var body: some View {
         ZStack(alignment: coverTopInset == nil ? .center : .top) {
@@ -1382,7 +1392,8 @@ private struct PhoneDetailCoverArtwork: View {
                         url: url,
                         thumbhash: thumbhash,
                         targetSize: CGSize(width: 420, height: 420),
-                        contentMode: .fill
+                        contentMode: .fill,
+                        fallbackUrl: fallbackUrl
                     )
                     .scaleEffect(1.25)
                     .saturation(1.2)
@@ -1403,7 +1414,8 @@ private struct PhoneDetailCoverArtwork: View {
             targetSize: CGSize(width: width, height: coverHeight),
             contentMode: .fill,
             placeholderStyle: .artwork,
-            placeholderSymbol: placeholderSymbol
+            placeholderSymbol: placeholderSymbol,
+            fallbackUrl: fallbackUrl
         )
         .frame(width: width, height: coverHeight)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

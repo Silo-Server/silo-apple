@@ -1,7 +1,7 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// The scrolling body of a movie or series detail page. Usually one column:
+/// The scrolling body of a title detail page. Usually one column:
 /// the hero, then the sections below it. A wide, short page (see
 /// `PhoneDetailHeroLayout.usesSplitLayout`) instead spreads the artwork
 /// across the whole window, holds the title and actions still in a glass
@@ -95,6 +95,67 @@ struct PhoneDetailPageLayout<Column: View, PaneArtwork: View, PaneSidebar: View,
             paneSidebar: paneSidebar,
             paneContent: paneContent
         )
+    }
+}
+
+/// The page every iPhone, iPad and Mac title detail draws, for movies, series
+/// and audiobooks alike: the artwork surface, `PhoneDetailPageLayout`'s
+/// single column or split page, and the sections below the hero added after
+/// the first frame (`PhoneDetailBelowFold`). Each page supplies its hero (or
+/// one part of it on a split page), what its split sidebar adds under the
+/// hero, what its split content pane adds under the overview, and its
+/// sections.
+struct PhoneDetailPage<Hero: View, SidebarExtras: View, BelowOverview: View, BelowFold: View>: View {
+    let backdropURL: String?
+    let backdropThumbhash: String?
+    let enablesArtworkGlass: Bool
+    /// Drawn on the surface while `backdropURL` loads, such as a card seed's.
+    var fallbackBackdropURL: String? = nil
+    let scrollState: PhoneDetailScrollState
+    /// The hero; on a split page, the part named.
+    @ViewBuilder let hero: (PhoneDetailHeroPane?) -> Hero
+    /// Under the hero in a split page's sidebar, such as playback selectors.
+    @ViewBuilder let sidebarExtras: () -> SidebarExtras
+    /// Under the overview in a split page's content pane. In a single column
+    /// the hero draws it.
+    @ViewBuilder let belowOverview: () -> BelowOverview
+    @ViewBuilder let belowFold: () -> BelowFold
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    var body: some View {
+        PhoneDetailPageSurface(
+            backdropURL: backdropURL,
+            backdropThumbhash: backdropThumbhash,
+            enablesArtworkGlass: enablesArtworkGlass,
+            keepsSideSafeArea: true,
+            fallbackBackdropURL: fallbackBackdropURL
+        ) {
+            PhoneDetailPageLayout(scrollState: scrollState) {
+                VStack(alignment: .leading, spacing: horizontalSizeClass == .regular ? 16 : 32) {
+                    hero(nil)
+                    PhoneDetailBelowFold { belowFold() }
+                }
+                .padding(.bottom, 40)
+            } paneArtwork: {
+                hero(.artwork)
+            } paneSidebar: {
+                VStack(spacing: 16) {
+                    hero(.sidebar)
+                    sidebarExtras()
+                }
+            } paneContent: {
+                VStack(alignment: .leading, spacing: 32) {
+                    VStack(spacing: 14) {
+                        hero(.overview)
+                        belowOverview()
+                    }
+                    .padding(.horizontal, SiloTheme.safePadding)
+                    belowFold()
+                }
+                .padding(.bottom, 40)
+            }
+        }
     }
 }
 

@@ -18,24 +18,18 @@ extension ItemDetail {
     /// A provisional detail drawn from the card that opened `contentId`, so
     /// the page can paint its title, facts and artwork before the catalog
     /// answers. Fields a card does not carry (files, watch state, cast,
-    /// crew, the ratings row, themes, trailers) stay nil; the page shows
-    /// those parts in their loading form while the detail is provisional.
+    /// crew, the ratings row, themes, trailers, a book's authors, narrators
+    /// and series) stay nil; the page shows those parts in their loading
+    /// form while the detail is provisional.
     ///
-    /// A movie or series card seeds its own page. An episode card that opens
-    /// its series seeds a series page from the series' id, title and artwork
-    /// only, never the episode's description, still, runtime or ratings.
-    /// Anything else, or a card without a title, seeds nothing.
+    /// A movie, series or audiobook card seeds its own page. An episode card
+    /// that opens its series seeds a series page from the series' id, title
+    /// and artwork only, never the episode's description, still, runtime or
+    /// ratings. Anything else, or a card without a title, seeds nothing.
     static func seed(from item: SectionItem, opening contentId: String) -> ItemDetail? {
         if item.contentId == contentId {
-            let type: String
-            if SiloMediaType.isMovieLibrary(item.type) {
-                type = "movie"
-            } else if SiloMediaType.isSeries(item.type) {
-                type = "series"
-            } else {
-                return nil
-            }
-            guard let title = nonEmpty(item.title) else { return nil }
+            guard let type = pageType(ofCard: item.type),
+                  let title = nonEmpty(item.title) else { return nil }
             return provisional(
                 contentId: contentId,
                 type: type,
@@ -86,6 +80,16 @@ extension ItemDetail {
             backdropUrl: backdrop,
             backdropThumbhash: backdrop == nil ? nil : item.seriesBackdropThumbhash
         )
+    }
+
+    /// The detail type of the page a card opens on its own, in the form the
+    /// page branches on. Nil for episodes and seasons, which open their
+    /// series, and for types the page does not draw.
+    private static func pageType(ofCard cardType: String) -> String? {
+        if SiloMediaType.isMovieLibrary(cardType) { return "movie" }
+        if SiloMediaType.isSeries(cardType) { return "series" }
+        if SiloMediaType.isAudiobook(cardType) { return "audiobook" }
+        return nil
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

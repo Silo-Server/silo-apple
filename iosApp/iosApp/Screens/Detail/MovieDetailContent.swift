@@ -59,7 +59,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
 
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.locale) private var locale
     /// The position the resume prompt offers; non-nil while it is shown.
     @State private var pendingResumePosition: Double?
@@ -73,39 +72,22 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @State private var showsMediaInfo = false
 
     var body: some View {
-        PhoneDetailPageSurface(
+        PhoneDetailPage(
             backdropURL: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
             enablesArtworkGlass: SiloMediaType.isMovieLibrary(detail.type),
-            keepsSideSafeArea: true,
-            fallbackBackdropURL: seedArtwork?.backdrop
-        ) {
-            PhoneDetailPageLayout(scrollState: scrollState) {
-                VStack(alignment: .leading, spacing: heroToContentSpacing) {
-                    hero()
-                    PhoneDetailBelowFold { belowFold }
-                }
-                .padding(.bottom, 40)
-            } paneArtwork: {
-                hero(pane: .artwork)
-            } paneSidebar: {
-                VStack(spacing: 16) {
-                    hero(pane: .sidebar)
-                    if let effectiveVersion {
-                        playbackSelectors(for: effectiveVersion)
-                    }
-                }
-            } paneContent: {
-                VStack(alignment: .leading, spacing: 32) {
-                    VStack(spacing: 14) {
-                        hero(pane: .overview)
-                        belowOverview()
-                    }
-                    .padding(.horizontal, SiloTheme.safePadding)
-                    belowFold
-                }
-                .padding(.bottom, 40)
+            fallbackBackdropURL: seedArtwork?.backdrop,
+            scrollState: scrollState
+        ) { pane in
+            hero(pane: pane)
+        } sidebarExtras: {
+            if let effectiveVersion {
+                playbackSelectors(for: effectiveVersion)
             }
+        } belowOverview: {
+            belowOverview()
+        } belowFold: {
+            belowFold
         }
         .siloResumePlaybackAlert(
             isPresented: Binding(
@@ -125,13 +107,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
         }
     }
 
-    private var heroToContentSpacing: CGFloat {
-        horizontalSizeClass == .regular ? 16 : 32
-    }
-
     // MARK: - Hero
 
-    private func hero(pane: PhoneDetailHeroPane? = nil) -> some View {
+    private func hero(pane: PhoneDetailHeroPane?) -> some View {
         PhoneDetailHero(
             title: detail.title,
             logoUrl: detail.logoUrl,

@@ -1,10 +1,11 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Phone, iPad, and Mac audiobook detail, built on the same scaffold as
-/// `MovieDetailContent`: the artwork page surface, `PhoneDetailHero`, the
-/// named action row, and the shared section headers, rails, and Details
-/// list. Book-specific pieces are the cover-forward hero, the listening
+/// Phone, iPad, and Mac audiobook detail, drawn on the same `PhoneDetailPage`
+/// as movies and series, with `PhoneDetailHero`, the named action row, and
+/// the shared section headers, rails, and Details list. Opened from a card,
+/// it draws the card's seed until the fetched detail replaces it, as they
+/// do. Book-specific pieces are the cover-forward hero, the listening
 /// controls (progress-aware Resume, speed, start over), chapters and parts,
 /// the author/narrator rail, and the series rails. Format wording and cover
 /// shape come from `BookDetailKind`.
@@ -24,12 +25,17 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     /// Reference-backed scroll state observed only by the small parallax and
     /// pinned-chrome views, keeping the native ScrollView's body stable.
     let scrollState: PhoneDetailScrollState
+    /// `detail` is the tapped card's seed: it has no parts, listening
+    /// progress or credits yet, so Play and the actions wait in their
+    /// loading form.
+    var isProvisional = false
+    /// The artwork the seed drew, kept on screen while `detail`'s loads.
+    var seedArtwork: DetailSeedArtwork? = nil
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(AudioPlaybackStore.self) private var audioStore
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.locale) private var locale
     @State private var showAllChapters = false
 
@@ -40,27 +46,22 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     }
 
     var body: some View {
-        PhoneDetailPageSurface(
+        // Without a backdrop the cover washes the page.
+        PhoneDetailPage(
             backdropURL: hasBackdrop ? detail.backdropUrl : detail.posterUrl,
             backdropThumbhash: hasBackdrop ? detail.backdropThumbhash : detail.posterThumbhash,
-            enablesArtworkGlass: true
-        ) {
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: heroToContentSpacing) {
-                    hero
-                    belowFold
-                }
-                .padding(.bottom, 40)
-            }
-            .ignoresSafeArea(edges: .top)
-            .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
-            .detailScrollDismissal()
-            .phoneDetailScrollTracking(scrollState)
+            enablesArtworkGlass: true,
+            fallbackBackdropURL: hasBackdrop ? seedArtwork?.backdrop : seedArtwork?.poster,
+            scrollState: scrollState
+        ) { pane in
+            hero(pane: pane)
+        } sidebarExtras: {
+            EmptyView()
+        } belowOverview: {
+            belowOverview()
+        } belowFold: {
+            belowFold
         }
-    }
-
-    private var heroToContentSpacing: CGFloat {
-        horizontalSizeClass == .regular ? 16 : 32
     }
 
     private var hasBackdrop: Bool {
@@ -69,7 +70,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 
     // MARK: - Hero
 
-    private var hero: some View {
+    private func hero(pane: PhoneDetailHeroPane?) -> some View {
         let presentation = presentation
         return PhoneDetailHero(
             title: presentation.title,
@@ -89,6 +90,9 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             artworkStyle: hasBackdrop
                 ? .backdrop
                 : .cover(aspectRatio: kind.coverAspectRatio, placeholderSymbol: kind.placeholderSymbol),
+            pane: pane,
+            fallbackArtworkUrl: seedArtwork?.hero,
+            fallbackPosterUrl: seedArtwork?.poster,
             actions: { actionStack(presentation) },
             belowOverview: { belowOverview() }
         )
@@ -102,6 +106,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             AudiobookPrimaryButton(
                 contentId: detail.contentId,
                 presentation: presentation,
+                isProvisional: isProvisional,
                 startPlayback: { restart, position in
                     startPlayback(restart: restart, startPosition: position)
                 }
@@ -146,6 +151,9 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                     moreMenuItems
                 }
             }
+            // Finished and Start Over act on state a seed lacks, and the
+            // seed's favorite and queue flags are the card's.
+            .disabled(isProvisional)
         }
         .frame(maxWidth: .infinity)
     }
@@ -225,8 +233,11 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                 coverRail(title: moreByAuthorTitle, items: alsoByAuthor)
             }
 
-            detailsSection
-                .padding(.horizontal, SiloTheme.safePadding)
+            // A seed's facts are a partial list; show the detail's whole one.
+            if !isProvisional {
+                detailsSection
+                    .padding(.horizontal, SiloTheme.safePadding)
+            }
 
             if let similar = detail.audiobook?.related?.similar, !similar.isEmpty {
                 coverRail(title: AppLanguage.string(.detailMoreLikeThis, locale: locale), items: similar)
@@ -548,6 +559,8 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 private struct AudiobookPrimaryButton: View {
     let contentId: String
     let presentation: BookDetailPresentation
+    /// The page shows the card's seed, which has no listening progress.
+    let isProvisional: Bool
     let startPlayback: (_ restart: Bool, _ startPosition: Double?) -> Void
 
     @Environment(AudioPlaybackStore.self) private var audioStore
@@ -591,6 +604,15 @@ private struct AudiobookPrimaryButton: View {
                     progress: fraction
                 )
             }
+        } else if isProvisional {
+            // Neither Play nor Resume is known until the detail answers.
+            PhonePrimaryPillButton(
+                icon: "play.fill",
+                title: AppLanguage.string(.commonLoading, locale: locale),
+                action: {},
+                fullWidth: true
+            )
+            .disabled(true)
         } else {
             PhonePrimaryPillButton(
                 icon: presentation.primaryIcon,

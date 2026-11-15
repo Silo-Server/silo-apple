@@ -194,7 +194,7 @@ struct SimilarPosterItem: Identifiable, Hashable {
     }
 
     init(audiobook item: AudiobookRelatedItem) {
-        self.card = nil
+        self.card = BrowseItem(audiobook: item)
         self.contentId = item.contentId
         self.title = item.title
         self.posterUrl = item.posterUrl
@@ -203,6 +203,43 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.subtitle = item.seriesIndex.map { AppLanguage.string(.detailAudiobookBookNumber($0)) }
         self.placeholderSymbol = nil
         self.accessibilityDescription = audiobookRelatedItemAccessibilityLabel(item)
+    }
+}
+
+extension BrowseItem {
+    /// A book from an audiobook page's series or related rails, lifted into
+    /// a card so the page it opens draws it until its detail loads.
+    init(audiobook item: AudiobookRelatedItem) {
+        self.init(
+            contentId: item.contentId,
+            type: "audiobook",
+            title: item.title,
+            year: item.year,
+            genres: nil,
+            contentRating: nil,
+            advisoryAge: nil,
+            advisorySource: nil,
+            status: nil,
+            ratingImdb: nil,
+            ratingTmdb: nil,
+            ratingRtCritic: nil,
+            ratingRtAudience: nil,
+            runtime: nil,
+            originalLanguage: nil,
+            studios: nil,
+            networks: nil,
+            showStatus: nil,
+            overview: nil,
+            posterUrl: item.posterUrl,
+            posterThumbhash: nil,
+            backdropUrl: nil,
+            backdropThumbhash: nil,
+            addedAt: nil,
+            releaseDate: nil,
+            lastAirDate: nil,
+            userState: nil,
+            overlaySummary: nil
+        )
     }
 }
 
