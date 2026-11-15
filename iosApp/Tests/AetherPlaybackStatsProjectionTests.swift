@@ -163,6 +163,10 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         XCTAssertEqual(notes.map(\.value), ["Video codec unsupported", "HDR was tone-mapped to SDR."])
         XCTAssertEqual(notes.map(\.label), ["Diagnostics", ""])
         XCTAssertFalse(stats.playbackRows.contains { $0.id == "playbackRate" }, "normal speed is not a stat")
+        // The overlay cannot scroll: it keeps the one-line reason and leaves
+        // the warnings, which have no limit, to the pages that do.
+        let overlayNotes = stats.overlayRows.filter { $0.id.hasPrefix("diagnostics") }
+        XCTAssertEqual(overlayNotes.map(\.value), ["Video codec unsupported"])
     }
 
     func testDolbyVisionProfileConversionRequiresEngineConfirmation() {

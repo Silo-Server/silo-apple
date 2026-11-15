@@ -60,7 +60,9 @@ struct PlaybackStatsPanel: View {
                     Text(row.value)
                         .foregroundStyle(.white.opacity(0.95))
                         // The plate hugs its rows; a long value wraps here
-                        // instead of widening it across the picture.
+                        // instead of widening it across the picture, and
+                        // stops at two lines so the plate keeps its height.
+                        .lineLimit(2)
                         .frame(maxWidth: 340, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
                 }

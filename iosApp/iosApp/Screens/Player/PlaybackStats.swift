@@ -86,15 +86,21 @@ extension PlaybackStats {
     }
 
     /// What the inert iPhone overlay draws: everything a viewer can act on.
-    /// Aether's internals stay on the pages that scroll.
+    /// The overlay cannot scroll, so its height has to be bounded: Aether's
+    /// internals and the server's warnings, which have no limit on their
+    /// number or length, stay on the pages that scroll.
     var overlayRows: [Row] {
-        playbackRows + streamRows
+        playbackRows(includingWarnings: false) + streamRows
     }
 
     var hasRows: Bool { !allRows.isEmpty }
 
     /// What is playing and how it reaches the device.
     var playbackRows: [Row] {
+        playbackRows(includingWarnings: true)
+    }
+
+    private func playbackRows(includingWarnings: Bool) -> [Row] {
         var rows: [Row] = []
         append(&rows, "playback", .playerHudPlayback, joined([playMethod, container]))
         append(&rows, "video", .playerHudVideo, mediaDescription(video))
@@ -108,7 +114,7 @@ extension PlaybackStats {
         }
         // The reason and the warnings share one label; only the first row
         // carries it.
-        let notes = ([decisionReason] + warnings).compactMap { normalized($0) }
+        let notes = ([decisionReason] + (includingWarnings ? warnings : [])).compactMap { normalized($0) }
         for (index, note) in notes.enumerated() {
             rows.append(Row(
                 id: "diagnostics.\(index)",
