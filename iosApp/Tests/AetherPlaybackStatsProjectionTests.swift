@@ -255,6 +255,8 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
             (1_920, 800, 1, "1080p"),
             (1_440, 1_080, 1, "1080p"),
             (1_440, 1_080, 4.0 / 3.0, "1080p"),
+            // Reaches 1080p through its displayed width alone (1920×800).
+            (1_280, 800, 3.0 / 2.0, "1080p"),
             (1_280, 720, 1, "720p"),
             (720, 480, 32.0 / 27.0, "480p"),
         ]
