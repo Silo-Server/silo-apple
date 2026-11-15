@@ -197,8 +197,6 @@ struct TVPlayerScrubber: View {
                     .fill(Color.white.opacity(isTimelineScrubbing ? 0.48 : isFocused ? 0.35 : 0.24))
                     .frame(height: trackHeight)
 
-                markerRegions(barWidth: width)
-
                 // Played / scrub-preview fill.
                 Capsule(style: .continuous)
                     .fill(Color.white)
@@ -217,6 +215,14 @@ struct TVPlayerScrubber: View {
                         .frame(width: width * bufferedAhead, height: trackHeight)
                         .offset(x: width * progressFraction)
                 }
+
+                PlayerMarkerBands(
+                    timeline: viewModel.markerTimeline,
+                    duration: viewModel.duration,
+                    width: width,
+                    height: trackHeight,
+                    opacity: isTimelineScrubbing || isFocused ? 0.45 : 0.34
+                )
 
                 // Chapter ticks float on top of the fill — white at full
                 // opacity so they read through the played region too.
@@ -238,32 +244,6 @@ struct TVPlayerScrubber: View {
         // filter-release handoff) into a visible 100 ms slide. With it
         // removed, normal playback ticks step forward discretely (at the
         // periodic observer's cadence) and seek commits snap cleanly.
-    }
-
-    /// The intro region, and a region for every credits range so a file with
-    /// two credits sequences shows both. Credits use the Android TV and Roku amber.
-    @ViewBuilder
-    private func markerRegions(barWidth: CGFloat) -> some View {
-        if let introRange = viewModel.introRange {
-            markerRegion(introRange, color: .cyan, barWidth: barWidth)
-        }
-        ForEach(Array(viewModel.markerTimeline.ranges(.credits).enumerated()), id: \.offset) { _, range in
-            markerRegion(range, color: Color(hex: "#FFB74D"), barWidth: barWidth)
-        }
-    }
-
-    @ViewBuilder
-    private func markerRegion(_ range: TimeRange, color: Color, barWidth: CGFloat) -> some View {
-        if viewModel.duration > 0 {
-            let start = min(max(range.start / viewModel.duration, 0), 1)
-            let end = min(max(range.end / viewModel.duration, 0), 1)
-            if end > start {
-                Capsule(style: .continuous)
-                    .fill(color.opacity(isTimelineScrubbing || isFocused ? 0.45 : 0.34))
-                    .frame(width: barWidth * (end - start), height: trackHeight)
-                    .offset(x: barWidth * start)
-            }
-        }
     }
 
     @ViewBuilder

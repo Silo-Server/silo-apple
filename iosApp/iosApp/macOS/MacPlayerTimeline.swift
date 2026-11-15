@@ -57,6 +57,14 @@ struct MacPlayerTimeline: View {
                         .fill(Color.white)
                         .frame(width: width * progressFraction, height: 5)
 
+                    PlayerMarkerBands(
+                        timeline: viewModel.markerTimeline,
+                        duration: viewModel.duration,
+                        width: width,
+                        height: 5,
+                        opacity: 0.45
+                    )
+
                     chapterTicks(width: width)
 
                     Circle()
