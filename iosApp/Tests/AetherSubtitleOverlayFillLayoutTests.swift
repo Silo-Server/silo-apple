@@ -47,6 +47,15 @@ final class AetherSubtitleOverlayFillLayoutTests: XCTestCase {
                           "the line stays above the picture's bottom edge")
     }
 
+    /// Two cues on screen at the same time are drawn one above the other,
+    /// where both can be read, instead of on top of each other.
+    func testCuesShownTogetherStackInsteadOfOverlapping() async throws {
+        let surface = CGSize(width: 600, height: 600)
+        let one = try await drawnSubtitle("NAME CARD", surface: surface, gravity: .resizeAspect)
+        let two = try await drawnSubtitle("NAME CARD", "DIALOGUE LINE", surface: surface, gravity: .resizeAspect)
+        XCTAssertGreaterThan(two.text.height, one.text.height * 1.8, "the second cue adds a line above the first")
+    }
+
     private func assertFillKeepsTheLineAboveTheBottom(live: Bool) async throws {
         let surface = CGSize(width: 600, height: 200)
         let drawn = try await drawnSubtitle("SUBTITLE LINE", live: live, surface: surface, gravity: .resizeAspectFill)
@@ -56,12 +65,13 @@ final class AetherSubtitleOverlayFillLayoutTests: XCTestCase {
                                  "the line sits above the surface's bottom edge")
     }
 
-    /// Plays the bundled video on a surface of the given size, shows one cue
-    /// over it, and returns the picture's size with where the cue's text was
-    /// drawn, in the surface's points. The cue comes from a sidecar, or is
-    /// handed to the overlay as a live cue.
+    /// Plays the bundled video on a surface of the given size, shows the
+    /// lines over it as cues on screen at the same time, and returns the
+    /// picture's size with where their text was drawn, in the surface's
+    /// points. The cues come from a sidecar, or are handed to the overlay as
+    /// live cues.
     private func drawnSubtitle(
-        _ line: String,
+        _ lines: String...,
         live: Bool = false,
         surface: CGSize,
         gravity: AVLayerVideoGravity
@@ -96,9 +106,10 @@ final class AetherSubtitleOverlayFillLayoutTests: XCTestCase {
         let sidecar = FileManager.default.temporaryDirectory.appendingPathComponent("fill-\(UUID().uuidString).srt")
         defer { try? FileManager.default.removeItem(at: sidecar) }
         if live {
-            liveCues.cues = [LiveSubtitleCue(text: line, startMs: 0, endMs: 10_000)]
+            liveCues.cues = lines.map { LiveSubtitleCue(text: $0, startMs: 0, endMs: 10_000) }
         } else {
-            try "1\n00:00:00,000 --> 00:00:10,000\n\(line)\n\n".write(to: sidecar, atomically: true, encoding: .utf8)
+            let srt = lines.enumerated().map { "\($0.offset + 1)\n00:00:00,000 --> 00:00:10,000\n\($0.element)\n\n" }.joined()
+            try srt.write(to: sidecar, atomically: true, encoding: .utf8)
             let appID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3)
             controller.addExternalSubtitleTrack(ExternalSubtitleTrack(url: sidecar), appTrackID: appID)
             controller.selectSubtitleTrack(id: appID)
