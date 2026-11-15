@@ -5,11 +5,13 @@ struct PlaybackStatsPanel: View {
     /// `PlaybackStats`, so the platforms can't drift on *what* is reported —
     /// only on how much chrome is drawn around it.
     enum Layout {
-        /// tvOS Info HUD pane: uppercase section headers, trailing-aligned
-        /// label column, monospaced values. Reads as a panel.
+        /// tvOS Stats pane and the Mac options panel: uppercase section
+        /// headers, trailing-aligned label column, monospaced values. Reads
+        /// as a panel, and shows every section.
         case sectioned
         /// iOS overlay: one flat `Label:  value` list, no section headers,
-        /// drawn straight onto the picture. Reads as annotation.
+        /// drawn straight onto the picture. Reads as annotation, and leaves
+        /// Aether's internals out.
         case plain
     }
 
@@ -18,10 +20,8 @@ struct PlaybackStatsPanel: View {
     var usesTVTypography = false
     var usesTwoColumnLayout = false
 
-    static let sourceSectionID = "stats-source"
-    static let mediaSectionID = "stats-media"
-    static let bufferSectionID = "stats-buffer"
-    static let networkSectionID = "stats-network"
+    static let playbackSectionID = "stats-playback"
+    static let streamSectionID = "stats-stream"
     static let engineSectionID = "stats-engine"
 
     var body: some View {
@@ -44,20 +44,26 @@ struct PlaybackStatsPanel: View {
 
     // MARK: - Plain layout
 
-    /// Flat `Label:` / value grid over `compactRows`. Draws no background of
+    /// Flat `Label:` / value grid over `overlayRows`. Draws no background of
     /// its own — the overlay owns that, so this stays reusable as bare
-    /// annotation. Single column by design: the compact set is short enough
+    /// annotation. Single column by design: the overlay set is short enough
     /// to fit a phone in landscape, which is what lets the overlay stay
     /// inert (no scrolling) without clipping anything.
     private var plainList: some View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 4) {
-            ForEach(stats.compactRows, id: \.0) { row in
+            ForEach(stats.overlayRows) { row in
                 GridRow {
-                    Text(verbatim: "\(row.0):")
+                    // A row with no label continues the one above it.
+                    Text(verbatim: row.label.isEmpty ? "" : "\(row.label):")
                         .foregroundStyle(.white.opacity(0.58))
                         .gridColumnAlignment(.leading)
-                    Text(row.1)
+                    Text(row.value)
                         .foregroundStyle(.white.opacity(0.95))
+                        // The plate hugs its rows; a long value wraps here
+                        // instead of widening it across the picture, and
+                        // stops at two lines so the plate keeps its height.
+                        .lineLimit(2)
+                        .frame(maxWidth: 340, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -65,17 +71,16 @@ struct PlaybackStatsPanel: View {
         .font(.system(size: 11))
     }
 
+    /// What is playing: the wide values, so it gets a column to itself.
     private var leftSections: [StatsSection] {
         [
-            .init(id: Self.sourceSectionID, title: .playerStatsSectionSource, rows: stats.sourceRows),
-            .init(id: Self.mediaSectionID, title: .playerStatsSectionMedia, rows: stats.mediaRows)
+            .init(id: Self.playbackSectionID, title: .playerHudPlayback, rows: stats.playbackRows)
         ]
     }
 
     private var rightSections: [StatsSection] {
         [
-            .init(id: Self.bufferSectionID, title: .playerStatsSectionBuffer, rows: stats.bufferRows),
-            .init(id: Self.networkSectionID, title: .playerStatsSectionNetwork, rows: stats.networkRows),
+            .init(id: Self.streamSectionID, title: .playerHudStream, rows: stats.streamRows),
             .init(id: Self.engineSectionID, title: .playerStatsSectionEngine, rows: stats.engineRows)
         ]
     }
@@ -113,17 +118,21 @@ struct PlaybackStatsPanel: View {
                 Color.clear
                     .frame(height: 1)
             }
-            ForEach(section.rows, id: \.0) { row in
+            ForEach(section.rows) { row in
                 GridRow {
-                    Text(row.0)
+                    Text(row.label)
                         .font(labelFont)
                         .foregroundStyle(.white.opacity(0.74))
-                    Text(row.1)
+                    Text(row.value)
                         .font(valueFont)
                         .foregroundStyle(.white)
                         .monospacedDigit()
-                        .lineLimit(1)
+                        // A line of several words may take a second line. A
+                        // single token, such as a host name, shrinks instead
+                        // of breaking in the middle.
+                        .lineLimit(row.value.contains(" ") ? 2 : 1)
                         .minimumScaleFactor(0.76)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -150,6 +159,6 @@ struct PlaybackStatsPanel: View {
     private struct StatsSection: Identifiable {
         let id: String
         let title: LocalizedStringResource
-        let rows: [(String, String)]
+        let rows: [PlaybackStats.Row]
     }
 }

@@ -40,7 +40,7 @@ struct MacPlayerControls: View {
                     .disabled(viewModel.chapters.isEmpty)
                     .opacity(viewModel.chapters.isEmpty ? 0.45 : 1)
 
-                    iconButton("speedometer", help: "Playback speed, stats and route") {
+                    iconButton("speedometer", help: "Playback speed and stats") {
                         showOptions(.playback)
                     }
 
