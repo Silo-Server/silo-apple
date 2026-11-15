@@ -120,6 +120,7 @@ struct DownloadsStorageHeader: View {
 
     private static let seriesColor = Color.siloBrandBlue
     private static let moviesColor = Color.siloBrandRed
+    private static let audiobooksColor = Color.purple
     private static let inProgressColor = Color.siloBrandOrange
     private static let otherColor = Color.siloOnSurface.opacity(0.3)
 
@@ -174,6 +175,7 @@ struct DownloadsStorageHeader: View {
             HStack(spacing: 2) {
                 segment(width: width * CGFloat(breakdown.series) / total, color: Self.seriesColor)
                 segment(width: width * CGFloat(breakdown.movies) / total, color: Self.moviesColor)
+                segment(width: width * CGFloat(breakdown.audiobooks) / total, color: Self.audiobooksColor)
                 segment(width: width * CGFloat(breakdown.inProgress) / total, color: Self.inProgressColor)
                 segment(width: width * CGFloat(breakdown.other) / total, color: Self.otherColor)
             }
@@ -187,8 +189,8 @@ struct DownloadsStorageHeader: View {
         color.frame(width: max(0, width))
     }
 
-    /// Two columns, so four categories fit a phone width without wrapping
-    /// inside a label.
+    /// Two columns, so the categories fit a phone width without wrapping
+    /// inside a label. Empty categories are left out.
     private var legend: some View {
         LazyVGrid(
             columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
@@ -197,6 +199,7 @@ struct DownloadsStorageHeader: View {
         ) {
             legendItem(color: Self.seriesColor, bytes: breakdown.series, label: .downloadsStorageSeries)
             legendItem(color: Self.moviesColor, bytes: breakdown.movies, label: .downloadsStorageMovies)
+            legendItem(color: Self.audiobooksColor, bytes: breakdown.audiobooks, label: .libraryKindAudiobooks)
             legendItem(color: Self.inProgressColor, bytes: breakdown.inProgress, label: .downloadsStorageInProgressLegend)
             legendItem(color: Self.otherColor, bytes: breakdown.other, label: .downloadsStorageOtherLegend)
         }
@@ -355,10 +358,13 @@ struct DownloadPosterThumb: View {
     var fileURL: URL? = nil
     var width: CGFloat = 40
     var corner: CGFloat = 7
+    /// Width over height: a 2:3 poster unless the artwork is another shape,
+    /// such as a square book cover.
+    var aspectRatio: CGFloat = 2.0 / 3.0
 
     var body: some View {
         DownloadArtworkImage(thumbhash: thumbhash, fileURL: fileURL)
-            .frame(width: width, height: width * 1.5)
+            .frame(width: width, height: width / aspectRatio)
             .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     }
 }

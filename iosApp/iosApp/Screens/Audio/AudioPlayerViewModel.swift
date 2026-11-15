@@ -58,6 +58,20 @@ final class AudioPlayerViewModel {
     )
 
     private(set) var context: AudiobookPlaybackContext?
+    /// The book opened from its download without the server: every part
+    /// plays from disk and progress waits in the offline queue.
+    private(set) var isOfflineSession = false
+    /// The download scope the book's local copy belongs to, captured at
+    /// start when the book is downloaded. Its progress is recorded there,
+    /// and only while that scope is still loaded.
+    private var downloadProgressOwner: DownloadManager.ProgressOwner?
+    /// Downloaded files that failed to open in this session; their parts
+    /// stream instead of failing again on every seek.
+    private var unopenableLocalFileIds: Set<Int> = []
+    /// When each book's latest recorded position was sampled. An upload that
+    /// answers late must not record its older position over a newer one;
+    /// kept across sessions, since a close's save can race the last tick's.
+    private var latestRecordedSample: [String: Date] = [:]
     private(set) var isLoading = false
     private(set) var error: ErrorState?
     /// The playhead, updated on every ~10 Hz clock tick. Read it only in
@@ -140,17 +154,36 @@ final class AudioPlayerViewModel {
             if let loadingPreview {
                 loadPreviewPalette(posterUrl: loadingPreview.posterUrl, generation: generation)
             }
-            let detail = try await api.itemDetail(contentId: contentId, libraryId: libraryId)
+            let downloads = DownloadManager.shared
+            let download = Self.playableDownload(contentId: contentId, in: downloads)
+            let progressOwner = download != nil ? downloads.progressOwner() : nil
+            let context: AudiobookPlaybackContext
+            var opensOffline = false
+            if let download, !ConnectionMonitor.shared.isServerReachable {
+                // No server to ask: open the download directly instead of
+                // waiting for the detail request to time out.
+                context = try await offlineContext(for: download)
+                opensOffline = true
+            } else {
+                do {
+                    context = try await onlineContext(contentId: contentId, libraryId: libraryId,
+                                                      hasDownload: download != nil)
+                } catch {
+                    guard let download, generation == startGeneration,
+                          !Task.isCancelled, !Self.isCancellation(error) else { throw error }
+                    context = try await offlineContext(for: download)
+                    opensOffline = true
+                }
+            }
             guard generation == startGeneration else {
-                // A newer start() superseded this request while the
-                // item-detail load was in flight; abandon it so the older,
-                // slower response cannot overwrite the newer book's context.
+                // A newer start() superseded this request while the context
+                // loaded; abandon it so the older, slower result cannot
+                // overwrite the newer book's context.
                 return
             }
-            guard let context = AudiobookPlaybackContext(detail: detail) else {
-                throw APIError.unsupportedMedia(AppLanguage.string(.audiobookErrorNoPlayableTrack))
-            }
             self.context = context
+            isOfflineSession = opensOffline
+            downloadProgressOwner = progressOwner
             duration = context.totalDurationSeconds
             setPlayhead(clampGlobal(startPosition ?? (restart ? 0 : context.resumePositionSeconds)))
             loadPalette(posterUrl: context.posterUrl)
@@ -281,12 +314,16 @@ final class AudioPlayerViewModel {
         let closedAuthority = activeAuthority
         let position = currentTime
         let total = duration
+        let downloadOwner = downloadProgressOwner
+        let sampledAt = Date()
         resetSessionState()
         if let closedContext {
-            await uploadBookPosition(
+            await saveBookPosition(
                 contentId: closedContext.contentId,
                 position: position,
                 duration: total,
+                sampledAt: sampledAt,
+                downloadOwner: downloadOwner,
                 label: "final audiobook sync" // i18n-ignore: log label
             )
         }
@@ -309,6 +346,9 @@ final class AudioPlayerViewModel {
         nowPlaying.detach()
         sleepTimer.cancel()
         context = nil
+        isOfflineSession = false
+        downloadProgressOwner = nil
+        unopenableLocalFileIds = []
         activeSession = nil
         activeAuthority = nil
         activeTrackIndex = nil
@@ -333,8 +373,9 @@ final class AudioPlayerViewModel {
         var didLoadNewTrack = false
 
         var requiresNewSession = true
+        // A downloaded part has no server session; its timeline and engine
+        // epoch are enough to seek inside it.
         if activeTrackIndex == index,
-           activeSession != nil,
            let activeTimeline,
            let activeEngineEpoch {
             switch activeTimeline.seekDisposition(forSourceTime: localTime) {
@@ -345,6 +386,27 @@ final class AudioPlayerViewModel {
             case .replan:
                 break
             }
+        }
+
+        if requiresNewSession, let localURL = localFileURL(for: track) {
+            do {
+                try await loadLocalTrack(track, url: localURL, localTime: localTime, generation: generation)
+                resolvedGlobalTime = AudioPlaybackTimeline.globalTime(for: localTime, in: track)
+                didLoadNewTrack = true
+                requiresNewSession = false
+            } catch {
+                // Superseded, or nothing else to play: report it. Online, a
+                // copy that won't open is streamed instead.
+                guard !isOfflineSession, !Self.isCancellation(error), generation == loadGeneration else { throw error }
+                unopenableLocalFileIds.insert(track.fileId)
+                logger.warning(
+                    "downloaded audiobook part failed to open; streaming it: \(MediaLogRedactor.sanitize(error), privacy: .public)"
+                )
+            }
+        } else if requiresNewSession, isOfflineSession {
+            // Opened without the server, and the file is gone (deleted or
+            // replaced since): there is nothing to stream from.
+            throw OfflinePlaybackError.mediaFileMissing
         }
 
         if requiresNewSession {
@@ -568,7 +630,7 @@ final class AudioPlayerViewModel {
             }
             guard let effectiveTrack = context?.tracks.first(where: {
                 $0.fileId == plan.effectiveMediaFileId
-            }) else {
+            }), let effectiveVersion = effectiveTrack.version else {
                 _ = try? await authority.stop(sessionId, finalSample: nil)
                 throw PlaybackV3TerminalFailure(
                     reason: "effective_file_unavailable",
@@ -580,7 +642,7 @@ final class AudioPlayerViewModel {
             let session = ApplePlaybackV3PlanAdapter.playbackSession(
                 plan: plan,
                 sessionId: sessionId,
-                selectedVersion: effectiveTrack.version,
+                selectedVersion: effectiveVersion,
                 serverFeatures: response.serverFeatures
             )
             return StartedAudioSession(
@@ -766,10 +828,12 @@ final class AudioPlayerViewModel {
                 )
             }
         }
-        await uploadBookPosition(
+        await saveBookPosition(
             contentId: context.contentId,
             position: currentTime,
             duration: duration,
+            sampledAt: Date(),
+            downloadOwner: downloadProgressOwner,
             label: "audiobook progress sync" // i18n-ignore: log label
         )
     }
@@ -778,19 +842,22 @@ final class AudioPlayerViewModel {
     /// the only durable resume point for an audiobook. Each call is a new
     /// write of the current position: a failed or unanswered upload is never
     /// re-sent, and the next periodic sync or close carries a fresh value.
-    private func uploadBookPosition(contentId: String, position: Double, duration: Double, label: String) async {
+    @discardableResult
+    private func uploadBookPosition(contentId: String, position: Double, duration: Double, label: String) async -> Bool {
         guard let item = SyncProgressItem(
             mediaItemId: contentId,
             position: position,
             duration: duration,
             forceOverwrite: true
-        ) else { return }
+        ) else { return false }
         let outcome = await SiloAPI.shared.apiV2Client.syncProgress([item])
         if let failure = outcome.failureSummary {
             logger.warning(
                 "\(label, privacy: .public) failed for \(contentId, privacy: .public) at \(position, privacy: .public): \(failure, privacy: .public)"
             )
+            return false
         }
+        return true
     }
 
     private func attachNowPlaying() {
@@ -854,7 +921,8 @@ final class AudioPlayerViewModel {
 
     private func resolvedURL(_ raw: String?) async -> URL? {
         guard let raw, !raw.isEmpty else { return nil }
-        if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
+        // A downloaded book's cover is a file on this device.
+        if raw.hasPrefix("http://") || raw.hasPrefix("https://") || raw.hasPrefix("file://") {
             return URL(string: raw)
         }
         let serverUrl = await SiloAPI.shared.currentServerUrl()
@@ -862,6 +930,159 @@ final class AudioPlayerViewModel {
         let base = serverUrl.hasSuffix("/") ? String(serverUrl.dropLast()) : serverUrl
         let path = raw.hasPrefix("/") ? raw : "/\(raw)"
         return URL(string: base + path)
+    }
+
+    // MARK: - Downloaded books
+
+    /// Saves the whole-book position sampled at `sampledAt`. A downloaded
+    /// book (one with a `downloadOwner`, the scope its local resume point
+    /// and offline queue belong to) queues it while the server can't be reached (sent with that
+    /// time, so the newest position wins), and when an upload gets no
+    /// answer, so it isn't lost when the connection drops mid-book. Once the
+    /// server is back, even a book opened offline uploads directly. A
+    /// position older than the one already recorded is dropped.
+    private func saveBookPosition(contentId: String, position: Double, duration: Double, sampledAt: Date,
+                                  downloadOwner: DownloadManager.ProgressOwner?, label: String) async {
+        let completed = AudiobookProgress.isFinished(played: false, position: position, totalDuration: duration)
+        let downloads = DownloadManager.shared
+        // Compared only with this device's own sample times, never with the
+        // server's clock.
+        func isLatest() -> Bool {
+            if let latest = latestRecordedSample[contentId], latest > sampledAt { return false }
+            latestRecordedSample[contentId] = sampledAt
+            return true
+        }
+        func queue(_ owner: DownloadManager.ProgressOwner) {
+            guard isLatest() else { return }
+            downloads.recordOfflineProgress(mediaItemId: contentId, position: position, duration: duration,
+                                            completed: completed, owner: owner, sampledAt: sampledAt,
+                                            latchesCompleted: false)
+        }
+        if let owner = downloadOwner, !ConnectionMonitor.shared.isServerReachable {
+            queue(owner)
+            return
+        }
+        let uploaded = await uploadBookPosition(contentId: contentId, position: position, duration: duration, label: label)
+        guard let owner = downloadOwner else { return }
+        if uploaded {
+            guard isLatest() else { return }
+            downloads.recordLocalProgress(mediaItemId: contentId, position: position, duration: duration,
+                                          completed: completed, owner: owner, sampledAt: sampledAt,
+                                          latchesCompleted: false)
+        } else {
+            queue(owner)
+        }
+    }
+
+    /// The book's completed download, when its file can play: a single
+    /// file, saved whole.
+    private static func playableDownload(contentId: String, in downloads: DownloadManager) -> DownloadRecord? {
+        guard let record = downloads.record(forContentId: contentId),
+              record.isAudiobook, record.isPlayableOffline else { return nil }
+        return record
+    }
+
+    /// The downloaded file for `track`, when the book's download holds that
+    /// exact file and it is on disk.
+    private func localFileURL(for track: AudioPlaybackTrack) -> URL? {
+        guard let context, !unopenableLocalFileIds.contains(track.fileId),
+              let record = Self.playableDownload(contentId: context.contentId, in: DownloadManager.shared),
+              record.mediaFileId == String(track.fileId),
+              let url = DownloadManager.shared.absoluteMediaURL(for: record),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
+    /// The book from the server. While listening this device did offline
+    /// is unsent or on its way, the local resume point wins over the
+    /// server's, which is older, and the queue is sent without holding up
+    /// playback.
+    private func onlineContext(contentId: String, libraryId: Int?, hasDownload: Bool) async throws -> AudiobookPlaybackContext {
+        let downloads = DownloadManager.shared
+        let localIsNewer = hasDownload && downloads.hasUnsentProgress(forMediaItemId: contentId)
+        if localIsNewer {
+            Task { await downloads.flushOfflineProgress() }
+        }
+        let detail = try await api.itemDetail(contentId: contentId, libraryId: libraryId)
+        guard let context = AudiobookPlaybackContext(detail: detail) else {
+            throw APIError.unsupportedMedia(AppLanguage.string(.audiobookErrorNoPlayableTrack))
+        }
+        if hasDownload { downloads.noteAudiobookAuthor(contentId: contentId, author: context.subtitle) }
+        if localIsNewer, let local = downloads.localProgress(forMediaItemId: contentId) {
+            return context.resuming(at: AudiobookProgress.playerStartPosition(local.position,
+                                                                               totalDuration: context.totalDurationSeconds))
+        }
+        return context
+    }
+
+    /// The book from its download alone: the stored manifest describes the
+    /// file, and the local resume point (kept newest-first with the
+    /// server's) says where to pick up.
+    private func offlineContext(for record: DownloadRecord) async throws -> AudiobookPlaybackContext {
+        let downloads = DownloadManager.shared
+        guard let manifest = await downloads.loadManifest(for: record) else {
+            throw OfflinePlaybackError.manifestUnavailable
+        }
+        let stored = downloads.localProgress(forMediaItemId: record.contentId)?.position ?? 0
+        guard let context = AudiobookPlaybackContext(
+            download: record,
+            manifest: manifest,
+            posterUrl: downloads.posterImageURL(for: record)?.absoluteString,
+            resumePositionSeconds: 0
+        ) else {
+            throw APIError.unsupportedMedia(AppLanguage.string(.audiobookErrorNoPlayableTrack))
+        }
+        return context.resuming(at: AudiobookProgress.playerStartPosition(stored, totalDuration: context.totalDurationSeconds))
+    }
+
+    /// Loads a downloaded part from disk. There is no server session: the
+    /// file's own timeline is the part's. Promotes it only once Aether has
+    /// accepted the file, and retires the part's previous server session.
+    private func loadLocalTrack(_ track: AudioPlaybackTrack, url: URL, localTime: Double, generation: Int) async throws {
+        let priorSession = activeSession
+        let priorAuthority = activeAuthority
+        let timeline = PlaybackTimelineMapper(directStartSeconds: localTime)
+        try requireCurrentLoad(generation)
+        let engineEpoch = engine.beginLoad()
+        loadingEngineEpoch = engineEpoch
+        do {
+            try await engine.finishLoad(engineEpoch, url: url, headers: [:], startSeconds: timeline.aetherStartPosition)
+            try requireCurrentLoad(generation)
+            guard loadingEngineEpoch == engineEpoch, engine.activeLoadEpoch == engineEpoch else {
+                throw CancellationError()
+            }
+        } catch {
+            if engine.activeLoadEpoch == engineEpoch { engine.stop() }
+            if loadingEngineEpoch == engineEpoch { loadingEngineEpoch = nil }
+            // `beginLoad()` replaced the prior media, so its session can no
+            // longer resume.
+            if let priorSession, let priorAuthority {
+                await stopPlaybackSession(priorSession, authority: priorAuthority,
+                                          reason: "local audio load failed after replacing prior media")
+            }
+            resetEngineAfterLoadFailure(ifCurrent: generation)
+            throw error
+        }
+        loadingEngineEpoch = nil
+        activeEngineEpoch = engineEpoch
+        activeSession = nil
+        activeAuthority = nil
+        activeTrackIndex = track.index
+        activeTimeline = timeline
+        if let priorSession, let priorAuthority {
+            Task { [weak self] in
+                await self?.stopPlaybackSession(priorSession, authority: priorAuthority,
+                                                reason: "downloaded audio track committed")
+            }
+        }
+    }
+
+    /// A request cancelled because a newer start, seek or close took over.
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        if case HTTPError.network(let underlying as URLError) = error, underlying.code == .cancelled { return true }
+        return false
     }
 
     private func clampGlobal(_ value: Double) -> Double {

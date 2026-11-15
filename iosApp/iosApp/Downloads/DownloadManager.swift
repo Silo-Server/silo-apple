@@ -264,15 +264,19 @@ final class DownloadManager {
         if online { processQueue() }
     }
 
-    /// Sends queued track-preference picks whenever the server can be
-    /// reached again.
+    /// Sends queued track-preference picks and offline progress whenever the
+    /// server can be reached again, so listening done offline reaches other
+    /// devices without waiting for the app to come back to the foreground.
     private func observeServerReachability() {
         let reachable = withObservationTracking {
             ConnectionMonitor.shared.isServerReachable
         } onChange: {
             Task { @MainActor in self.observeServerReachability() }
         }
-        if reachable { flushTrackPrefs() }
+        if reachable {
+            flushTrackPrefs()
+            Task { await self.flushOfflineProgress() }
+        }
     }
 
     // MARK: - Observable surface
@@ -562,7 +566,12 @@ final class DownloadManager {
 
     /// Standalone downloaded movies (no parent series).
     var movieRecords: [DownloadRecord] {
-        onDeviceRecords.filter { $0.seriesId == nil }
+        onDeviceRecords.filter { $0.seriesId == nil && !$0.isAudiobook }
+    }
+
+    /// Downloaded audiobooks.
+    var audiobookRecords: [DownloadRecord] {
+        onDeviceRecords.filter(\.isAudiobook)
     }
 
     /// Downloaded episodes grouped by series, then season.
@@ -578,7 +587,7 @@ final class DownloadManager {
     /// One entry of `seriesGroups`, built without grouping every series.
     func seriesGroup(forSeriesId seriesId: String) -> DownloadSeriesGroup? {
         let episodes = Self.newestFirst(
-            file.records.values.filter { $0.isOnDevice && $0.seriesId == seriesId }
+            file.records.values.filter { $0.isOnDevice && $0.seriesId == seriesId && !$0.isAudiobook }
         )
         guard !episodes.isEmpty else { return nil }
         let monitor = subscription(forSeriesId: seriesId)
@@ -603,37 +612,41 @@ final class DownloadManager {
         }
     }
 
-    /// Storage split for the hero bar: series vs movies (summed from record
-    /// sizes), in-flight transfer bytes (from active records' progress —
+    /// Storage split for the hero bar: series, movies and audiobooks (summed
+    /// from record sizes), in-flight transfer bytes (from active records' progress —
     /// invisible to the on-disk walk while the media sits in the session's
     /// staging area), plus an "other" remainder (artwork/manifests/
     /// subtitles) derived from the true on-disk total.
     var storageBreakdown: DownloadStorageBreakdown {
         var series: Int64 = 0
         var movies: Int64 = 0
+        var audiobooks: Int64 = 0
         var inProgress: Int64 = 0
         for record in file.records.values {
             if record.isOnDevice {
-                if record.seriesId == nil { movies += record.fileSize }
+                if record.isAudiobook { audiobooks += record.fileSize }
+                else if record.seriesId == nil { movies += record.fileSize }
                 else { series += record.fileSize }
             } else if record.localStatus.isActive {
                 inProgress += record.bytesDownloaded
             }
         }
-        let other = max(0, totalBytesUsed - series - movies)
+        let other = max(0, totalBytesUsed - series - movies - audiobooks)
         return DownloadStorageBreakdown(
             series: series,
             movies: movies,
+            audiobooks: audiobooks,
             inProgress: inProgress,
             other: other
         )
     }
 
     /// The unified, sorted list the Manager renders: one entry per series
-    /// group and one per standalone movie.
+    /// group, standalone movie and audiobook.
     func downloadListItems(sortedBy option: DownloadSortOption) -> [DownloadListItem] {
         var items = seriesGroups.map(DownloadListItem.series)
         items += movieRecords.map(DownloadListItem.movie)
+        items += audiobookRecords.map(DownloadListItem.audiobook)
         return DownloadGroupBuilder.sorted(items, by: option)
     }
 
@@ -1286,6 +1299,52 @@ final class DownloadManager {
         )
     }
 
+    /// Downloads a single-file audiobook. The server keeps one download per
+    /// book on a device, so a book split into several files can't be saved
+    /// whole and the detail page doesn't offer it. Audio files are always
+    /// served as they are: the quality presets are video bitrate classes.
+    /// `author` is the row's subtitle.
+    func downloadAudiobook(
+        contentId: String,
+        fileId: Int,
+        displayTitle: String?,
+        author: String?,
+        posterThumbhash: String?
+    ) async throws {
+        try await requestDownload(
+            contentId: contentId,
+            fileId: fileId,
+            quality: DownloadFormat.original.rawValue,
+            type: "audiobook",
+            displayTitle: displayTitle,
+            displaySubtitle: author,
+            posterThumbhash: posterThumbhash
+        )
+        // A create that ended in a conflict or without an answer adopts the
+        // registry's row, which knows nothing of the book; label it here so
+        // it lists and plays as one before its manifest arrives.
+        guard var record = record(forContentId: contentId), record.type == nil else { return }
+        record.type = "audiobook"
+        record.title = record.title ?? displayTitle
+        record.subtitle = record.subtitle ?? author
+        record.posterThumbhash = record.posterThumbhash ?? posterThumbhash
+        file.records[record.id] = record
+        persist()
+    }
+
+    /// Labels a downloaded book with its author, the row subtitle, from a
+    /// detail already in hand. A row imported from the registry (another
+    /// scope's download, or a create that adopted the registry's row) knows
+    /// only what the manifest says, which has no author.
+    func noteAudiobookAuthor(contentId: String, author: String?) {
+        guard let author, !author.isEmpty,
+              var record = record(forContentId: contentId), record.isAudiobook,
+              record.subtitle != author else { return }
+        record.subtitle = author
+        file.records[record.id] = record
+        persist()
+    }
+
     /// `fileId` is the version each episode should match, on a server that
     /// supports it.
     func downloadSeason(seriesId: String, seasonNumber: Int, fileId: Int? = nil, quality: String? = nil) async throws {
@@ -1863,11 +1922,16 @@ final class DownloadManager {
         record.title = record.title ?? manifest.title
         record.type = record.type ?? manifest.type
         record.posterThumbhash = record.posterThumbhash ?? manifest.posterThumbhash
-        record.seriesPosterThumbhash = record.seriesPosterThumbhash ?? manifest.seriesPosterThumbhash
-        if let seriesId = manifest.seriesId { record.seriesId = seriesId }
-        record.seriesTitle = record.seriesTitle ?? manifest.seriesTitle
-        record.seasonNumber = record.seasonNumber ?? manifest.seasonNumber
-        record.episodeNumber = record.episodeNumber ?? manifest.episodeNumber
+        // A book in a series carries a series id too, but only episodes
+        // group under a series. The manifest decides, since it names the
+        // type before the record has one.
+        if !SiloMediaType.isAudiobook(manifest.type) {
+            record.seriesPosterThumbhash = record.seriesPosterThumbhash ?? manifest.seriesPosterThumbhash
+            if let seriesId = manifest.seriesId { record.seriesId = seriesId }
+            record.seriesTitle = record.seriesTitle ?? manifest.seriesTitle
+            record.seasonNumber = record.seasonNumber ?? manifest.seasonNumber
+            record.episodeNumber = record.episodeNumber ?? manifest.episodeNumber
+        }
         if record.subtitle == nil {
             if manifest.type == "episode" {
                 // Stored English (D44); rows show `displaySubtitle(locale:)`.
@@ -1890,7 +1954,9 @@ final class DownloadManager {
         record.targetBitrateKbps = manifest.targetBitrateKbps
         record.revision = manifest.revision ?? record.revision
         record.container = manifest.container
-        record.seriesPosterThumbhash = manifest.seriesPosterThumbhash ?? record.seriesPosterThumbhash
+        if !SiloMediaType.isAudiobook(manifest.type) {
+            record.seriesPosterThumbhash = manifest.seriesPosterThumbhash ?? record.seriesPosterThumbhash
+        }
         record.stableIdentity = manifest.stableIdentity
         if record.fileSize <= 0, let size = manifest.fileSize { record.fileSize = size }
         record.expectedBytes = manifest.integrity?.expectedBytes
@@ -3813,7 +3879,7 @@ final class DownloadManager {
         if canMonitorSeries, let owner = await captureScopeOwner() {
             registered = await syncSubscriptions(owner: owner)
         }
-        await flushProgressQueue()
+        await flushOfflineProgress()
         await flushTrackPrefs()?.value
         let watchStateOwner = await refreshWatchState()
         await reconcileWithServer(triggerPipeline: true)
@@ -3878,18 +3944,33 @@ final class DownloadManager {
 
     // MARK: - Offline progress
 
+    /// The download scope a playback started in. Progress it records lands
+    /// only in that scope's store, never in a profile switched to meanwhile.
+    struct ProgressOwner: Sendable {
+        fileprivate let scope: ScopeKey
+    }
+
+    func progressOwner() -> ProgressOwner? {
+        loadedScope.map(ProgressOwner.init)
+    }
+
+    func isCurrent(_ owner: ProgressOwner) -> Bool {
+        owner.scope == loadedScope
+    }
+
     /// Record a watch-progress event from offline playback: update the
     /// local resume point and queue it for the next reconnect flush.
-    func recordOfflineProgress(mediaItemId: String, position: Double, duration: Double, completed: Bool) {
-        guard !mediaItemId.isEmpty, position.isFinite, position >= 0 else { return }
-        let now = Date()
-        var entry = file.localProgress[mediaItemId]
-            ?? LocalProgressEntry(position: 0, duration: duration, completed: false, updatedAt: now)
-        entry.position = position
-        if duration.isFinite, duration > 0 { entry.duration = duration }
-        entry.completed = entry.completed || completed
-        entry.updatedAt = now
-        file.localProgress[mediaItemId] = entry
+    /// With an `owner`, nothing is recorded once its scope is gone.
+    /// `sampledAt` is when the position was read; the queued event carries
+    /// it. `latchesCompleted` keeps an item finished once it was; a book
+    /// played again after finishing passes false.
+    func recordOfflineProgress(mediaItemId: String, position: Double, duration: Double, completed: Bool,
+                               owner: ProgressOwner? = nil, sampledAt: Date = Date(),
+                               latchesCompleted: Bool = true) {
+        guard owner.map(isCurrent) ?? true,
+              let now = updateLocalProgress(mediaItemId: mediaItemId, position: position, duration: duration,
+                                            completed: completed, at: sampledAt, latchesCompleted: latchesCompleted)
+        else { return }
 
         var queue = file.progressQueue
         OfflineProgressQueue.record(
@@ -3901,6 +3982,71 @@ final class DownloadManager {
         )
         file.progressQueue = queue
         persist()
+    }
+
+    /// Updates the local resume point without queuing an upload, for
+    /// playback whose progress reached the server directly. That position
+    /// supersedes the item's queued ones that aren't on their way, so they
+    /// are dropped rather than sent after it.
+    func recordLocalProgress(mediaItemId: String, position: Double, duration: Double, completed: Bool,
+                             owner: ProgressOwner? = nil, sampledAt: Date = Date(),
+                             latchesCompleted: Bool = true) {
+        guard owner.map(isCurrent) ?? true,
+              updateLocalProgress(mediaItemId: mediaItemId, position: position, duration: duration,
+                                  completed: completed, at: sampledAt, latchesCompleted: latchesCompleted) != nil
+        else { return }
+        let inFlight = progressUploadsInFlight
+        file.progressQueue.removeAll { $0.mediaItemId == mediaItemId && !inFlight.contains($0.id) }
+        persist()
+    }
+
+    /// Writes the local resume point in memory and returns its time, or nil
+    /// for a position that can't be stored.
+    private func updateLocalProgress(mediaItemId: String, position: Double, duration: Double,
+                                     completed: Bool, at time: Date, latchesCompleted: Bool) -> Date? {
+        guard !mediaItemId.isEmpty, position.isFinite, position >= 0 else { return nil }
+        var entry = file.localProgress[mediaItemId]
+            ?? LocalProgressEntry(position: 0, duration: duration, completed: false, updatedAt: time)
+        entry.position = position
+        if duration.isFinite, duration > 0 { entry.duration = duration }
+        entry.completed = latchesCompleted ? (entry.completed || completed) : completed
+        entry.updatedAt = time
+        file.localProgress[mediaItemId] = entry
+        return time
+    }
+
+    /// Whether offline progress for the item is waiting to be sent or on its
+    /// way. The server's resume point is older than the local one until it
+    /// lands. A held entry (sent, never answered) doesn't count: it may have
+    /// arrived, and progress made elsewhere since then would be newer.
+    func hasUnsentProgress(forMediaItemId mediaItemId: String) -> Bool {
+        let inFlight = progressUploadsInFlight
+        return file.progressQueue.contains {
+            $0.mediaItemId == mediaItemId && ($0.state == .pending || inFlight.contains($0.id))
+        }
+    }
+
+    /// The flush every caller shares, so two never claim the same queue at
+    /// once. It runs on its own task: a caller that is cancelled (a newer
+    /// play replacing the start that asked for it) doesn't cut its upload
+    /// off mid-request, which would leave the entries held.
+    private var progressFlushTask: Task<Void, Never>?
+
+    /// Uploads queued offline progress, joining a flush already running.
+    func flushOfflineProgress() async {
+        guard downloadsEnabled else { return }
+        if let running = progressFlushTask {
+            await running.value
+            return
+        }
+        // The task clears its own handle, so a caller arriving after it ends
+        // starts a new flush instead of joining a finished one.
+        let flush = Task {
+            await self.flushProgressQueue()
+            self.progressFlushTask = nil
+        }
+        progressFlushTask = flush
+        await flush.value
     }
 
     /// Offline progress entries whose upload outcome is unknown. They are
@@ -4506,6 +4652,14 @@ final class DownloadManager {
         case "avi": return "avi"
         case "ts": return "ts"
         case "m2ts": return "m2ts"
+        // Audiobook files the server delivers as they are.
+        case "mp3": return "mp3"
+        case "flac": return "flac"
+        case "wav": return "wav"
+        case "aac": return "aac"
+        case "ogg": return "ogg"
+        case "opus": return "opus"
+        case "m4a", "m4b": return "m4a"
         default: return "mp4"
         }
     }

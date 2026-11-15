@@ -270,7 +270,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
     let downloadId: String
     let contentId: String
     let episodeId: String?
-    let type: String          // "movie" | "episode"
+    let type: String          // "movie" | "episode" | "audiobook"
     let revision: Int?
     let quality: String
     let effectiveQuality: String?
@@ -729,7 +729,7 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// e.g. "2024" or "S1 · E2", stored in English (D44). Rows show
     /// `displaySubtitle(locale:)`.
     var subtitle: String?
-    var type: String?                    // "movie" | "episode" | "series"
+    var type: String?                    // "movie" | "episode" | "series" | "audiobook"
     var seriesId: String?
     /// Cached parent-series title for episode downloads (from the manifest),
     /// so the grouped Downloads UI can label a series card offline.
@@ -771,6 +771,10 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// ThumbHash for the record's 2:3 poster tile: an episode's series
     /// poster, since its own poster is the episode still.
     var tileThumbhash: String? { seriesPosterThumbhash ?? posterThumbhash }
+
+    /// An audiobook download: played in the audio player and listed apart
+    /// from movies and series.
+    var isAudiobook: Bool { type.map(SiloMediaType.isAudiobook) ?? false }
 
     /// Completed or revoked: the media occupies storage and stays playable.
     var isOnDevice: Bool { localStatus == .completed || localStatus == .revoked }

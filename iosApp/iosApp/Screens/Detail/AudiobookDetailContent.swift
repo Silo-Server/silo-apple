@@ -6,7 +6,7 @@ import SwiftUI
 /// the shared section headers, rails, and Details list. Opened from a card,
 /// it draws the card's seed until the fetched detail replaces it, as they
 /// do. Book-specific pieces are the cover-forward hero, the listening
-/// controls (progress-aware Resume, speed, start over), chapters and parts,
+/// controls (progress-aware Resume, start over), chapters and parts,
 /// the author/narrator rail, and the series rails. Format wording and cover
 /// shape come from `BookDetailKind`.
 ///
@@ -62,6 +62,12 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
         } belowFold: {
             belowFold
         }
+        // A downloaded book imported from the registry has no author on its
+        // row until a detail names one.
+        .task(id: "\(detail.contentId)|\(isProvisional)") {
+            guard !isProvisional else { return }
+            DownloadManager.shared.noteAudiobookAuthor(contentId: detail.contentId, author: presentation.playerSubtitle)
+        }
     }
 
     private var hasBackdrop: Bool {
@@ -99,8 +105,8 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     }
 
     /// Resume, then the same named action row movies use, with the watch
-    /// wording swapped for book wording and listening controls in place of
-    /// download.
+    /// wording swapped for book wording and Download for a book stored as
+    /// one file. Playback speed lives in the player.
     private func actionStack(_ presentation: BookDetailPresentation) -> some View {
         VStack(spacing: 14) {
             AudiobookPrimaryButton(
@@ -146,7 +152,18 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                     ),
                     action: onToggleWatched
                 )
-                AudiobookSpeedMenu()
+                if let part = downloadablePart {
+                    if DownloadManager.shared.downloadsEnabled {
+                        DownloadActionButton(
+                            audiobook: detail,
+                            part: part,
+                            title: presentation.title,
+                            author: presentation.playerSubtitle
+                        )
+                    } else if DownloadManager.shared.downloadsRestricted {
+                        DownloadUnavailableButton()
+                    }
+                }
                 PhoneLabeledMenu(label: AppLanguage.string(.detailMore, locale: locale)) {
                     moreMenuItems
                 }
@@ -156,6 +173,14 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             .disabled(isProvisional)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// The book's one file, when it is stored as one. The server keeps a
+    /// single download per book on a device, so a book split into several
+    /// files can't be saved whole and isn't offered.
+    private var downloadablePart: FileVersion? {
+        let parts = AudiobookPlaybackContext.audioParts(of: detail)
+        return parts.count == 1 ? parts.first : nil
     }
 
     @ViewBuilder
@@ -628,48 +653,16 @@ private struct AudiobookPrimaryButton: View {
     /// page's resume prompt; Start Over lives in the More menu.
     private func performPrimaryAction(_ action: BookDetailPresentation.PrimaryAction) {
         switch action {
-        case .resume(let position):
-            startPlayback(false, position)
+        case .resume:
+            // The player picks the resume point: the server's, or this
+            // device's newer one for a downloaded book whose listening
+            // hasn't reached the server yet. The page's copy can be stale.
+            startPlayback(false, nil)
         case .playAgain:
             startPlayback(true, nil)
         case .play:
             startPlayback(false, nil)
         }
-    }
-}
-
-/// Playback speed menu. Reads the live rate itself for the same reason as
-/// `AudiobookPrimaryButton`.
-private struct AudiobookSpeedMenu: View {
-    @Environment(AudioPlaybackStore.self) private var audioStore
-    @Environment(\.locale) private var locale
-
-    private let speedOptions: [Double] = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-
-    var body: some View {
-        PhoneLabeledMenu(
-            icon: "speedometer",
-            label: AppLanguage.string(.detailAudiobookSpeed(speedLabel(audioStore.player.playbackRate)), locale: locale)
-        ) {
-            ForEach(speedOptions, id: \.self) { rate in
-                Button {
-                    audioStore.player.setPlaybackRate(rate)
-                } label: {
-                    if abs(audioStore.player.playbackRate - rate) < 0.01 {
-                        Label(speedLabel(rate), systemImage: "checkmark")
-                    } else {
-                        Text(speedLabel(rate))
-                    }
-                }
-            }
-        }
-    }
-
-    private func speedLabel(_ rate: Double) -> String {
-        let value = rate.truncatingRemainder(dividingBy: 1) == 0
-            ? String(Int(rate))
-            : String(format: "%g", rate)
-        return LocaleFormat.localized(value) + "×"
     }
 }
 
