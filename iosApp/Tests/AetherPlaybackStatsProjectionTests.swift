@@ -247,6 +247,38 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         }
     }
 
+    /// The Now playing line names the picture as displayed, whatever its
+    /// crop, shape or pixel shape.
+    func testPictureSummaryNamesTheDisplayedResolution() {
+        let cases: [(Int32, Int32, Double, String)] = [
+            (3_840, 1_600, 1, "4K"),
+            (1_920, 800, 1, "1080p"),
+            (1_440, 1_080, 1, "1080p"),
+            (1_440, 1_080, 4.0 / 3.0, "1080p"),
+            (1_280, 720, 1, "720p"),
+            (720, 480, 32.0 / 27.0, "480p"),
+        ]
+        for (width, height, pixelAspectRatio, expected) in cases {
+            let stats = AetherPlaybackStatsProjection.make(
+                snapshot: AetherPlaybackStatsSnapshot(
+                    route: .loopback,
+                    phase: .playing,
+                    sourceVideoWidth: width,
+                    sourceVideoHeight: height,
+                    sourceVideoPixelAspectRatio: pixelAspectRatio
+                ),
+                source: AetherPlaybackStatsSourceMetadata(
+                    sourceURL: nil,
+                    delivery: "original_http",
+                    container: "mkv",
+                    playbackRate: 1
+                )
+            )
+
+            XCTAssertEqual(stats.video.summary, expected, "\(width)×\(height) at \(pixelAspectRatio)")
+        }
+    }
+
     func testRouteAsymmetricTelemetryDoesNotInventForwardBuffer() {
         let telemetry = LiveTelemetry(
             instantBitrateMbps: nil,

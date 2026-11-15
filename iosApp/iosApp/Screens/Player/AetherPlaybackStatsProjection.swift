@@ -293,23 +293,35 @@ enum AetherPlaybackStatsProjection {
                 : nil,
             decoder: normalized(snapshot.activeVideoDecoder),
             summary: joined([
-                resolutionClass(width: snapshot.sourceVideoWidth, height: snapshot.sourceVideoHeight),
+                resolutionClass(
+                    width: snapshot.sourceVideoWidth,
+                    height: snapshot.sourceVideoHeight,
+                    pixelAspectRatio: snapshot.sourceVideoPixelAspectRatio
+                ),
                 hasPicture && range != .sdr ? videoFormatLabel(range, dvProfile: nil) : nil,
             ])
         )
     }
 
-    /// "4K", "1080p" and so on, by width: a scope crop of a 1080p master
-    /// (1920×800) is still 1080p.
-    private static func resolutionClass(width: Int32, height: Int32) -> String? {
+    /// "4K", "1080p" and so on, for the picture as displayed. Either
+    /// dimension reaching a class's size is enough: a scope crop of a 1080p
+    /// master (1920×800) and a 4:3 picture (1440×1080) are both 1080p. An
+    /// anamorphic stream counts its displayed width, as `dimensionLabel` does.
+    private static func resolutionClass(width: Int32, height: Int32, pixelAspectRatio: Double) -> String? {
         guard width > 0, height > 0 else { return nil }
-        switch width {
-        case 3800...: return "4K"
-        case 2500...: return "1440p"
-        case 1900...: return "1080p"
-        case 1260...: return "720p"
-        default: return "\(height)p"
-        }
+        let hasSquarePixels = !(pixelAspectRatio.isFinite && pixelAspectRatio > 0)
+            || abs(pixelAspectRatio - 1) <= 0.001
+        let displayWidth = hasSquarePixels
+            ? Int(width)
+            : Int((Double(width) * pixelAspectRatio).rounded())
+        let classes: [(width: Int, height: Int, label: String)] = [
+            (3_800, 2_100, "4K"),
+            (2_500, 1_400, "1440p"),
+            (1_900, 1_060, "1080p"),
+            (1_260, 700, "720p"),
+        ]
+        let match = classes.first { displayWidth >= $0.width || Int(height) >= $0.height }
+        return match?.label ?? "\(height)p"
     }
 
     private static func videoCodecLabel(_ codec: String) -> String {
