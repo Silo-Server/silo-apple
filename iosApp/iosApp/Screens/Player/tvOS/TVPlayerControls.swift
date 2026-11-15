@@ -117,6 +117,7 @@ struct TVPlayerControls: View {
                 segmentSkipLayer
                     .transition(.opacity)
             }
+            skipPillSeekPresses
             if isHUDPresented {
                 TVPlayerInfoHUD(
                     viewModel: viewModel,
@@ -410,7 +411,8 @@ struct TVPlayerControls: View {
     /// hidden, the shell's press capture owns the remote and routes Select to
     /// the pill, so the pill is not focusable and is drawn lit as the Select
     /// target. With the controls up it is an ordinary button in the native
-    /// focus graph, and Down moves on to the transport while its timer runs.
+    /// focus graph, and Down moves on to the transport while its timer runs;
+    /// Left and Right seek (see `skipPillSeekPresses`).
     @ViewBuilder
     private var introSkipLayer: some View {
         if let pill = viewModel.introSkipPrompt.pill {
@@ -434,6 +436,37 @@ struct TVPlayerControls: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             .animation(.easeOut(duration: 0.22), value: viewModel.showControls)
         }
+    }
+
+    /// Left and Right while a skip pill holds focus: a tap skips and a hold
+    /// starts a hold seek, as with the controls hidden. A pill is its own focus
+    /// section with nothing beside it, so these presses have no native target
+    /// and would otherwise do nothing until the pill goes. Physical presses
+    /// only, like the scrubber's: a swipe's stray move command must not seek.
+    /// Up and Down keep their native moves. Not while the HUD is up, which
+    /// owns the remote.
+    private var skipPillSeekPresses: some View {
+        TVDirectionalPressGestureView(
+            isActive: (isIntroSkipFocused || isSegmentSkipFocused) &&
+                viewModel.showControls && !isHUDPresented,
+            onArrowTap: { direction in
+                switch direction {
+                case .left: viewModel.skipBackward()
+                case .right: viewModel.skipForward()
+                case .up, .down: break
+                }
+            },
+            onArrowHoldBegin: { direction in
+                switch direction {
+                case .left: viewModel.beginHoldSeek(forward: false)
+                case .right: viewModel.beginHoldSeek(forward: true)
+                case .up, .down: break
+                }
+            }
+        )
+        .frame(width: 1, height: 1)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     /// The Skip Recap / Skip Credits pill, up for as long as the playhead is
