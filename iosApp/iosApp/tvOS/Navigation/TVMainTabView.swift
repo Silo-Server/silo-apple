@@ -17,10 +17,19 @@ func tvVisibleRootsFocusRearm(
 #if os(tvOS)
 import SwiftUI
 
-private enum TVPersonalRootDestination: Hashable {
+enum TVPersonalRootDestination: Hashable {
     case watchlist
     case favorites
     case requests
+}
+
+/// The shell page on screen: its tab, a personal page over it, and each
+/// library tab's section. Switch Profile keeps it so Back on the picker
+/// returns there.
+struct TVShellPlace: Equatable {
+    let root: TVRootDestination
+    let personalRoot: TVPersonalRootDestination?
+    let pillSelections: [TVLibraryTabType: TVLibraryPill]
 }
 
 /// Carries a page's request to focus the top menu up to the shell: Up at the
@@ -171,7 +180,7 @@ private struct TVRootPage: View, Equatable {
 struct TVMainTabView: View {
     @Environment(\.locale) private var locale
     @Bindable var router: AppRouter
-    @State private var selectedRoot: TVRootDestination = .home
+    @State private var selectedRoot: TVRootDestination
     /// Watchlist, Favorites, and Requests are root-shell pages rather than
     /// pushed destinations, so the Skyline bar and profile controls remain
     /// present.
@@ -216,7 +225,7 @@ struct TVMainTabView: View {
     }()
     /// Per-type pill selection, session-only (§8): it survives tab
     /// switches but cold start always lands on Recommended.
-    @State private var pillSelections: [TVLibraryTabType: TVLibraryPill] = [:]
+    @State private var pillSelections: [TVLibraryTabType: TVLibraryPill]
     /// Per-type library scope: which single library each multi-library type
     /// is scoped to (§3.1). Seeded from the persisted choice (or the first
     /// library on cold start) via `TVLibraryScopeStore`, and updated +
@@ -310,6 +319,20 @@ struct TVMainTabView: View {
     @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
 
     private static let panelFocusExitCloseDelayNanoseconds: UInt64 = 80_000_000
+
+    /// Starts on Home, or on the page a cancelled Switch Profile left
+    /// (the library tabs wait for the library list before being checked).
+    init(router: AppRouter) {
+        self.router = router
+        let place = router.restoredShellPlace
+        _selectedRoot = State(initialValue: place?.root ?? .home)
+        _personalRoot = State(initialValue: place?.personalRoot)
+        _pillSelections = State(initialValue: place?.pillSelections ?? [:])
+    }
+
+    private var shellPlace: TVShellPlace {
+        TVShellPlace(root: selectedRoot, personalRoot: personalRoot, pillSelections: pillSelections)
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -482,7 +505,13 @@ struct TVMainTabView: View {
         }
         // The bar starts locked; this schedules the release for a launch that
         // never runs another hand-off (e.g. entering from the profile picker).
-        .onAppear { lockBarForContentHandoff() }
+        .onAppear {
+            lockBarForContentHandoff()
+            router.didRestoreShellPlace()
+        }
+        .onChange(of: shellPlace, initial: true) { _, place in
+            router.tvShellPlace = place
+        }
         // Up reaches the bar natively now, without `focusTopMenuIfVisible`.
         // Record the ownership change so the menu state stays truthful: pages
         // stop entry claims, and Menu/Back and dwell work from the bar.
@@ -1356,7 +1385,9 @@ struct TVMainTabView: View {
         } catch {
             // Keep whatever tabs we already have (cached or none) — Home
             // and Calendar always stay reachable, so a transient failure
-            // never strands the user.
+            // never strands the user. A page restored after Switch Profile
+            // may be a library tab that isn't in the bar yet.
+            ensureSelectedRootIsVisible()
         }
     }
 
