@@ -2802,7 +2802,7 @@ struct MainTabView: View {
             }
             #if os(iOS)
             .environment(\.statusColumn, statusColumn)
-            .siloTabBarMinimizeOnScroll()
+            .siloTabBarMinimizeOnScroll(isEnabled: !pageDockHost.pageIsTooShortToMinimize)
             .modifier(NowPlayingShelfAttachment(showsCard: statusColumn != nil))
             // Outside the attachment, so the slot and every tab read it.
             .environment(pageDockHost)

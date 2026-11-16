@@ -262,6 +262,7 @@ struct TrackSelectionSheet: View {
 }
 
 private struct TrackSelectionRow: View {
+    @Environment(\.locale) private var locale
     let name: String
     var detail: String? = nil
     var pills: [String] = []
@@ -316,7 +317,7 @@ private struct TrackSelectionRow: View {
     private var pillRow: some View {
         HStack(spacing: 4) {
             ForEach(pills, id: \.self) { pill in
-                Text(pill.uppercased())
+                Text(pill.uppercased(with: locale))
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 5)

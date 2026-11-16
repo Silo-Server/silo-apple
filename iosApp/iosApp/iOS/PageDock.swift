@@ -75,7 +75,20 @@ final class PageDockHost {
     }
 
     func withdraw(_ dock: any PageDockModel) {
-        if self.dock === dock { self.dock = nil }
+        if self.dock === dock {
+            self.dock = nil
+            pageIsTooShortToMinimize = false
+        }
+    }
+
+    /// The page on screen scrolls less than a screen. Every flick on such
+    /// a page overshoots its end and springs back, and the tab bar takes
+    /// each spring back for a scroll up: it minimised and expanded on
+    /// alternate flicks. It stays expanded on these pages instead.
+    private(set) var pageIsTooShortToMinimize = false
+
+    func setPageIsTooShortToMinimize(_ isShort: Bool) {
+        if pageIsTooShortToMinimize != isShort { pageIsTooShortToMinimize = isShort }
     }
 
     /// The tab bar can host the dock: iOS 26.1 and later, where the slot
@@ -85,6 +98,65 @@ final class PageDockHost {
     static var slotIsAvailable: Bool {
         if #available(iOS 26.1, *) { return true }
         return false
+    }
+}
+
+extension View {
+    /// The dock floating at the bottom of the page, for when the tab bar's
+    /// slot can't hold it. Nothing when `isShown` is false.
+    func floatingPageDock<Model: PageDockModel>(_ model: Model, isShown: Bool) -> some View {
+        modifier(FloatingPageDock(model: model, isShown: isShown))
+    }
+}
+
+/// Floats the dock just above the tab bar, following it as it minimises,
+/// while the page keeps the room it had with the tab bar expanded.
+///
+/// When the tab bar minimises, the room it leaves the page shrinks, and a
+/// page scrolled to its end jumped by the difference each time the tab bar
+/// changed size. So the page ignores the tab bar's room and is given the
+/// most it has had at this width instead, plus the dock.
+private struct FloatingPageDock<Model: PageDockModel>: ViewModifier {
+    let model: Model
+    let isShown: Bool
+
+    /// The tab bar's room at its largest, at `width`. A bar that later
+    /// goes away (a now-playing card on iOS 18) leaves it larger than
+    /// needed, which only adds room after the page's end.
+    @State private var expandedBottom: CGFloat = 0
+    @State private var width: CGFloat = 0
+    @State private var dockHeight: CGFloat = 0
+
+    private struct Room: Equatable {
+        var width: CGFloat
+        var bottom: CGFloat
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .safeAreaPadding(.bottom, isShown ? expandedBottom + dockHeight : 0)
+            .ignoresSafeArea(.container, edges: isShown ? .bottom : [])
+            .overlay(alignment: .bottom) {
+                if isShown {
+                    PageDock(model: model)
+                        .onGeometryChange(for: CGFloat.self) { proxy in
+                            proxy.size.height
+                        } action: { height in
+                            dockHeight = height
+                        }
+                }
+            }
+            .onGeometryChange(for: Room.self) { proxy in
+                Room(width: proxy.size.width, bottom: proxy.safeAreaInsets.bottom)
+            } action: { room in
+                // A new width (a rotation) has bars of its own height.
+                if abs(room.width - width) >= 0.5 {
+                    width = room.width
+                    expandedBottom = room.bottom
+                } else if room.bottom > expandedBottom {
+                    expandedBottom = room.bottom
+                }
+            }
     }
 }
 
@@ -259,9 +331,12 @@ struct PageDock<Model: PageDockModel>: View {
                 model.leadingButton(style: style)
                     .frame(width: Self.floatingHeight, height: Self.floatingHeight)
                     .siloGlass(in: Circle(), interactive: model.leadingButtonIsInteractive)
+                // Capped as well as floored: the switcher takes all the
+                // height it is offered, and over the page it is offered
+                // the whole page.
                 switcher
                     .padding(edgeInset)
-                    .frame(maxWidth: .infinity, minHeight: Self.floatingHeight)
+                    .frame(maxWidth: .infinity, minHeight: Self.floatingHeight, maxHeight: Self.floatingHeight)
                     .siloGlass(in: Capsule())
             }
         }

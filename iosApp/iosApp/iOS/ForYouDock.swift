@@ -161,12 +161,8 @@ struct ForYouDockedView: View {
                         PageChromeGlass(scrollState: chrome)
                     }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                // Exactly one dock shows: here, or in the tab bar's slot.
-                if !dockIsInSlot {
-                    PageDock(model: dock)
-                }
-            }
+            // Exactly one dock shows: here, or in the tab bar's slot.
+            .floatingPageDock(dock, isShown: !dockIsInSlot)
             .onAppear {
                 dock.onScrollToTop = { page in
                     scrollToTopRequests[page, default: 0] += 1

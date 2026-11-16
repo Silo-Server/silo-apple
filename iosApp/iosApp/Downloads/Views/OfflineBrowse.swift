@@ -367,7 +367,7 @@ struct OfflineDownloadDetailView: View {
                             .frame(height: 1)
                     }
                     HStack(alignment: .top, spacing: 16) {
-                        Text(row.0.uppercased())
+                        Text(row.0.uppercased(with: locale))
                             .font(.system(size: 11, weight: .bold))
                             .tracking(1.2)
                             .foregroundColor(.siloOnSurface.opacity(0.5))

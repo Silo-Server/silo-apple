@@ -11,6 +11,18 @@
             "value" : "يستخدم Silo شبكتك المحلية للعثور على خوادم Silo، ولإعداد Silo على التلفزيون والعثور عليه والتحكم فيه."
           }
         },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo používá vaši místní síť k vyhledání serverů Silo a k nastavení, vyhledání a ovládání aplikace Silo na vaší televizi."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo bruger dit lokale netværk til at finde Silo-servere og til at konfigurere, finde og styre Silo på dit tv."
+          }
+        },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
@@ -29,10 +41,28 @@
             "value" : "Silo usa tu red local para encontrar servidores de Silo y para configurar, encontrar y controlar Silo en tu TV."
           }
         },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo käyttää lähiverkkoasi Silo-palvelimien löytämiseen sekä Silon määrittämiseen, löytämiseen ja ohjaamiseen tv:ssäsi."
+          }
+        },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo utilise votre réseau local pour trouver des serveurs Silo, et pour configurer, trouver et contrôler Silo sur votre TV."
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo upotrebljava vašu lokalnu mrežu za pronalaženje poslužitelja Silo te za postavljanje, pronalaženje i upravljanje aplikacijom Silo na vašem TV-u."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo usa la tua rete locale per trovare i server Silo e per configurare, trovare e controllare Silo sulla tua TV."
           }
         },
         "ja" : {
@@ -41,10 +71,28 @@
             "value" : "Siloはローカルネットワークを使用して、Siloサーバーを検出したり、テレビのSiloを設定・検出・操作したりします。"
           }
         },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo는 로컬 네트워크를 사용해 Silo 서버를 찾고, TV에서 Silo를 설정하고 찾고 제어해요."
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo bruker det lokale nettverket ditt til å finne Silo-servere og til å konfigurere, finne og styre Silo på TV-en din."
+          }
+        },
         "nl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo gebruikt je lokale netwerk om Silo-servers te vinden, en om Silo op je tv in te stellen, te vinden en te bedienen."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo używa sieci lokalnej do wyszukiwania serwerów Silo oraz do konfigurowania i wyszukiwania aplikacji Silo na telewizorze i sterowania nią."
           }
         },
         "pt-BR" : {
@@ -53,10 +101,40 @@
             "value" : "O Silo usa sua rede local para encontrar servidores Silo e para configurar, encontrar e controlar o Silo na sua TV."
           }
         },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo использует локальную сеть, чтобы находить серверы Silo, а также настраивать и находить Silo на вашем телевизоре и управлять им."
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo använder ditt lokala nätverk för att hitta Silo-servrar och för att konfigurera, hitta och styra Silo på din tv."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo, Silo sunucularını bulmak ve TV’nizde Silo’yu kurmak, bulmak ve kontrol etmek için yerel ağınızı kullanır."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo використовує вашу локальну мережу, щоб знаходити сервери Silo, а також налаштовувати й знаходити Silo на телевізорі та керувати ним."
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo使用你的本地网络查找Silo服务器，以及在你的电视上设置、查找和控制Silo。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo 會使用你的區域網路來尋找 Silo 伺服器，以及在你的電視上設定、尋找和控制 Silo。"
           }
         }
       }
