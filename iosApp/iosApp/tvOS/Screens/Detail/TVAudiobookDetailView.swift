@@ -1,20 +1,22 @@
 #if os(tvOS)
 import SwiftUI
 
-/// The "Lounge" audiobook detail. The first viewport is the hero — cover +
-/// identity + state cluster + action row, vertically centered, answering
-/// "what is this and where am I" with a single golden-path press (Resume).
-/// Below the fold the page scrolls into About, alternate narrations, and the
-/// discovery rails (`TVAudiobookDetailSections`), like the movie/series
-/// detail bodies. The **Chapters** picker stays behind a full-screen cover.
-/// Design source of truth: `docs/audiobook-detail-redesign/tvos-mockups-v2.html`
-/// (Option C v2).
+/// The "Lounge" audiobook detail. The first screen is the hero — cover,
+/// identity, listening state and the action row — with the top of the About
+/// section showing beneath it so the page reads as scrollable. Below come
+/// About, alternate narrations and the discovery rails
+/// (`TVAudiobookDetailSections`). The **Chapters** picker stays behind a
+/// full-screen cover.
 ///
 /// Focus: the action row is a flat set of sibling `Button`s so the tvOS focus
-/// engine owns movement (native-graph model, per `docs/tvos-focus.md`). We
-/// seed initial focus onto Resume with `@FocusState` + `defaultFocus` because
-/// geometry would otherwise pick the (higher) first control inconsistently.
-/// Below-fold rows/rails are ordinary vertical focus progression.
+/// engine owns movement (native-graph model, per `docs/tvos-focus.md`). Focus
+/// opens on the primary action; coming back up from below returns to the
+/// action the viewer left. Each section below is one native focus stop or
+/// rail, so Down visits them in order and never skips About.
+///
+/// Scrolling: the page pins the hero to the top while the action row has
+/// focus and centers the focused section otherwise (`detailFocusScroll`), so
+/// a section's heading is always on screen with its content.
 struct TVAudiobookDetailView: View {
     let detail: ItemDetail
     let libraryId: Int?
@@ -27,9 +29,20 @@ struct TVAudiobookDetailView: View {
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.locale) private var locale
 
+    @Namespace private var pageFocusNamespace
     @FocusState private var focusedAction: Action?
+    @FocusState private var focusedSection: TVAudiobookDetailSections.Section?
+    /// The action focus returns to when the viewer comes back up from the
+    /// sections.
+    @State private var lastFocusedAction: Action = .primary
     @State private var showChapters = false
     @State private var didClaimInitialActionFocus = false
+
+    private let heroScrollId = "audiobook-hero"
+    /// Tall enough to center the hero's content like a first screen, short
+    /// enough that the About heading and its first lines show beneath it.
+    /// The loading frame uses it too, so the loaded page does not jump.
+    static let heroHeight: CGFloat = 860
 
     private enum Action: Hashable { case primary, chapters, startOver, favorite, finished }
 
@@ -68,41 +81,52 @@ struct TVAudiobookDetailView: View {
         }
     }
 
-    /// Hero sized to the full viewport, with the info sections below the
-    /// fold. The blurred-cover background stays fixed behind the scroll; the
-    /// sections carry their own near-black backdrop so they stay legible as
-    /// they ride up over the brighter hero region of the wash.
     private var scrollBody: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                // The whole hero viewport is one focus section: its only
-                // focusable content (the action row) sits right of the 460pt
-                // cover, so without the section, Up from a far-left rail card
-                // below the fold finds no candidate in its horizontal band and
-                // the press dies. The section spans full width and redirects
-                // entry to the nearest button — same reachability trick as
-                // TVDetailHero's full-width action cluster.
-                content
-                    .containerRelativeFrame(.vertical)
-                    .focusSection()
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    // The hero is one focus section: its only focusable
+                    // content (the action row) sits right of the cover, so
+                    // without the section, Up from a far-left rail card finds
+                    // no candidate in its horizontal band and the press dies.
+                    content
+                        .frame(height: Self.heroHeight)
+                        .focusSection()
+                        // Re-entry from below lands on the action the viewer
+                        // left, or on the primary action when that one is
+                        // gone (Chapters and Start Over come and go with the
+                        // book's state).
+                        .defaultFocus($focusedAction, reentryAction, priority: .userInitiated)
+                        .id(heroScrollId)
 
-                if TVAudiobookDetailSections.hasContent(detail) {
-                    TVAudiobookDetailSections(
-                        detail: detail,
-                        onNavigateToItem: onNavigateToItem
-                    )
-                    .padding(.horizontal, SiloTheme.safePadding)
-                    .padding(.top, 64)
-                    .padding(.bottom, 80)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background { sectionsBackdrop }
+                    if TVAudiobookDetailSections.hasContent(detail) {
+                        TVAudiobookDetailSections(
+                            detail: detail,
+                            focusedSection: $focusedSection,
+                            onNavigateToItem: onNavigateToItem
+                        )
+                        .padding(.horizontal, SiloTheme.safePadding)
+                        .padding(.bottom, TVDetailLayout.pageBottomPadding)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background { sectionsBackdrop }
+                    }
                 }
             }
+            .ignoresSafeArea()
+            // The page opens on the primary action. Without this the engine
+            // can pick the About block, which also shows on the first screen.
+            .focusScope(pageFocusNamespace)
+            .defaultFocus($focusedAction, .primary, priority: .userInitiated)
+            .detailFocusScroll(
+                proxy: proxy,
+                actionRowFocused: focusedAction != nil,
+                heroId: heroScrollId,
+                focusedPosterRailId: focusedSection?.rawValue
+            )
         }
-        .ignoresSafeArea()
     }
 
-    /// Scrolls with the sections: a short clear→black ramp at the fold, then
+    /// Scrolls with the sections: a short clear→black ramp above them, then
     /// solid near-black extended well past the bottom edge so overscroll
     /// never exposes the brighter wash. Keeps the below-fold body legible the
     /// same way the other detail pages read over the near-black app
@@ -114,10 +138,10 @@ struct TVAudiobookDetailView: View {
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .frame(height: 280)
+            .frame(height: 220)
             Color.black.opacity(0.88)
         }
-        .padding(.top, -280)
+        .padding(.top, -220)
         .padding(.bottom, -600)
     }
 
@@ -289,10 +313,14 @@ struct TVAudiobookDetailView: View {
     // MARK: - Actions
 
     private var actionRow: some View {
-        HStack(spacing: 24) {
+        // Every control keeps its size on focus, as on the movie and series
+        // pages: Play stays labeled and no pill scales, so moving along the
+        // row never reflows it under the pill gaining focus.
+        HStack(spacing: 18) {
             TVPrimaryPillButton(
                 icon: model.primaryIcon,
-                title: AppLanguage.string(model.primaryLabel, locale: locale)
+                title: AppLanguage.string(model.primaryLabel, locale: locale),
+                stabilizesFocusMotion: true
             ) {
                 model.performPrimary(audioStore, libraryId: libraryId)
             }
@@ -300,16 +328,28 @@ struct TVAudiobookDetailView: View {
             .onAppear(perform: claimInitialActionFocus)
 
             if model.showsChapters {
-                TVSecondaryPillButton(icon: "list.bullet", title: AppLanguage.string(.detailAudiobookChapters, locale: locale)) {
+                TVSecondaryPillButton(
+                    icon: "list.bullet",
+                    title: AppLanguage.string(.detailAudiobookChapters, locale: locale),
+                    stabilizesFocusMotion: true
+                ) {
                     showChapters = true
                 }
                 .focused($focusedAction, equals: .chapters)
             }
 
-            TVSecondaryPillButton(icon: "arrow.counterclockwise", title: AppLanguage.string(.detailStartOver, locale: locale)) {
-                audioStore.play(contentId: detail.contentId, restart: true, libraryId: libraryId)
+            // Only with progress to discard: before the first listen Play
+            // starts at the beginning, and after the last Play Again does.
+            if model.resumePosition != nil {
+                TVSecondaryPillButton(
+                    icon: "arrow.counterclockwise",
+                    title: AppLanguage.string(.detailStartOver, locale: locale),
+                    stabilizesFocusMotion: true
+                ) {
+                    audioStore.play(contentId: detail.contentId, restart: true, libraryId: libraryId)
+                }
+                .focused($focusedAction, equals: .startOver)
             }
-            .focused($focusedAction, equals: .startOver)
 
             // Same circle toggles as the movie/series action rows, with the
             // iOS audiobook labels; the filled icon carries the state. The
@@ -343,7 +383,17 @@ struct TVAudiobookDetailView: View {
             )
             .focused($focusedAction, equals: .finished)
         }
-        .defaultFocus($focusedAction, .primary)
+        .onChange(of: focusedAction) { _, action in
+            if let action { lastFocusedAction = action }
+        }
+    }
+
+    private var reentryAction: Action {
+        switch lastFocusedAction {
+        case .chapters where !model.showsChapters: .primary
+        case .startOver where model.resumePosition == nil: .primary
+        default: lastFocusedAction
+        }
     }
 
     private func claimInitialActionFocus() {
@@ -363,16 +413,21 @@ struct TVAudiobookBackdrop: View {
     var body: some View {
         ZStack {
             if let posterUrl, !posterUrl.isEmpty {
-                AsyncImageView(
-                    url: posterUrl,
-                    thumbhash: thumbhash,
-                    targetSize: CGSize(width: 600, height: 600),
-                    contentMode: .fill
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
-                .blur(radius: 70)
-                .opacity(0.35)
+                // The square art fills the space it is offered and no more.
+                // A flexible frame around it grew to the art's square (1760pt
+                // tall on a 1080pt screen) and stretched the whole page with it.
+                Color.clear
+                    .overlay {
+                        AsyncImageView(
+                            url: posterUrl,
+                            thumbhash: thumbhash,
+                            targetSize: CGSize(width: 600, height: 600),
+                            contentMode: .fill
+                        )
+                    }
+                    .clipped()
+                    .blur(radius: 70)
+                    .opacity(0.35)
             }
             RadialGradient(
                 colors: [Color(red: 0.07, green: 0.25, blue: 0.235).opacity(0.9), .clear],

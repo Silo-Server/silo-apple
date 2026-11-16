@@ -1,25 +1,40 @@
 #if os(tvOS)
 import SwiftUI
 
-/// Below-the-fold body of the Lounge audiobook detail page: About (overview +
-/// static credits), alternate narrations, and the discovery rails (series,
-/// more-by-author, related). It scrolls under the hero like the movie and
-/// series detail bodies, so selections navigate directly via
-/// `onNavigateToItem`.
+/// Below-the-hero body of the Lounge audiobook detail page: About (the
+/// description beside the book's facts), alternate narrations, and the
+/// discovery rails (series, more-by-author, related). Selections navigate
+/// directly via `onNavigateToItem`.
 ///
-/// Focus: a vertical progression of native `focusSection` rows and rails;
-/// each rail lands d-pad entry on its first card (see `AudiobookCoverRail`).
+/// Focus: a vertical progression of native focus stops. About is one
+/// full-width focus target, so Down from any hero action lands on it before
+/// the rails; Select opens the whole description when it is cut off. Each
+/// rail lands d-pad entry on its first card (see `AudiobookCoverRail`). The
+/// section holding focus is reported through `focusedSection` so the page
+/// can keep its heading on screen.
 struct TVAudiobookDetailSections: View {
+    /// Each section's focus identity, doubling as its scroll ID.
+    enum Section: String, Hashable {
+        case about = "audiobook-about"
+        case narrations = "audiobook-narrations"
+        case series = "audiobook-series"
+        case moreByAuthor = "audiobook-more-by-author"
+        case related = "audiobook-related"
+    }
+
     let detail: ItemDetail
+    let focusedSection: FocusState<Section?>.Binding
     let onNavigateToItem: (String) -> Void
 
     @Environment(\.locale) private var locale
+    @State private var showFullDescription = false
 
-    /// Whether the detail has anything to show below the fold. The parent
+    /// Whether the detail has anything to show below the hero. The parent
     /// skips the section block entirely when empty so a bare audiobook page
-    /// stays a fixed single screen instead of scrolling into blank space.
+    /// stays a single screen instead of scrolling into blank space.
     static func hasContent(_ detail: ItemDetail) -> Bool {
-        if let overview = detail.overview, !overview.isEmpty { return true }
+        if overview(of: detail) != nil { return true }
+        if !DetailFacts(detail: detail).assembleFacts().isEmpty { return true }
         guard let audiobook = detail.audiobook else { return false }
         return !audiobook.otherNarrations.isEmpty
             || !(audiobook.series?.entries.isEmpty ?? true)
@@ -27,8 +42,14 @@ struct TVAudiobookDetailSections: View {
             || !(audiobook.related?.similar.isEmpty ?? true)
     }
 
+    private static func overview(of detail: ItemDetail) -> String? {
+        guard let overview = detail.overview?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !overview.isEmpty else { return nil }
+        return overview
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 64) {
+        VStack(alignment: .leading, spacing: TVDetailLayout.bodySectionSpacing) {
             aboutSection
             narrationsSection
             seriesRail
@@ -36,53 +57,31 @@ struct TVAudiobookDetailSections: View {
             relatedRail
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .fullScreenCover(isPresented: $showFullDescription) {
+            if let overview = Self.overview(of: detail) {
+                TVAudiobookDescriptionView(detail: detail, overview: overview)
+            }
+        }
     }
 
-    // MARK: - About + credits
+    // MARK: - About
 
     @ViewBuilder
     private var aboutSection: some View {
-        if let overview = detail.overview, !overview.isEmpty {
-            VStack(alignment: .leading, spacing: 20) {
-                sectionHeader(.detailAudiobookAbout)
-                Text(overview)
-                    .font(.system(size: 25))
-                    .foregroundColor(.white.opacity(0.72))
-                    .lineSpacing(4)
-                    .frame(maxWidth: 1280, alignment: .leading)
-                if let credits = staticCredits {
-                    Text(credits)
-                        .font(.system(size: 22))
-                        .foregroundColor(.white.opacity(0.55))
-                }
+        let overview = Self.overview(of: detail)
+        let facts = DetailFacts(detail: detail).assembleFacts(locale: locale)
+        if overview != nil || !facts.isEmpty {
+            VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
+                TVSectionHeader(title: AppLanguage.string(.detailAudiobookAbout, locale: locale))
+                AboutBlock(
+                    overview: overview,
+                    facts: facts,
+                    onShowFullDescription: { showFullDescription = true }
+                )
+                .focused(focusedSection, equals: .about)
             }
-        } else if let credits = staticCredits {
-            Text(credits)
-                .font(.system(size: 22))
-                .foregroundColor(.white.opacity(0.55))
+            .id(Section.about.rawValue)
         }
-    }
-
-    /// "Written by … · Narrated by … · Publisher · Year" — empty pieces skipped.
-    private var staticCredits: String? {
-        var pieces: [String] = []
-        if let authors = AudiobookDetailFormatting.peopleSummary(
-            detail.audiobook?.authors.map(\.name) ?? [], visible: 3
-        ) {
-            pieces.append(AppLanguage.string(.detailWrittenByNames(authors), locale: locale))
-        }
-        if let narrators = AudiobookDetailFormatting.peopleSummary(
-            detail.audiobook?.narrators.map(\.name) ?? [], visible: 3
-        ) {
-            pieces.append(AppLanguage.string(.detailNarratedBy(narrators), locale: locale))
-        }
-        if let publisher = detail.audiobook?.publisher, !publisher.isEmpty {
-            pieces.append(publisher)
-        }
-        if let year = detail.year {
-            pieces.append(LocaleFormat.integer(year, locale: locale))
-        }
-        return pieces.isEmpty ? nil : pieces.joined(separator: " · ")
     }
 
     // MARK: - Narrations
@@ -91,8 +90,8 @@ struct TVAudiobookDetailSections: View {
     private var narrationsSection: some View {
         let narrations = detail.audiobook?.otherNarrations ?? []
         if !narrations.isEmpty {
-            VStack(alignment: .leading, spacing: 20) {
-                sectionHeader(.detailAudiobookNarrations)
+            VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
+                TVSectionHeader(title: AppLanguage.string(.detailAudiobookNarrations, locale: locale))
                 VStack(spacing: 10) {
                     ForEach(narrations) { narration in
                         narrationRow(narration)
@@ -101,6 +100,8 @@ struct TVAudiobookDetailSections: View {
                 .frame(maxWidth: 1380, alignment: .leading)
                 .focusSection()
             }
+            .focused(focusedSection, equals: .narrations)
+            .id(Section.narrations.rawValue)
         }
     }
 
@@ -121,8 +122,13 @@ struct TVAudiobookDetailSections: View {
             AudiobookCoverRail(
                 title: series.name ?? AppLanguage.string(.detailAudiobookSeries, locale: locale),
                 items: series.entries,
+                // Every card in the rail repeats the series name the heading
+                // already shows, so drop it and keep the book's own title.
+                stripsSeriesName: series.name,
                 onSelect: onNavigateToItem
             )
+            .focused(focusedSection, equals: .series)
+            .id(Section.series.rawValue)
         }
     }
 
@@ -134,6 +140,8 @@ struct TVAudiobookDetailSections: View {
                 items: items,
                 onSelect: onNavigateToItem
             )
+            .focused(focusedSection, equals: .moreByAuthor)
+            .id(Section.moreByAuthor.rawValue)
         }
     }
 
@@ -145,16 +153,9 @@ struct TVAudiobookDetailSections: View {
                 items: items,
                 onSelect: onNavigateToItem
             )
+            .focused(focusedSection, equals: .related)
+            .id(Section.related.rawValue)
         }
-    }
-
-    // MARK: - Shared
-
-    private func sectionHeader(_ title: LocalizedStringResource) -> some View {
-        Text(title)
-            .font(.title2)
-            .fontWeight(.semibold)
-            .foregroundColor(.white)
     }
 }
 
@@ -193,6 +194,134 @@ private struct NarrationRowLabel: View {
     }
 }
 
+// MARK: - About block
+
+/// The About section's single focus stop: the description, clamped, beside
+/// the book's facts. Focusing it scrolls the whole section into view; when
+/// the description is cut off, a MORE tag shows and Select opens the whole
+/// text. A full-width target, so Down from any hero action reaches it.
+private struct AboutBlock: View {
+    let overview: String?
+    let facts: [DetailFacts.Fact]
+    let onShowFullDescription: () -> Void
+
+    @Environment(\.locale) private var locale
+    /// Heights of the clamped description and of the whole text at the same
+    /// width; the description was cut off when they differ.
+    @State private var clampedHeight: CGFloat = 0
+    @State private var fullHeight: CGFloat = 0
+
+    private var isTruncated: Bool { fullHeight > clampedHeight + 1 }
+
+    private static let overviewLineLimit = 6
+
+    var body: some View {
+        Button {
+            if isTruncated { onShowFullDescription() }
+        } label: {
+            HStack(alignment: .top, spacing: 80) {
+                if let overview {
+                    overviewColumn(overview)
+                        .frame(maxWidth: 1000, alignment: .leading)
+                }
+                if !facts.isEmpty {
+                    factsColumn
+                        .frame(width: overview == nil ? 1000 : 520, alignment: .leading)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(AboutBlockStyle())
+        .accessibilityHint(isTruncated ? Text(.detailOverviewMore) : Text(verbatim: ""))
+    }
+
+    private func overviewColumn(_ overview: String) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(overview)
+                .font(.system(size: 26))
+                .foregroundColor(.white.opacity(0.86))
+                .lineSpacing(6)
+                .lineLimit(Self.overviewLineLimit)
+                .fixedSize(horizontal: false, vertical: true)
+                // A hidden unclamped copy measures the whole text.
+                .background(alignment: .topLeading) {
+                    Text(overview)
+                        .font(.system(size: 26))
+                        .lineSpacing(6)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { clampedHeight = $0 }
+            if isTruncated {
+                MoreTag()
+            }
+        }
+    }
+
+    private var factsColumn: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(Array(facts.enumerated()), id: \.offset) { _, fact in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(fact.label.uppercased(with: locale))
+                        .font(.system(size: 17, weight: .bold))
+                        .tracking(2)
+                        .foregroundColor(.white.opacity(0.5))
+                    Text(fact.value)
+                        .font(.system(size: 23))
+                        .foregroundColor(.white.opacity(0.9))
+                        .lineLimit(2)
+                }
+            }
+        }
+    }
+}
+
+/// "MORE" tag under a cut-off description; turns solid while the About block
+/// has focus so it reads as what Select does.
+private struct MoreTag: View {
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        Text(.detailOverviewMore)
+            .font(.system(size: 18, weight: .bold))
+            .tracking(1.5)
+            .foregroundColor(isFocused ? .black : .white.opacity(0.8))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(
+                Capsule().fill(isFocused ? Color.white : Color.white.opacity(0.14))
+            )
+    }
+}
+
+/// A quiet focus treatment for a block of text: a faint panel that bleeds
+/// past the text, so the text stays aligned with the heading above it.
+private struct AboutBlockStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        AboutBlockBody(configuration: configuration)
+    }
+}
+
+private struct AboutBlockBody: View {
+    let configuration: ButtonStyleConfiguration
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        configuration.label
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous)
+                    .fill(Color.white.opacity(isFocused ? 0.08 : 0))
+                    .padding(.horizontal, -32)
+                    .padding(.vertical, -20)
+            )
+            .scaleEffect(configuration.isPressed ? 0.99 : 1)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+    }
+}
+
 // MARK: - Cover rail
 
 /// One horizontal rail of square audiobook covers (series / more-by-author /
@@ -203,22 +332,23 @@ private struct NarrationRowLabel: View {
 private struct AudiobookCoverRail: View {
     let title: String
     let items: [AudiobookRelatedItem]
+    /// A series name to strip from the start of each card's title.
+    var stripsSeriesName: String? = nil
     let onSelect: (String) -> Void
 
     @Environment(\.locale) private var locale
     @FocusState private var focusedItemId: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text(title)
-                .font(.title2)
-                .fontWeight(.semibold)
-                .foregroundColor(.white)
+        VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
+            TVSectionHeader(title: title)
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 32) {
+                LazyHStack(spacing: 40) {
                     ForEach(items) { item in
                         TVMediaCard(
-                            title: item.title,
+                            title: stripsSeriesName.map {
+                                AudiobookDetailFormatting.cleanTitle(item.title, seriesName: $0)
+                            } ?? item.title,
                             posterUrl: item.posterUrl ?? "",
                             year: item.year,
                             subtitle: item.seriesIndex.map {
@@ -233,7 +363,7 @@ private struct AudiobookCoverRail: View {
                         )
                     }
                 }
-                .padding(.vertical, 24)
+                .padding(.vertical, 12)
             }
             .focusSection()
             .tvDefaultFocus(items.first?.contentId, in: $focusedItemId)
