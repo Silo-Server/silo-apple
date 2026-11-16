@@ -1232,10 +1232,7 @@ final class AppRouter {
                 profileSwitchReturn = nil
                 return
             }
-            guard await keepReopenedProfile(saved.closed, startedIn: session) else { return }
-            // Any route change since (an expired session, another account)
-            // keeps its own screen.
-            guard authState == .needsProfile, profileFlowRevision == picker else { return }
+            guard await keepReopenedProfile(saved.closed, startedIn: session, onPicker: picker) else { return }
             StartupContentPrefetcher.prefetchAuthenticatedContent()
             sessionReturnPoint = saved.returnPoint
             restoredShellPlace = saved.place
@@ -1257,11 +1254,17 @@ final class AppRouter {
         profileSwitchReturn = nil
     }
 
-    /// False, with the profile closed again for a fresh choice, when the app
-    /// left the foreground while Back was reopening it.
-    private func keepReopenedProfile(_ closed: ClosedProfile, startedIn session: Int) async -> Bool {
-        guard foregroundSession != session else { return true }
-        _ = await AuthService.shared.beginExplicitProfileSelection(expectedProfileID: closed.profileID)
+    /// Whether the reopened profile stays: only while the app never left the
+    /// foreground and the picker Back was pressed on is still the one up.
+    /// Otherwise that screen keeps its route, and the profile closes again
+    /// unless something else already opened Home.
+    private func keepReopenedProfile(_ closed: ClosedProfile, startedIn session: Int, onPicker picker: Int) async -> Bool {
+        if foregroundSession == session, authState == .needsProfile, profileFlowRevision == picker {
+            return true
+        }
+        if authState != .authenticated {
+            _ = await AuthService.shared.beginExplicitProfileSelection(expectedProfileID: closed.profileID)
+        }
         return false
     }
     #endif
