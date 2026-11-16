@@ -440,6 +440,7 @@ struct TVRequestsPage: View {
             backdropThumbhash: nil,
             fallbackArtworkUrl: RequestImageURL.build(item.posterPath, size: .poster),
             fallbackArtworkThumbhash: nil,
+            fallbackArtworkAspect: .poster,
             baseOverlayData: nil,
             contentRatingBadge: nil,
             progressUpdatedAt: nil,

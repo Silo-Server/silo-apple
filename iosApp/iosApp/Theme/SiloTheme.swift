@@ -337,6 +337,14 @@ enum SiloTheme {
         /// row below it.
         static let densePosterCardWidth: CGFloat = 176
 
+        /// Card width for a Skyline row of `layout`. Square audiobook covers
+        /// are as tall as a dense poster, so cover rows match poster rows and
+        /// fit the same band. Episode thumbs keep their own width.
+        static func denseCardWidth(for layout: MediaRowLayout) -> CGFloat {
+            guard layout == .square else { return densePosterCardWidth }
+            return densePosterCardWidth * SiloTheme.posterCardHeight / SiloTheme.posterCardWidth
+        }
+
         // MARK: Collections poster grid (§6.3)
 
         /// Collections render as standard 2:3 poster tiles (the canonical

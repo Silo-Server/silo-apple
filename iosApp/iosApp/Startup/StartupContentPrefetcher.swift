@@ -718,7 +718,8 @@ enum StartupContentPrefetcher {
     /// uses: Skyline rows on tvOS, Home's rows or `SectionRow` elsewhere.
     private static func rowCardArtwork(for item: SectionItem, in section: ResolvedSection, onHome: Bool) -> CardArtwork? {
         #if os(tvOS)
-        return MediaRow.cardArtwork(for: item, layout: SectionRow.layout(for: section), cardWidth: SiloTheme.Skyline.densePosterCardWidth)
+        let layout = SectionRow.layout(for: section)
+        return MediaRow.cardArtwork(for: item, layout: layout, cardWidth: SiloTheme.Skyline.denseCardWidth(for: layout))
         #else
         if onHome || section.isContinueWatchingSection {
             return HomeFeedRow.cardArtwork(for: item, in: section)
