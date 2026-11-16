@@ -102,9 +102,9 @@ enum ArtworkSurface: Sendable {
         let column = max(screen.width - Self.sidebarWidth, 0)
         switch self {
         case .home:
-            // `MacFeaturedHero` fills the column at 0.8 × the window height,
-            // clamped to 660...1200 pt; landscape cards are 340 pt.
-            let heroHeight = min(max(screen.height * 0.8, 660), 1200)
+            // `MacFeaturedHero` fills the column at a share of the window
+            // height; landscape cards are 340 pt.
+            let heroHeight = SiloTheme.macHeroHeight(forWindowHeight: screen.height)
             return ArtworkSlotWidths(
                 poster: 185, backdrop: Self.fillWidth(CGSize(width: column, height: heroHeight)), logo: 320
             )

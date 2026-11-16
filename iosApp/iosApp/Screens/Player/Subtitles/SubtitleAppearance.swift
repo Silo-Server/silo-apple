@@ -44,12 +44,15 @@ enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
         case .xxlarge: return 88
         }
         #else
+        // macOS sits at the web player's viewing distance, so it uses the
+        // web ladder: 20/26/32/40/48 px at 720 lines, with Medium and Small
+        // closer to Large so the smaller sizes stay readable on a laptop.
         switch self {
-        case .small: return 62
-        case .medium: return 79
-        case .large: return 96
-        case .xlarge: return 116
-        case .xxlarge: return 136
+        case .small: return 36
+        case .medium: return 42
+        case .large: return 48
+        case .xlarge: return 60
+        case .xxlarge: return 72
         }
         #endif
     }

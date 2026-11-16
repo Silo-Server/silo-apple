@@ -15,6 +15,11 @@ struct AetherSubtitleOverlay: View {
     let liveSecondaryCues: [LiveSubtitleCue]
     let appearance: SubtitleAppearance
     let subtitleSyncMs: Int
+    /// Height of player chrome covering the bottom of this view, such as a
+    /// control bar that is showing. Text cues placed at the bottom by default
+    /// rise above it; positioned cues, ASS and bitmap subtitles stay where
+    /// they were authored.
+    var bottomObstruction: CGFloat = 0
 
     @State private var primary: [SubtitleCue] = []
     @State private var secondary: [SubtitleCue] = []
@@ -56,19 +61,27 @@ struct AetherSubtitleOverlay: View {
             // Built once per evaluation: it sanitizes the appearance and
             // parses its colors, and every cue below needs it.
             let style = AetherSubtitleRenderStyle(appearance: appearance)
+            // The part of the obstruction that reaches up into the text
+            // area, measured from its bottom edge, plus a little air. Only
+            // text with no authored position is lifted, and it sits there.
+            let clearance = bottomObstruction > 0
+                ? max(0, bottomObstruction - (geometry.size.height - textRect.maxY)) + 8
+                : 0
             ZStack {
                 if assSubtitles.handlesCurrentTrack {
                     ASSSubtitleLayer(session: assSubtitles, videoRect: videoRect, delaySeconds: subtitleDelaySeconds)
                 } else {
                     cueLayer(activeCues(primaryCursor, of: primary, usesMovieTimeline: primaryUsesMovieTimeline),
-                             stack: primaryStack, style: style, videoRect: videoRect, textRect: textRect, secondary: false)
+                             stack: primaryStack, style: style, videoRect: videoRect, textRect: textRect, secondary: false,
+                             bottomClearance: clearance)
                 }
                 cueLayer(activeCues(secondaryCursor, of: secondary, usesMovieTimeline: secondaryUsesMovieTimeline),
-                         stack: secondaryStack, style: style, videoRect: videoRect, textRect: textRect, secondary: true)
+                         stack: secondaryStack, style: style, videoRect: videoRect, textRect: textRect, secondary: true,
+                         bottomClearance: clearance)
                 liveCueLayer(activeLiveCues(livePrimaryCursor, in: livePrimaryCues),
-                             style: style, videoRect: textRect, secondary: false)
+                             style: style, videoRect: textRect, secondary: false, bottomClearance: clearance)
                 liveCueLayer(activeLiveCues(liveSecondaryCursor, in: liveSecondaryCues),
-                             style: style, videoRect: textRect, secondary: true)
+                             style: style, videoRect: textRect, secondary: true, bottomClearance: clearance)
             }
         }
         .allowsHitTesting(false)
@@ -149,7 +162,8 @@ struct AetherSubtitleOverlay: View {
         _ cues: [LiveSubtitleCue],
         style: AetherSubtitleRenderStyle,
         videoRect: CGRect,
-        secondary: Bool
+        secondary: Bool,
+        bottomClearance: CGFloat
     ) -> some View {
         ForEach(cues) { cue in
             positionedText(
@@ -157,7 +171,8 @@ struct AetherSubtitleOverlay: View {
                 placement: nil,
                 style: style,
                 videoRect: videoRect,
-                secondary: secondary
+                secondary: secondary,
+                bottomClearance: bottomClearance
             )
         }
     }
@@ -172,7 +187,8 @@ struct AetherSubtitleOverlay: View {
         style: AetherSubtitleRenderStyle,
         videoRect: CGRect,
         textRect: CGRect,
-        secondary: Bool
+        secondary: Bool,
+        bottomClearance: CGFloat
     ) -> some View {
         // Runs on every evaluation, even with nothing showing, so the stack
         // always knows which captions are still on screen.
@@ -192,12 +208,14 @@ struct AetherSubtitleOverlay: View {
                     placement: cue.placement,
                     style: style,
                     videoRect: layoutRect,
-                    secondary: secondary
+                    secondary: secondary,
+                    bottomClearance: bottomClearance
                 )
             }
         }
         if let block = blockText(stacked, style: style, videoRect: textRect) {
-            positionedText(block, placement: nil, style: style, videoRect: textRect, secondary: secondary)
+            positionedText(block, placement: nil, style: style, videoRect: textRect, secondary: secondary,
+                           bottomClearance: bottomClearance)
         }
     }
 
@@ -229,7 +247,8 @@ struct AetherSubtitleOverlay: View {
         placement: SubtitleTextPlacement?,
         style: AetherSubtitleRenderStyle,
         videoRect: CGRect,
-        secondary: Bool
+        secondary: Bool,
+        bottomClearance: CGFloat
     ) -> some View {
         let rendered = decoratedText(text, style: style, videoRect: videoRect)
 
@@ -250,7 +269,12 @@ struct AetherSubtitleOverlay: View {
                     position: style.position,
                     videoRect: videoRect,
                     secondary: secondary
-                )
+                ).lifted(by: bottomLift(
+                    clearance: bottomClearance,
+                    authoredAlignment: placement?.alignment,
+                    position: style.position,
+                    videoRect: videoRect
+                ))
                 Color.clear
                     .overlay(alignment: resolved.alignment) {
                         rendered
@@ -320,6 +344,33 @@ struct AetherSubtitleOverlay: View {
     private struct ResolvedPlacement {
         let alignment: Alignment
         let insets: EdgeInsets
+
+        /// A bottom placement moved `lift` further up; others unchanged.
+        func lifted(by lift: CGFloat) -> ResolvedPlacement {
+            guard lift > 0, alignment.vertical == .bottom else { return self }
+            var insets = insets
+            insets.bottom += lift
+            return ResolvedPlacement(alignment: alignment, insets: insets)
+        }
+    }
+
+    /// How far bottom placements rise to clear `clearance`: enough to lift
+    /// the primary slot above it. The secondary slot moves by the same
+    /// amount, so the two keep their separation.
+    private func bottomLift(
+        clearance: CGFloat,
+        authoredAlignment: Int?,
+        position: AetherSubtitleRenderStyle.Position,
+        videoRect: CGRect
+    ) -> CGFloat {
+        guard clearance > 0 else { return 0 }
+        let primary = defaultPlacement(
+            authoredAlignment: authoredAlignment,
+            position: position,
+            videoRect: videoRect,
+            secondary: false
+        )
+        return max(0, clearance - primary.insets.bottom)
     }
 
     private func defaultPlacement(

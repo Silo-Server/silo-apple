@@ -177,6 +177,11 @@ struct PhonePlaybackSelectorRow: View {
     @ScaledMetric(relativeTo: .footnote) private var iconWidth = PhonePlaybackSelectorMetrics.iconWidth
     #if os(macOS)
     @State private var activeSelector: PhonePlaybackSelectorKind?
+    /// Where along the clicked row the drop-down hangs from, as a fraction
+    /// of its width: the click, or the trailing value and chevron when the
+    /// row was opened from the keyboard.
+    @State private var dropDownAnchorX: CGFloat = 1
+    @State private var selectorRowWidth: CGFloat = 0
     #endif
     /// The subtitle options list the profile's preferred language first.
     @ObservedObject private var profilePrefs = ProfilePrefsStore.shared
@@ -358,7 +363,21 @@ struct PhonePlaybackSelectorRow: View {
             Button { activeSelector = kind } label: { content() }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(kind.spokenLabel(value(for: kind))))
-                .popover(isPresented: dropDownBinding(for: kind), arrowEdge: .bottom) {
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { selectorRowWidth = $0 }
+                // Opens from the click, not the middle of the wide row.
+                .simultaneousGesture(SpatialTapGesture().onEnded { tap in
+                    guard selectorRowWidth > 0 else { return }
+                    dropDownAnchorX = min(max(tap.location.x / selectorRowWidth, 0), 1)
+                })
+                .onChange(of: activeSelector) { _, selector in
+                    // The next keyboard-opened drop-down starts at the value.
+                    if selector == nil { dropDownAnchorX = 1 }
+                }
+                .popover(
+                    isPresented: dropDownBinding(for: kind),
+                    attachmentAnchor: .point(UnitPoint(x: dropDownAnchorX, y: 1)),
+                    arrowEdge: .bottom
+                ) {
                     selectorPresentation(for: kind)
                 }
             #endif

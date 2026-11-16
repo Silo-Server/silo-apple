@@ -1,14 +1,14 @@
 #if os(macOS)
 import SwiftUI
 
-/// Hero for a Home section the server marks as featured.
+/// Hero for a Home section the server marks as featured, laid out like the
+/// web app's `HeroBanner`.
 ///
-/// The section's layout is defined on the server, so a featured section is a
-/// hero on every client, not a poster row. The current title fills the
-/// backdrop with its metadata, synopsis, and primary actions, and the
-/// section's full list runs along the bottom with the current title
-/// highlighted. Clicking a title in the list brings it up; the hero also
-/// advances on its own and pauses while the pointer is over it.
+/// The current title fills the backdrop with its metadata, synopsis, and
+/// primary actions. A counter and progress rail in the trailing corner show
+/// where the slideshow is; arrows at the edges appear while the pointer is
+/// over the hero. The hero advances on its own and pauses under the pointer
+/// or from its pause button.
 struct MacFeaturedHero: View {
     let section: ResolvedSection
 
@@ -17,6 +17,10 @@ struct MacFeaturedHero: View {
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @State private var index = 0
     @State private var isHovering = false
+    /// The viewer paused the slideshow with its pause button.
+    @State private var isUserPaused = false
+    /// How long the current title has been on show while the slideshow ran.
+    @State private var clock = SlideClock()
     /// The logo that has finished loading. Until a title's logo is in, its
     /// name is shown as text, so the hero is never untitled.
     @State private var loadedLogoURL: String?
@@ -33,29 +37,44 @@ struct MacFeaturedHero: View {
         return section.items[min(index, section.items.count - 1)]
     }
 
+    private var hasSeveralTitles: Bool { section.items.count > 1 }
+
     var body: some View {
         if let item {
             ZStack(alignment: .bottomLeading) {
                 backdrop(for: item)
                 scrim
-                VStack(alignment: .leading, spacing: SiloTheme.largePadding) {
-                    details(for: item)
-                    titleStrip
+                details(for: item)
+                    .padding(.bottom, SiloTheme.macHeroContentBottomPadding)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if hasSeveralTitles {
+                    slideIndicator
+                        .padding(.trailing, SiloTheme.macHeroIndicatorInset)
+                        .padding(.bottom, SiloTheme.macHeroIndicatorBottomInset)
                 }
-                .padding(.bottom, SiloTheme.padding)
+            }
+            .overlay {
+                if hasSeveralTitles {
+                    pagingArrows
+                }
             }
             .frame(maxWidth: .infinity)
             // A share of the window, so the rows below stay in view.
             .containerRelativeFrame(.vertical) { length, _ in
-                min(
-                    SiloTheme.macHeroMaxHeight,
-                    max(SiloTheme.macHeroMinHeight, length * SiloTheme.macHeroWindowFraction)
-                )
+                SiloTheme.macHeroHeight(forWindowHeight: length)
             }
             .clipped()
             .onHover { isHovering = $0 }
+            .animation(.easeOut(duration: SiloTheme.normalDuration), value: isHovering)
             .task(id: AdvanceTrigger(index: index, isPaused: isPaused, ids: section.items.map(\.contentId))) {
-                await advanceAfterDelay()
+                await runSlideTimer()
+            }
+            // Back on Home, the title on show gets its full time again. The
+            // pointer may have left while the page was covered.
+            .onDisappear {
+                clock.restart(at: .now, running: false)
+                isHovering = false
             }
             // Only the slide on show translates on view; the others wait
             // until they come up.
@@ -71,9 +90,10 @@ struct MacFeaturedHero: View {
                 )
             }
             .onChange(of: section.items.map(\.contentId)) { _, ids in
-                // A reload can shorten the section; keep the label and the
-                // highlight on a title that still exists.
-                if index >= ids.count { index = max(0, ids.count - 1) }
+                // New titles get their full time on show. A reload can also
+                // shorten the section; keep the counter on a title that
+                // still exists.
+                show(min(index, max(0, ids.count - 1)))
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Featured")
@@ -82,53 +102,67 @@ struct MacFeaturedHero: View {
 
     // MARK: - Layers
 
+    /// The current title's artwork. A new title cross-fades in over the old
+    /// one, as on web; the text beside it changes at once.
     private func backdrop(for item: SectionItem) -> some View {
-        Group {
-            if let seriesBackdrop = item.episodeSeriesBackdrop {
-                // An episode's own backdrop is usually a small still; its
-                // series backdrop fills the hero and is never a spoiler.
-                AsyncImageView(url: seriesBackdrop.url, thumbhash: seriesBackdrop.thumbhash, contentMode: .fill)
-            } else if let url = item.backdropUrl?.nonEmpty ?? item.posterUrl?.nonEmpty {
-                // An empty URL is no artwork: fall back as for a missing one.
-                let backdropURL = item.backdropUrl?.nonEmpty
-                AsyncImageView(
-                    url: url,
-                    thumbhash: backdropURL == nil ? item.posterThumbhash : item.backdropThumbhash,
-                    contentMode: .fill
-                )
-                .episodeSpoilerBlur(EpisodeSpoilerPreferences.shared.settings.hidesImage(for: item))
-            } else {
-                Color.siloSurfaceElevated
-            }
+        ZStack {
+            Color.siloSurfaceElevated
+            artwork(for: item)
+                // Web dims the backdrop to 90% brightness.
+                .overlay(Color.black.opacity(0.1))
+                .id(item.contentId)
+                .transition(.opacity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
-        .id(item.contentId)
-        .transition(.opacity)
+        .animation(.easeInOut(duration: SiloTheme.macHeroCrossFadeSeconds), value: item.contentId)
         .accessibilityHidden(true)
     }
 
-    /// Fades the artwork into the page canvas on the leading and bottom
-    /// edges: the text stays legible, and the hero has no hard edge beside
-    /// the sidebar or above the first row.
+    @ViewBuilder
+    private func artwork(for item: SectionItem) -> some View {
+        if let seriesBackdrop = item.episodeSeriesBackdrop {
+            // An episode's own backdrop is usually a small still; its series
+            // backdrop fills the hero and is never a spoiler.
+            AsyncImageView(url: seriesBackdrop.url, thumbhash: seriesBackdrop.thumbhash, contentMode: .fill)
+        } else if let url = item.backdropUrl?.nonEmpty ?? item.posterUrl?.nonEmpty {
+            // An empty URL is no artwork: fall back as for a missing one.
+            let backdropURL = item.backdropUrl?.nonEmpty
+            AsyncImageView(
+                url: url,
+                thumbhash: backdropURL == nil ? item.posterThumbhash : item.backdropThumbhash,
+                contentMode: .fill
+            )
+            .episodeSpoilerBlur(EpisodeSpoilerPreferences.shared.settings.hidesImage(for: item))
+        } else {
+            Color.siloSurfaceElevated
+        }
+    }
+
+    /// Web's two scrims: the artwork fades into the page canvas from the
+    /// bottom, under the rows, and from the leading edge, under the text.
     private var scrim: some View {
         ZStack {
             LinearGradient(
                 stops: [
                     .init(color: .siloPageCanvas, location: 0),
-                    .init(color: Color.siloPageCanvas.opacity(0.7), location: 0.3),
-                    .init(color: .clear, location: 0.7),
+                    .init(color: Color.siloPageCanvas.opacity(0.88), location: 0.12),
+                    .init(color: Color.siloPageCanvas.opacity(0.48), location: 0.30),
+                    .init(color: Color.siloPageCanvas.opacity(0.12), location: 0.50),
+                    .init(color: .clear, location: 0.66),
                 ],
-                startPoint: .leading,
-                endPoint: .trailing
+                startPoint: .bottom,
+                endPoint: .top
             )
             LinearGradient(
                 stops: [
-                    .init(color: .clear, location: 0.45),
-                    .init(color: .siloPageCanvas, location: 1),
+                    .init(color: Color.siloPageCanvas.opacity(0.88), location: 0),
+                    .init(color: Color.siloPageCanvas.opacity(0.58), location: 0.16),
+                    .init(color: Color.siloPageCanvas.opacity(0.22), location: 0.34),
+                    .init(color: .clear, location: 0.50),
                 ],
-                startPoint: .top,
-                endPoint: .bottom
+                startPoint: .leading,
+                endPoint: .trailing
             )
         }
         .allowsHitTesting(false)
@@ -136,14 +170,12 @@ struct MacFeaturedHero: View {
     }
 
     private func details(for item: SectionItem) -> some View {
-        VStack(alignment: .leading, spacing: SiloTheme.spacing) {
-            Text("Featured — No. \(Self.twoDigit(index + 1))")
-                .font(.siloCaption.weight(.semibold))
-                .textCase(.uppercase)
-                .tracking(SiloTheme.macSidebarHeadingTracking)
-                .foregroundStyle(Color.siloSecondaryText)
+        VStack(alignment: .leading, spacing: 0) {
+            eyebrow
+                .padding(.bottom, SiloTheme.padding)
 
             title(for: item)
+                .padding(.bottom, SiloTheme.padding)
 
             if let metadata = Self.metadata(for: item) {
                 // On a slide change the old and new lines crossfade in place,
@@ -154,6 +186,7 @@ struct MacFeaturedHero: View {
                         .id(item.contentId)
                         .transition(.opacity)
                 }
+                .padding(.bottom, SiloTheme.largePadding)
             }
 
             overview(for: item)
@@ -162,31 +195,28 @@ struct MacFeaturedHero: View {
                 // A series has nothing to play directly; More Info opens it.
                 if SiloMediaType.isDirectlyPlayable(item.type) {
                     Button { play(item) } label: {
-                        Label("Play", systemImage: "play.fill")
-                            .font(.siloBody.weight(.semibold))
-                            .foregroundStyle(Color.siloBackground)
-                            .padding(.horizontal, SiloTheme.largePadding)
-                            .padding(.vertical, SiloTheme.spacing)
-                            .background(Capsule().fill(Color.siloPrimary))
-                            .contentShape(Capsule())
+                        MacHeroPill(title: "Play", systemImage: "play.fill", isProminent: true)
                     }
                 }
                 Button { openDetail(item) } label: {
-                    Label("More Info", systemImage: "info.circle")
-                        .font(.siloBody.weight(.semibold))
-                        .foregroundStyle(Color.siloOnSurface)
-                        .padding(.horizontal, SiloTheme.largePadding)
-                        .padding(.vertical, SiloTheme.spacing)
-                        .background(Capsule().fill(Color.siloChromeSelectedFill))
-                        .overlay(Capsule().stroke(Color.siloChromeSelectedBorder))
-                        .contentShape(Capsule())
+                    MacHeroPill(title: "More Info", systemImage: "info.circle", isProminent: false)
                 }
             }
             .buttonStyle(.siloFlat)
-            .padding(.top, SiloTheme.smallPadding)
         }
         .frame(maxWidth: SiloTheme.macHeroTextWidth, alignment: .leading)
         .padding(.leading, HomeFeedMetrics.gutter)
+        .padding(.trailing, SiloTheme.macHeroIndicatorInset)
+    }
+
+    /// "FEATURED — NO. 03"
+    private var eyebrow: some View {
+        Text("\(Text("Featured").foregroundStyle(Color.white.opacity(0.92)))\(Text("  —  ").foregroundStyle(Color.white.opacity(0.45)))No. \(Self.twoDigit(index + 1))")
+            .font(.system(size: 11.5, weight: .semibold))
+            .textCase(.uppercase)
+            .tracking(2.5)
+            .foregroundStyle(Color.white.opacity(0.62))
+            .accessibilityLabel("Featured, \(index + 1) of \(section.items.count)")
     }
 
     /// The synopsis, with its on-view translation status and, in the
@@ -201,10 +231,12 @@ struct MacFeaturedHero: View {
             )
             VStack(alignment: .leading, spacing: SiloTheme.smallPadding) {
                 Text(overview)
-                    .font(.siloBody)
-                    .foregroundStyle(Color.siloSecondaryText)
+                    .font(.system(size: 15))
+                    .lineSpacing(5)
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.72))
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: SiloTheme.macHeroOverviewWidth, alignment: .leading)
                     .opacity(presentation.status == .translating ? 0.5 : 1)
                 if presentation.status != nil || offersTranslation {
                     HStack(spacing: SiloTheme.spacing) {
@@ -232,6 +264,7 @@ struct MacFeaturedHero: View {
                     }
                 }
             }
+            .padding(.bottom, SiloTheme.macHeroOverviewBottomPadding)
         }
     }
 
@@ -248,10 +281,12 @@ struct MacFeaturedHero: View {
     @ViewBuilder
     private func title(for item: SectionItem) -> some View {
         let name = Text(item.title)
-            .font(.siloHeroTitle)
+            .font(.system(size: SiloTheme.macHeroTitleSize, weight: .heavy))
+            .tracking(-1.5)
             .foregroundStyle(Color.siloOnSurface)
             .lineLimit(2)
-            .minimumScaleFactor(0.7)
+            .minimumScaleFactor(0.6)
+            .shadow(color: .black.opacity(0.45), radius: 25, y: 18)
 
         // A profile that turned title art off (`ui.title_art`) gets the name.
         if TitleArtPreferences.shared.showsTitleArt,
@@ -277,79 +312,75 @@ struct MacFeaturedHero: View {
         CGSize(width: SiloTheme.macHeroLogoWidth, height: SiloTheme.macHeroLogoHeight)
     }
 
-    /// Every title in the section, with the one on show highlighted.
-    private var titleStrip: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: HomeFeedMetrics.cardSpacing) {
-                    ForEach(Array(section.items.enumerated()), id: \.element.contentId) { offset, entry in
-                        Button { select(offset) } label: {
-                            thumbnail(for: entry, isCurrent: offset == index)
-                        }
-                        .buttonStyle(.siloFlat)
-                        .id(entry.contentId)
-                        .accessibilityLabel(entry.title)
-                        .accessibilityAddTraits(offset == index ? .isSelected : [])
-                    }
-                }
-                .padding(.horizontal, HomeFeedMetrics.gutter)
-                // Room for the highlight ring, which draws outside the art.
-                .padding(.vertical, SiloTheme.smallPadding)
-                .mouseDragScrolling()
+    // MARK: - Slideshow controls
+
+    /// "01 ──── 05", the progress rail, and the pause button.
+    private var slideIndicator: some View {
+        HStack(spacing: SiloTheme.spacing) {
+            HStack(spacing: SiloTheme.spacing) {
+                Text(Self.twoDigit(index + 1))
+                    .foregroundStyle(Color.white)
+                Rectangle()
+                    .fill(Color.white.opacity(0.35))
+                    .frame(width: 40, height: 1)
+                Text(Self.twoDigit(section.items.count))
+                    .foregroundStyle(Color.white.opacity(0.68))
             }
-            .onChange(of: index) { _, newIndex in
-                guard section.items.indices.contains(newIndex) else { return }
-                withAnimation(.easeInOut(duration: SiloTheme.slowDuration)) {
-                    proxy.scrollTo(section.items[newIndex].contentId, anchor: .center)
+            .font(.system(size: 11, design: .monospaced))
+            .tracking(1.3)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Title \(index + 1) of \(section.items.count)")
+
+            if advancesAutomatically {
+                progressRail
+                MacHeroIconButton(
+                    systemImage: isUserPaused ? "play.fill" : "pause.fill",
+                    help: isUserPaused ? "Resume slideshow" : "Pause slideshow",
+                    size: SiloTheme.macHeroPauseButtonSize
+                ) {
+                    isUserPaused.toggle()
                 }
             }
         }
-        .frame(height: Self.thumbnailSize.height + SiloTheme.smallPadding * 2)
     }
 
-    /// The list's posters match the poster rows below the hero, including
-    /// the Poster Size setting.
-    private static var thumbnailSize: CGSize {
-        let width = HomeFeedRow.posterWidth
-        return CGSize(width: width, height: width * HomeFeedMetrics.posterAspect)
-    }
-
-    private func thumbnail(for entry: SectionItem, isCurrent: Bool) -> some View {
-        let shape = RoundedRectangle(cornerRadius: HomeFeedMetrics.posterRadius, style: .continuous)
-        return Group {
-            if let url = entry.posterUrl?.nonEmpty {
-                AsyncImageView(
-                    url: url,
-                    thumbhash: entry.posterThumbhash,
-                    targetSize: Self.thumbnailSize,
-                    contentMode: .fill
-                )
-                .episodeSpoilerBlur(entry.isEpisodeItem && EpisodeSpoilerPreferences.shared.settings.hidesImage(
-                    for: EpisodeWatchState(sectionItem: entry), isEpisodeStill: entry.posterIsEpisodeStill
-                ))
-            } else {
-                Color.siloSurfaceElevated
-                    .overlay {
-                        Text(entry.title)
-                            .font(.siloSmall)
-                            .foregroundStyle(Color.siloSecondaryText)
-                            .multilineTextAlignment(.center)
-                            .padding(SiloTheme.smallPadding)
-                    }
+    /// Fills over the time a title stays up, and holds while paused.
+    private var progressRail: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: isPaused)) { context in
+            let progress = min(1, clock.elapsed(at: context.date) / SiloTheme.macHeroAdvanceSeconds)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.18))
+                Capsule()
+                    .fill(Color.white.opacity(0.88))
+                    .frame(width: SiloTheme.macHeroProgressRailWidth * progress)
             }
         }
-        .frame(width: Self.thumbnailSize.width, height: Self.thumbnailSize.height)
-        .clipShape(shape)
-        .overlay {
-            shape.fill(Color.black.opacity(isCurrent ? 0 : SiloTheme.macHeroUnselectedShade))
+        .frame(width: SiloTheme.macHeroProgressRailWidth, height: 2)
+        .accessibilityHidden(true)
+    }
+
+    /// Previous and next, at the hero's edges, shown while the pointer is
+    /// over it, and always with VoiceOver, which stops the slideshow.
+    private var pagingArrows: some View {
+        let isShown = isHovering || voiceOverEnabled
+        return HStack {
+            MacHeroIconButton(
+                systemImage: "chevron.left",
+                help: "Previous featured title",
+                size: SiloTheme.macHeroArrowSize,
+                isGlass: true
+            ) { step(-1) }
+            Spacer()
+            MacHeroIconButton(
+                systemImage: "chevron.right",
+                help: "Next featured title",
+                size: SiloTheme.macHeroArrowSize,
+                isGlass: true
+            ) { step(1) }
         }
-        .overlay {
-            shape.strokeBorder(
-                isCurrent ? Color.siloPrimary : Color.clear,
-                lineWidth: SiloTheme.macHeroSelectionRingWidth
-            )
-        }
-        .contentShape(shape)
+        .padding(.horizontal, SiloTheme.largePadding)
+        .opacity(isShown ? 0.9 : 0)
+        .allowsHitTesting(isShown)
     }
 
     // MARK: - Behaviour
@@ -363,36 +394,40 @@ struct MacFeaturedHero: View {
         let ids: [String]
     }
 
-    /// The title must not change under someone reading or operating the
-    /// hero: under the pointer, with Reduce Motion, or with VoiceOver on.
+    /// Reduce Motion and VoiceOver turn the slideshow off: the title must
+    /// not change under someone reading it.
+    private var advancesAutomatically: Bool {
+        hasSeveralTitles && !reduceMotion && !voiceOverEnabled
+    }
+
+    /// The slideshow holds under the pointer and from the pause button.
     private var isPaused: Bool {
-        isHovering || reduceMotion || voiceOverEnabled
+        !advancesAutomatically || isHovering || isUserPaused
     }
 
-    private func advanceAfterDelay() async {
-        guard !isPaused, section.items.count > 1 else { return }
-        try? await Task.sleep(for: .seconds(SiloTheme.macHeroAdvanceSeconds))
-        guard !Task.isCancelled else { return }
-        step(1)
-    }
-
-    /// Brings a title up; clicking the one already on show opens it.
-    private func select(_ offset: Int) {
-        guard offset != index else {
-            if let item { openDetail(item) }
+    private func runSlideTimer() async {
+        let now = Date.now
+        guard !isPaused else {
+            clock.pause(at: now)
             return
         }
-        withAnimation(.easeInOut(duration: SiloTheme.slowDuration)) {
-            index = offset
-        }
+        clock.resume(at: now)
+        let remaining = max(0, SiloTheme.macHeroAdvanceSeconds - clock.elapsed(at: now))
+        try? await Task.sleep(for: .seconds(remaining))
+        guard !Task.isCancelled else { return }
+        step(1)
     }
 
     private func step(_ delta: Int) {
         let count = section.items.count
         guard count > 1 else { return }
-        withAnimation(.easeInOut(duration: SiloTheme.slowDuration)) {
-            index = (index + delta + count) % count
-        }
+        show((index + delta + count) % count)
+    }
+
+    /// Brings a title up and starts its time on show from zero.
+    private func show(_ newIndex: Int) {
+        index = newIndex
+        clock.restart(at: .now, running: !isPaused)
     }
 
     private func play(_ item: SectionItem) {
@@ -407,21 +442,36 @@ struct MacFeaturedHero: View {
         )
     }
 
-    /// The facts line. The rating keeps its full width; the text truncates.
+    /// The facts line, separated by dimmed middle dots as on web. The rating
+    /// is drawn as its source's mark and score and keeps its full width; the
+    /// text truncates.
     private func metadataLine(_ metadata: Metadata) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
             if let rating = metadata.rating {
-                Text(verbatim: metadata.lead.map { $0 + " · " }.joined())
+                if !metadata.lead.isEmpty {
+                    Text("\(Self.factsText(metadata.lead))\(Self.factSeparator)") // i18n-ignore: joins two Text values
+                }
                 RatingEntryView(rating: rating, size: 13)
-                Text(verbatim: metadata.trailing.map { " · " + $0 }.joined())
+                if !metadata.trailing.isEmpty {
+                    Text("\(Self.factSeparator)\(Self.factsText(metadata.trailing))") // i18n-ignore: joins two Text values
+                }
             } else {
-                Text(verbatim: (metadata.lead + metadata.trailing).joined(separator: " · "))
+                Self.factsText(metadata.lead + metadata.trailing)
             }
         }
-        .font(.siloBody.weight(.semibold))
-        .foregroundStyle(Color.siloOnSurface)
+        .font(.system(size: 13, weight: .medium))
+        .tracking(0.25)
+        .foregroundStyle(Color.white.opacity(0.85))
         .lineLimit(1)
         .accessibilityElement(children: .combine)
+    }
+
+    private static let factSeparator = Text(verbatim: "  ·  ").foregroundStyle(Color.white.opacity(0.55))
+
+    private static func factsText(_ parts: [String]) -> Text {
+        parts.dropFirst().reduce(Text(verbatim: parts.first ?? "")) { text, part in
+            Text("\(text)\(factSeparator)\(Text(verbatim: part))") // i18n-ignore: joins Text values
+        }
     }
 
     private func openDetail(_ item: SectionItem) {
@@ -457,10 +507,102 @@ struct MacFeaturedHero: View {
             : DisplayRating.primaryCard(imdb: item.ratingImdb, tmdb: item.ratingTmdb)
         var trailing = Array((item.genres ?? []).prefix(2))
         if let contentRating = item.contentRating, !contentRating.isEmpty {
-            trailing.append(contentRating)
+            trailing.append(contentRating.uppercased())
         }
         guard !lead.isEmpty || rating != nil || !trailing.isEmpty else { return nil }
         return Metadata(lead: lead, rating: rating, trailing: trailing)
+    }
+}
+
+/// Time a slide has been on show, counting only while the slideshow runs.
+private struct SlideClock {
+    private var banked: TimeInterval = 0
+    private var runningSince: Date?
+
+    func elapsed(at date: Date) -> TimeInterval {
+        banked + (runningSince.map { date.timeIntervalSince($0) } ?? 0)
+    }
+
+    mutating func pause(at date: Date) {
+        banked = elapsed(at: date)
+        runningSince = nil
+    }
+
+    mutating func resume(at date: Date) {
+        if runningSince == nil { runningSince = date }
+    }
+
+    mutating func restart(at date: Date, running: Bool) {
+        banked = 0
+        runningSince = running ? date : nil
+    }
+}
+
+/// Web's hero pills: a solid Play and a glass More Info.
+private struct MacHeroPill: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+    let isProminent: Bool
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.system(size: 13.5, weight: .bold))
+            .tracking(0.15)
+            .foregroundStyle(isProminent ? Color.siloBackground : Color.siloOnSurface)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 12)
+            .background {
+                if isProminent {
+                    Capsule()
+                        .fill(Color.siloPrimary)
+                        .brightness(isHovering ? -0.04 : 0)
+                        .shadow(color: Color.siloPrimary.opacity(0.25), radius: 14, y: 10)
+                } else {
+                    Capsule()
+                        .fill(Color.white.opacity(isHovering ? 0.18 : 0.12))
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay(Capsule().stroke(Color.white.opacity(0.14)))
+                }
+            }
+            .offset(y: isProminent && isHovering ? -1 : 0)
+            .contentShape(Capsule())
+            .onHover { isHovering = $0 }
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isHovering)
+    }
+}
+
+/// A round icon button for the slideshow: the pause button and, with
+/// `isGlass`, the paging arrows.
+private struct MacHeroIconButton: View {
+    let systemImage: String
+    let help: String
+    let size: CGFloat
+    var isGlass = false
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: size * (isGlass ? 0.44 : 0.5), weight: .semibold))
+                .foregroundStyle(Color.white.opacity(isGlass || isHovering ? 1 : 0.7))
+                .frame(width: size, height: size)
+                .background {
+                    if isGlass {
+                        Circle()
+                            .fill(.ultraThinMaterial)
+                            .overlay(Circle().stroke(Color.white.opacity(0.18)))
+                    }
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(.siloFlat)
+        .onHover { isHovering = $0 }
+        .help(help)
+        .accessibilityLabel(help)
     }
 }
 

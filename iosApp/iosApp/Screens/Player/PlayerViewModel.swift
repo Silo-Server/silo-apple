@@ -848,8 +848,8 @@ class PlayerViewModel {
     /// Canonical user volume/mute, owned by the VM. A fresh Aether load can
     /// replace its internal route, so the VM reapplies these values and keeps
     /// the cast UI in sync.
-    private var userVolume: Float = 1.0
-    private var userMuted = false
+    private(set) var userVolume: Float = 1.0
+    private(set) var userMuted = false
     private var streamLoadGeneration: UInt64 = 0
     var backendCapabilities: PlayerBackendCapabilities {
         let engine = aetherPlaybackController.engine
