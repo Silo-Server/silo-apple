@@ -150,6 +150,7 @@ struct WatchlistView: View {
         .reportsPageChromeScroll()
         .scrollsToTopOnLibraryDockRequest()
         #else
+        let coverAspect = items.savedListCoverAspect
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(items) { item in
@@ -169,7 +170,7 @@ struct WatchlistView: View {
                         playAction: playAction(for: item),
                         contentId: item.contentId,
                         detailSeedSource: .browse(item),
-                        aspect: items.savedListCoverAspect,
+                        aspect: coverAspect,
                         onUserStateChanged: { state in
                             guard !state.inWatchlist else { return }
                             withAnimation {
@@ -190,6 +191,7 @@ struct WatchlistView: View {
     private var tvGridContent: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 40) {
+                let coverAspect = items.savedListCoverAspect
                 if usesTVTopMenu {
                     Text(.personalWatchlistTitle)
                         .font(.system(size: 64, weight: .bold))
@@ -215,7 +217,7 @@ struct WatchlistView: View {
                             focusedItemId: $focusedContentId,
                             contentId: item.contentId,
                             detailSeedSource: .browse(item),
-                            aspect: items.savedListCoverAspect,
+                            aspect: coverAspect,
                             cardWidthOverride: tvCardWidthOverride,
                             onUserStateChanged: { state in
                                 guard !state.inWatchlist else { return }

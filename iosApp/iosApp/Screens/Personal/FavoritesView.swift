@@ -176,7 +176,8 @@ struct IOSPersonalMediaPosterLayout: View {
     }
 
     private var phoneGrid: some View {
-        LazyVGrid(columns: phoneColumns, spacing: 12) {
+        let coverAspect = items.savedListCoverAspect
+        return LazyVGrid(columns: phoneColumns, spacing: 12) {
             ForEach(items) { item in
                 MediaCard(
                     title: item.title,
@@ -193,7 +194,7 @@ struct IOSPersonalMediaPosterLayout: View {
                     },
                     contentId: item.contentId,
                     detailSeedSource: .browse(item),
-                    aspect: items.savedListCoverAspect,
+                    aspect: coverAspect,
                     cardWidthOverride: phoneCardWidthOverride,
                     onUserStateChanged: { state in
                         onUserStateChanged(item, state)
@@ -211,7 +212,8 @@ struct IOSPersonalMediaPosterLayout: View {
     }
 
     private var tabletCarouselRows: some View {
-        LazyVStack(alignment: .leading, spacing: 24) {
+        let coverAspect = items.savedListCoverAspect
+        return LazyVStack(alignment: .leading, spacing: 24) {
             ForEach(Array(rows.enumerated()), id: \.offset) { _, rowItems in
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: HomeFeedMetrics.cardSpacing) {
@@ -231,7 +233,7 @@ struct IOSPersonalMediaPosterLayout: View {
                                 },
                                 contentId: item.contentId,
                                 detailSeedSource: .browse(item),
-                                aspect: items.savedListCoverAspect,
+                                aspect: coverAspect,
                                 onUserStateChanged: { state in
                                     onUserStateChanged(item, state)
                                 }
@@ -484,6 +486,7 @@ struct FavoritesView: View {
         #if os(tvOS)
         tvGridContent
         #else
+        let coverAspect = items.savedListCoverAspect
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(items) { item in
@@ -503,7 +506,7 @@ struct FavoritesView: View {
                         playAction: playAction(for: item),
                         contentId: item.contentId,
                         detailSeedSource: .browse(item),
-                        aspect: items.savedListCoverAspect,
+                        aspect: coverAspect,
                         onUserStateChanged: { state in
                             guard !state.isFavorite else { return }
                             withAnimation {
@@ -529,6 +532,7 @@ struct FavoritesView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 40) {
                 let visibleItems = filteredItems
+                let coverAspect = visibleItems.savedListCoverAspect
                 if usesTVTopMenu {
                     Text(.personalFavoritesTitle)
                         .font(.system(size: 64, weight: .bold))
@@ -546,7 +550,7 @@ struct FavoritesView: View {
                         spacing: 60
                     ) {
                         ForEach(visibleItems) { item in
-                            favoriteCard(for: item)
+                            favoriteCard(for: item, aspect: coverAspect)
                                 .frame(maxWidth: .infinity)
                         }
                     }
@@ -612,7 +616,7 @@ struct FavoritesView: View {
         .frame(maxWidth: .infinity, minHeight: 430)
     }
 
-    private func favoriteCard(for item: BrowseItem) -> some View {
+    private func favoriteCard(for item: BrowseItem, aspect: MediaCardAspect) -> some View {
         MediaCard(
             title: item.title,
             posterUrl: item.posterUrl ?? "",
@@ -629,7 +633,7 @@ struct FavoritesView: View {
             playAction: playAction(for: item),
             contentId: item.contentId,
             detailSeedSource: .browse(item),
-            aspect: filteredItems.savedListCoverAspect,
+            aspect: aspect,
             cardWidthOverride: tvCardWidthOverride,
             onUserStateChanged: { state in
                 guard !state.isFavorite else { return }
