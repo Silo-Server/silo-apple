@@ -6,11 +6,16 @@ import Foundation
 struct TVHeroArtwork: Equatable {
     let url: String
     let thumbhash: String?
+    /// Set when the artwork is a cover or poster standing in for a missing
+    /// backdrop. The hero draws it framed at this shape instead of
+    /// stretching it across the backdrop area.
+    var coverAspect: MediaCardAspect? = nil
 
-    init?(url: String?, thumbhash: String?) {
+    init?(url: String?, thumbhash: String?, coverAspect: MediaCardAspect? = nil) {
         guard let url, !url.isEmpty else { return nil }
         self.url = url
         self.thumbhash = thumbhash
+        self.coverAspect = coverAspect
     }
 }
 
@@ -105,6 +110,10 @@ struct TVMarqueeContent: Equatable {
     let backdropThumbhash: String?
     let fallbackArtworkUrl: String?
     let fallbackArtworkThumbhash: String?
+    /// The fallback artwork's shape when the hero should frame it as a cover:
+    /// square for audiobooks, 2:3 for posters. Nil stretches it across the
+    /// backdrop area, as an episode still is.
+    var fallbackArtworkAspect: MediaCardAspect? = nil
     /// The item-level overlay bag is retained so Continue Watching can replace
     /// only file-specific values while preserving ratings and other card data.
     let baseOverlayData: OverlayData?
@@ -233,6 +242,7 @@ extension TVMarqueeContent {
             backdropThumbhash: backdrop.thumbhash,
             fallbackArtworkUrl: hidesPoster ? nil : Self.nonEmpty(item.posterUrl),
             fallbackArtworkThumbhash: hidesPoster ? nil : item.posterThumbhash,
+            fallbackArtworkAspect: Self.coverAspect(for: item, hidesPoster: hidesPoster),
             baseOverlayData: OverlayData.from(item),
             contentRatingBadge: contentRatingBadge,
             progressUpdatedAt: item.progressUpdatedAt,
@@ -316,6 +326,15 @@ extension TVMarqueeContent {
         if let text = MediaTextFormatting.runtime(minutes: runtimeMinutes) { return text }
         guard let durationSeconds, durationSeconds > 0 else { return nil }
         return MediaTextFormatting.runtime(minutes: Int((durationSeconds / 60).rounded()))
+    }
+
+    /// How the hero frames this item's poster when it has no backdrop. An
+    /// episode's poster can be a landscape still, so it keeps the stretch.
+    private static func coverAspect(for item: SectionItem, hidesPoster: Bool) -> MediaCardAspect? {
+        guard !hidesPoster else { return nil }
+        if item.isAudiobook { return .square }
+        if item.isEpisodeItem || item.posterIsEpisodeStill == true { return nil }
+        return .poster
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
@@ -603,6 +622,10 @@ struct TVMarqueeEnrichment: Equatable {
     let backdropThumbhash: String?
 
     let backdropIsEpisodeStill: Bool?
+    /// Detail asks for the poster at its 460 pt cover size, sharper than the
+    /// row card's. The hero uses it when it frames a cover.
+    let posterUrl: String?
+    let posterThumbhash: String?
 
     init(detail: ItemDetail) {
         if let seriesBackdrop = detail.episodeSeriesBackdrop {
@@ -614,6 +637,8 @@ struct TVMarqueeEnrichment: Equatable {
             backdropThumbhash = detail.backdropThumbhash
             backdropIsEpisodeStill = detail.backdropIsEpisodeStill
         }
+        posterUrl = detail.posterIsEpisodeStill == true ? nil : detail.posterUrl
+        posterThumbhash = detail.posterIsEpisodeStill == true ? nil : detail.posterThumbhash
         let trimmedRating = detail.contentRating?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         contentRatingBadge = trimmedRating?.isEmpty == false
@@ -686,10 +711,7 @@ final class TVFocusMarqueeModel {
                 url: content.backdropUrl,
                 thumbhash: content.backdropThumbhash
             ),
-            fallback: TVHeroArtwork(
-                url: content.fallbackArtworkUrl,
-                thumbhash: content.fallbackArtworkThumbhash
-            ),
+            fallback: fallbackArtwork(for: content),
             prefersEnrichedBackdrop: (content.isEpisode && !content.backdropIsSeriesArtwork)
                 || content.backdropUrl?.isEmpty != false,
             canLoadEnrichment: content.contentId != nil,
@@ -701,8 +723,31 @@ final class TVFocusMarqueeModel {
         )
     }
 
+    /// The poster that stands in for a missing backdrop. A framed cover
+    /// prefers detail's sharper poster; the hero only falls back once detail
+    /// has answered, so this never swaps one cover for another on screen.
+    private func fallbackArtwork(for content: TVMarqueeContent) -> TVHeroArtwork? {
+        guard let aspect = content.fallbackArtworkAspect else {
+            return TVHeroArtwork(url: content.fallbackArtworkUrl, thumbhash: content.fallbackArtworkThumbhash)
+        }
+        if let detailPoster = TVHeroArtwork(
+            url: enrichment?.posterUrl,
+            thumbhash: enrichment?.posterThumbhash,
+            coverAspect: aspect
+        ) {
+            return detailPoster
+        }
+        return TVHeroArtwork(
+            url: content.fallbackArtworkUrl,
+            thumbhash: content.fallbackArtworkThumbhash,
+            coverAspect: aspect
+        )
+    }
+
     private var displayedArtwork: TVHeroArtwork?
     var backdropURL: String? { displayedArtwork?.url }
+    /// Non-nil when the hero shows a framed cover rather than a backdrop.
+    var backdropCoverAspect: MediaCardAspect? { displayedArtwork?.coverAspect }
 
     var backdropThumbhash: String? { displayedArtwork?.thumbhash }
 

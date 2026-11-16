@@ -223,7 +223,7 @@ struct TVSkylineSectionFeed: View {
             },
             // The marquee keeps the last card it previewed.
             onExploreAllFocus: { focusRestorationOwnerSectionId = section.id },
-            cardWidth: SiloTheme.Skyline.densePosterCardWidth,
+            cardWidth: SiloTheme.Skyline.denseCardWidth(for: SectionRow.layout(for: section)),
             cardVerticalPadding: SiloTheme.Skyline.rowBandCardVerticalPadding,
             focusRestorationOwner: Binding(
                 get: { focusRestorationOwnerSectionId == section.id },
@@ -245,10 +245,11 @@ struct TVSkylineSectionFeed: View {
     private func warmRows(after index: Int) -> [CardArtwork] {
         let next = sections.dropFirst(index + 1).prefix(ArtworkLookahead.rowsAhead)
         return ArtworkLookahead.warmRows(next, items: \.items) { section, item in
-            MediaRow.cardArtwork(
+            let layout = SectionRow.layout(for: section)
+            return MediaRow.cardArtwork(
                 for: item,
-                layout: SectionRow.layout(for: section),
-                cardWidth: SiloTheme.Skyline.densePosterCardWidth
+                layout: layout,
+                cardWidth: SiloTheme.Skyline.denseCardWidth(for: layout)
             )
         }
     }
@@ -375,6 +376,7 @@ struct TVSkylineBackdrop: View {
             tints: model.tints,
             artworkURL: model.backdropURL,
             artworkThumbhash: model.backdropThumbhash,
+            artworkCoverAspect: model.backdropCoverAspect,
             isVisible: model.backdropURL != nil,
             crossfadeDuration: SiloTheme.Skyline.marqueeCrossfadeDuration
         )
