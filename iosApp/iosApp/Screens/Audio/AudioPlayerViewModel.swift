@@ -315,7 +315,7 @@ final class AudioPlayerViewModel {
         let closedAuthority = activeAuthority
         let position = currentTime
         let total = duration
-        let scopeOwner = progressScopeOwner
+        let scopeOwner = currentProgressScopeOwner()
         let sampledAt = Date()
         resetSessionState()
         if let closedContext {
@@ -834,7 +834,7 @@ final class AudioPlayerViewModel {
             position: currentTime,
             duration: duration,
             sampledAt: Date(),
-            scopeOwner: progressScopeOwner,
+            scopeOwner: currentProgressScopeOwner(),
             label: "audiobook progress sync" // i18n-ignore: log label
         )
     }
@@ -934,6 +934,17 @@ final class AudioPlayerViewModel {
     }
 
     // MARK: - Downloaded books
+
+    /// The session's download scope. A book started while the download store
+    /// was still loading had none at start; it takes the scope once the store
+    /// has loaded. A profile or server switch closes the player, so that is
+    /// still the scope playback started in.
+    private func currentProgressScopeOwner() -> DownloadManager.ProgressOwner? {
+        if progressScopeOwner == nil {
+            progressScopeOwner = DownloadManager.shared.progressOwner()
+        }
+        return progressScopeOwner
+    }
 
     /// Saves the whole-book position sampled at `sampledAt`. A book that is
     /// downloaded now, in the still-loaded `scopeOwner` scope its playback
