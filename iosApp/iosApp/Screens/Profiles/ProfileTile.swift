@@ -95,10 +95,13 @@ struct ProfileTile: View {
                     .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: isFocused ? 30 : 0, y: isFocused ? 20 : 0)
 
                 VStack(spacing: 0) {
+                    // Wraps to a second line rather than cutting a long name
+                    // short, so names that share a beginning stay apart.
                     Text(profile.name)
                         .font(.system(size: scaledNameSize(size), weight: .semibold))
                         .foregroundStyle(isFocused ? Color.siloOnSurface : Color.siloOnSurface.opacity(nameOpacity))
-                        .lineLimit(1)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
 
                     if isRemembered {
                         Text(rememberedBadgeLabel)
