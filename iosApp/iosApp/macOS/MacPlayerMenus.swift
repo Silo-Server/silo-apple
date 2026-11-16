@@ -295,12 +295,13 @@ enum MacPlayerMenuContent {
     }
 
     private static func chapters(_ viewModel: PlayerViewModel) -> [MacMenuEntry] {
+        // A position in the list: chapter indexes can skip numbers.
         let current = viewModel.chapters.lastIndex { $0.time <= viewModel.currentTime }
-        return viewModel.chapters.map { chapter in
+        return viewModel.chapters.enumerated().map { position, chapter in
             .item(MacMenuItem(
                 title: chapter.title?.nilIfEmpty ?? "Chapter \(chapter.index + 1)",
                 trailing: PlayerTimeFormatter.formatHMS(chapter.time),
-                isChecked: chapter.index == current,
+                isChecked: position == current,
                 action: { viewModel.jumpToChapter(at: chapter.time) }
             ))
         }

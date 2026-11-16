@@ -90,9 +90,10 @@ struct MacFeaturedHero: View {
                 )
             }
             .onChange(of: section.items.map(\.contentId)) { _, ids in
-                // A reload can shorten the section; keep the counter on a
-                // title that still exists.
-                if index >= ids.count { show(max(0, ids.count - 1)) }
+                // New titles get their full time on show. A reload can also
+                // shorten the section; keep the counter on a title that
+                // still exists.
+                show(min(index, max(0, ids.count - 1)))
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Featured")
@@ -539,7 +540,7 @@ private struct SlideClock {
 
 /// Web's hero pills: a solid Play and a glass More Info.
 private struct MacHeroPill: View {
-    let title: String
+    let title: LocalizedStringKey
     let systemImage: String
     let isProminent: Bool
 
