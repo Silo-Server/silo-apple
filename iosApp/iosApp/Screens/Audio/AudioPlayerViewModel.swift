@@ -319,12 +319,14 @@ final class AudioPlayerViewModel {
         let sampledAt = Date()
         resetSessionState()
         if let closedContext {
+            let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
             await saveBookPosition(
                 contentId: closedContext.contentId,
                 position: position,
                 duration: total,
                 sampledAt: sampledAt,
                 scopeOwner: scopeOwner,
+                auth: auth,
                 label: "final audiobook sync" // i18n-ignore: log label
             )
         }
@@ -807,6 +809,15 @@ final class AudioPlayerViewModel {
     /// whole-book position that powers resume and Continue Listening.
     private func syncNow() async {
         guard let context else { return }
+        // The whole-book sample and the identity it uploads under are taken
+        // before any await, so a newer start or a profile switch while the
+        // session sample is on the wire can't mix into it.
+        let contentId = context.contentId
+        let position = currentTime
+        let total = duration
+        let sampledAt = Date()
+        let scopeOwner = currentProgressScopeOwner()
+        let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
         if let session = activeSession,
            let authority = activeAuthority,
            let activeTrackIndex,
@@ -830,11 +841,12 @@ final class AudioPlayerViewModel {
             }
         }
         await saveBookPosition(
-            contentId: context.contentId,
-            position: currentTime,
-            duration: duration,
-            sampledAt: Date(),
-            scopeOwner: currentProgressScopeOwner(),
+            contentId: contentId,
+            position: position,
+            duration: total,
+            sampledAt: sampledAt,
+            scopeOwner: scopeOwner,
+            auth: auth,
             label: "audiobook progress sync" // i18n-ignore: log label
         )
     }
@@ -844,14 +856,15 @@ final class AudioPlayerViewModel {
     /// write of the current position: a failed or unanswered upload is never
     /// re-sent, and the next periodic sync or close carries a fresh value.
     @discardableResult
-    private func uploadBookPosition(contentId: String, position: Double, duration: Double, label: String) async -> Bool {
-        guard let item = SyncProgressItem(
+    private func uploadBookPosition(contentId: String, position: Double, duration: Double,
+                                    auth: CapturedOrdinaryRequestAuth?, label: String) async -> Bool {
+        guard let auth, let item = SyncProgressItem(
             mediaItemId: contentId,
             position: position,
             duration: duration,
             forceOverwrite: true
         ) else { return false }
-        let outcome = await SiloAPI.shared.apiV2Client.syncProgress([item])
+        let outcome = await SiloAPI.shared.apiV2Client.syncProgress([item], auth: auth)
         if let failure = outcome.failureSummary {
             logger.warning(
                 "\(label, privacy: .public) failed for \(contentId, privacy: .public) at \(position, privacy: .public): \(failure, privacy: .public)"
@@ -954,7 +967,8 @@ final class AudioPlayerViewModel {
     /// server is back, even a book opened offline uploads directly. A
     /// position older than the one already recorded is dropped.
     private func saveBookPosition(contentId: String, position: Double, duration: Double, sampledAt: Date,
-                                  scopeOwner: DownloadManager.ProgressOwner?, label: String) async {
+                                  scopeOwner: DownloadManager.ProgressOwner?,
+                                  auth: CapturedOrdinaryRequestAuth?, label: String) async {
         let completed = AudiobookProgress.isFinished(played: false, position: position, totalDuration: duration)
         let downloads = DownloadManager.shared
         // Decided at each save, so a download that finishes mid-book counts
@@ -981,7 +995,8 @@ final class AudioPlayerViewModel {
             queue(owner)
             return
         }
-        let uploaded = await uploadBookPosition(contentId: contentId, position: position, duration: duration, label: label)
+        let uploaded = await uploadBookPosition(contentId: contentId, position: position, duration: duration,
+                                                auth: auth, label: label)
         guard let owner = downloadOwner else { return }
         if uploaded {
             guard isLatest() else { return }

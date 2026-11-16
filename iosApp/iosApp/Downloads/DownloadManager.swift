@@ -4081,17 +4081,22 @@ final class DownloadManager {
         while !finished.value, ContinuousClock.now < deadline, !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(100))
         }
-        // An answer from another profile or server says nothing about this one.
+        // An answer from another profile or server says nothing about this
+        // one, and a newer position queued after the applied one is still
+        // unsent.
         return loadedScope == scope && appliedProgressItemIds.contains(mediaItemId)
+            && !hasUnsentProgress(forMediaItemId: mediaItemId)
     }
 
     /// Seeds a downloaded book's local resume point from the server's, so a
     /// book downloaded and then opened offline before the next progress read
     /// starts where the listener left off. Leaves an existing entry alone.
+    /// The seed is dated as old as possible: the detail it came from carries
+    /// no time, so the next progress read replaces it with the server's.
     private func seedLocalProgress(mediaItemId: String, position: Double?, duration: Double?) {
         guard file.localProgress[mediaItemId] == nil, let position, position > 0,
               updateLocalProgress(mediaItemId: mediaItemId, position: position, duration: duration ?? 0,
-                                  completed: false, at: Date(), latchesCompleted: false) != nil
+                                  completed: false, at: .distantPast, latchesCompleted: false) != nil
         else { return }
         persist()
     }

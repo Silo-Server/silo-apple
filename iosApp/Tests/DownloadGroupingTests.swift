@@ -102,8 +102,12 @@ final class DownloadGroupingTests: XCTestCase {
         XCTAssertTrue(book.isAudiobook)
         XCTAssertNil(book.seriesId)
         XCTAssertNil(book.seriesTitle)
+        // A book row that carries a series id anyway (stored before this
+        // rule) still stays out of series grouping.
+        var seriesBook = book
+        seriesBook.seriesId = "stormlight"
         let groups = DownloadGroupBuilder.seriesGroups(
-            from: [book, episode("e1", series: "s1", season: 1, number: 1, bytes: 10)],
+            from: [seriesBook, episode("e1", series: "s1", season: 1, number: 1, bytes: 10)],
             isWatched: { _ in false },
             seriesTitle: { _ in nil },
             isMonitored: { _ in false }
