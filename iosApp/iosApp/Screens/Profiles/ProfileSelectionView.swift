@@ -685,7 +685,9 @@ struct ProfileSelectionView: View {
     private let rowSpacing: CGFloat = 60
     private let footerSpacing: CGFloat = 20
     private var gridColumns: [GridItem] {
-        Array(repeating: GridItem(.fixed(240), spacing: tileSpacing), count: min(max(viewModel.profiles.count + 1, 1), 6))
+        // Top-aligned so a name that wraps doesn't lift its avatar above
+        // the rest of the row.
+        Array(repeating: GridItem(.fixed(240), spacing: tileSpacing, alignment: .top), count: min(max(viewModel.profiles.count + 1, 1), 6))
         // 6 × 240 + 5 × 44 = 1660, inside the 1740 pt safe width.
     }
     #else
@@ -711,8 +713,9 @@ struct ProfilePickerLayout: Equatable {
     let columnWidth: CGFloat
     let scrolls: Bool
 
-    /// Name, optional "Last used" caption and their spacing under an avatar.
-    static let labelHeight: CGFloat = 48
+    /// Name (up to two lines), optional "Last used" caption and their
+    /// spacing under an avatar.
+    static let labelHeight: CGFloat = 68
     static let minimumAvatar: CGFloat = 64
 
     private struct Option {
