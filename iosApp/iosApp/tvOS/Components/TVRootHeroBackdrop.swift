@@ -211,11 +211,7 @@ struct TVRootHeroBackdrop: View {
                         contentMode: .fill
                     )
                     .id(artworkURL)
-                    .transition(
-                        reduceMotion || !hasDisplayedArtwork
-                            ? .identity
-                            : .opacity.animation(.easeInOut(duration: crossfadeDuration))
-                    )
+                    .transition(artworkTransition)
                 }
             }
             .frame(width: artworkSize.width, height: artworkSize.height)
@@ -233,6 +229,16 @@ struct TVRootHeroBackdrop: View {
         .ignoresSafeArea()
     }
 
+    /// The first artwork paints without a fade; every later swap
+    /// crossfades. The removal fade is set for the first artwork too: a view
+    /// inserted with `.identity` kept it when it was removed, so the first
+    /// swap on a page blinked the old art out before the new one faded in.
+    private var artworkTransition: AnyTransition {
+        guard !reduceMotion else { return .identity }
+        let fade = AnyTransition.opacity.animation(.easeInOut(duration: crossfadeDuration))
+        return .asymmetric(insertion: hasDisplayedArtwork ? fade : .identity, removal: fade)
+    }
+
     /// A cover standing in for a missing backdrop, drawn whole and sharp at
     /// a size its artwork can carry. Its glow and shadow are part of the
     /// ambient wash. Its own layer, so a backdrop-to-cover swap still
@@ -242,11 +248,7 @@ struct TVRootHeroBackdrop: View {
             if let artworkURL, !artworkURL.isEmpty, let aspect = artworkCoverAspect {
                 framedCover(url: artworkURL, size: Self.coverSize(for: aspect))
                     .id(artworkURL)
-                    .transition(
-                        reduceMotion || !hasDisplayedArtwork
-                            ? .identity
-                            : .opacity.animation(.easeInOut(duration: crossfadeDuration))
-                    )
+                    .transition(artworkTransition)
             }
         }
         .padding(.top, Self.coverTopInset)

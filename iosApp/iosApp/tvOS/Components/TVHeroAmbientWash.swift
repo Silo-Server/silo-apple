@@ -29,9 +29,15 @@ struct TVHeroAmbientWash: View {
     let animatesChanges: Bool
     let crossfadeDuration: Double
 
-    @State private var bitmap: Bitmap?
+    /// Rendered washes, bottom to top. A new wash fades in over the ones
+    /// already on screen, which stay fully opaque until it has finished, so
+    /// a swap never shows the lighter SwiftUI wash underneath. Removing the
+    /// old bitmap with an opacity transition let it drop out ahead of the
+    /// new one, and the page flashed bright for a moment on each swap.
+    @State private var layers: [Bitmap] = []
 
-    private struct Bitmap {
+    private struct Bitmap: Identifiable {
+        var id: Int { generation }
         let generation: Int
         let image: CGImage
     }
@@ -50,14 +56,15 @@ struct TVHeroAmbientWash: View {
                     .animation(animatesChanges ? .easeInOut(duration: crossfadeDuration) : nil, value: tints)
                     .animation(animatesChanges ? .easeInOut(duration: 0.24) : nil, value: isVisible)
 
-                if let bitmap {
+                ForEach(layers) { bitmap in
                     Image(decorative: bitmap.image, scale: 1)
                         .resizable()
                         // Each bitmap pixel keeps its dithered value; scaling
                         // would blend neighbors and round them again.
                         .interpolation(.none)
-                        .id(bitmap.generation)
-                        .transition(.opacity)
+                        // Covered layers leave only once the wash above them
+                        // is opaque, so they can go without a fade.
+                        .transition(.asymmetric(insertion: .opacity, removal: .identity))
                 }
             }
             .task(id: Request(tints: tints, isVisible: isVisible, cover: cover, canvas: geometry.size)) {
@@ -87,11 +94,16 @@ struct TVHeroAmbientWash: View {
             canvas: canvas, colors: colors, isVisible: isVisible, cover: coverEffects
         )
         guard !Task.isCancelled, let image else { return }
-        let next = Bitmap(generation: (bitmap?.generation ?? 0) + 1, image: image)
-        if animatesChanges, bitmap != nil {
-            withAnimation(.easeInOut(duration: crossfadeDuration)) { bitmap = next }
-        } else {
-            bitmap = next
+        let next = Bitmap(generation: (layers.last?.generation ?? 0) + 1, image: image)
+        guard animatesChanges, !layers.isEmpty else {
+            layers = [next]
+            return
+        }
+        withAnimation(.easeInOut(duration: crossfadeDuration)) {
+            layers.append(next)
+        } completion: {
+            // `next` now covers everything below it.
+            layers.removeAll { $0.generation < next.generation }
         }
     }
 }
