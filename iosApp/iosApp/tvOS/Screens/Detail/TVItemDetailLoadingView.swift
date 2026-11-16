@@ -236,7 +236,9 @@ struct TVItemDetailLoadingView: View {
             }
             .padding(.horizontal, SiloTheme.safePadding)
             .padding(.leading, 12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity)
+            .frame(height: TVAudiobookDetailView.heroHeight)
+            .frame(maxHeight: .infinity, alignment: .top)
         }
         .ignoresSafeArea()
     }

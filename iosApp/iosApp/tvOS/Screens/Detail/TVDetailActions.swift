@@ -98,6 +98,9 @@ private extension View {
 struct TVSecondaryPillButton: View {
     let icon: String
     let title: String
+    /// Same opt-in as `TVPrimaryPillButton`: no scale on focus, so only the
+    /// fill changes and the row never shifts under the pill.
+    var stabilizesFocusMotion = false
     let action: () -> Void
 
     var body: some View {
@@ -112,7 +115,13 @@ struct TVSecondaryPillButton: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
         }
-        .buttonStyle(TVPillButtonStyle(kind: .secondary, focusTreatment: .compact))
+        .buttonStyle(
+            TVPillButtonStyle(
+                kind: .secondary,
+                focusTreatment: .compact,
+                stabilizesFocusMotion: stabilizesFocusMotion
+            )
+        )
         .accessibilityLabel(title)
     }
 }
