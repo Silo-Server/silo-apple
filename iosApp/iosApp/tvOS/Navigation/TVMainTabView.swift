@@ -241,6 +241,9 @@ struct TVMainTabView: View {
     /// Focus is on its way from the entered menu back to its bar anchor, and
     /// what happens to the menu when it lands (`leavePanelForAnchor`).
     @State private var panelReturn: TVPanelReturn?
+    /// Identifies one return, so a timer left over from an earlier one cannot
+    /// act on a later one.
+    @State private var panelReturnGeneration = 0
     @State private var controlReceiver = TVControlReceiver.shared
     /// Bar element to re-focus after Menu-ing out of a panel — its own
     /// anchor, so focus returns to the dwelled tab/avatar (§7).
@@ -251,6 +254,7 @@ struct TVMainTabView: View {
     /// The bar element focus is returning to after its menu closed, until it
     /// lands there (`TVTopMenuBar.focusReturnPending`).
     @State private var pendingBarReturn: TVTopMenuPanel?
+    @State private var pendingBarReturnGeneration = 0
     /// Content owns focus. The bar stays focusable (see
     /// `isBarLockedForContentHandoff`), so Up reaches it natively.
     @State private var isTopMenuFocusSuppressed = true
@@ -1114,17 +1118,21 @@ struct TVMainTabView: View {
             panelReturn = closing ? .close : .preview
         }
         panelReturnFocus = panel
+        panelReturnGeneration += 1
+        let generation = panelReturnGeneration
         // The anchor goes live in this update; ask for focus once that has
         // committed.
         DispatchQueue.main.async {
-            guard openPanel == panel, panelEntersFocus, panelReturn != nil else { return }
+            guard generation == panelReturnGeneration,
+                  openPanel == panel, panelEntersFocus, panelReturn != nil else { return }
             topMenuFocusRequest += 1
         }
         // A return that never lands falls back to closing the menu the old
         // way, so the remote cannot be left inside a menu it tried to leave.
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(300))
-            guard openPanel == panel, panelEntersFocus, panelReturn != nil else { return }
+            guard generation == panelReturnGeneration,
+                  openPanel == panel, panelEntersFocus, panelReturn != nil else { return }
             panelReturn = nil
             closePanel()
         }
@@ -1149,9 +1157,11 @@ struct TVMainTabView: View {
     /// focus really is.
     private func expectBarReturn(to panel: TVTopMenuPanel) {
         pendingBarReturn = panel
+        pendingBarReturnGeneration += 1
+        let generation = pendingBarReturnGeneration
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
-            if pendingBarReturn == panel {
+            if generation == pendingBarReturnGeneration, pendingBarReturn == panel {
                 pendingBarReturn = nil
             }
         }

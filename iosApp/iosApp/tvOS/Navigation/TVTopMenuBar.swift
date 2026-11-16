@@ -1149,6 +1149,9 @@ struct TVForYouDropdown: View {
     @State private var lastAppliedEntryGeneration = 0
     /// Identity of the rows; changed to rebuild them for a handed-in entry.
     @State private var rowsIdentity = 0
+    /// Identifies the pending repeat claim. Bumped when a newer claim starts
+    /// or the menu stops being entered, so a deferred claim cannot land late.
+    @State private var reclaimGeneration = 0
 
     var body: some View {
         panel
@@ -1162,7 +1165,10 @@ struct TVForYouDropdown: View {
                 onPanelFocusChanged(newValue != nil)
             }
             .onChange(of: entersPanel) { _, entered in
-                if !entered { focusedAction = nil }
+                if !entered {
+                    reclaimGeneration += 1
+                    focusedAction = nil
+                }
             }
             .onAppear {
                 if entersPanel { applyEntryGeneration(focusEntryGeneration) }
@@ -1187,8 +1193,13 @@ struct TVForYouDropdown: View {
     /// later, on fresh rows.
     private func reclaimEntryFocus() {
         guard entersPanel else { return }
+        reclaimGeneration += 1
+        let generation = reclaimGeneration
         focusedAction = nil
         DispatchQueue.main.async {
+            // Skip if the menu was left, a newer claim started, or focus
+            // reached a row in the meantime.
+            guard generation == reclaimGeneration, focusedAction == nil else { return }
             rowsIdentity += 1
             focusedAction = .watchlist
         }
@@ -1322,6 +1333,9 @@ struct TVProfileDropdown: View {
     @State private var lastAppliedEntryGeneration = 0
     /// Identity of the rows; changed to rebuild them for a handed-in entry.
     @State private var rowsIdentity = 0
+    /// Identifies the pending repeat claim. Bumped when a newer claim starts
+    /// or the menu stops being entered, so a deferred claim cannot land late.
+    @State private var reclaimGeneration = 0
 
     var body: some View {
         panel
@@ -1335,7 +1349,10 @@ struct TVProfileDropdown: View {
                 onPanelFocusChanged(newValue != nil)
             }
             .onChange(of: entersPanel) { _, entered in
-                if !entered { focusedAction = nil }
+                if !entered {
+                    reclaimGeneration += 1
+                    focusedAction = nil
+                }
             }
             .onAppear {
                 if entersPanel { applyEntryGeneration(focusEntryGeneration) }
@@ -1356,8 +1373,11 @@ struct TVProfileDropdown: View {
     /// See `TVForYouDropdown.reclaimEntryFocus`.
     private func reclaimEntryFocus() {
         guard entersPanel else { return }
+        reclaimGeneration += 1
+        let generation = reclaimGeneration
         focusedAction = nil
         DispatchQueue.main.async {
+            guard generation == reclaimGeneration, focusedAction == nil else { return }
             rowsIdentity += 1
             focusedAction = .history
         }

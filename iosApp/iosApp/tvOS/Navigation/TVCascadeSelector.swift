@@ -86,6 +86,9 @@ struct TVCascadeSelector: View {
     /// handed-in entry. A claim made right after the tab took focus is ignored
     /// by a container that already exists, and taken by one created with it.
     @State private var claimIdentity = 0
+    /// Identifies the pending repeat claim. Bumped when a newer claim starts
+    /// or the panel stops being entered, so a deferred claim cannot land late.
+    @State private var reclaimGeneration = 0
     /// Each library row's vertical center in the level-1 HStack's coordinate
     /// space. The flyout offsets to align its first section with the anchored
     /// row, so the composite highlight does not visually jump on Right.
@@ -130,6 +133,7 @@ struct TVCascadeSelector: View {
         .onChange(of: panelFocused) { _, isFocused in handlePanelFocusedChange(isFocused) }
         .onChange(of: entersPanel) { _, entered in
             if !entered {
+                reclaimGeneration += 1
                 panelFocused = false
                 focus = nil
             }
@@ -539,8 +543,11 @@ struct TVCascadeSelector: View {
     /// claim had taken, so clear it first and claim again a turn later.
     private func reclaimPanelFocus() {
         guard entersPanel, focus != nil else { return }
+        reclaimGeneration += 1
+        let generation = reclaimGeneration
         if panelFocused { panelFocused = false }
         DispatchQueue.main.async {
+            guard generation == reclaimGeneration, focus != nil, !panelFocused else { return }
             claimIdentity += 1
             panelFocused = true
         }
