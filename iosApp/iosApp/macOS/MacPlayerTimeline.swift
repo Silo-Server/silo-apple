@@ -37,71 +37,64 @@ struct MacPlayerTimeline: View {
     }
 
     var body: some View {
-        VStack(spacing: 7) {
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                ZStack(alignment: .leading) {
+        GeometryReader { proxy in
+            let width = max(proxy.size.width, 1)
+            ZStack(alignment: .leading) {
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.24))
+                    .frame(height: 5)
+
+                let bufferedAhead = max(0, bufferedFraction - progressFraction)
+                if bufferedAhead > 0 {
                     Capsule(style: .continuous)
-                        .fill(Color.white.opacity(0.24))
-                        .frame(height: 5)
-
-                    let bufferedAhead = max(0, bufferedFraction - progressFraction)
-                    if bufferedAhead > 0 {
-                        Capsule(style: .continuous)
-                            .fill(Color.white.opacity(0.30))
-                            .frame(width: width * bufferedAhead, height: 5)
-                            .offset(x: width * progressFraction)
-                    }
-
-                    Capsule(style: .continuous)
-                        .fill(Color.white)
-                        .frame(width: width * progressFraction, height: 5)
-
-                    PlayerMarkerBands(
-                        timeline: viewModel.markerTimeline,
-                        duration: viewModel.duration,
-                        width: width,
-                        height: 5,
-                        opacity: 0.45
-                    )
-
-                    chapterTicks(width: width)
-
-                    Circle()
-                        .fill(Color.white)
-                        .frame(width: isHoveringOrDragging ? 14 : 10, height: isHoveringOrDragging ? 14 : 10)
-                        .shadow(color: .black.opacity(0.45), radius: 5, y: 2)
-                        .offset(x: width * progressFraction - (isHoveringOrDragging ? 7 : 5))
+                        .fill(Color.white.opacity(0.30))
+                        .frame(width: width * bufferedAhead, height: 5)
+                        .offset(x: width * progressFraction)
                 }
-                .frame(maxHeight: .infinity)
-                .contentShape(Rectangle())
-                .gesture(dragGesture(width: width))
-                .onContinuousHover { phase in
-                    switch phase {
-                    case .active(let point):
-                        hoverFraction = fraction(for: point.x, width: width)
-                    case .ended:
-                        hoverFraction = nil
-                    }
+
+                Capsule(style: .continuous)
+                    .fill(Color.white)
+                    .frame(width: width * progressFraction, height: 5)
+
+                PlayerMarkerBands(
+                    timeline: viewModel.markerTimeline,
+                    duration: viewModel.duration,
+                    width: width,
+                    height: 5,
+                    opacity: 0.45
+                )
+
+                chapterTicks(width: width)
+
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: isHoveringOrDragging ? 14 : 10, height: isHoveringOrDragging ? 14 : 10)
+                    .shadow(color: .black.opacity(0.45), radius: 5, y: 2)
+                    .offset(x: width * progressFraction - (isHoveringOrDragging ? 7 : 5))
+            }
+            // The time under the pointer, as on web: the times beside the
+            // title show where playback is, not where a click would land.
+            .overlay(alignment: .topLeading) {
+                if let bubbleFraction, viewModel.duration > 0 {
+                    timeBubble
+                        .alignmentGuide(.leading) { $0[HorizontalAlignment.center] - width * bubbleFraction }
+                        .alignmentGuide(.top) { $0[.bottom] + 4 }
+                        .allowsHitTesting(false)
                 }
             }
-            .frame(height: 24)
-
-            HStack {
-                Text(PlayerTimeFormatter.formatHMS(displayTime))
-                    .foregroundStyle(.white)
-                Spacer()
-                if viewModel.duration > 0 {
-                    Text("-\(PlayerTimeFormatter.formatHMS(max(0, viewModel.duration - displayTime)))")
-                        .foregroundStyle(.white.opacity(0.72))
-                } else {
-                    Text("--:--")
-                        .foregroundStyle(.white.opacity(0.45))
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(dragGesture(width: width))
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let point):
+                    hoverFraction = fraction(for: point.x, width: width)
+                case .ended:
+                    hoverFraction = nil
                 }
             }
-            .font(.system(size: 12, weight: .medium, design: .rounded))
-            .monospacedDigit()
         }
+        .frame(height: 24)
         .overlay(alignment: .top) {
             if showsScrubPreview, let image = viewModel.scrubPreviewImage {
                 scrubPreviewCard(image)
@@ -133,6 +126,30 @@ struct MacPlayerTimeline: View {
         .shadow(color: .black.opacity(0.45), radius: 12, y: 4)
     }
 
+    /// Where the time bubble points: the pointer, or the scrub while
+    /// dragging. Hidden while the scrub preview shows its own time.
+    private var bubbleFraction: Double? {
+        if showsScrubPreview {
+            guard viewModel.scrubPreviewImage == nil else { return nil }
+            return fraction(ofTime: viewModel.scrubPreviewTime)
+        }
+        return hoverFraction
+    }
+
+    private var timeBubble: some View {
+        Text(PlayerTimeFormatter.formatHMS(displayTime))
+            .font(.system(size: 12, weight: .semibold))
+            .monospacedDigit()
+            .foregroundStyle(MacPlayerHUDStyle.paper)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(MacPlayerHUDStyle.panel)
+            )
+            .fixedSize()
+    }
+
     private var isHoveringOrDragging: Bool {
         hoverFraction != nil || isDragging || viewModel.isScrubbing
     }
@@ -154,6 +171,12 @@ struct MacPlayerTimeline: View {
                 isDragging = false
                 viewModel.endScrub()
             }
+    }
+
+    /// The bubble only shows once the length is known.
+    private func fraction(ofTime time: Double) -> Double {
+        guard viewModel.duration > 0 else { return 0 }
+        return min(max(time / viewModel.duration, 0), 1)
     }
 
     private func fraction(for x: CGFloat, width: CGFloat) -> Double {

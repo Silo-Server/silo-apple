@@ -110,6 +110,9 @@ private struct MacPlayerScreen: View {
                     .simultaneousGesture(TapGesture().onEnded { viewModel.revealControls() })
 
                 if shouldShowControls {
+                    MacPlayerScrims()
+                        .transition(.opacity)
+
                     MacPlayerControls(
                         viewModel: viewModel,
                         isFullScreen: isFullScreen,
@@ -126,10 +129,10 @@ private struct MacPlayerScreen: View {
                     MacIntroSkipPill(pill: pill) {
                         viewModel.selectIntroSkipPrompt()
                     }
-                    .padding(.trailing, 24)
-                    // Above the control bar while it shows; toward the corner
-                    // once it hides.
-                    .padding(.bottom, shouldShowControls ? 136 : 24)
+                    .padding(.trailing, 32)
+                    // Above the controls while they show; toward the corner
+                    // once they hide.
+                    .padding(.bottom, shouldShowControls ? controlBarHeight + 16 : 24)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .transition(.opacity)
                 }
@@ -242,10 +245,11 @@ private struct MacPlayerScreen: View {
         // the picture has the screen to itself while they're hidden.
         .background(MacPlayerFullScreenBridge(hidesToolbar: !shouldShowControls) { isFullScreen = $0 })
         .preferredColorScheme(.dark)
-        // One header: the window's title bar carries what is playing and its
-        // format beside the back button.
+        // What is playing shows in the HUD, as on web; the title bar keeps
+        // only the back button. The title still names the window in the
+        // Window menu and Mission Control.
         .navigationTitle(viewModel.title.isEmpty ? "Silo" : viewModel.title)
-        .navigationSubtitle(viewModel.metadata.badges.joined(separator: " · "))
+        .toolbar(removing: .title)
         .animation(.easeOut(duration: 0.16), value: shouldShowControls)
         .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
         .animation(.easeOut(duration: 0.2), value: viewModel.showBufferingPill)

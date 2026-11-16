@@ -3,10 +3,11 @@ import AppKit
 import Foundation
 import SwiftUI
 
-/// The player's control bar: the timeline, then transport in the middle,
-/// track, chapter and quality menus on the leading side, and speed, Playback
-/// Info and full screen on the trailing side. The menus are native pop-up
-/// menus; Playback Info is a popover.
+/// The player's HUD, laid out like the web player's: the timeline across the
+/// bottom, then what is playing at the start, transport on the centreline,
+/// and volume, track menus and settings at the end. It sits on the picture
+/// over a scrim (`MacPlayerScrims`) rather than on a panel. The menus are
+/// native pop-up menus; Playback Info is a popover.
 struct MacPlayerControls: View {
     let viewModel: PlayerViewModel
     let isFullScreen: Bool
@@ -14,124 +15,218 @@ struct MacPlayerControls: View {
     @Binding var isInfoPresented: Bool
     let onOpenMenu: (MacPlayerMenu) -> Void
     let onToggleFullScreen: () -> Void
-    /// Reports how far up from the window's bottom edge the bar reaches.
+    /// Reports how far up from the window's bottom edge the HUD reaches.
     let onHeightChange: (CGFloat) -> Void
 
-    private static let edgeInset: CGFloat = 20
+    @Environment(\.locale) private var locale
 
-    // The title and format line live in the window's title bar, beside the
-    // back button, so the picture carries only the transport controls.
     var body: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
-            bar
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                    onHeightChange(height + Self.edgeInset)
-                }
+            hud
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeightChange($0) }
         }
-        .padding(Self.edgeInset)
     }
 
-    private var bar: some View {
-        VStack(spacing: 10) {
+    private var hud: some View {
+        VStack(spacing: 12) {
             MacPlayerTimeline(viewModel: viewModel)
                 .mediaLayoutDirection()
 
-            // Transport leads; tracks, quality, speed, volume, Playback
-            // Info and full screen trail, as in the TV app and on web.
-            HStack(spacing: 2) {
-                HStack(spacing: 14) {
-                    Button {
-                        viewModel.skipBackward()
-                    } label: {
-                        glyph(SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward), size: 17)
-                    }
-                    .help("\(SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward)) (←)")
-
-                    Button {
-                        viewModel.togglePlayPause()
-                    } label: {
-                        Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 22, weight: .semibold))
-                            .contentTransition(.symbolEffect(.replace))
-                            .frame(width: 44, height: 36)
-                    }
-                    .help(viewModel.isPlaying ? "Pause (Space)" : "Play (Space)")
-
-                    Button {
-                        viewModel.skipForward()
-                    } label: {
-                        glyph(SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward), size: 17)
-                    }
-                    .help("\(SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward)) (→)")
-                }
-                .mediaLayoutDirection()
-
-                Spacer(minLength: 16)
-
-                if !viewModel.chapters.isEmpty {
-                    menuButton(.chapters, help: "Chapters") {
-                        glyph("list.bullet")
-                    }
-                }
-
-                if viewModel.hasQualityChoice {
-                    qualityButton
-                }
-
-                menuButton(.tracks, help: "Audio and Subtitles (⌘S)") {
-                    glyph("captions.bubble")
-                }
-                .disabled(!viewModel.hasTrackSelectionOptions)
-
-                menuButton(.speed, help: "Playback Speed") {
-                    Text(MacPlayerMenuContent.speedLabel(viewModel.settings.playbackSpeed))
-                        .font(.system(size: 13, weight: .semibold))
-                        .monospacedDigit()
-                        .frame(minWidth: 40, minHeight: 30)
-                }
-
-                MacPlayerVolumeControl(viewModel: viewModel)
-
-                Button {
-                    isInfoPresented.toggle()
-                } label: {
-                    glyph("info.circle")
-                }
-                .help("Playback Info (⌘I)")
-                .popover(isPresented: $isInfoPresented, arrowEdge: .top) {
-                    MacPlaybackInfoView(viewModel: viewModel)
-                }
-
-                Button(action: onToggleFullScreen) {
-                    glyph(isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                }
-                .help(isFullScreen ? "Exit Full Screen (F)" : "Full Screen (F)")
+            MacPlayerHUDRow(spacing: 24) {
+                titleBlock
+                transport
+                trailingControls
             }
-            .buttonStyle(MacPlayerGlyphButtonStyle())
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 10)
-        .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.regularMaterial)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.black.opacity(0.3))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
-                }
-                .shadow(color: .black.opacity(0.3), radius: 16, y: 6)
-        }
+        .padding(.horizontal, 32)
+        .padding(.bottom, 28)
     }
 
-    private func glyph(_ systemName: String, size: CGFloat = 15) -> some View {
+    // MARK: - What is playing
+
+    /// The series or movie title, the episode (or the year) and the current
+    /// chapter, then the time line: "38:23 / 1:42:01 · Ends 9:41 PM".
+    private var titleBlock: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !hudTitle.isEmpty {
+                Text(verbatim: hudTitle)
+                    .font(.system(size: 18, weight: .semibold))
+                    .tracking(-0.2)
+                    .foregroundStyle(MacPlayerHUDStyle.paper)
+                    .lineLimit(1)
+                    .help(hudTitle)
+            }
+            if !metaParts.isEmpty {
+                dotted(metaParts.map { Text(verbatim: $0) })
+            }
+            dotted(timeParts)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var hudTitle: String {
+        let metadata = viewModel.metadata
+        if let series = metadata.seriesTitle, !series.isEmpty { return series }
+        return metadata.primaryTitle.isEmpty ? viewModel.title : metadata.primaryTitle
+    }
+
+    /// "S1:E4 · Pilot" for an episode, the year for a movie, then the
+    /// chapter when the title has more than one.
+    private var metaParts: [String] {
+        let metadata = viewModel.metadata
+        var parts: [String] = []
+        if let series = metadata.seriesTitle, !series.isEmpty {
+            let episode = [metadata.episodeTag, metadata.primaryTitle]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+                .joined(separator: " · ")
+            if !episode.isEmpty { parts.append(episode) }
+        } else if let year = metadata.year {
+            parts.append(LocaleFormat.integer(year, locale: locale))
+        }
+        if viewModel.chapters.count > 1,
+           let chapter = viewModel.chapters.last(where: { $0.time <= viewModel.currentTime }),
+           let title = chapter.title, !title.isEmpty {
+            parts.append(title)
+        }
+        return parts
+    }
+
+    private var timeParts: [Text] {
+        let elapsed = PlayerTimeFormatter.formatHMS(viewModel.currentTime)
+        guard viewModel.duration > 0 else { return [Text(verbatim: elapsed)] }
+        let remaining = max(0, viewModel.duration - viewModel.currentTime)
+        let speed = max(viewModel.settings.playbackSpeed, 0.1)
+        let endsAt = Date().addingTimeInterval(remaining / speed)
+            .formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(locale))
+        return [
+            // Clock times read left to right in every language.
+            Text(verbatim: "\u{2066}\(elapsed) / \(PlayerTimeFormatter.formatHMS(viewModel.duration))\u{2069}"),
+            Text(.playerScrubberEndsAt(endsAt)),
+        ]
+    }
+
+    /// Parts on one line, split by small dots as on web. The first part
+    /// keeps its width; the rest truncate.
+    private func dotted(_ parts: [Text]) -> some View {
+        HStack(spacing: 8) {
+            ForEach(parts.indices, id: \.self) { index in
+                if index > 0 {
+                    Circle()
+                        .frame(width: 3, height: 3)
+                        .opacity(0.8)
+                        .accessibilityHidden(true)
+                }
+                parts[index]
+                    .lineLimit(1)
+                    .layoutPriority(index == 0 ? 1 : 0)
+            }
+        }
+        .font(.system(size: 13))
+        .foregroundStyle(MacPlayerHUDStyle.ash)
+    }
+
+    // MARK: - Transport
+
+    private var transport: some View {
+        HStack(spacing: 12) {
+            Button {
+                viewModel.skipBackward()
+            } label: {
+                Image(systemName: SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward))
+            }
+            .buttonStyle(MacPlayerGlassDiscStyle())
+            .help("\(SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward)) (←)")
+
+            Button {
+                viewModel.togglePlayPause()
+            } label: {
+                Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .buttonStyle(MacPlayerPlayDiscStyle())
+            .help(viewModel.isPlaying ? "Pause (Space)" : "Play (Space)")
+
+            Button {
+                viewModel.skipForward()
+            } label: {
+                Image(systemName: SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward))
+            }
+            .buttonStyle(MacPlayerGlassDiscStyle())
+            .help("\(SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward)) (→)")
+        }
+        // Transport reads left to right in every language, like the timeline.
+        .mediaLayoutDirection()
+    }
+
+    // MARK: - Settings
+
+    /// Volume, then the track menus, then quality, speed, Playback Info and
+    /// full screen, in the web player's groups.
+    private var trailingControls: some View {
+        HStack(spacing: 4) {
+            MacPlayerVolumeControl(viewModel: viewModel)
+
+            groupDivider
+
+            menuButton(.tracks, help: "Audio and Subtitles (⌘S)") {
+                glyph("captions.bubble")
+            }
+            .disabled(!viewModel.hasTrackSelectionOptions)
+
+            if !viewModel.chapters.isEmpty {
+                menuButton(.chapters, help: "Chapters") {
+                    glyph("list.bullet")
+                }
+            }
+
+            groupDivider
+
+            if viewModel.hasQualityChoice {
+                qualityButton
+            }
+
+            menuButton(.speed, help: "Playback Speed") {
+                Text(MacPlayerMenuContent.speedLabel(viewModel.settings.playbackSpeed))
+                    .font(.system(size: 13, weight: .semibold))
+                    .monospacedDigit()
+                    .frame(minWidth: 40, minHeight: MacPlayerHUDStyle.iconButtonSize)
+            }
+
+            Button {
+                isInfoPresented.toggle()
+            } label: {
+                glyph("info.circle")
+            }
+            .help("Playback Info (⌘I)")
+            .popover(isPresented: $isInfoPresented, arrowEdge: .top) {
+                MacPlaybackInfoView(viewModel: viewModel)
+            }
+
+            Button(action: onToggleFullScreen) {
+                glyph(isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+            }
+            .help(isFullScreen ? "Exit Full Screen (F)" : "Full Screen (F)")
+        }
+        .buttonStyle(MacPlayerGlyphButtonStyle())
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    private var groupDivider: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.15))
+            .frame(width: 1, height: 24)
+            .padding(.horizontal, 6)
+            .accessibilityHidden(true)
+    }
+
+    private func glyph(_ systemName: String) -> some View {
         Image(systemName: systemName)
-            .font(.system(size: size, weight: .medium))
-            .frame(width: 32, height: 30)
+            .font(.system(size: 17, weight: .medium))
+            .frame(width: MacPlayerHUDStyle.iconButtonSize, height: MacPlayerHUDStyle.iconButtonSize)
     }
 
     private func menuButton<Label: View>(
@@ -148,8 +243,8 @@ struct MacPlayerControls: View {
         .help(help)
     }
 
-    /// Opens the quality menu and names the active choice, like the quality
-    /// pill on iOS.
+    /// Opens the quality menu and names the active choice, like the settings
+    /// button on web.
     private var qualityButton: some View {
         menuButton(.quality, help: "Quality") {
             HStack(spacing: 6) {
@@ -163,8 +258,9 @@ struct MacPlayerControls: View {
                     .lineLimit(1)
             }
             .font(.system(size: 13, weight: .semibold))
-            .padding(.horizontal, 8)
-            .frame(height: 30)
+            .padding(.leading, 10)
+            .padding(.trailing, 14)
+            .frame(height: MacPlayerHUDStyle.iconButtonSize)
         }
         .accessibilityLabel("Playback Quality")
         .accessibilityValue(activeQualityLabel)
@@ -173,6 +269,103 @@ struct MacPlayerControls: View {
     private var activeQualityLabel: String {
         viewModel.activeQualityOption?.label
             ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
+    }
+}
+
+/// The web HUD's fixed tokens: it always sits on a picture, never on an app
+/// surface, so it does not follow the theme.
+enum MacPlayerHUDStyle {
+    /// Titles and glyphs.
+    static let paper = Color(red: 245 / 255, green: 243 / 255, blue: 239 / 255)
+    /// Secondary text.
+    static let ash = Color(red: 189 / 255, green: 186 / 255, blue: 179 / 255)
+    /// The play disc's glyph.
+    static let ink = Color(red: 14 / 255, green: 14 / 255, blue: 17 / 255)
+    /// Tooltips and other small panels on the picture.
+    static let panel = Color(red: 16 / 255, green: 16 / 255, blue: 19 / 255).opacity(0.93)
+    /// The skip discs, at rest and under the pointer.
+    static let glass = Color(red: 20 / 255, green: 20 / 255, blue: 24 / 255).opacity(0.62)
+    static let glassHover = Color(red: 40 / 255, green: 40 / 255, blue: 46 / 255).opacity(0.78)
+    static let iconButtonSize: CGFloat = 36
+}
+
+/// The HUD's row: the first view at the start, the second on the
+/// centreline, the third at the end. The two sides share the width equally
+/// unless the end needs more, as in the web player's grid, so the title
+/// gives up room before the controls do.
+private struct MacPlayerHUDRow: Layout {
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let width = proposal.width ?? sizes.reduce(spacing * 2) { $0 + $1.width }
+        return CGSize(width: width, height: sizes.map(\.height).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 3 else { return }
+        let middle = subviews[1].sizeThatFits(.unspecified)
+        let trailingIdeal = subviews[2].sizeThatFits(.unspecified).width
+        let sides = max(0, bounds.width - middle.width - spacing * 2)
+        let trailingWidth = min(sides, max(sides / 2, trailingIdeal))
+        let leadingWidth = sides - trailingWidth
+        subviews[0].place(
+            at: CGPoint(x: bounds.minX, y: bounds.midY),
+            anchor: .leading,
+            proposal: ProposedViewSize(width: leadingWidth, height: bounds.height)
+        )
+        subviews[1].place(
+            at: CGPoint(x: bounds.minX + leadingWidth + spacing, y: bounds.midY),
+            anchor: .leading,
+            proposal: ProposedViewSize(middle)
+        )
+        subviews[2].place(
+            at: CGPoint(x: bounds.maxX, y: bounds.midY),
+            anchor: .trailing,
+            proposal: ProposedViewSize(width: trailingWidth, height: bounds.height)
+        )
+    }
+}
+
+/// The web HUD's scrims: eased ramps that darken only where the controls
+/// sit, so text stays legible on a white frame without dimming the middle
+/// of the picture.
+struct MacPlayerScrims: View {
+    var body: some View {
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.66), location: 0),
+                        .init(color: .black.opacity(0.42), location: 0.35),
+                        .init(color: .black.opacity(0.16), location: 0.7),
+                        .init(color: .black.opacity(0), location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: max(128, proxy.size.height * 0.18))
+                Spacer(minLength: 0)
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.92), location: 0),
+                        .init(color: .black.opacity(0.86), location: 0.16),
+                        .init(color: .black.opacity(0.74), location: 0.32),
+                        .init(color: .black.opacity(0.54), location: 0.48),
+                        .init(color: .black.opacity(0.3), location: 0.64),
+                        .init(color: .black.opacity(0.13), location: 0.8),
+                        .init(color: .black.opacity(0.04), location: 0.92),
+                        .init(color: .black.opacity(0), location: 1),
+                    ],
+                    startPoint: .bottom,
+                    endPoint: .top
+                )
+                .frame(height: max(272, proxy.size.height * 0.46))
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -189,8 +382,8 @@ private struct MacPlayerVolumeControl: View {
                 // One symbol whose waves fill with the level, so dragging the
                 // slider doesn't swap glyphs of different widths.
                 Image(systemName: level == 0 ? "speaker.slash.fill" : "speaker.wave.3.fill", variableValue: level)
-                    .font(.system(size: 15, weight: .medium))
-                    .frame(width: 32, height: 30, alignment: .center)
+                    .font(.system(size: 17, weight: .medium))
+                    .frame(width: MacPlayerHUDStyle.iconButtonSize, height: MacPlayerHUDStyle.iconButtonSize)
             }
             .help(level == 0 ? "Unmute (M)" : "Mute (M)")
 
@@ -309,8 +502,8 @@ struct MacVolumeScrollArea: NSViewRepresentable {
     }
 }
 
-/// A bare glyph that takes a soft highlight under the pointer and dims
-/// while pressed or disabled, like the controls in QuickTime Player.
+/// A bare glyph that takes a soft round highlight under the pointer and
+/// dims while pressed or disabled, like the web HUD's icon buttons.
 private struct MacPlayerGlyphButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         GlyphButton(configuration: configuration)
@@ -323,19 +516,77 @@ private struct MacPlayerGlyphButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
-                .foregroundStyle(Color.white.opacity(foregroundOpacity))
+                .foregroundStyle(MacPlayerHUDStyle.paper.opacity(isEnabled ? 1 : 0.42))
                 .background {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.white.opacity(isHovering && isEnabled ? 0.12 : 0))
+                    Capsule(style: .continuous)
+                        .fill(Color.white.opacity(isHovering && isEnabled ? 0.1 : 0))
                 }
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Capsule(style: .continuous))
+                .scaleEffect(configuration.isPressed && isEnabled ? 0.94 : 1)
                 .onHover { isHovering = $0 }
                 .animation(.easeOut(duration: SiloTheme.fastDuration), value: isHovering)
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
         }
+    }
+}
 
-        private var foregroundOpacity: Double {
-            guard isEnabled else { return 0.3 }
-            return configuration.isPressed ? 0.6 : 0.95
+/// The web HUD's glass discs for the skip buttons: legible on any frame.
+private struct MacPlayerGlassDiscStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Disc(configuration: configuration)
+    }
+
+    private struct Disc: View {
+        let configuration: Configuration
+        @State private var isHovering = false
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(MacPlayerHUDStyle.paper)
+                .frame(width: 48, height: 48)
+                .background {
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                        .overlay {
+                            Circle().fill(isHovering ? MacPlayerHUDStyle.glassHover : MacPlayerHUDStyle.glass)
+                        }
+                        .overlay { Circle().strokeBorder(Color.white.opacity(0.12), lineWidth: 1) }
+                }
+                .contentShape(Circle())
+                .scaleEffect(configuration.isPressed ? 0.95 : 1)
+                .onHover { isHovering = $0 }
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isHovering)
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
+        }
+    }
+}
+
+/// The web HUD's play button: the one solid disc, so it reads first.
+private struct MacPlayerPlayDiscStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Disc(configuration: configuration)
+    }
+
+    private struct Disc: View {
+        let configuration: Configuration
+        @State private var isHovering = false
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(MacPlayerHUDStyle.ink)
+                .frame(width: 60, height: 60)
+                .background {
+                    Circle()
+                        .fill(MacPlayerHUDStyle.paper)
+                        .shadow(color: .black.opacity(0.7), radius: 16, y: 12)
+                }
+                .contentShape(Circle())
+                .scaleEffect(configuration.isPressed ? 0.96 : isHovering ? 1.04 : 1)
+                .onHover { isHovering = $0 }
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isHovering)
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
         }
     }
 }
