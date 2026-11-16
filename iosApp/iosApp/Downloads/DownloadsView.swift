@@ -303,7 +303,7 @@ struct DownloadsView: View {
                     }
                 }
             }
-        case .movie(let record):
+        case .movie(let record), .audiobook(let record):
             DownloadMovieRow(
                 record: record,
                 watched: manager.isWatched(record),

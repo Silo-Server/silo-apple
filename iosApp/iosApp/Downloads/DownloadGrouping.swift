@@ -40,6 +40,7 @@ struct DownloadSeriesGroup: Identifiable, Hashable, Sendable {
 struct DownloadStorageBreakdown: Hashable, Sendable {
     let series: Int64
     let movies: Int64
+    let audiobooks: Int64
     /// Bytes transferred so far by in-flight downloads. Tracked from the
     /// records' progress rather than disk usage — partial media sits in the
     /// session's staging area, invisible to the on-disk walk — so mid-flight
@@ -49,40 +50,42 @@ struct DownloadStorageBreakdown: Hashable, Sendable {
     /// beyond completed media.
     let other: Int64
 
-    var total: Int64 { series + movies + inProgress + other }
+    var total: Int64 { series + movies + audiobooks + inProgress + other }
 }
 
-/// A single row in the Manager list: either a whole series (collapsed to
-/// one expandable card) or a standalone movie.
+/// A single row in the Manager list: a whole series (collapsed to one
+/// expandable card), a standalone movie, or an audiobook.
 enum DownloadListItem: Identifiable, Hashable {
     case series(DownloadSeriesGroup)
     case movie(DownloadRecord)
+    case audiobook(DownloadRecord)
 
     var id: String {
         switch self {
         case .series(let group): return "series:" + group.seriesId
         case .movie(let record): return "movie:" + record.id
+        case .audiobook(let record): return "audiobook:" + record.id
         }
     }
 
     var totalBytes: Int64 {
         switch self {
         case .series(let group): return group.totalBytes
-        case .movie(let record): return record.fileSize
+        case .movie(let record), .audiobook(let record): return record.fileSize
         }
     }
 
     var latestRegisteredAt: Date {
         switch self {
         case .series(let group): return group.latestRegisteredAt
-        case .movie(let record): return record.registeredAt
+        case .movie(let record), .audiobook(let record): return record.registeredAt
         }
     }
 
     var sortTitle: String {
         switch self {
         case .series(let group): return group.title
-        case .movie(let record): return record.title ?? record.contentId
+        case .movie(let record), .audiobook(let record): return record.title ?? record.contentId
         }
     }
 
@@ -91,7 +94,7 @@ enum DownloadListItem: Identifiable, Hashable {
     var downloadIds: [String] {
         switch self {
         case .series(let group): return group.allRecords.map(\.id)
-        case .movie(let record): return [record.id]
+        case .movie(let record), .audiobook(let record): return [record.id]
         }
     }
 }
@@ -101,14 +104,15 @@ enum DownloadListItem: Identifiable, Hashable {
 /// closures) so the ordering rules are unit-testable in isolation.
 enum DownloadGroupBuilder {
     /// Group episode records (those with a `seriesId`) into per-series,
-    /// per-season cards. Records without a `seriesId` (movies) are ignored.
+    /// per-season cards. Records without a `seriesId` (movies) and
+    /// audiobooks are ignored.
     static func seriesGroups(
         from records: [DownloadRecord],
         isWatched: (DownloadRecord) -> Bool,
         seriesTitle: (String) -> String?,
         isMonitored: (String) -> Bool
     ) -> [DownloadSeriesGroup] {
-        let episodes = records.filter { $0.seriesId != nil }
+        let episodes = records.filter { $0.seriesId != nil && !$0.isAudiobook }
         return Dictionary(grouping: episodes) { $0.seriesId! }
             .map { seriesId, recs in
                 makeSeriesGroup(
