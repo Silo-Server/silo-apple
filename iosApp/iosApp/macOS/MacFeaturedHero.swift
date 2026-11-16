@@ -359,9 +359,10 @@ struct MacFeaturedHero: View {
     }
 
     /// Previous and next, at the hero's edges, shown while the pointer is
-    /// over it.
+    /// over it, and always with VoiceOver, which stops the slideshow.
     private var pagingArrows: some View {
-        HStack {
+        let isShown = isHovering || voiceOverEnabled
+        return HStack {
             MacHeroIconButton(
                 systemImage: "chevron.left",
                 help: "Previous featured title",
@@ -377,8 +378,8 @@ struct MacFeaturedHero: View {
             ) { step(1) }
         }
         .padding(.horizontal, SiloTheme.largePadding)
-        .opacity(isHovering ? 0.9 : 0)
-        .allowsHitTesting(isHovering)
+        .opacity(isShown ? 0.9 : 0)
+        .allowsHitTesting(isShown)
     }
 
     // MARK: - Behaviour

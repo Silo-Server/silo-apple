@@ -74,6 +74,8 @@ private struct MacPlayerScreen: View {
     @Environment(\.dismiss) private var dismiss
     /// The Playback Info popover is open.
     @State private var isInfoPresented = false
+    /// A HUD control has keyboard focus (keyboard navigation).
+    @FocusedValue(\.macPlayerHUDHasFocus) private var hudHasFocus
     /// The control-bar menu that is open, if any.
     @State private var openMenu: MacPlayerMenu?
     @State private var menuAnchors = MacPlayerMenuAnchors()
@@ -173,7 +175,7 @@ private struct MacPlayerScreen: View {
                     .transition(.opacity)
                 }
 
-                MacPlayerKeyMonitor(isEnabled: openMenu == nil) { command in
+                MacPlayerKeyMonitor(isEnabled: openMenu == nil, controlHasFocus: hudHasFocus == true) { command in
                     handleCommand(command)
                 }
                 .frame(width: 0, height: 0)

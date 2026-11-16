@@ -19,12 +19,24 @@ struct MacPlayerControls: View {
     let onHeightChange: (CGFloat) -> Void
 
     @Environment(\.locale) private var locale
+    /// The HUD's width, for the compact controls in a narrow player.
+    @State private var hudWidth: CGFloat = 0
+
+    /// Below this width the full set of settings would run into the
+    /// transport, so the volume slider and the quality label give way.
+    private static let compactWidth: CGFloat = 820
+
+    private var isCompact: Bool { hudWidth > 0 && hudWidth < Self.compactWidth }
 
     var body: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             hud
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeightChange($0) }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { hudWidth = $0 }
+                // Lets the player's key monitor leave Space and Return to a
+                // control that keyboard navigation has focused.
+                .focusedValue(\.macPlayerHUDHasFocus, true)
         }
     }
 
@@ -60,8 +72,11 @@ struct MacPlayerControls: View {
             if !metaParts.isEmpty {
                 dotted(metaParts.map { Text(verbatim: $0) })
             }
-            dotted(timeParts)
-                .monospacedDigit()
+            // The end time moves on while paused, when nothing else redraws.
+            TimelineView(.periodic(from: .now, by: 15)) { context in
+                dotted(timeParts(at: context.date))
+                    .monospacedDigit()
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -95,12 +110,12 @@ struct MacPlayerControls: View {
         return parts
     }
 
-    private var timeParts: [Text] {
+    private func timeParts(at now: Date) -> [Text] {
         let elapsed = PlayerTimeFormatter.formatHMS(viewModel.currentTime)
         guard viewModel.duration > 0 else { return [Text(verbatim: elapsed)] }
         let remaining = max(0, viewModel.duration - viewModel.currentTime)
         let speed = max(viewModel.settings.playbackSpeed, 0.1)
-        let endsAt = Date().addingTimeInterval(remaining / speed)
+        let endsAt = now.addingTimeInterval(remaining / speed)
             .formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(locale))
         return [
             // Clock times read left to right in every language.
@@ -168,7 +183,7 @@ struct MacPlayerControls: View {
     /// full screen, in the web player's groups.
     private var trailingControls: some View {
         HStack(spacing: 4) {
-            MacPlayerVolumeControl(viewModel: viewModel)
+            MacPlayerVolumeControl(viewModel: viewModel, showsSlider: !isCompact)
 
             groupDivider
 
@@ -254,12 +269,14 @@ struct MacPlayerControls: View {
                 } else {
                     Image(systemName: "slider.horizontal.3")
                 }
-                Text(activeQualityLabel)
-                    .lineLimit(1)
+                if !isCompact {
+                    Text(activeQualityLabel)
+                        .lineLimit(1)
+                }
             }
             .font(.system(size: 13, weight: .semibold))
             .padding(.leading, 10)
-            .padding(.trailing, 14)
+            .padding(.trailing, isCompact ? 10 : 14)
             .frame(height: MacPlayerHUDStyle.iconButtonSize)
         }
         .accessibilityLabel("Playback Quality")
@@ -270,6 +287,11 @@ struct MacPlayerControls: View {
         viewModel.activeQualityOption?.label
             ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
     }
+}
+
+extension FocusedValues {
+    /// A control in the player's HUD has keyboard focus.
+    @Entry var macPlayerHUDHasFocus: Bool?
 }
 
 /// The web HUD's fixed tokens: it always sits on a picture, never on an app
@@ -373,6 +395,9 @@ struct MacPlayerScrims: View {
 /// volume is the player's own gain, under the system volume.
 private struct MacPlayerVolumeControl: View {
     let viewModel: PlayerViewModel
+    /// Off in a narrow player: the speaker still mutes, and the arrow keys
+    /// and scrolling still set the level.
+    var showsSlider = true
 
     private var level: Double { Double(viewModel.audibleVolume) }
 
@@ -387,15 +412,17 @@ private struct MacPlayerVolumeControl: View {
             }
             .help(level == 0 ? "Unmute (M)" : "Mute (M)")
 
-            Slider(value: Binding(
-                get: { level },
-                set: { viewModel.applyUserVolume(Float($0)) }
-            ), in: 0...1)
-            .controlSize(.mini)
-            .tint(.white)
-            .frame(width: 84)
-            .help("Volume (↑ ↓, or scroll)")
-            .accessibilityLabel("Volume")
+            if showsSlider {
+                Slider(value: Binding(
+                    get: { level },
+                    set: { viewModel.applyUserVolume(Float($0)) }
+                ), in: 0...1)
+                .controlSize(.mini)
+                .tint(.white)
+                .frame(width: 84)
+                .help("Volume (↑ ↓, or scroll)")
+                .accessibilityLabel("Volume")
+            }
         }
         // Scrolling over the speaker or the slider changes the volume.
         .background(MacVolumeScrollArea { viewModel.stepVolume(by: $0) })
@@ -483,6 +510,8 @@ struct MacVolumeScrollArea: NSViewRepresentable {
             if !event.momentumPhase.isEmpty { return ownsSwipe }
             if event.phase.contains(.began) {
                 ownsSwipe = contains(event)
+                // A swipe that starts elsewhere scrolls or scrubs as usual.
+                guard ownsSwipe else { return false }
             } else if event.phase.isEmpty {
                 // A wheel notch: no phases, acts where it lands.
                 guard contains(event) else { return false }

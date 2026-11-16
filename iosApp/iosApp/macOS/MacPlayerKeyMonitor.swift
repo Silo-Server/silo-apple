@@ -3,7 +3,9 @@ import AppKit
 import SwiftUI
 
 /// The player's keyboard shortcuts, for the player's window whatever has
-/// focus in it. A text field that is editing keeps its keys.
+/// focus in it. A text field that is editing keeps its keys, and a control
+/// that keyboard navigation has focused keeps Space and Return, which
+/// activate it as everywhere on the Mac.
 ///
 /// A window-scoped monitor rather than a first responder: a control the
 /// viewer clicked or tabbed to would otherwise take Space and the arrows
@@ -11,12 +13,15 @@ import SwiftUI
 struct MacPlayerKeyMonitor: NSViewRepresentable {
     /// Off while a player menu is open: the menu takes the keys.
     let isEnabled: Bool
+    /// A HUD control has keyboard focus.
+    var controlHasFocus = false
     let onCommand: (MacPlayerCommand) -> Void
 
     func makeNSView(context: Context) -> MonitorView { MonitorView() }
 
     func updateNSView(_ nsView: MonitorView, context: Context) {
         nsView.isEnabled = isEnabled
+        nsView.controlHasFocus = controlHasFocus
         nsView.onCommand = onCommand
     }
 
@@ -26,6 +31,7 @@ struct MacPlayerKeyMonitor: NSViewRepresentable {
 
     final class MonitorView: NSView {
         var isEnabled = true
+        var controlHasFocus = false
         var onCommand: (MacPlayerCommand) -> Void = { _ in }
         private var monitor: MacLocalEventMonitor?
 
@@ -54,11 +60,18 @@ struct MacPlayerKeyMonitor: NSViewRepresentable {
         private func command(for event: NSEvent) -> MacPlayerCommand? {
             guard isEnabled, let window, event.window === window,
                   !(window.firstResponder is NSText) else { return nil }
-            return MacPlayerCommand(
+            let command = MacPlayerCommand(
                 keyCode: event.keyCode,
                 characters: event.charactersIgnoringModifiers,
                 modifiers: event.modifierFlags
             )
+            // Only keyboard navigation focuses the HUD's controls; a click
+            // never leaves Space with one.
+            if controlHasFocus, NSApp.isFullKeyboardAccessEnabled,
+               command == .playPause || command == .confirm {
+                return nil
+            }
+            return command
         }
     }
 }
