@@ -1081,6 +1081,12 @@ struct LocalProgressEntry: Codable, Equatable, Sendable {
     var duration: Double
     var completed: Bool
     var updatedAt: Date
+    /// Set on a resume point seeded from the server's when a book was
+    /// downloaded: the device time it was written. Such an entry carries no
+    /// server time (`updatedAt` is `distantPast`), so a progress read that
+    /// started after it replaces it, and one already in flight leaves it.
+    /// Cleared by any write of this device's own playback.
+    var seededAt: Date? = nil
 }
 
 /// The entire on-disk store blob for one `(server, profile)` scope.

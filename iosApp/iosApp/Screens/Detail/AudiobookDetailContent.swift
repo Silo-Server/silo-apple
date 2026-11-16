@@ -38,10 +38,6 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.locale) private var locale
     @State private var showAllChapters = false
-    /// When the fetched detail arrived. A download dates the offline resume
-    /// point it seeds from this detail with it, so a newer save elsewhere
-    /// still wins and an older progress read doesn't.
-    @State private var detailLoadedAt: Date?
 
     private let kind = BookDetailKind.audiobook
 
@@ -70,7 +66,6 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
         // row until a detail names one.
         .task(id: "\(detail.contentId)|\(isProvisional)") {
             guard !isProvisional else { return }
-            detailLoadedAt = Date()
             DownloadManager.shared.noteAudiobookAuthor(contentId: detail.contentId, author: presentation.playerSubtitle)
         }
     }
@@ -163,8 +158,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                             audiobook: detail,
                             part: part,
                             title: presentation.title,
-                            author: presentation.playerSubtitle,
-                            detailLoadedAt: detailLoadedAt
+                            author: presentation.playerSubtitle
                         )
                     } else if DownloadManager.shared.downloadsRestricted {
                         DownloadUnavailableButton()

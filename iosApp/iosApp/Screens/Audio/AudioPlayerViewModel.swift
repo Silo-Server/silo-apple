@@ -161,9 +161,9 @@ final class AudioPlayerViewModel {
             }
             let downloads = DownloadManager.shared
             let download = Self.playableDownload(contentId: contentId, in: downloads)
-            let progressOwner = downloads.progressOwner()
             let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
             guard generation == startGeneration else { return }
+            let progressOwner = downloads.progressOwner(forProfile: auth?.profileId)
             let context: AudiobookPlaybackContext
             var opensOffline = false
             if let download, !ConnectionMonitor.shared.isServerReachable {
@@ -957,11 +957,12 @@ final class AudioPlayerViewModel {
 
     /// The session's download scope. A book started while the download store
     /// was still loading had none at start; it takes the scope once the store
-    /// has loaded. A profile or server switch closes the player, so that is
-    /// still the scope playback started in.
+    /// has loaded, and only a store of the profile playback started under.
+    /// An explicit profile switch keeps the player going, so after one this
+    /// stays nil (or no longer current) and nothing is recorded.
     private func currentProgressScopeOwner() -> DownloadManager.ProgressOwner? {
         if progressScopeOwner == nil {
-            progressScopeOwner = DownloadManager.shared.progressOwner()
+            progressScopeOwner = DownloadManager.shared.progressOwner(forProfile: playbackAuth?.profileId)
         }
         return progressScopeOwner
     }

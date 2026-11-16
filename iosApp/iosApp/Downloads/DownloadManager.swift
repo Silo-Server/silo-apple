@@ -1305,8 +1305,7 @@ final class DownloadManager {
     /// whole and the detail page doesn't offer it. Audio files are always
     /// served as they are: the quality presets are video bitrate classes.
     /// `author` is the row's subtitle; `resumePosition` and `bookDuration`
-    /// are the server's, seeding the offline resume point, dated
-    /// `resumeObservedAt`, when the detail reporting them arrived.
+    /// are the server's, seeding the offline resume point.
     func downloadAudiobook(
         contentId: String,
         fileId: Int,
@@ -1314,7 +1313,6 @@ final class DownloadManager {
         author: String?,
         posterThumbhash: String?,
         resumePosition: Double?,
-        resumeObservedAt: Date?,
         bookDuration: Double?
     ) async throws {
         try await requestDownload(
@@ -1326,8 +1324,7 @@ final class DownloadManager {
             displaySubtitle: author,
             posterThumbhash: posterThumbhash
         )
-        seedLocalProgress(mediaItemId: contentId, position: resumePosition, duration: bookDuration,
-                          observedAt: resumeObservedAt)
+        seedLocalProgress(mediaItemId: contentId, position: resumePosition, duration: bookDuration)
         // A create that ended in a conflict or without an answer adopts the
         // registry's row, which knows nothing of the book; label it here so
         // it lists and plays as one before its manifest arrives.
@@ -3962,6 +3959,13 @@ final class DownloadManager {
         loadedScope.map(ProgressOwner.init)
     }
 
+    /// The loaded scope's owner when it belongs to `profileId`, the profile
+    /// a playback started under, and nil for any other profile's store.
+    func progressOwner(forProfile profileId: String?) -> ProgressOwner? {
+        guard let scope = loadedScope, let profileId, scope.profileId == profileId else { return nil }
+        return ProgressOwner(scope: scope)
+    }
+
     func isCurrent(_ owner: ProgressOwner) -> Bool {
         owner.scope == loadedScope
     }
@@ -4009,9 +4013,11 @@ final class DownloadManager {
     }
 
     /// Writes the local resume point in memory and returns its time, or nil
-    /// for a position that can't be stored.
+    /// for a position that can't be stored. `seededAt` marks a seed from the
+    /// server's resume point; every other write clears it.
     private func updateLocalProgress(mediaItemId: String, position: Double, duration: Double,
-                                     completed: Bool, at time: Date, latchesCompleted: Bool) -> Date? {
+                                     completed: Bool, at time: Date, latchesCompleted: Bool,
+                                     seededAt: Date? = nil) -> Date? {
         guard !mediaItemId.isEmpty, position.isFinite, position >= 0 else { return nil }
         var entry = file.localProgress[mediaItemId]
             ?? LocalProgressEntry(position: 0, duration: duration, completed: false, updatedAt: time)
@@ -4019,6 +4025,7 @@ final class DownloadManager {
         if duration.isFinite, duration > 0 { entry.duration = duration }
         entry.completed = latchesCompleted ? (entry.completed || completed) : completed
         entry.updatedAt = time
+        entry.seededAt = seededAt
         file.localProgress[mediaItemId] = entry
         return time
     }
@@ -4094,14 +4101,15 @@ final class DownloadManager {
     /// Seeds a downloaded book's local resume point from the server's, so a
     /// book downloaded and then opened offline before the next progress read
     /// starts where the listener left off. Leaves an existing entry alone.
-    /// The seed is dated when the detail reporting it arrived: a progress
-    /// read with a newer row (saved elsewhere since) replaces it, and one
-    /// older than that detail, already in flight, doesn't. Without that time
-    /// it is dated as old as possible, so the next read replaces it.
-    private func seedLocalProgress(mediaItemId: String, position: Double?, duration: Double?, observedAt: Date?) {
+    /// The seed carries no server time (the detail has none): the next
+    /// progress read that starts after it replaces it with the server's row,
+    /// and a read already in flight leaves it alone (`seededAt`). No device
+    /// time is compared with a server time.
+    private func seedLocalProgress(mediaItemId: String, position: Double?, duration: Double?) {
         guard file.localProgress[mediaItemId] == nil, let position, position > 0,
               updateLocalProgress(mediaItemId: mediaItemId, position: position, duration: duration ?? 0,
-                                  completed: false, at: observedAt ?? .distantPast, latchesCompleted: false) != nil
+                                  completed: false, at: .distantPast, latchesCompleted: false,
+                                  seededAt: Date()) != nil
         else { return }
         persist()
     }
@@ -4509,11 +4517,18 @@ final class DownloadManager {
         queuedItemIds: Set<String>,
         keptItemIds: Set<String>
     ) -> [String: LocalProgressEntry] {
+        // A seed written after the read started is newer than anything the
+        // read can say about that item.
+        func seededDuringRead(_ entry: LocalProgressEntry) -> Bool {
+            entry.seededAt.map { $0 >= readStartedAt } ?? false
+        }
         var merged = local.filter { id, entry in
-            keptItemIds.contains(id) && (queuedItemIds.contains(id) || entry.updatedAt >= readStartedAt)
+            keptItemIds.contains(id)
+                && (queuedItemIds.contains(id) || entry.updatedAt >= readStartedAt || seededDuringRead(entry))
         }
         for item in read where keptItemIds.contains(item.mediaItemId) {
-            if let existing = local[item.mediaItemId], existing.updatedAt > item.updatedAt {
+            if let existing = local[item.mediaItemId],
+               existing.updatedAt > item.updatedAt || seededDuringRead(existing) {
                 merged[item.mediaItemId] = existing
                 continue
             }
