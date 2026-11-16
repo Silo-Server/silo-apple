@@ -21,7 +21,7 @@ final class TVAudiobookDescriptionPassageTests: XCTestCase {
         XCTAssertGreaterThan(passages.count, 1)
         XCTAssertEqual(passages.map(\.startsParagraph), [true] + Array(repeating: false, count: passages.count - 1))
         for passage in passages {
-            XCTAssertLessThanOrEqual(passage.text.count, DescriptionPassage.targetLength + sentence.count)
+            XCTAssertLessThanOrEqual(passage.text.count, DescriptionPassage.targetLength)
             XCTAssertTrue(passage.text.hasSuffix("."), passage.text)
         }
         XCTAssertEqual(
@@ -30,10 +30,38 @@ final class TVAudiobookDescriptionPassageTests: XCTestCase {
         )
     }
 
-    func testLongTextWithoutSentenceBreaksStaysOnePassage() {
+    func testLongTextWithoutSentenceBreaksSplitsAtWords() {
         let paragraph = String(repeating: "word ", count: 200).trimmingCharacters(in: .whitespaces)
 
-        XCTAssertEqual(DescriptionPassage.split(paragraph).map(\.text), [paragraph])
+        let passages = DescriptionPassage.split(paragraph)
+
+        XCTAssertGreaterThan(passages.count, 1)
+        XCTAssertTrue(passages.allSatisfy { $0.text.count <= DescriptionPassage.targetLength })
+        XCTAssertTrue(passages.allSatisfy { $0.text.hasPrefix("word") && $0.text.hasSuffix("word") })
+        XCTAssertEqual(passages.map(\.text).joined(separator: " "), paragraph)
+    }
+
+    func testOversizedSentenceAmongShortOnesSplitsAtWords() {
+        let long = String(repeating: "and then ", count: 80) + "it ended."
+        let paragraph = "It began. \(long) After that, quiet."
+
+        let passages = DescriptionPassage.split(paragraph)
+
+        XCTAssertTrue(passages.allSatisfy { $0.text.count <= DescriptionPassage.targetLength })
+        XCTAssertEqual(
+            passages.map(\.text).joined(separator: " ").filter { !$0.isWhitespace },
+            paragraph.filter { !$0.isWhitespace }
+        )
+    }
+
+    func testUnbrokenRunLongerThanAPassageIsCut() {
+        let run = String(repeating: "x", count: DescriptionPassage.targetLength * 2 + 10)
+
+        let passages = DescriptionPassage.split(run)
+
+        XCTAssertEqual(passages.count, 3)
+        XCTAssertTrue(passages.allSatisfy { $0.text.count <= DescriptionPassage.targetLength })
+        XCTAssertEqual(passages.map(\.text).joined(), run)
     }
 
     func testIdsAreSequentialAcrossParagraphs() {

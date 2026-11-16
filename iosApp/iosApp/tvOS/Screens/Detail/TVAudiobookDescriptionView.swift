@@ -107,7 +107,9 @@ struct DescriptionPassage: Identifiable, Equatable {
     static let targetLength = 420
 
     /// Splits text into paragraphs, then splits long paragraphs at sentence
-    /// boundaries into passages near `targetLength` characters.
+    /// boundaries into passages near `targetLength` characters. A sentence
+    /// longer than that splits at word boundaries, so no passage outgrows the
+    /// screen.
     static func split(_ text: String) -> [DescriptionPassage] {
         var passages: [DescriptionPassage] = []
         let paragraphs = text
@@ -128,20 +130,36 @@ struct DescriptionPassage: Identifiable, Equatable {
         paragraph.enumerateSubstrings(in: paragraph.startIndex..., options: .bySentences) { sentence, _, _, _ in
             if let sentence { sentences.append(sentence) }
         }
-        guard sentences.count > 1 else { return [paragraph] }
+        if sentences.isEmpty { sentences = [paragraph] }
+        let pieces = sentences.flatMap { $0.count > targetLength ? wordRuns(of: $0) : [$0] }
         var chunks: [String] = []
         var current = ""
-        for sentence in sentences {
-            if !current.isEmpty, current.count + sentence.count > targetLength {
+        for piece in pieces {
+            if !current.isEmpty, current.count + piece.count > targetLength {
                 chunks.append(current.trimmingCharacters(in: .whitespaces))
                 current = ""
             }
-            current += sentence
+            current += piece
         }
         if !current.trimmingCharacters(in: .whitespaces).isEmpty {
             chunks.append(current.trimmingCharacters(in: .whitespaces))
         }
         return chunks
+    }
+
+    /// Words of an oversized sentence, each keeping its trailing space so
+    /// joining them restores the text. A word longer than `targetLength`
+    /// (a URL, say) is cut into `targetLength` pieces.
+    private static func wordRuns(of sentence: String) -> [String] {
+        sentence.split(separator: " ", omittingEmptySubsequences: false).flatMap { word -> [String] in
+            let word = String(word) + " "
+            guard word.count > targetLength else { return [word] }
+            return stride(from: 0, to: word.count, by: targetLength).map { start in
+                let from = word.index(word.startIndex, offsetBy: start)
+                let to = word.index(from, offsetBy: targetLength, limitedBy: word.endIndex) ?? word.endIndex
+                return String(word[from..<to])
+            }
+        }
     }
 }
 

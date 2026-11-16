@@ -270,7 +270,7 @@ private struct AboutBlock: View {
                     Text(fact.value)
                         .font(.system(size: 23))
                         .foregroundColor(.white.opacity(0.9))
-                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
