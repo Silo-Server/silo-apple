@@ -1305,7 +1305,8 @@ final class DownloadManager {
     /// whole and the detail page doesn't offer it. Audio files are always
     /// served as they are: the quality presets are video bitrate classes.
     /// `author` is the row's subtitle; `resumePosition` and `bookDuration`
-    /// are the server's, seeding the offline resume point.
+    /// are the server's, seeding the offline resume point, dated
+    /// `resumeObservedAt`, when the detail reporting them arrived.
     func downloadAudiobook(
         contentId: String,
         fileId: Int,
@@ -1313,6 +1314,7 @@ final class DownloadManager {
         author: String?,
         posterThumbhash: String?,
         resumePosition: Double?,
+        resumeObservedAt: Date?,
         bookDuration: Double?
     ) async throws {
         try await requestDownload(
@@ -1324,7 +1326,8 @@ final class DownloadManager {
             displaySubtitle: author,
             posterThumbhash: posterThumbhash
         )
-        seedLocalProgress(mediaItemId: contentId, position: resumePosition, duration: bookDuration)
+        seedLocalProgress(mediaItemId: contentId, position: resumePosition, duration: bookDuration,
+                          observedAt: resumeObservedAt)
         // A create that ended in a conflict or without an answer adopts the
         // registry's row, which knows nothing of the book; label it here so
         // it lists and plays as one before its manifest arrives.
@@ -4091,12 +4094,14 @@ final class DownloadManager {
     /// Seeds a downloaded book's local resume point from the server's, so a
     /// book downloaded and then opened offline before the next progress read
     /// starts where the listener left off. Leaves an existing entry alone.
-    /// The seed is dated as old as possible: the detail it came from carries
-    /// no time, so the next progress read replaces it with the server's.
-    private func seedLocalProgress(mediaItemId: String, position: Double?, duration: Double?) {
+    /// The seed is dated when the detail reporting it arrived: a progress
+    /// read with a newer row (saved elsewhere since) replaces it, and one
+    /// older than that detail, already in flight, doesn't. Without that time
+    /// it is dated as old as possible, so the next read replaces it.
+    private func seedLocalProgress(mediaItemId: String, position: Double?, duration: Double?, observedAt: Date?) {
         guard file.localProgress[mediaItemId] == nil, let position, position > 0,
               updateLocalProgress(mediaItemId: mediaItemId, position: position, duration: duration ?? 0,
-                                  completed: false, at: .distantPast, latchesCompleted: false) != nil
+                                  completed: false, at: observedAt ?? .distantPast, latchesCompleted: false) != nil
         else { return }
         persist()
     }

@@ -66,6 +66,10 @@ final class AudioPlayerViewModel {
     /// offline queue are written there, and only while that scope is still
     /// loaded.
     private var progressScopeOwner: DownloadManager.ProgressOwner?
+    /// The request identity the book started under. Whole-book progress
+    /// uploads under it and nothing else: after a profile switch the old
+    /// profile's book is refused instead of writing into the new profile.
+    private var playbackAuth: CapturedOrdinaryRequestAuth?
     /// Downloaded files that failed to open in this session; their parts
     /// stream instead of failing again on every seek.
     private var unopenableLocalFileIds: Set<Int> = []
@@ -158,6 +162,8 @@ final class AudioPlayerViewModel {
             let downloads = DownloadManager.shared
             let download = Self.playableDownload(contentId: contentId, in: downloads)
             let progressOwner = downloads.progressOwner()
+            let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
+            guard generation == startGeneration else { return }
             let context: AudiobookPlaybackContext
             var opensOffline = false
             if let download, !ConnectionMonitor.shared.isServerReachable {
@@ -185,6 +191,7 @@ final class AudioPlayerViewModel {
             self.context = context
             isOfflineSession = opensOffline
             progressScopeOwner = progressOwner
+            playbackAuth = auth
             duration = context.totalDurationSeconds
             setPlayhead(clampGlobal(startPosition ?? (restart ? 0 : context.resumePositionSeconds)))
             loadPalette(posterUrl: context.posterUrl)
@@ -316,10 +323,10 @@ final class AudioPlayerViewModel {
         let position = currentTime
         let total = duration
         let scopeOwner = currentProgressScopeOwner()
+        let auth = playbackAuth
         let sampledAt = Date()
         resetSessionState()
         if let closedContext {
-            let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
             await saveBookPosition(
                 contentId: closedContext.contentId,
                 position: position,
@@ -351,6 +358,7 @@ final class AudioPlayerViewModel {
         context = nil
         isOfflineSession = false
         progressScopeOwner = nil
+        playbackAuth = nil
         unopenableLocalFileIds = []
         activeSession = nil
         activeAuthority = nil
@@ -809,15 +817,14 @@ final class AudioPlayerViewModel {
     /// whole-book position that powers resume and Continue Listening.
     private func syncNow() async {
         guard let context else { return }
-        // The whole-book sample and the identity it uploads under are taken
-        // before any await, so a newer start or a profile switch while the
-        // session sample is on the wire can't mix into it.
+        // The whole-book sample is taken before any await, so a newer start
+        // while the session sample is on the wire can't mix into it.
         let contentId = context.contentId
         let position = currentTime
         let total = duration
         let sampledAt = Date()
         let scopeOwner = currentProgressScopeOwner()
-        let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
+        let auth = playbackAuth
         if let session = activeSession,
            let authority = activeAuthority,
            let activeTrackIndex,

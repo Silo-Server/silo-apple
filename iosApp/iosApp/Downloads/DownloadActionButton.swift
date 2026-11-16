@@ -14,8 +14,9 @@ struct DownloadActionButton: View {
         case movie
         case episode
         /// A single-file book, saved as it is: no quality or version choice.
-        /// The server's resume point and book length seed offline resume.
-        case audiobook(fileId: Int, resumePosition: Double?, duration: Double?)
+        /// The server's resume point, when the detail that reported it
+        /// arrived, and the book length seed offline resume.
+        case audiobook(fileId: Int, resumePosition: Double?, resumeObservedAt: Date?, duration: Double?)
     }
 
     private let contentId: String
@@ -88,11 +89,12 @@ struct DownloadActionButton: View {
 
     /// Audiobook action-row button for a book stored as one file, `part`.
     /// `title` is the page's cleaned title and `author` the row subtitle.
-    init(audiobook detail: ItemDetail, part: FileVersion, title: String, author: String?) {
+    init(audiobook detail: ItemDetail, part: FileVersion, title: String, author: String?, detailLoadedAt: Date?) {
         contentId = detail.contentId
         kind = .audiobook(
             fileId: part.fileId,
             resumePosition: detail.userData?.positionSeconds,
+            resumeObservedAt: detailLoadedAt,
             duration: detail.audiobook?.totalDurationSeconds.map(Double.init)
         )
         seriesId = nil
@@ -331,7 +333,7 @@ struct DownloadActionButton: View {
         Task {
             do {
                 switch kind {
-                case let .audiobook(fileId, resumePosition, duration):
+                case let .audiobook(fileId, resumePosition, resumeObservedAt, duration):
                     try await manager.downloadAudiobook(
                         contentId: contentId,
                         fileId: fileId,
@@ -339,6 +341,7 @@ struct DownloadActionButton: View {
                         author: displaySubtitle,
                         posterThumbhash: posterThumbhash,
                         resumePosition: resumePosition,
+                        resumeObservedAt: resumeObservedAt,
                         bookDuration: duration
                     )
                 case .episode:
