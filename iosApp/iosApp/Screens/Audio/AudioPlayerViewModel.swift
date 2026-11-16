@@ -61,10 +61,11 @@ final class AudioPlayerViewModel {
     /// The book opened from its download without the server: every part
     /// plays from disk and progress waits in the offline queue.
     private(set) var isOfflineSession = false
-    /// The download scope the book's local copy belongs to, captured at
-    /// start when the book is downloaded. Its progress is recorded there,
-    /// and only while that scope is still loaded.
-    private var downloadProgressOwner: DownloadManager.ProgressOwner?
+    /// The download scope active when the book started. When the book is
+    /// downloaded, by then or during playback, its local resume point and
+    /// offline queue are written there, and only while that scope is still
+    /// loaded.
+    private var progressScopeOwner: DownloadManager.ProgressOwner?
     /// Downloaded files that failed to open in this session; their parts
     /// stream instead of failing again on every seek.
     private var unopenableLocalFileIds: Set<Int> = []
@@ -156,7 +157,7 @@ final class AudioPlayerViewModel {
             }
             let downloads = DownloadManager.shared
             let download = Self.playableDownload(contentId: contentId, in: downloads)
-            let progressOwner = download != nil ? downloads.progressOwner() : nil
+            let progressOwner = downloads.progressOwner()
             let context: AudiobookPlaybackContext
             var opensOffline = false
             if let download, !ConnectionMonitor.shared.isServerReachable {
@@ -183,7 +184,7 @@ final class AudioPlayerViewModel {
             }
             self.context = context
             isOfflineSession = opensOffline
-            downloadProgressOwner = progressOwner
+            progressScopeOwner = progressOwner
             duration = context.totalDurationSeconds
             setPlayhead(clampGlobal(startPosition ?? (restart ? 0 : context.resumePositionSeconds)))
             loadPalette(posterUrl: context.posterUrl)
@@ -314,7 +315,7 @@ final class AudioPlayerViewModel {
         let closedAuthority = activeAuthority
         let position = currentTime
         let total = duration
-        let downloadOwner = downloadProgressOwner
+        let scopeOwner = progressScopeOwner
         let sampledAt = Date()
         resetSessionState()
         if let closedContext {
@@ -323,7 +324,7 @@ final class AudioPlayerViewModel {
                 position: position,
                 duration: total,
                 sampledAt: sampledAt,
-                downloadOwner: downloadOwner,
+                scopeOwner: scopeOwner,
                 label: "final audiobook sync" // i18n-ignore: log label
             )
         }
@@ -347,7 +348,7 @@ final class AudioPlayerViewModel {
         sleepTimer.cancel()
         context = nil
         isOfflineSession = false
-        downloadProgressOwner = nil
+        progressScopeOwner = nil
         unopenableLocalFileIds = []
         activeSession = nil
         activeAuthority = nil
@@ -833,7 +834,7 @@ final class AudioPlayerViewModel {
             position: currentTime,
             duration: duration,
             sampledAt: Date(),
-            downloadOwner: downloadProgressOwner,
+            scopeOwner: progressScopeOwner,
             label: "audiobook progress sync" // i18n-ignore: log label
         )
     }
@@ -934,17 +935,24 @@ final class AudioPlayerViewModel {
 
     // MARK: - Downloaded books
 
-    /// Saves the whole-book position sampled at `sampledAt`. A downloaded
-    /// book (one with a `downloadOwner`, the scope its local resume point
-    /// and offline queue belong to) queues it while the server can't be reached (sent with that
-    /// time, so the newest position wins), and when an upload gets no
+    /// Saves the whole-book position sampled at `sampledAt`. A book that is
+    /// downloaded now, in the still-loaded `scopeOwner` scope its playback
+    /// started in, queues it while the server can't be reached (sent with
+    /// that time, so the newest position wins), and when an upload gets no
     /// answer, so it isn't lost when the connection drops mid-book. Once the
     /// server is back, even a book opened offline uploads directly. A
     /// position older than the one already recorded is dropped.
     private func saveBookPosition(contentId: String, position: Double, duration: Double, sampledAt: Date,
-                                  downloadOwner: DownloadManager.ProgressOwner?, label: String) async {
+                                  scopeOwner: DownloadManager.ProgressOwner?, label: String) async {
         let completed = AudiobookProgress.isFinished(played: false, position: position, totalDuration: duration)
         let downloads = DownloadManager.shared
+        // Decided at each save, so a download that finishes mid-book counts
+        // from then on.
+        var downloadOwner: DownloadManager.ProgressOwner?
+        if let scopeOwner, downloads.isCurrent(scopeOwner),
+           Self.playableDownload(contentId: contentId, in: downloads) != nil {
+            downloadOwner = scopeOwner
+        }
         // Compared only with this device's own sample times, never with the
         // server's clock.
         func isLatest() -> Bool {

@@ -4069,6 +4069,7 @@ final class DownloadManager {
     /// past the deadline on its own task; `appliedProgressItemIds` shows
     /// whether it lands later.
     func syncUnsentProgress(forMediaItemId mediaItemId: String, waitingAtMost limit: Duration) async -> Bool {
+        guard let scope = loadedScope else { return false }
         appliedProgressItemIds.remove(mediaItemId)
         final class Finished { var value = false }
         let finished = Finished()
@@ -4080,7 +4081,8 @@ final class DownloadManager {
         while !finished.value, ContinuousClock.now < deadline, !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(100))
         }
-        return appliedProgressItemIds.contains(mediaItemId)
+        // An answer from another profile or server says nothing about this one.
+        return loadedScope == scope && appliedProgressItemIds.contains(mediaItemId)
     }
 
     /// Seeds a downloaded book's local resume point from the server's, so a
