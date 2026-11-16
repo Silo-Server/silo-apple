@@ -516,10 +516,14 @@ final class AuthService: @unchecked Sendable {
             rememberSelection: rememberSelection,
             expectedAccount: expectedAccount
         )
-        // Re-probe capabilities for the newly-selected profile. Fire and
-        // forget so profile navigation is never held behind an optional
-        // feature probe. Artwork-bearing API methods await the coalesced image
-        // probe at their own request boundary before dispatching.
+        refreshProfileCapabilities()
+    }
+
+    /// Re-probe capabilities for the newly-opened profile. Fire and forget so
+    /// profile navigation is never held behind an optional feature probe.
+    /// Artwork-bearing API methods await the coalesced image probe at their
+    /// own request boundary before dispatching.
+    private func refreshProfileCapabilities() {
         Task { @MainActor in
             await AICapabilities.shared.refresh()
             await ImageSizeCapability.shared.refresh()
@@ -685,6 +689,46 @@ final class AuthService: @unchecked Sendable {
             markSelectionRequired: true
         )
     }
+
+    #if os(tvOS)
+    /// The open profile and its proof, captured in one actor turn, for
+    /// reopening it if the person backs out of the picker. Nil while a
+    /// temporary remote-playback identity owns requests: the switch ends it
+    /// first, and the profile to reopen is the persistent one underneath.
+    func openProfileForSwitch() async -> ClosedProfile? {
+        guard let open = await TokenStore.shared.captureOrdinaryRequestAuth(),
+              case .persistentServer = open.credentialOwner,
+              let profileID = open.profileId else { return nil }
+        return ClosedProfile(account: open.account, profileID: profileID, profileToken: open.profileToken)
+    }
+
+    /// Reopens the profile an explicit switch closed, with the proof it had,
+    /// when the person leaves the picker without choosing (Apple TV Back).
+    /// Commits as a selection does, so the next cold launch follows the
+    /// launch setting again instead of the switch's pending picker.
+    func reopenProfile(_ closed: ClosedProfile) async throws {
+        guard !(await TokenStore.shared.hasTemporaryScope()) else {
+            throw ProfileTransitionError.temporaryIdentityActive
+        }
+        // The switch kept the remembered record, which says whether this
+        // profile needed its PIN when it was chosen.
+        let remembered = launchPreferences.rememberedProfile(forAccount: closed.account.localAccountId)
+        let requiresPIN: Bool
+        if let remembered, remembered.profileID == closed.profileID {
+            requiresPIN = remembered.requiredPINAtSelection
+        } else {
+            requiresPIN = closed.profileToken != nil
+        }
+        try await activateProfile(
+            profileID: closed.profileID,
+            profileToken: closed.profileToken,
+            requiresPIN: requiresPIN,
+            rememberSelection: true,
+            expectedAccount: closed.account
+        )
+        refreshProfileCapabilities()
+    }
+    #endif
 
     /// Clear active profile identity while retaining the account session.
     /// This path owns the HTTP transition barrier for launch, explicit switch,
@@ -1135,4 +1179,11 @@ final class AuthService: @unchecked Sendable {
         ResponseCache.shared.clearMemory()
         resetIdentityScopedStores(forgetWatchPartyRecent: true, preservingTrailerReturn: false)
     }
+}
+
+/// A profile Switch Profile closed: its account and the proof it held.
+struct ClosedProfile {
+    let account: RefreshAccountIdentity
+    let profileID: String
+    let profileToken: String?
 }

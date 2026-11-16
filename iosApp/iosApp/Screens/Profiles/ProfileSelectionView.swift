@@ -42,6 +42,8 @@ struct ProfileSelectionView: View {
     /// sign-out confirmation, so focus goes back to it when that
     /// closes rather than to the first profile.
     @State private var returnFocus: PickerFocus?
+    /// Add Profile is opening the primary profile to create one.
+    @State private var isPreparingManagement = false
     @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
     #endif
 
@@ -74,7 +76,7 @@ struct ProfileSelectionView: View {
             background
 
             pickerContent
-                .disabled(viewModel.isClearingTemporaryManagementContext || isPINEntryPresented)
+                .disabled(viewModel.isClearingTemporaryManagementContext || isPINEntryPresented || isCancellingSwitch)
                 .accessibilityHidden(isPINEntryPresented)
                 .opacity(isPINEntryPresented ? 0 : 1)
         }
@@ -116,6 +118,10 @@ struct ProfileSelectionView: View {
         #endif
         .sensoryFeedback(.error, trigger: wrongPINCount)
         #if os(tvOS)
+        // Back on a picker Switch Profile opened goes back to the profile and
+        // page it left. Any other picker leaves Back to the system, so on the
+        // launch picker it still closes the app.
+        .onExitCommand(perform: router.profileSwitchReturn != nil && router.path.isEmpty ? cancelSwitch : nil)
         .defaultFocus($pickerFocus, defaultPickerFocus)
         .onAppear {
             if acceptsFocus { restoreFocus() }
@@ -586,7 +592,13 @@ struct ProfileSelectionView: View {
             return
         }
 
+        #if os(tvOS)
+        isPreparingManagement = true
+        #endif
         Task {
+            #if os(tvOS)
+            defer { isPreparingManagement = false }
+            #endif
             do {
                 try await viewModel.prepareForProfileManagement()
                 showCreateProfile = true
@@ -595,6 +607,26 @@ struct ProfileSelectionView: View {
             }
         }
     }
+
+    private var isCancellingSwitch: Bool {
+        #if os(tvOS)
+        router.isCancellingProfileSwitch
+        #else
+        false
+        #endif
+    }
+
+    #if os(tvOS)
+    /// Ignored while the picker is opening a profile or lending the primary
+    /// one to Add Profile: the switch has an owner until that finishes.
+    private func cancelSwitch() {
+        guard selectingProfileID == nil, !isVerifyingPIN, !isPreparingManagement,
+              viewModel.rememberOffer == nil,
+              !viewModel.isUsingTemporaryManagementContext,
+              !viewModel.isClearingTemporaryManagementContext else { return }
+        router.cancelProfileSwitch()
+    }
+    #endif
 
     private func handleCreateProfileDismissed() {
         Task { await viewModel.clearTemporaryManagementContextIfNeeded() }

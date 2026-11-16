@@ -112,6 +112,12 @@ final class AppRouter {
             // was open when the menu row was chosen. Any route change, even
             // to Home again under another account or profile, closes them.
             if addProfileRequest != nil { addProfileRequest = nil }
+            #if os(tvOS)
+            // Back reopens the closed profile only from the picker Switch
+            // Profile opened. Any later route, including another account's
+            // picker, belongs to someone else.
+            profileSwitchReturn = nil
+            #endif
             if authState == .needsProfile {
                 // With no account open, or while the person has yet to
                 // choose one, the profile flow starts at Change Account
@@ -155,6 +161,21 @@ final class AppRouter {
     @ObservationIgnored private var sessionReturnPoint: SessionReturnPoint?
     /// The signed-in server, account and profile. Tests replace it.
     @ObservationIgnored var sessionOwner: () -> SessionOwner? = { SessionOwner.current() }
+
+    #if os(tvOS)
+    // MARK: - Leaving Switch Profile
+
+    /// The profile Switch Profile closed and where the person was, while the
+    /// picker it opened is up. Back on that picker reopens both.
+    private(set) var profileSwitchReturn: ProfileSwitchReturn?
+    /// A Back on the picker is reopening the closed profile.
+    private(set) var isCancellingProfileSwitch = false
+    /// The shell's current page, kept up to date by `TVMainTabView`, so a
+    /// switch started anywhere (Settings too) knows the page under it.
+    @ObservationIgnored var tvShellPlace: TVShellPlace?
+    /// The page a cancelled switch returns to, read by the next shell.
+    @ObservationIgnored private(set) var restoredShellPlace: TVShellPlace?
+    #endif
 
     // MARK: - Temporary Password
 
@@ -1153,16 +1174,62 @@ final class AppRouter {
     /// boundary regardless of which menu or settings surface initiated it.
     func switchProfile() {
         Task { @MainActor in
-            guard await completeRequestedProfileSwitch() else {
+            #if os(tvOS)
+            let returnPoint = currentReturnPoint()
+            let place = tvShellPlace
+            #endif
+            let result = await completeRequestedProfileSwitch()
+            guard result.switched else {
                 // A refusal here leaves the user on the current screen with no
                 // visible change, which reads as "the app ignored me".
                 Self.recordAuthActionBreadcrumb(reason: "switchProfile", outcome: "refused")
                 return
             }
             pickerRequestedByPerson = true
+            #if os(tvOS)
+            // From a pushed screen (Settings) the shell's stack would pop
+            // while fading out and leave the picker with nothing focused, so
+            // Back would reach the system instead of the picker.
+            withoutStackCrossfade { showProfileSelection() }
+            if let closed = result.closed, authState == .needsProfile {
+                profileSwitchReturn = ProfileSwitchReturn(closed: closed, returnPoint: returnPoint, place: place)
+            }
+            #else
             showProfileSelection()
+            #endif
         }
     }
+
+    #if os(tvOS)
+    /// Back on the picker Switch Profile opened: the closed profile opens
+    /// again, with the proof it had, on the page it was on. If it can't, the
+    /// picker stays.
+    func cancelProfileSwitch() {
+        guard let saved = profileSwitchReturn, !isCancellingProfileSwitch else { return }
+        isCancellingProfileSwitch = true
+        Task { @MainActor in
+            defer { isCancellingProfileSwitch = false }
+            do {
+                try await AuthService.shared.reopenProfile(saved.closed)
+            } catch {
+                Self.recordAuthActionBreadcrumb(reason: "cancelProfileSwitch", outcome: "refused")
+                return
+            }
+            StartupContentPrefetcher.prefetchAuthenticatedContent()
+            await PlayerSettings.shared.refreshFromServer()
+            // Something else may have moved on from the picker meanwhile.
+            guard authState == .needsProfile else { return }
+            sessionReturnPoint = saved.returnPoint
+            restoredShellPlace = saved.place
+            resetToHome()
+        }
+    }
+
+    /// The restored page has been shown.
+    func didRestoreShellPlace() {
+        restoredShellPlace = nil
+    }
+    #endif
 
     /// Transition to the authenticated home screen. After a session expiry,
     /// the same profile of the same account returns to the screens it was on.
@@ -1277,17 +1344,21 @@ final class AppRouter {
     }
     #endif
 
-    private func completeRequestedProfileSwitch() async -> Bool {
-        if await AuthService.shared.beginExplicitProfileSelection() {
-            return true
-        }
+    /// Whether the switch went ahead and, on Apple TV, the profile it closed.
+    private func completeRequestedProfileSwitch() async -> (switched: Bool, closed: ClosedProfile?) {
         #if os(tvOS)
-        guard await RemotePlaybackIdentityManager.shared.end() else {
-            return false
+        var closing = await AuthService.shared.openProfileForSwitch()
+        if await AuthService.shared.beginExplicitProfileSelection() {
+            return (true, closing)
         }
-        return await AuthService.shared.beginExplicitProfileSelection()
+        guard await RemotePlaybackIdentityManager.shared.end() else {
+            return (false, nil)
+        }
+        // The remote identity is gone; reopen the profile underneath it.
+        closing = await AuthService.shared.openProfileForSwitch()
+        return (await AuthService.shared.beginExplicitProfileSelection(), closing)
         #else
-        return false
+        return (await AuthService.shared.beginExplicitProfileSelection(), nil)
         #endif
     }
 
@@ -1447,6 +1518,15 @@ struct SessionOwner: Equatable {
         return SessionOwner(serverID: serverID, accountID: accountID, profileID: profileID)
     }
 }
+
+#if os(tvOS)
+/// What Back on the picker Switch Profile opened goes back to.
+struct ProfileSwitchReturn {
+    let closed: ClosedProfile
+    let returnPoint: SessionReturnPoint?
+    let place: TVShellPlace?
+}
+#endif
 
 /// The screens open when a session expired, kept in memory until the next
 /// sign-in reaches Home.
