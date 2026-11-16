@@ -72,9 +72,10 @@ struct MacPlayerControls: View {
             if !metaParts.isEmpty {
                 dotted(metaParts.map { Text(verbatim: $0) })
             }
-            // The end time moves on while paused, when nothing else redraws.
-            TimelineView(.periodic(from: .now, by: 15)) { context in
-                dotted(timeParts(at: context.date))
+            // The end time moves on while paused, when nothing else redraws;
+            // it reads the clock on every redraw, not just on the ticks.
+            TimelineView(.periodic(from: .now, by: 15)) { _ in
+                dotted(timeParts)
                     .monospacedDigit()
             }
         }
@@ -110,12 +111,12 @@ struct MacPlayerControls: View {
         return parts
     }
 
-    private func timeParts(at now: Date) -> [Text] {
+    private var timeParts: [Text] {
         let elapsed = PlayerTimeFormatter.formatHMS(viewModel.currentTime)
         guard viewModel.duration > 0 else { return [Text(verbatim: elapsed)] }
         let remaining = max(0, viewModel.duration - viewModel.currentTime)
         let speed = max(viewModel.settings.playbackSpeed, 0.1)
-        let endsAt = now.addingTimeInterval(remaining / speed)
+        let endsAt = Date().addingTimeInterval(remaining / speed)
             .formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(locale))
         return [
             // Clock times read left to right in every language.
