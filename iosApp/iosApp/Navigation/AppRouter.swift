@@ -170,6 +170,9 @@ final class AppRouter {
     private(set) var profileSwitchReturn: ProfileSwitchReturn?
     /// A Back on the picker is reopening the closed profile.
     private(set) var isCancellingProfileSwitch = false
+    /// One Switch Profile at a time, so a second press can't close the
+    /// picker's return.
+    @ObservationIgnored private var isSwitchingProfile = false
     /// The shell's current page, kept up to date by `TVMainTabView`, so a
     /// switch started anywhere (Settings too) knows the page under it.
     @ObservationIgnored var tvShellPlace: TVShellPlace?
@@ -1173,8 +1176,13 @@ final class AppRouter {
     /// User-initiated profile switching has one persistence and cache
     /// boundary regardless of which menu or settings surface initiated it.
     func switchProfile() {
+        #if os(tvOS)
+        guard !isSwitchingProfile else { return }
+        isSwitchingProfile = true
+        #endif
         Task { @MainActor in
             #if os(tvOS)
+            defer { isSwitchingProfile = false }
             let returnPoint = currentReturnPoint()
             let place = tvShellPlace
             #endif
@@ -1207,18 +1215,23 @@ final class AppRouter {
     func cancelProfileSwitch() {
         guard let saved = profileSwitchReturn, !isCancellingProfileSwitch else { return }
         isCancellingProfileSwitch = true
+        let picker = profileFlowRevision
         Task { @MainActor in
             defer { isCancellingProfileSwitch = false }
             do {
                 try await AuthService.shared.reopenProfile(saved.closed)
             } catch {
+                // The picker stays, and Back on it now does what it does on
+                // any other picker.
                 Self.recordAuthActionBreadcrumb(reason: "cancelProfileSwitch", outcome: "refused")
+                profileSwitchReturn = nil
                 return
             }
             StartupContentPrefetcher.prefetchAuthenticatedContent()
             await PlayerSettings.shared.refreshFromServer()
-            // Something else may have moved on from the picker meanwhile.
-            guard authState == .needsProfile else { return }
+            // Any route change since (an expired session, another account)
+            // keeps its own screen.
+            guard authState == .needsProfile, profileFlowRevision == picker else { return }
             sessionReturnPoint = saved.returnPoint
             restoredShellPlace = saved.place
             resetToHome()
@@ -1228,6 +1241,12 @@ final class AppRouter {
     /// The restored page has been shown.
     func didRestoreShellPlace() {
         restoredShellPlace = nil
+    }
+
+    /// The app left the foreground: a picker it comes back to is a fresh
+    /// choice, not one to back out of.
+    func forgetProfileSwitchReturn() {
+        profileSwitchReturn = nil
     }
     #endif
 
@@ -1348,7 +1367,7 @@ final class AppRouter {
     private func completeRequestedProfileSwitch() async -> (switched: Bool, closed: ClosedProfile?) {
         #if os(tvOS)
         var closing = await AuthService.shared.openProfileForSwitch()
-        if await AuthService.shared.beginExplicitProfileSelection() {
+        if await AuthService.shared.beginExplicitProfileSelection(expectedProfileID: closing?.profileID) {
             return (true, closing)
         }
         guard await RemotePlaybackIdentityManager.shared.end() else {
@@ -1356,7 +1375,8 @@ final class AppRouter {
         }
         // The remote identity is gone; reopen the profile underneath it.
         closing = await AuthService.shared.openProfileForSwitch()
-        return (await AuthService.shared.beginExplicitProfileSelection(), closing)
+        let switched = await AuthService.shared.beginExplicitProfileSelection(expectedProfileID: closing?.profileID)
+        return (switched, closing)
         #else
         return (await AuthService.shared.beginExplicitProfileSelection(), nil)
         #endif

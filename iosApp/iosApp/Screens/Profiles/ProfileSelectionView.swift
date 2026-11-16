@@ -168,6 +168,7 @@ struct ProfileSelectionView: View {
             && !showCreateProfile
             && router.pendingRemoval == nil
             && !viewModel.isClearingTemporaryManagementContext
+            && !router.isCancellingProfileSwitch
             && !showsLoading
     }
 

@@ -548,6 +548,9 @@ struct ContentView: View {
                 ExitSentinel.shared.appDidEnterForeground()
             case .background:
                 ExitSentinel.shared.appDidEnterBackground()
+                // Back on the switch picker reopens a profile without its PIN
+                // only while the person is still at the TV.
+                router.forgetProfileSwitchReturn()
             default:
                 break
             }

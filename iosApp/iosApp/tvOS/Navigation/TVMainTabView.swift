@@ -1385,7 +1385,9 @@ struct TVMainTabView: View {
         } catch {
             // Keep whatever tabs we already have (cached or none) — Home
             // and Calendar always stay reachable, so a transient failure
-            // never strands the user.
+            // never strands the user. A page restored after Switch Profile
+            // may be a library tab that isn't in the bar yet.
+            ensureSelectedRootIsVisible()
         }
     }
 

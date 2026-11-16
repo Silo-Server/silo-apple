@@ -682,11 +682,14 @@ final class AuthService: @unchecked Sendable {
     /// Persist an explicit switch request before clearing request identity so
     /// killing the app on the picker cannot make Automatic silently restore
     /// the previous profile.
-    func beginExplicitProfileSelection() async -> Bool {
+    /// `expectedProfileID` refuses the switch if another profile opened
+    /// meanwhile.
+    func beginExplicitProfileSelection(expectedProfileID: String? = nil) async -> Bool {
         await PlayerSettings.shared.flushPendingDeviceSettings()
         return await deactivateProfile(
             preserveRememberedProfile: true,
-            markSelectionRequired: true
+            markSelectionRequired: true,
+            expectedProfileID: expectedProfileID
         )
     }
 
