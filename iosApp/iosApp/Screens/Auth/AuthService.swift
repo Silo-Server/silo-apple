@@ -727,7 +727,9 @@ final class AuthService: @unchecked Sendable {
             profileToken: closed.profileToken,
             requiresPIN: requiresPIN,
             rememberSelection: true,
-            expectedAccount: closed.account
+            expectedAccount: closed.account,
+            // A profile chosen meanwhile wins over a late Back.
+            requiringNoOpenProfile: true
         )
         refreshProfileCapabilities()
     }
@@ -793,7 +795,8 @@ final class AuthService: @unchecked Sendable {
         profileToken: String?,
         requiresPIN: Bool,
         rememberSelection: Bool,
-        expectedAccount: RefreshAccountIdentity
+        expectedAccount: RefreshAccountIdentity,
+        requiringNoOpenProfile: Bool = false
     ) async throws {
         guard serverRegistry.activeServerId != nil else {
             throw ProfileTransitionError.noActiveServer
@@ -813,7 +816,8 @@ final class AuthService: @unchecked Sendable {
               await TokenStore.shared.activateProfile(
                 profileID: profileID,
                 profileToken: profileToken,
-                expectedAccount: expectedAccount
+                expectedAccount: expectedAccount,
+                requiringNoOpenProfile: requiringNoOpenProfile
               ) else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             #if os(iOS) || os(tvOS)

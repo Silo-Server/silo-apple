@@ -1606,14 +1606,17 @@ actor TokenStore {
     /// Commits profile ID and verification proof in one actor turn after the
     /// caller has closed HTTP dispatch. Persistent mutations fail closed while
     /// a temporary remote-playback identity owns request authentication.
+    /// `requiringNoOpenProfile` refuses when a profile opened meanwhile.
     func activateProfile(
         profileID: String,
         profileToken: String?,
-        expectedAccount: RefreshAccountIdentity
+        expectedAccount: RefreshAccountIdentity,
+        requiringNoOpenProfile: Bool = false
     ) -> Bool {
         guard temporaryScope == nil,
               refreshAccountIdentity() == expectedAccount,
-              !profileID.isEmpty else {
+              !profileID.isEmpty,
+              !requiringNoOpenProfile || defaults.string(forKey: profileIdDefaultsKey) == nil else {
             return false
         }
         ensureLoaded()

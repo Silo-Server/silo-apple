@@ -173,6 +173,9 @@ final class AppRouter {
     /// One Switch Profile at a time, so a second press can't close the
     /// picker's return.
     @ObservationIgnored private var isSwitchingProfile = false
+    /// Advances each time the app leaves the foreground, so a switch or a
+    /// Back still in flight then gives up its way back.
+    @ObservationIgnored private var foregroundSession = 0
     /// The shell's current page, kept up to date by `TVMainTabView`, so a
     /// switch started anywhere (Settings too) knows the page under it.
     @ObservationIgnored var tvShellPlace: TVShellPlace?
@@ -1183,6 +1186,7 @@ final class AppRouter {
         Task { @MainActor in
             #if os(tvOS)
             defer { isSwitchingProfile = false }
+            let session = foregroundSession
             let returnPoint = currentReturnPoint()
             let place = tvShellPlace
             #endif
@@ -1199,7 +1203,7 @@ final class AppRouter {
             // while fading out and leave the picker with nothing focused, so
             // Back would reach the system instead of the picker.
             withoutStackCrossfade { showProfileSelection() }
-            if let closed = result.closed, authState == .needsProfile {
+            if let closed = result.closed, authState == .needsProfile, foregroundSession == session {
                 profileSwitchReturn = ProfileSwitchReturn(closed: closed, returnPoint: returnPoint, place: place)
             }
             #else
@@ -1216,6 +1220,7 @@ final class AppRouter {
         guard let saved = profileSwitchReturn, !isCancellingProfileSwitch else { return }
         isCancellingProfileSwitch = true
         let picker = profileFlowRevision
+        let session = foregroundSession
         Task { @MainActor in
             defer { isCancellingProfileSwitch = false }
             do {
@@ -1227,14 +1232,16 @@ final class AppRouter {
                 profileSwitchReturn = nil
                 return
             }
-            StartupContentPrefetcher.prefetchAuthenticatedContent()
-            await PlayerSettings.shared.refreshFromServer()
+            guard await keepReopenedProfile(saved.closed, startedIn: session) else { return }
             // Any route change since (an expired session, another account)
             // keeps its own screen.
             guard authState == .needsProfile, profileFlowRevision == picker else { return }
+            StartupContentPrefetcher.prefetchAuthenticatedContent()
             sessionReturnPoint = saved.returnPoint
             restoredShellPlace = saved.place
             resetToHome()
+            // Behind the page, so a slow server never holds the picker.
+            Task { await PlayerSettings.shared.refreshFromServer() }
         }
     }
 
@@ -1246,7 +1253,16 @@ final class AppRouter {
     /// The app left the foreground: a picker it comes back to is a fresh
     /// choice, not one to back out of.
     func forgetProfileSwitchReturn() {
+        foregroundSession &+= 1
         profileSwitchReturn = nil
+    }
+
+    /// False, with the profile closed again for a fresh choice, when the app
+    /// left the foreground while Back was reopening it.
+    private func keepReopenedProfile(_ closed: ClosedProfile, startedIn session: Int) async -> Bool {
+        guard foregroundSession != session else { return true }
+        _ = await AuthService.shared.beginExplicitProfileSelection(expectedProfileID: closed.profileID)
+        return false
     }
     #endif
 
