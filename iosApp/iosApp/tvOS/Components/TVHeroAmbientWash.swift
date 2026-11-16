@@ -81,10 +81,11 @@ struct TVHeroAmbientWash: View {
                 coverFrame: TVRootHeroBackdrop.coverFrame(for: cover.aspect, canvas: canvas)
             )
         }
-        let isVisible = isVisible
-        let image = await Task.detached(priority: .userInitiated) {
-            TVHeroAmbientRenderer.render(canvas: canvas, colors: colors, isVisible: isVisible, cover: coverEffects)
-        }.value
+        // Runs off the main actor and inherits this task's cancellation, so
+        // a wash superseded by the next focus change stops early.
+        let image = await TVHeroAmbientRenderer.render(
+            canvas: canvas, colors: colors, isVisible: isVisible, cover: coverEffects
+        )
         guard !Task.isCancelled, let image else { return }
         let next = Bitmap(generation: (bitmap?.generation ?? 0) + 1, image: image)
         if animatesChanges, bitmap != nil {
@@ -144,7 +145,10 @@ enum TVHeroAmbientRenderer {
         | CGBitmapInfo.floatComponents.rawValue
         | CGBitmapInfo.byteOrder32Little.rawValue
 
-    static func render(canvas: CGSize, colors: Colors, isVisible: Bool, cover: CoverEffects?) -> CGImage? {
+    /// Nil when the calling task is cancelled; cancellation is checked
+    /// between the expensive stages.
+    @concurrent
+    static func render(canvas: CGSize, colors: Colors, isVisible: Bool, cover: CoverEffects?) async -> CGImage? {
         let width = Int((canvas.width / pointsPerPixel).rounded(.up))
         let height = Int((canvas.height / pointsPerPixel).rounded(.up))
         guard width > 0, height > 0,
@@ -172,6 +176,7 @@ enum TVHeroAmbientRenderer {
         drawEllipse(colors.shadow, alpha: 0.55 * visible, center: CGPoint(x: 0, y: 1), radius: 0.42, in: context, canvas: canvas)
 
         if let cover {
+            guard !Task.isCancelled else { return nil }
             if let thumbnail = cover.thumbnail, let glow = blurredGlow(thumbnail, around: cover.coverFrame) {
                 draw(glow.image, in: glow.frame, alpha: glowOpacity, on: context)
             }
@@ -180,6 +185,7 @@ enum TVHeroAmbientRenderer {
             }
         }
 
+        guard !Task.isCancelled else { return nil }
         return ditheredImage(from: context, width: width, height: height)
     }
 
