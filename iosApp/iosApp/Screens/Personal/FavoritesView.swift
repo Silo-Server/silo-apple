@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// Movies / TV Shows split for the saved-list screens (Favorites and
-/// Watchlist on iOS, Favorites on tvOS).
+/// Movies / TV Shows / Audiobooks split for the saved-list screens
+/// (Favorites and Watchlist on iOS, Favorites on tvOS).
 enum PersonalMediaSection: CaseIterable, Identifiable {
     case movies
     case tvShows
+    case audiobooks
 
     var id: Self { self }
 
@@ -12,6 +13,15 @@ enum PersonalMediaSection: CaseIterable, Identifiable {
         switch self {
         case .movies: .personalFilterMovies
         case .tvShows: .personalFilterTvShows
+        case .audiobooks: .personalFilterAudiobooks
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .movies: "film"
+        case .tvShows: "tv"
+        case .audiobooks: "book.closed"
         }
     }
 
@@ -25,41 +35,48 @@ enum PersonalMediaSection: CaseIterable, Identifiable {
             return SiloMediaType.isMovieLibrary(type)
         case .tvShows:
             return SiloMediaType.isSeries(type) || SiloMediaType.isEpisode(type)
+        case .audiobooks:
+            return SiloMediaType.isAudiobook(type)
         }
+    }
+
+    /// The sections offered: Audiobooks only while audiobooks are turned on.
+    static func available(showAudiobooks: Bool) -> [PersonalMediaSection] {
+        allCases.filter { showAudiobooks || $0 != .audiobooks }
+    }
+
+    /// This section, or Movies when it is Audiobooks and audiobooks have
+    /// since been turned off.
+    func resolved(showAudiobooks: Bool) -> PersonalMediaSection {
+        self == .audiobooks && !showAudiobooks ? .movies : self
     }
 }
 
-/// All / Movies / TV Shows: what the iPhone For You tab's dock narrows its
-/// pages to.
+/// All / Movies / TV Shows / Audiobooks: what the iPhone For You tab's dock
+/// narrows its pages to.
 enum PersonalMediaFilter: String, CaseIterable, Identifiable {
     case all
     case movies
     case tvShows
+    case audiobooks
 
     var id: Self { self }
 
     var label: LocalizedStringResource {
-        switch self {
-        case .all: .searchFilterAll
-        case .movies: .personalFilterMovies
-        case .tvShows: .personalFilterTvShows
-        }
+        section?.label ?? .searchFilterAll
     }
 
     var systemImage: String {
-        switch self {
-        case .all: "square.stack.3d.up"
-        case .movies: "film"
-        case .tvShows: "tv"
-        }
+        section?.systemImage ?? "square.stack.3d.up"
     }
 
-    /// The Movies / TV Shows split this narrows to; nil keeps everything.
-    private var section: PersonalMediaSection? {
+    /// The split this narrows to; nil keeps everything.
+    var section: PersonalMediaSection? {
         switch self {
         case .all: nil
         case .movies: .movies
         case .tvShows: .tvShows
+        case .audiobooks: .audiobooks
         }
     }
 
@@ -71,13 +88,26 @@ enum PersonalMediaFilter: String, CaseIterable, Identifiable {
         includes(type: item.type)
     }
 
-    /// "9 movies", "6 shows", "14 titles": how many titles are showing.
+    /// The filters offered: Audiobooks only while audiobooks are turned on.
+    static func available(showAudiobooks: Bool) -> [PersonalMediaFilter] {
+        allCases.filter { showAudiobooks || $0 != .audiobooks }
+    }
+
+    /// This filter, or All when it is Audiobooks and audiobooks have since
+    /// been turned off.
+    func resolved(showAudiobooks: Bool) -> PersonalMediaFilter {
+        self == .audiobooks && !showAudiobooks ? .all : self
+    }
+
+    /// "9 movies", "6 shows", "3 books", "14 titles": how many titles are
+    /// showing.
     func countLabel(_ count: Int) -> LocalizedStringResource {
         let text = LocaleFormat.groupedCount(count)
         switch self {
         case .all: return .libraryTitleCount(count: count, text)
         case .movies: return .libraryCollectionCardMovies(count: count, text)
         case .tvShows: return .libraryCollectionCardShows(count: count, text)
+        case .audiobooks: return .libraryCollectionCardBooks(count: count, text)
         }
     }
 }
@@ -94,15 +124,24 @@ struct PersonalListDockPage {
     let onCount: (Int?) -> Void
 }
 
+extension Array where Element == BrowseItem {
+    /// Square covers when every title shown is an audiobook; otherwise
+    /// posters, so a mixed grid keeps one card height and its rows line up.
+    var savedListCoverAspect: MediaCardAspect {
+        !isEmpty && allSatisfy(\.isAudiobook) ? .square : .poster
+    }
+}
+
 #if os(iOS)
 /// Shared iPhone/iPad picker used by Favorites and Watchlist, so both
 /// saved-list screens keep identical tabs.
 struct IOSPersonalMediaSectionPicker: View {
     @Binding var selection: PersonalMediaSection
+    let sections: [PersonalMediaSection]
 
     var body: some View {
         Picker(selection: $selection) {
-            ForEach(PersonalMediaSection.allCases) { section in
+            ForEach(sections) { section in
                 Text(section.label).tag(section)
             }
         } label: {
@@ -137,7 +176,8 @@ struct IOSPersonalMediaPosterLayout: View {
     }
 
     private var phoneGrid: some View {
-        LazyVGrid(columns: phoneColumns, spacing: 12) {
+        let coverAspect = items.savedListCoverAspect
+        return LazyVGrid(columns: phoneColumns, spacing: 12) {
             ForEach(items) { item in
                 MediaCard(
                     title: item.title,
@@ -154,6 +194,7 @@ struct IOSPersonalMediaPosterLayout: View {
                     },
                     contentId: item.contentId,
                     detailSeedSource: .browse(item),
+                    aspect: coverAspect,
                     cardWidthOverride: phoneCardWidthOverride,
                     onUserStateChanged: { state in
                         onUserStateChanged(item, state)
@@ -171,7 +212,8 @@ struct IOSPersonalMediaPosterLayout: View {
     }
 
     private var tabletCarouselRows: some View {
-        LazyVStack(alignment: .leading, spacing: 24) {
+        let coverAspect = items.savedListCoverAspect
+        return LazyVStack(alignment: .leading, spacing: 24) {
             ForEach(Array(rows.enumerated()), id: \.offset) { _, rowItems in
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: HomeFeedMetrics.cardSpacing) {
@@ -191,6 +233,7 @@ struct IOSPersonalMediaPosterLayout: View {
                                 },
                                 contentId: item.contentId,
                                 detailSeedSource: .browse(item),
+                                aspect: coverAspect,
                                 onUserStateChanged: { state in
                                     onUserStateChanged(item, state)
                                 }
@@ -275,6 +318,15 @@ struct FavoritesView: View {
     #if os(iOS)
     @State private var selectedSection: PersonalMediaSection = .movies
     #endif
+    #if !os(macOS)
+    @State private var navPrefs = AppNavPreferences.shared
+
+    /// The picked section, falling back to Movies if audiobooks were turned
+    /// off while Audiobooks was picked.
+    private var activeSection: PersonalMediaSection {
+        selectedSection.resolved(showAudiobooks: navPrefs.showAudiobooks)
+    }
+    #endif
 
     private var columns: [GridItem] {
         #if os(tvOS)
@@ -312,7 +364,10 @@ struct FavoritesView: View {
             VStack(spacing: 16) {
                 let visibleItems = filteredIOSItems
                 if dockPage == nil {
-                    IOSPersonalMediaSectionPicker(selection: $selectedSection)
+                    IOSPersonalMediaSectionPicker(
+                        selection: Binding(get: { activeSection }, set: { selectedSection = $0 }),
+                        sections: PersonalMediaSection.available(showAudiobooks: navPrefs.showAudiobooks)
+                    )
                 }
 
                 if visibleItems.isEmpty {
@@ -334,13 +389,14 @@ struct FavoritesView: View {
 
     private var filteredIOSItems: [BrowseItem] {
         if let dockPage { return items.filter(dockPage.filter.includes) }
-        return items.filter(selectedSection.includes)
+        return items.filter(activeSection.includes)
     }
 
-    /// Movies or TV Shows, whichever the picker or the dock narrows to.
-    private var iosShowsMovies: Bool {
-        if let dockPage { return dockPage.filter == .movies }
-        return selectedSection == .movies
+    /// The type the picker or the dock narrows to; the dock's All never
+    /// reaches the empty state, which needs a list with nothing at all.
+    private var iosEmptySection: PersonalMediaSection {
+        guard let dockPage else { return activeSection }
+        return dockPage.filter.section ?? .movies
     }
 
     /// The count for the For You tab's header; nil until the list loads.
@@ -351,7 +407,7 @@ struct FavoritesView: View {
 
     private var iosSelectedSectionEmptyState: some View {
         ContentUnavailableView {
-            Label(iosEmptyTitle, systemImage: iosShowsMovies ? "film" : "tv")
+            Label(iosEmptyTitle, systemImage: iosEmptySection.systemImage)
         } description: {
             Text(.personalFavoritesEmptyBody)
         }
@@ -359,7 +415,11 @@ struct FavoritesView: View {
     }
 
     private var iosEmptyTitle: LocalizedStringResource {
-        iosShowsMovies ? .personalFavoritesEmptyMoviesTitle : .personalFavoritesEmptyTvShowsTitle
+        switch iosEmptySection {
+        case .movies: .personalFavoritesEmptyMoviesTitle
+        case .tvShows: .personalFavoritesEmptyTvShowsTitle
+        case .audiobooks: .personalFavoritesEmptyAudiobooksTitle
+        }
     }
     #endif
 
@@ -426,6 +486,7 @@ struct FavoritesView: View {
         #if os(tvOS)
         tvGridContent
         #else
+        let coverAspect = items.savedListCoverAspect
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(items) { item in
@@ -445,6 +506,7 @@ struct FavoritesView: View {
                         playAction: playAction(for: item),
                         contentId: item.contentId,
                         detailSeedSource: .browse(item),
+                        aspect: coverAspect,
                         onUserStateChanged: { state in
                             guard !state.isFavorite else { return }
                             withAnimation {
@@ -463,13 +525,14 @@ struct FavoritesView: View {
 
     #if os(tvOS)
     private var filteredItems: [BrowseItem] {
-        items.filter(selectedSection.includes)
+        items.filter(activeSection.includes)
     }
 
     private var tvGridContent: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 40) {
                 let visibleItems = filteredItems
+                let coverAspect = visibleItems.savedListCoverAspect
                 if usesTVTopMenu {
                     Text(.personalFavoritesTitle)
                         .font(.system(size: 64, weight: .bold))
@@ -487,7 +550,7 @@ struct FavoritesView: View {
                         spacing: 60
                     ) {
                         ForEach(visibleItems) { item in
-                            favoriteCard(for: item)
+                            favoriteCard(for: item, aspect: coverAspect)
                                 .frame(maxWidth: .infinity)
                         }
                     }
@@ -503,7 +566,7 @@ struct FavoritesView: View {
 
     private var sectionSelector: some View {
         HStack(spacing: 14) {
-            ForEach(PersonalMediaSection.allCases) { section in
+            ForEach(PersonalMediaSection.available(showAudiobooks: navPrefs.showAudiobooks)) { section in
                 Button {
                     withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
                         selectedSection = section
@@ -513,8 +576,8 @@ struct FavoritesView: View {
                         .font(.system(size: 24, weight: .semibold))
                         .lineLimit(1)
                 }
-                .buttonStyle(FavoriteSectionPillStyle(isSelected: selectedSection == section))
-                .accessibilityAddTraits(selectedSection == section ? .isSelected : [])
+                .buttonStyle(FavoriteSectionPillStyle(isSelected: activeSection == section))
+                .accessibilityAddTraits(activeSection == section ? .isSelected : [])
                 .focused($focusedSection, equals: section)
             }
 
@@ -529,12 +592,16 @@ struct FavoritesView: View {
     }
 
     private var tvEmptyTitle: LocalizedStringResource {
-        selectedSection == .movies ? .personalFavoritesNoMovies : .personalFavoritesNoTvShows
+        switch activeSection {
+        case .movies: .personalFavoritesNoMovies
+        case .tvShows: .personalFavoritesNoTvShows
+        case .audiobooks: .personalFavoritesNoAudiobooks
+        }
     }
 
     private var selectedSectionEmptyState: some View {
         VStack(spacing: 16) {
-            Image(systemName: selectedSection == .movies ? "film" : "tv")
+            Image(systemName: activeSection.systemImage)
                 .font(.system(size: 54, weight: .light))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.34))
 
@@ -549,7 +616,7 @@ struct FavoritesView: View {
         .frame(maxWidth: .infinity, minHeight: 430)
     }
 
-    private func favoriteCard(for item: BrowseItem) -> some View {
+    private func favoriteCard(for item: BrowseItem, aspect: MediaCardAspect) -> some View {
         MediaCard(
             title: item.title,
             posterUrl: item.posterUrl ?? "",
@@ -566,6 +633,7 @@ struct FavoritesView: View {
             playAction: playAction(for: item),
             contentId: item.contentId,
             detailSeedSource: .browse(item),
+            aspect: aspect,
             cardWidthOverride: tvCardWidthOverride,
             onUserStateChanged: { state in
                 guard !state.isFavorite else { return }
@@ -590,7 +658,7 @@ struct FavoritesView: View {
               !isTopMenuFocused,
               !items.isEmpty else { return }
         lastAppliedFocusRequest = request
-        focusedSection = selectedSection
+        focusedSection = activeSection
     }
     #endif
 

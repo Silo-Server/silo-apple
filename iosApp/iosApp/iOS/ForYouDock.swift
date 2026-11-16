@@ -32,8 +32,8 @@ enum ForYouPage: String, CaseIterable, Identifiable, PageDockSegment {
 }
 
 /// The iPhone For You tab's dock: which page is on screen, and the type
-/// (All, Movies, TV Shows) every page is narrowed to. The tab owns it.
-/// The type opens on All, then on the one used last.
+/// (All, Movies, TV Shows, Audiobooks) every page is narrowed to. The tab
+/// owns it. The type opens on All, then on the one used last.
 @Observable
 @MainActor
 final class ForYouDockModel: PageDockModel {
@@ -44,12 +44,26 @@ final class ForYouDockModel: PageDockModel {
     private(set) var feedbackCount = 0
 
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let navPreferences = AppNavPreferences.shared
     private static let mediaFilterKey = "forYou.mediaFilter"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         mediaFilter = defaults.string(forKey: Self.mediaFilterKey)
             .flatMap(PersonalMediaFilter.init(rawValue:)) ?? .all
+    }
+
+    /// The types the menu offers: Audiobooks only while audiobooks are
+    /// turned on.
+    var availableFilters: [PersonalMediaFilter] {
+        PersonalMediaFilter.available(showAudiobooks: navPreferences.showAudiobooks)
+    }
+
+    /// The type the pages are narrowed to: the one picked, or All when it
+    /// is Audiobooks and audiobooks have since been turned off. The pick is
+    /// kept, so turning audiobooks back on restores it.
+    var activeFilter: PersonalMediaFilter {
+        mediaFilter.resolved(showAudiobooks: navPreferences.showAudiobooks)
     }
 
     @ObservationIgnored var onScrollToTop: (ForYouPage) -> Void = { _ in }
@@ -77,16 +91,17 @@ final class ForYouDockModel: PageDockModel {
     }
 }
 
-/// The dock's leading button: a system menu of All, Movies and TV Shows,
-/// with a checkmark on the type showing. Its glyph is that type's.
+/// The dock's leading button: a system menu of All, Movies, TV Shows and
+/// (with audiobooks on) Audiobooks, with a checkmark on the type showing.
+/// Its glyph is that type's.
 struct ForYouDockTypeButton: View {
     @Bindable var model: ForYouDockModel
     let style: PageDockStyle
 
     var body: some View {
         Menu {
-            Picker(selection: $model.mediaFilter) {
-                ForEach(PersonalMediaFilter.allCases) { filter in
+            Picker(selection: Binding(get: { model.activeFilter }, set: { model.mediaFilter = $0 })) {
+                ForEach(model.availableFilters) { filter in
                     Label {
                         Text(filter.label)
                     } icon: {
@@ -100,17 +115,17 @@ struct ForYouDockTypeButton: View {
             .pickerStyle(.inline)
             .labelsHidden()
         } label: {
-            PageDockGlyph(systemName: model.mediaFilter.systemImage, style: style)
+            PageDockGlyph(systemName: model.activeFilter.systemImage, style: style)
         }
         .menuOrder(.fixed)
         .buttonStyle(.plain)
         .accessibilityLabel(Text(.personalMediaType))
-        .accessibilityValue(Text(model.mediaFilter.label))
+        .accessibilityValue(Text(model.activeFilter.label))
         .accessibilityShowsLargeContentViewer {
             Label {
-                Text(model.mediaFilter.label)
+                Text(model.activeFilter.label)
             } icon: {
-                Image(systemName: model.mediaFilter.systemImage)
+                Image(systemName: model.activeFilter.systemImage)
             }
         }
     }
@@ -237,7 +252,7 @@ struct ForYouDockedView: View {
 
     private func dockPage(for page: ForYouPage) -> PersonalListDockPage {
         PersonalListDockPage(
-            filter: dock.mediaFilter,
+            filter: dock.activeFilter,
             reloadRequest: reloadRequests[page, default: 0],
             onCount: { count in
                 if listCounts[page] != count { listCounts[page] = count }
@@ -250,7 +265,7 @@ struct ForYouDockedView: View {
     /// The recommendation rows narrowed to the dock's type; a row left
     /// with nothing is dropped.
     private var visibleSections: [ResolvedSection] {
-        let filter = dock.mediaFilter
+        let filter = dock.activeFilter
         guard filter != .all else { return viewModel.sections }
         return viewModel.sections.compactMap { section in
             let kept = section.items.filter { filter.includes(type: $0.type) }
@@ -286,7 +301,7 @@ struct ForYouDockedView: View {
         } else if !viewModel.sections.isEmpty {
             // Recommendations exist, none of the dock's type.
             EmptyStateView(
-                icon: dock.mediaFilter.systemImage,
+                icon: dock.activeFilter.systemImage,
                 title: AppLanguage.string(.forYouEmpty, locale: locale)
             )
         } else if let error = viewModel.error {
@@ -343,7 +358,7 @@ struct ForYouDockedView: View {
     /// "9 movies": what a saved list is showing, once it has loaded.
     private var caption: LocalizedStringResource? {
         guard selectedPage != .forYou, let count = listCounts[selectedPage] else { return nil }
-        return dock.mediaFilter.countLabel(count)
+        return dock.activeFilter.countLabel(count)
     }
 }
 #endif

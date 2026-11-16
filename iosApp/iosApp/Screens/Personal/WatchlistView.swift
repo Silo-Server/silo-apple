@@ -18,6 +18,13 @@ struct WatchlistView: View {
     @State private var uiCustomization = UICustomizationPreferences.shared
     #if os(iOS)
     @State private var selectedSection: PersonalMediaSection = .movies
+    @State private var navPrefs = AppNavPreferences.shared
+
+    /// The picked section, falling back to Movies if audiobooks were turned
+    /// off while Audiobooks was picked.
+    private var activeSection: PersonalMediaSection {
+        selectedSection.resolved(showAudiobooks: navPrefs.showAudiobooks)
+    }
     #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
@@ -121,7 +128,10 @@ struct WatchlistView: View {
             VStack(spacing: 16) {
                 let visibleItems = filteredIOSItems
                 if dockPage == nil {
-                    IOSPersonalMediaSectionPicker(selection: $selectedSection)
+                    IOSPersonalMediaSectionPicker(
+                        selection: Binding(get: { activeSection }, set: { selectedSection = $0 }),
+                        sections: PersonalMediaSection.available(showAudiobooks: navPrefs.showAudiobooks)
+                    )
                 }
 
                 if visibleItems.isEmpty {
@@ -140,6 +150,7 @@ struct WatchlistView: View {
         .reportsPageChromeScroll()
         .scrollsToTopOnLibraryDockRequest()
         #else
+        let coverAspect = items.savedListCoverAspect
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(items) { item in
@@ -159,6 +170,7 @@ struct WatchlistView: View {
                         playAction: playAction(for: item),
                         contentId: item.contentId,
                         detailSeedSource: .browse(item),
+                        aspect: coverAspect,
                         onUserStateChanged: { state in
                             guard !state.inWatchlist else { return }
                             withAnimation {
@@ -179,6 +191,7 @@ struct WatchlistView: View {
     private var tvGridContent: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 40) {
+                let coverAspect = items.savedListCoverAspect
                 if usesTVTopMenu {
                     Text(.personalWatchlistTitle)
                         .font(.system(size: 64, weight: .bold))
@@ -204,6 +217,7 @@ struct WatchlistView: View {
                             focusedItemId: $focusedContentId,
                             contentId: item.contentId,
                             detailSeedSource: .browse(item),
+                            aspect: coverAspect,
                             cardWidthOverride: tvCardWidthOverride,
                             onUserStateChanged: { state in
                                 guard !state.inWatchlist else { return }
@@ -249,13 +263,14 @@ struct WatchlistView: View {
     #elseif os(iOS)
     private var filteredIOSItems: [BrowseItem] {
         if let dockPage { return items.filter(dockPage.filter.includes) }
-        return items.filter(selectedSection.includes)
+        return items.filter(activeSection.includes)
     }
 
-    /// Movies or TV Shows, whichever the picker or the dock narrows to.
-    private var iosShowsMovies: Bool {
-        if let dockPage { return dockPage.filter == .movies }
-        return selectedSection == .movies
+    /// The type the picker or the dock narrows to; the dock's All never
+    /// reaches the empty state, which needs a list with nothing at all.
+    private var iosEmptySection: PersonalMediaSection {
+        guard let dockPage else { return activeSection }
+        return dockPage.filter.section ?? .movies
     }
 
     /// The count for the For You tab's header; nil until the list loads.
@@ -266,7 +281,7 @@ struct WatchlistView: View {
 
     private var iosSelectedSectionEmptyState: some View {
         ContentUnavailableView {
-            Label(iosEmptyTitle, systemImage: iosShowsMovies ? "film" : "tv")
+            Label(iosEmptyTitle, systemImage: iosEmptySection.systemImage)
         } description: {
             Text(.personalWatchlistEmptyBody)
         }
@@ -274,7 +289,11 @@ struct WatchlistView: View {
     }
 
     private var iosEmptyTitle: LocalizedStringResource {
-        iosShowsMovies ? .personalWatchlistEmptyMoviesTitle : .personalWatchlistEmptyTvShowsTitle
+        switch iosEmptySection {
+        case .movies: .personalWatchlistEmptyMoviesTitle
+        case .tvShows: .personalWatchlistEmptyTvShowsTitle
+        case .audiobooks: .personalWatchlistEmptyAudiobooksTitle
+        }
     }
     #endif
 
