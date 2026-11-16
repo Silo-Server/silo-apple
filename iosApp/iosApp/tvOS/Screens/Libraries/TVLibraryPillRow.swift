@@ -9,11 +9,12 @@ import SwiftUI
 /// cascade dropdown (§5.3); `TVLibraryTypeTabView` renders the selected
 /// one, with `.recommended` as the landing default.
 enum TVLibraryPill: String, Hashable, CaseIterable {
+    // Case order is the order the cascade lists them in.
     /// The server-driven landing feed (recommendations + sections).
     case recommended
-    case collections
     /// The full library, browsable as an A–Z grid.
     case browse
+    case collections
 
     /// Resolved in the app language; `TVCascadeSelector` takes a `String`.
     var title: String {

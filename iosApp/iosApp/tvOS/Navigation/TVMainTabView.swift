@@ -23,6 +23,144 @@ private enum TVPersonalRootDestination: Hashable {
     case requests
 }
 
+/// Carries a page's request to focus the top menu up to the shell: Up at the
+/// page's first row while the bar cannot be reached natively. The page holds
+/// this instead of a closure over the shell, so a page that skipped a shell
+/// update never calls into an outdated copy of the shell.
+@Observable
+final class TVTopMenuFocusRelay {
+    private(set) var request = 0
+
+    func requestFocus() {
+        request += 1
+    }
+}
+
+/// What the entered menu does once focus is back on its bar anchor.
+private enum TVPanelReturn {
+    /// Up past the first row: the menu stays showing, as when resting on its tab.
+    case preview
+    /// Menu/Back: the menu closes.
+    case close
+}
+
+/// Which page sits under the top bar.
+private enum TVRootPageContent: Hashable {
+    case root(TVRootDestination)
+    case personal(TVPersonalRootDestination)
+}
+
+/// The page under the top bar.
+///
+/// The shell's body runs for every menu state change: a preview opening or
+/// closing, focus entering a panel, the bar lock releasing. The page views
+/// take closures, so SwiftUI could not tell an unchanged page from a changed
+/// one and re-rendered every visible row and card on each of those updates.
+/// Comparing only the values the page is built from lets them skip it.
+private struct TVRootPage: View, Equatable {
+    let content: TVRootPageContent
+    /// The library a type tab is scoped to; nil for every other page.
+    let activeLibrary: Library?
+    let selectedPill: Binding<TVLibraryPill>
+    /// `selectedPill`'s value when the shell built this page. Two bindings to
+    /// the same storage always read alike, so the comparison needs the value.
+    private let pill: TVLibraryPill
+    let focusRequest: Int
+    let detailReturnFocusRequest: Int
+    let menuOwnsFocus: Bool
+    let topMenuFocusRelay: TVTopMenuFocusRelay
+
+    init(
+        content: TVRootPageContent,
+        activeLibrary: Library?,
+        selectedPill: Binding<TVLibraryPill>,
+        focusRequest: Int,
+        detailReturnFocusRequest: Int,
+        menuOwnsFocus: Bool,
+        topMenuFocusRelay: TVTopMenuFocusRelay
+    ) {
+        self.content = content
+        self.activeLibrary = activeLibrary
+        self.selectedPill = selectedPill
+        pill = selectedPill.wrappedValue
+        self.focusRequest = focusRequest
+        self.detailReturnFocusRequest = detailReturnFocusRequest
+        self.menuOwnsFocus = menuOwnsFocus
+        self.topMenuFocusRelay = topMenuFocusRelay
+    }
+
+    static func == (lhs: TVRootPage, rhs: TVRootPage) -> Bool {
+        lhs.content == rhs.content
+            && lhs.activeLibrary == rhs.activeLibrary
+            && lhs.pill == rhs.pill
+            && lhs.focusRequest == rhs.focusRequest
+            && lhs.detailReturnFocusRequest == rhs.detailReturnFocusRequest
+            && lhs.menuOwnsFocus == rhs.menuOwnsFocus
+            && lhs.topMenuFocusRelay === rhs.topMenuFocusRelay
+    }
+
+    var body: some View {
+        let requestTopMenuFocus = { topMenuFocusRelay.requestFocus() }
+        switch content {
+        case .root(.home):
+            HomeView(
+                homeFocusRequest: focusRequest,
+                detailReturnFocusRequest: detailReturnFocusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: requestTopMenuFocus
+            )
+        case .root(.recommendations):
+            RecommendationsView(
+                focusRequest: focusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: requestTopMenuFocus
+            )
+        case .root(.libraryType(let type)):
+            TVLibraryTypeTabView(
+                type: type,
+                activeLibrary: activeLibrary,
+                selectedPill: selectedPill,
+                focusRequest: focusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: requestTopMenuFocus
+            )
+            // Re-create the tab body when the type changes so per-type
+            // section fetches reset cleanly (pill selection survives in
+            // pillSelections).
+            .id(type)
+        case .root(.calendar):
+            CalendarView(
+                focusRequest: focusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: requestTopMenuFocus
+            )
+        case .personal(.watchlist):
+            WatchlistView(
+                showsNavigationTitle: false,
+                usesTVTopMenu: true,
+                focusRequest: focusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: requestTopMenuFocus
+            )
+        case .personal(.favorites):
+            FavoritesView(
+                showsNavigationTitle: false,
+                usesTVTopMenu: true,
+                focusRequest: focusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: requestTopMenuFocus
+            )
+        case .personal(.requests):
+            TVRequestsPage(
+                mode: .hub,
+                focusRequest: focusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: requestTopMenuFocus
+            )
+        }
+    }
+}
+
 /// Root tvOS shell. Owns a custom Skyline top bar instead of relying on
 /// `TabView(.sidebarAdaptable)`, so content can use horizontal remote
 /// navigation without the system sidebar claiming leftward focus.
@@ -92,13 +230,27 @@ struct TVMainTabView: View {
     @State private var openPanel: TVTopMenuPanel?
     @State private var panelEntersFocus = false
     @State private var panelFocusEntryGeneration = 0
+    /// Bumped to make a menu repeat an entry claim that did not take.
+    @State private var panelFocusEntryRetry = 0
     @State private var panelHasFocus = false
+    /// The entry generation at which the panel itself last reported holding
+    /// focus. `panelHasFocus` is set ahead of that, when the shell hands focus
+    /// in, so it cannot tell whether the hand-in has landed.
+    @State private var panelFocusReportedGeneration = -1
     @State private var panelFocusExitTask: Task<Void, Never>?
+    /// Focus is on its way from the entered menu back to its bar anchor, and
+    /// what happens to the menu when it lands (`leavePanelForAnchor`).
+    @State private var panelReturn: TVPanelReturn?
     @State private var controlReceiver = TVControlReceiver.shared
     /// Bar element to re-focus after Menu-ing out of a panel — its own
     /// anchor, so focus returns to the dwelled tab/avatar (§7).
     @State private var panelReturnFocus: TVTopMenuPanel?
     @State private var isTopMenuFocused = false
+    /// The menu-bearing bar element focus rests on, as the bar reports it.
+    @State private var barFocusedPanel: TVTopMenuPanel?
+    /// The bar element focus is returning to after its menu closed, until it
+    /// lands there (`TVTopMenuBar.focusReturnPending`).
+    @State private var pendingBarReturn: TVTopMenuPanel?
     /// Content owns focus. The bar stays focusable (see
     /// `isBarLockedForContentHandoff`), so Up reaches it natively.
     @State private var isTopMenuFocusSuppressed = true
@@ -124,6 +276,8 @@ struct TVMainTabView: View {
     /// Search clears it.
     @State private var siriSearchRequest: AppRouter.SearchRequest?
     @State private var topMenuFocusRequest = 0
+    /// The page's Up-at-the-first-row requests for the top menu.
+    @State private var topMenuFocusRelay = TVTopMenuFocusRelay()
     /// Bumped by the focus watchdog to drop the bar's `@FocusState` when the
     /// engine has already dropped focus without telling it. Re-suppressing is
     /// not enough: the bar nils on the *transition* into suppression, and the
@@ -172,21 +326,25 @@ struct TVMainTabView: View {
                     selectedRoot: selectedRoot,
                     currentProfile: currentProfile,
                     isMenuFocused: $isTopMenuFocused,
+                    focusedPanelElement: $barFocusedPanel,
                     isFocusSuppressed: isTopMenuFocusSuppressed,
                     isLockedForContentHandoff: isBarLockedForContentHandoff || isBarLockedByPagePanel,
                     focusRequest: topMenuFocusRequest,
                     focusResetRequest: topMenuFocusResetRequest,
                     focusRequestTarget: panelReturnFocus,
+                    focusReturnPending: pendingBarReturn,
                     openPanel: openPanel,
                     panelHasFocus: panelHasFocus,
                     panelEntersFocus: panelEntersFocus,
+                    isPanelAnchorLive: isPanelAnchorLive,
                     onSelectRoot: selectRoot(_:),
                     onSearch: { navigateFromBar(.search) },
                     onDwell: handleDwell(_:),
                     onEnterPanel: enterPanelFor,
                     onEnterContent: enterContentFromBar,
                     onProfilePressed: openProfilePanelImmediately,
-                    onContentFocusHandoff: suppressTopMenuFocusForContentHandoff,
+                    onContentFocusHandoff: recordFocusLeftTopMenu,
+                    onReturnFromPanel: handleFocusReturnedFromPanel,
                     onExit: personalRoot != nil
                         ? returnFromPersonalRootInMenu
                         : (selectedRoot == .home ? nil : returnToHomeInMenu)
@@ -329,6 +487,14 @@ struct TVMainTabView: View {
             unlockBar()
             isTopMenuFocusSuppressed = false
         }
+        .onChange(of: topMenuFocusRelay.request) { _, _ in
+            focusTopMenuIfVisible()
+        }
+        .onChange(of: barFocusedPanel) { _, focused in
+            if focused != nil, focused == pendingBarReturn {
+                pendingBarReturn = nil
+            }
+        }
         .onChange(of: router.requestedTab) { _, requestedTab in
             guard let requestedTab else { return }
             router.requestedTab = nil
@@ -426,10 +592,10 @@ struct TVMainTabView: View {
 
             Group {
                 if let personalRoot {
-                    personalRootContent(personalRoot)
+                    rootPage(.personal(personalRoot))
                         .id(personalRoot)
                 } else {
-                    selectedRootContent
+                    rootPage(.root(selectedRoot))
                         .id(selectedRoot)
                 }
             }
@@ -446,7 +612,8 @@ struct TVMainTabView: View {
                 // the whole content subtree. Using `.disabled(openPanel != nil)`
                 // here made every visible button/card redraw in its disabled
                 // state when a dwell preview opened, which read as a page flash.
-                .allowsHitTesting(openPanel == nil)
+                .allowsHitTesting(!isPageBehindMenu)
+                .environment(\.isTVPageBehindMenu, isPageBehindMenu)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(edges: [.top, .horizontal])
@@ -473,78 +640,41 @@ struct TVMainTabView: View {
             && RequestsFeatureStore.shared.isKnownUnavailable
     }
 
+    /// The page is out of reach while a menu is showing, and while bar focus
+    /// rests on an element that has one. Left reachable there, a Down from a
+    /// library tab went to its menu only once the preview had opened; before
+    /// that, and after Menu closed the menu, it dropped into the page. The
+    /// suppression check lifts the block in the same update as a hand-down,
+    /// before the bar has reported losing focus.
+    private var isPageBehindMenu: Bool {
+        openPanel != nil || (barFocusedPanel != nil && !isTopMenuFocusSuppressed)
+    }
+
     /// The bar and an entered panel both own chrome focus. Native bar-focus
     /// telemetry can be false during those handoffs, so use shell ownership.
     private var menuOwnsFocus: Bool {
         !isTopMenuFocusSuppressed || panelEntersFocus
     }
 
-    @ViewBuilder
-    private var selectedRootContent: some View {
-        switch selectedRoot {
-        case .home:
-            HomeView(
-                homeFocusRequest: contentFocusRequest,
-                detailReturnFocusRequest: detailReturnFocusRequest,
-                isTopMenuFocused: menuOwnsFocus,
-                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
-            )
-        case .recommendations:
-            RecommendationsView(
-                focusRequest: contentFocusRequest,
-                isTopMenuFocused: menuOwnsFocus,
-                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
-            )
-        case .libraryType(let type):
-            let active = activeLibrary(for: type)
-            TVLibraryTypeTabView(
-                type: type,
-                activeLibrary: active,
-                selectedPill: pillSelection(for: type),
-                focusRequest: contentFocusRequest,
-                isTopMenuFocused: menuOwnsFocus,
-                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
-            )
-            // Re-create the tab body when the type changes so per-type
-            // section fetches reset cleanly (pill selection survives in
-            // pillSelections).
-            .id(type)
-        case .calendar:
-            CalendarView(
-                focusRequest: contentFocusRequest,
-                isTopMenuFocused: menuOwnsFocus,
-                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
-            )
+    /// The page for `content`, skipped by shell updates that leave its inputs
+    /// unchanged (`TVRootPage`).
+    private func rootPage(_ content: TVRootPageContent) -> some View {
+        var activeLibrary: Library?
+        var selectedPill = Binding.constant(TVLibraryPill.recommended)
+        if case .root(.libraryType(let type)) = content {
+            activeLibrary = self.activeLibrary(for: type)
+            selectedPill = pillSelection(for: type)
         }
-    }
-
-    @ViewBuilder
-    private func personalRootContent(_ destination: TVPersonalRootDestination) -> some View {
-        switch destination {
-        case .watchlist:
-            WatchlistView(
-                showsNavigationTitle: false,
-                usesTVTopMenu: true,
-                focusRequest: contentFocusRequest,
-                isTopMenuFocused: menuOwnsFocus,
-                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
-            )
-        case .favorites:
-            FavoritesView(
-                showsNavigationTitle: false,
-                usesTVTopMenu: true,
-                focusRequest: contentFocusRequest,
-                isTopMenuFocused: menuOwnsFocus,
-                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
-            )
-        case .requests:
-            TVRequestsPage(
-                mode: .hub,
-                focusRequest: contentFocusRequest,
-                isTopMenuFocused: menuOwnsFocus,
-                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
-            )
-        }
+        return TVRootPage(
+            content: content,
+            activeLibrary: activeLibrary,
+            selectedPill: selectedPill,
+            focusRequest: contentFocusRequest,
+            detailReturnFocusRequest: detailReturnFocusRequest,
+            menuOwnsFocus: menuOwnsFocus,
+            topMenuFocusRelay: topMenuFocusRelay
+        )
+        .equatable()
     }
 
     // MARK: - Anchored panel overlay (§5.3 / §5.8)
@@ -643,7 +773,7 @@ struct TVMainTabView: View {
                 reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.topMenuPanelOpenDuration),
                 value: isActive
             )
-            .onExitCommand { closePanel() }
+            .onExitCommand { leavePanelForAnchor(closing: true) }
     }
 
     /// Leading inset that places the panel under its anchor. Library
@@ -727,11 +857,13 @@ struct TVMainTabView: View {
             libraries: libraries(of: type),
             currentScopeId: activeLibrary(for: type)?.id,
             entersPanel: isActive && panelEntersFocus,
+            acceptsFocus: isActive,
             focusEntryGeneration: panelFocusEntryGeneration,
+            focusEntryRetry: panelFocusEntryRetry,
             onCommitLibrary: { commitScope(type: type, library: $0, pill: nil) },
             onCommitSection: { commitScope(type: type, library: $0, pill: $1) },
             onPreviewLibrary: { prefetchLibrarySectionsIfNeeded($0) },
-            onClose: { closePanel() },
+            onClose: { leavePanelForAnchor(closing: false) },
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
             onExitToContent: { exitPanelToContent() }
         )
@@ -741,8 +873,9 @@ struct TVMainTabView: View {
         TVForYouDropdown(
             entersPanel: isActive && panelEntersFocus,
             focusEntryGeneration: panelFocusEntryGeneration,
+            focusEntryRetry: panelFocusEntryRetry,
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
-            onClose: { closePanel() },
+            onClose: { leavePanelForAnchor(closing: false) },
             onExitToContent: { exitPanelToContent() },
             onWatchlist: { closePanel(then: { navigateFromBar(.watchlist) }) },
             onFavorites: { closePanel(then: { navigateFromBar(.favorites) }) },
@@ -758,6 +891,7 @@ struct TVMainTabView: View {
             serverHost: profileMenuServerLine,
             entersPanel: isActive && panelEntersFocus,
             focusEntryGeneration: panelFocusEntryGeneration,
+            focusEntryRetry: panelFocusEntryRetry,
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
             showsRequests: RequestsFeatureStore.shared.isEnabled,
             showsWatchParty: WatchPartyEntry.isAvailable,
@@ -854,12 +988,36 @@ struct TVMainTabView: View {
     /// Manually refresh panel row focus, used when d-pad-down arrives while
     /// the matching panel is already open.
     private func enterOpenPanel() {
-        guard openPanel != nil else { return }
+        guard openPanel != nil, !panelEntersFocus else { return }
         panelFocusExitTask?.cancel()
         panelFocusExitTask = nil
+        panelReturn = nil
         panelEntersFocus = true
         panelHasFocus = true
         panelFocusEntryGeneration += 1
+        confirmPanelEntry(generation: panelFocusEntryGeneration)
+    }
+
+    /// Check that a hand-in landed. The bar's own focus state is the reliable
+    /// sign: while it still names the menu's anchor, focus never left the tab.
+    /// The menu is asked to claim again; if it still has not taken focus, it
+    /// falls back to a preview, which is what the screen then shows.
+    private func confirmPanelEntry(generation: Int) {
+        Task { @MainActor in
+            for attempt in 0..<5 {
+                try? await Task.sleep(for: .milliseconds(60))
+                guard panelEntersFocus,
+                      panelFocusEntryGeneration == generation,
+                      let openPanel,
+                      barFocusedPanel == openPanel else { return }
+                if attempt < 4 {
+                    panelFocusEntryRetry += 1
+                } else {
+                    panelEntersFocus = false
+                    panelHasFocus = false
+                }
+            }
+        }
     }
 
     /// Route a d-pad-down on a panel-bearing bar element (§5.3): open its
@@ -882,17 +1040,18 @@ struct TVMainTabView: View {
         enterOpenPanel()
     }
 
-    /// Open an anchored panel and hand focus into it in the same state
-    /// transition. This is reserved for explicit entry gestures, not dwell,
-    /// so hover-open menus never trap horizontal tab navigation.
+    /// Open an anchored panel and hand focus into it. This is reserved for
+    /// explicit entry gestures, not dwell, so hover-open menus never trap
+    /// horizontal tab navigation.
     private func openPanelAndEnter(_ panel: TVTopMenuPanel) {
-        panelFocusExitTask?.cancel()
-        panelFocusExitTask = nil
-        panelEntersFocus = true
-        panelHasFocus = true
-        panelFocusEntryGeneration += 1
-        withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
-            openPanel = panel
+        // Show the panel first and enter it a turn later. A closed panel is
+        // disabled, and a focus claim made in the update that enables it is
+        // dropped: the bar had already gone inert, so nothing held focus and
+        // the next Menu press left the app.
+        openPanelPreview(panel)
+        DispatchQueue.main.async {
+            guard openPanel == panel, !panelEntersFocus else { return }
+            enterOpenPanel()
         }
     }
 
@@ -916,9 +1075,86 @@ struct TVMainTabView: View {
         // Restore the panel's tab/avatar before the action so a route push
         // can take focus and dismissing a confirmation returns to the bar.
         if wasFocused {
+            expectBarReturn(to: panel)
             focusTopMenuIfVisible(focusing: panel)
         }
         action?()
+    }
+
+    /// The entered menu's own bar element stays focusable for the dropdowns,
+    /// whose rows are real focus targets: Up from the first row then reaches
+    /// it natively, by a click or a swipe. It goes live only once a row has
+    /// reported focus: while the shell is still handing focus in, an inert
+    /// anchor is what makes the engine move off the tab, and a live one kept
+    /// focus there with the menu open and no row highlighted. The library
+    /// cascade is one composite focus item, so a live anchor above it would
+    /// take every Up press; its anchor goes live only for the return itself.
+    private var isPanelAnchorLive: Bool {
+        guard panelEntersFocus, let openPanel else { return false }
+        if panelReturn != nil { return true }
+        switch openPanel {
+        case .profile, .root(.recommendations):
+            return panelFocusReportedGeneration == panelFocusEntryGeneration
+        case .root:
+            return false
+        }
+    }
+
+    /// Leave the entered menu for its bar anchor: Up past the first row keeps
+    /// the menu showing as a preview, Menu/Back closes it. Focus moves from
+    /// the menu straight to the anchor while both are live, so the engine has
+    /// no repair to make and no wrong tab to stop on. The menu changes state
+    /// only once focus has landed (`handleFocusReturnedFromPanel`).
+    private func leavePanelForAnchor(closing: Bool) {
+        guard let panel = openPanel, panelEntersFocus else {
+            if closing { closePanel() }
+            return
+        }
+        if closing || panelReturn == nil {
+            panelReturn = closing ? .close : .preview
+        }
+        panelReturnFocus = panel
+        // The anchor goes live in this update; ask for focus once that has
+        // committed.
+        DispatchQueue.main.async {
+            guard openPanel == panel, panelEntersFocus, panelReturn != nil else { return }
+            topMenuFocusRequest += 1
+        }
+        // A return that never lands falls back to closing the menu the old
+        // way, so the remote cannot be left inside a menu it tried to leave.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard openPanel == panel, panelEntersFocus, panelReturn != nil else { return }
+            panelReturn = nil
+            closePanel()
+        }
+    }
+
+    /// Focus landed on the entered menu's anchor.
+    private func handleFocusReturnedFromPanel() {
+        panelFocusExitTask?.cancel()
+        panelFocusExitTask = nil
+        if panelReturn == .close {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.cascadeScrimDuration)) {
+                openPanel = nil
+            }
+        }
+        panelReturn = nil
+        panelEntersFocus = false
+        panelHasFocus = false
+    }
+
+    /// Hold the bar's focus highlight for `panel`'s element until focus lands
+    /// on it. The limit keeps a return that never lands from hiding where
+    /// focus really is.
+    private func expectBarReturn(to panel: TVTopMenuPanel) {
+        pendingBarReturn = panel
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            if pendingBarReturn == panel {
+                pendingBarReturn = nil
+            }
+        }
     }
 
     /// If d-pad down escapes past the last row in an open dropdown, tvOS may
@@ -930,6 +1166,12 @@ struct TVMainTabView: View {
 
         if hasFocus {
             panelHasFocus = true
+            // Down from the tab reached a previewed menu natively. Enter it,
+            // so the bar goes inert and the entry row takes the highlight.
+            if openPanel != nil, !panelEntersFocus {
+                enterOpenPanel()
+            }
+            panelFocusReportedGeneration = panelFocusEntryGeneration
             return
         }
 
@@ -1259,9 +1501,26 @@ struct TVMainTabView: View {
     }
 
     private func suppressTopMenuFocusForContentHandoff() {
+        pendingBarReturn = nil
         isTopMenuFocused = false
         isTopMenuFocusSuppressed = true
         lockBarForContentHandoff()
+    }
+
+    /// The bar lost focus without the shell handing it anywhere: a native Down
+    /// from a tab into the page, or the engine dropping the bar's focus.
+    private func recordFocusLeftTopMenu() {
+        guard TVFocusSystemProbe.focusedItem() != nil else {
+            // Nothing holds focus, so the engine still has a repair to make,
+            // and it must not land back in the bar.
+            suppressTopMenuFocusForContentHandoff()
+            return
+        }
+        // The move already landed, so there is no hand-down for the bar to
+        // interrupt. Locking the bar here kept an immediate Up from reaching
+        // it natively for 800 ms; a swipe has no other route to the bar.
+        isTopMenuFocused = false
+        isTopMenuFocusSuppressed = true
     }
 
     /// How long the bar stays disabled after a hand-down. Covers a row's

@@ -40,9 +40,16 @@ struct TVCascadeSelector: View {
     let currentScopeId: Int?
     /// Whether focus has entered the panel.
     let entersPanel: Bool
+    /// Whether the panel is showing, previewed or entered. A previewed panel
+    /// takes focus so Down from its tab reaches it natively, by a click or a
+    /// swipe; the host then enters it.
+    var acceptsFocus = false
     /// Bumped by the host the moment focus should enter the panel — lands
     /// on the current-scope library row.
     let focusEntryGeneration: Int
+    /// Bumped by the host to repeat an entry claim that did not take: one
+    /// made right after the tab took focus can be ignored.
+    var focusEntryRetry = 0
     /// Commit a library scope → its Browse landing.
     let onCommitLibrary: (Library) -> Void
     /// Commit a library scope + land on a specific section (pill).
@@ -75,6 +82,10 @@ struct TVCascadeSelector: View {
     /// Debounce task for the flyout follow (§5.3).
     @State private var flyoutFollowTask: Task<Void, Never>?
     @State private var lastAppliedEntryGeneration = 0
+    /// Identity of the focusable container; changed to rebuild it for a
+    /// handed-in entry. A claim made right after the tab took focus is ignored
+    /// by a container that already exists, and taken by one created with it.
+    @State private var claimIdentity = 0
     /// Each library row's vertical center in the level-1 HStack's coordinate
     /// space. The flyout offsets to align its first section with the anchored
     /// row, so the composite highlight does not visually jump on Right.
@@ -92,8 +103,8 @@ struct TVCascadeSelector: View {
         case section(Int, TVLibraryPill)
     }
 
-    /// Every library type offers Recommended (the landing default),
-    /// Collections, and Browse (§3).
+    /// Every library type offers Recommended (the landing default), Browse,
+    /// and Collections (§3), listed in that order.
     private var pills: [TVLibraryPill] { TVLibraryPill.allCases }
 
     /// A single-library tab skips the library list and shows just that
@@ -114,6 +125,7 @@ struct TVCascadeSelector: View {
         .onChange(of: focusEntryGeneration) { _, generation in
             applyEntryGeneration(generation)
         }
+        .onChange(of: focusEntryRetry) { _, _ in reclaimPanelFocus() }
         .onChange(of: focus) { _, newValue in handleFocusChange(newValue) }
         .onChange(of: panelFocused) { _, isFocused in handlePanelFocusedChange(isFocused) }
         .onChange(of: entersPanel) { _, entered in
@@ -128,10 +140,11 @@ struct TVCascadeSelector: View {
         }
         .onDisappear { flyoutFollowTask?.cancel() }
         .contentShape(Rectangle())
-        .focusable(entersPanel)
+        .focusable(entersPanel || acceptsFocus)
         .focused($panelFocused)
         .onTapGesture(perform: commitFocusedSelection)
         .onMoveCommand(perform: handleMoveCommand)
+        .id(claimIdentity)
     }
 
     // MARK: - Two-level (multi-library)
@@ -374,6 +387,8 @@ struct TVCascadeSelector: View {
               generation > 0,
               generation != lastAppliedEntryGeneration else { return }
         lastAppliedEntryGeneration = generation
+        // Focus that arrived natively is already here; rebuilding would drop it.
+        if !panelFocused { claimIdentity += 1 }
         if isSingleLibrary, let library = libraries.first {
             // Single-level: land on the first section (§5.3).
             onPreviewLibrary(library)
@@ -404,7 +419,9 @@ struct TVCascadeSelector: View {
     }
 
     private func handlePanelFocusedChange(_ isFocused: Bool) {
-        onPanelFocusChanged(isFocused && focus != nil)
+        // Focus reaching the preview has no highlighted row yet. Report it so
+        // the host enters the panel, which lands the highlight.
+        onPanelFocusChanged(isFocused && (focus != nil || !entersPanel))
     }
 
     /// Move the flyout to a newly focused library row after a rest
@@ -515,6 +532,17 @@ struct TVCascadeSelector: View {
             if let library = libraries.first(where: { $0.id == libraryId }) {
                 onCommitSection(library, pill)
             }
+        }
+    }
+
+    /// The host found focus still on the tab. This state can read as if the
+    /// claim had taken, so clear it first and claim again a turn later.
+    private func reclaimPanelFocus() {
+        guard entersPanel, focus != nil else { return }
+        if panelFocused { panelFocused = false }
+        DispatchQueue.main.async {
+            claimIdentity += 1
+            panelFocused = true
         }
     }
 
