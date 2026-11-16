@@ -238,7 +238,7 @@ enum SiloTheme {
         /// Focus-dwell before a library tab (or the profile avatar) opens
         /// its anchored panel. Sweeping across the bar never opens it;
         /// resting this long does. Tuned per Open-Q5/Q7 on device.
-        static let cascadeDwellMilliseconds: UInt64 = 250
+        static let cascadeDwellMilliseconds: UInt64 = 120
         /// Cascade open scale-up start (§4.2: 0.96 → 1.0).
         static let cascadeOpenScale: CGFloat = 0.96
         /// Cascade panel scale/fade duration (§4.2, 180 ms).

@@ -339,6 +339,7 @@ struct DownloadAttentionRow: View {
 
 // MARK: - Movie row
 
+/// A standalone movie or audiobook.
 struct DownloadMovieRow: View {
     let record: DownloadRecord
     let watched: Bool
@@ -351,10 +352,12 @@ struct DownloadMovieRow: View {
         Button(action: onTap) {
             HStack(spacing: 12) {
                 if selecting { DownloadSelectionCircle(selected: selected) }
+                // A book's square cover takes the poster's height.
                 DownloadPosterThumb(
                     thumbhash: record.posterThumbhash,
                     fileURL: DownloadManager.shared.posterImageURL(for: record),
-                    width: 40
+                    width: record.isAudiobook ? 60 : 40,
+                    aspectRatio: record.isAudiobook ? 1 : 2.0 / 3.0
                 )
                 VStack(alignment: .leading, spacing: 3) {
                     Text(record.displayTitle(locale: locale))
@@ -379,7 +382,9 @@ struct DownloadMovieRow: View {
         var parts: [String] = []
         if let sub = record.displaySubtitle(locale: locale), !sub.isEmpty { parts.append(sub) }
         parts.append(DownloadFormatting.bytes(record.fileSize))
-        if watched { parts.append(AppLanguage.string(.downloadsRowWatchedLower, locale: locale)) }
+        if watched {
+            parts.append(AppLanguage.string(record.isAudiobook ? .detailAudiobookFinished : .downloadsRowWatchedLower, locale: locale))
+        }
         return parts.joined(separator: " · ")
     }
 }

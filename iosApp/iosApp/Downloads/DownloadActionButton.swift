@@ -1,7 +1,8 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Download control for the movie / episode detail action row. Reads the
+/// Download control for the movie, episode and audiobook detail action
+/// rows. Reads the
 /// live record straight from `DownloadManager.shared` (an `@Observable`
 /// singleton), so it reflects download progress without the detail view
 /// model having to thread any state through.
@@ -9,8 +10,16 @@ import SwiftUI
 /// Draws a bare glyph over a state-derived caption, sized like the
 /// neighboring Favorite / Watchlist / Mark Seen actions.
 struct DownloadActionButton: View {
+    private enum Kind {
+        case movie
+        case episode
+        /// A single-file book, saved as it is: no quality or version choice.
+        /// The server's resume point and book length seed offline resume.
+        case audiobook(fileId: Int, resumePosition: Double?, duration: Double?)
+    }
+
     private let contentId: String
-    private let isEpisode: Bool
+    private let kind: Kind
     private let seriesId: String?
     private let displayTitle: String
     /// Stored with the record in English (D44); rows build the shown
@@ -55,7 +64,7 @@ struct DownloadActionButton: View {
         showOptions: Binding<Bool>
     ) {
         contentId = detail.contentId
-        isEpisode = detail.type == "episode"
+        kind = detail.type == "episode" ? .episode : .movie
         seriesId = detail.seriesId
         displayTitle = detail.title
         displaySubtitle = Self.episodeSubtitle(
@@ -75,6 +84,38 @@ struct DownloadActionButton: View {
         lastEditionKey = detail.userData?.lastEditionKey
         variants = detail.playbackVariants
         _showOptions = showOptions
+    }
+
+    /// Audiobook action-row button for a book stored as one file, `part`.
+    /// `title` is the page's cleaned title and `author` the row subtitle.
+    init(audiobook detail: ItemDetail, part: FileVersion, title: String, author: String?) {
+        contentId = detail.contentId
+        kind = .audiobook(
+            fileId: part.fileId,
+            resumePosition: detail.userData?.positionSeconds,
+            duration: detail.audiobook?.totalDurationSeconds.map(Double.init)
+        )
+        seriesId = nil
+        displayTitle = title
+        displaySubtitle = author
+        seasonNumber = nil
+        episodeNumber = nil
+        year = nil
+        posterThumbhash = detail.posterThumbhash
+        versions = [part]
+        selectedVersionFileId = part.fileId
+        selectedEditionId = nil
+        lastVersionFileId = nil
+        lastFileInProgress = false
+        lastEditionKey = nil
+        variants = nil
+        _showOptions = .constant(false)
+    }
+
+    /// A book has nothing to choose: one file, saved as it is.
+    private var offersOptions: Bool {
+        if case .audiobook = kind { return false }
+        return true
     }
 
     var body: some View {
@@ -117,7 +158,9 @@ struct DownloadActionButton: View {
                 )
             ) {
                 Button(.downloadsLargeDownloadAnyway) { startWithDefaults(fileId: warnedFileId) }
-                Button(.downloadsLargeChooseOptions) { showOptions = true }
+                if offersOptions {
+                    Button(.downloadsLargeChooseOptions) { showOptions = true }
+                }
                 Button(.commonCancel, role: .cancel) {}
             } message: {
                 if let largeDownloadWarning {
@@ -143,8 +186,10 @@ struct DownloadActionButton: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(.audiobookDetailDownload))
                 .contextMenu {
-                    Button { showOptions = true } label: {
-                        Label(.downloadsActionOptions, systemImage: "slider.horizontal.3")
+                    if offersOptions {
+                        Button { showOptions = true } label: {
+                            Label(.downloadsActionOptions, systemImage: "slider.horizontal.3")
+                        }
                     }
                 }
 
@@ -208,8 +253,14 @@ struct DownloadActionButton: View {
 
             case .failed:
                 Menu {
-                    Button { showOptions = true } label: {
-                        Label(.downloadsActionRetryWithOptions, systemImage: "arrow.clockwise")
+                    if offersOptions {
+                        Button { showOptions = true } label: {
+                            Label(.downloadsActionRetryWithOptions, systemImage: "arrow.clockwise")
+                        }
+                    } else if let id = record?.id {
+                        Button { manager.retryDownload(id: id) } label: {
+                            Label(.commonRetry, systemImage: "arrow.clockwise")
+                        }
                     }
                     Button(role: .destructive, action: delete) {
                         Label(.downloadsActionRemove, systemImage: "trash")
@@ -279,7 +330,18 @@ struct DownloadActionButton: View {
     private func startDownload(_ options: DownloadRequestOptions) {
         Task {
             do {
-                if isEpisode {
+                switch kind {
+                case let .audiobook(fileId, resumePosition, duration):
+                    try await manager.downloadAudiobook(
+                        contentId: contentId,
+                        fileId: fileId,
+                        displayTitle: displayTitle,
+                        author: displaySubtitle,
+                        posterThumbhash: posterThumbhash,
+                        resumePosition: resumePosition,
+                        bookDuration: duration
+                    )
+                case .episode:
                     try await manager.downloadEpisode(
                         seriesId: seriesId ?? contentId,
                         episodeId: contentId,
@@ -291,7 +353,7 @@ struct DownloadActionButton: View {
                         fileId: options.fileId,
                         quality: options.quality
                     )
-                } else {
+                case .movie:
                     try await manager.downloadMovie(
                         contentId: contentId,
                         displayTitle: displayTitle,
