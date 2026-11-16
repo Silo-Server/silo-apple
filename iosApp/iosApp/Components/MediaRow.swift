@@ -233,7 +233,7 @@ struct MediaRow: View {
         }
     }
 
-    /// Context-menu mutations can immediately remove the focused card from a
+    /// Context-menu mutations can remove the focused card from a
     /// membership-driven row (Continue Watching, Next Up). Preserve its old
     /// position and claim the card that slid into that slot, falling back to
     /// the preceding card when the removed item was last.
@@ -251,6 +251,7 @@ struct MediaRow: View {
         claimReplacementFocus(
             replacementId,
             removedId: removedId,
+            engineFallbackId: newIds.first,
             generation: generation
         )
     }
@@ -259,16 +260,24 @@ struct MediaRow: View {
     /// verify on a later turn after the focus engine has processed the write.
     /// A bounded retry covers the context-menu dismissal repair without
     /// fighting a legitimate focus move to another card.
+    ///
+    /// When the removal lands after the context menu has closed (any real
+    /// network round trip), focus is still on the removed card and tvOS moves
+    /// it to the row's first card itself, which scrolls the row back to its
+    /// start. Take focus back from that card during the first two attempts,
+    /// before a person could have pressed anything.
     private func claimReplacementFocus(
         _ replacementId: String,
         removedId: String,
+        engineFallbackId: String?,
         generation: Int,
         attempt: Int = 0
     ) {
         DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0 : 0.08)) {
+            let movedByEngine = attempt < 2 && focusedItemId == engineFallbackId
             guard generation == focusRestorationGeneration,
                   focusRestorationOwner?.wrappedValue == true,
-                  focusedItemId == nil || focusedItemId == removedId else { return }
+                  focusedItemId == nil || focusedItemId == removedId || movedByEngine else { return }
 
             focusedItemId = replacementId
             lastFocusedItemId = replacementId
@@ -284,6 +293,7 @@ struct MediaRow: View {
                 claimReplacementFocus(
                     replacementId,
                     removedId: removedId,
+                    engineFallbackId: engineFallbackId,
                     generation: generation,
                     attempt: attempt + 1
                 )

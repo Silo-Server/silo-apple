@@ -87,12 +87,23 @@ struct HomeFeedRow: View {
                 )
                 visibleItemId = initialId
             }
-            .onChange(of: section.items.map(\.contentId)) { _, newIds in
-                let preferred = newIds.contains(visibleItemId ?? "")
-                    ? visibleItemId
-                    : newIds.first
-                visibleItemId = preferred
+            .onChange(of: section.items.map(\.contentId)) { oldIds, newIds in
+                visibleItemId = Self.scrollAnchorId(keeping: visibleItemId, from: oldIds, to: newIds)
             }
+    }
+
+    /// The card a row stays parked on when its items change. Removing the card
+    /// at the scroll anchor keeps the row where it was by settling on the card
+    /// that slid into its place, or the one before it when it was last, rather
+    /// than sending the row back to its start.
+    static func scrollAnchorId(keeping currentId: String?, from oldIds: [String], to newIds: [String]) -> String? {
+        guard let currentId else { return newIds.first }
+        if newIds.contains(currentId) { return currentId }
+        guard let oldIndex = oldIds.firstIndex(of: currentId) else { return newIds.first }
+        let remaining = Set(newIds)
+        return oldIds[oldIndex...].first(where: remaining.contains)
+            ?? oldIds[..<oldIndex].last(where: remaining.contains)
+            ?? newIds.first
     }
 
     private var cardsScroll: some View {
