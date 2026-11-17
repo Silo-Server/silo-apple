@@ -460,6 +460,8 @@ struct TVItemDetailView: View {
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleSeriesWatched: { Task { await viewModel.toggleWatched() } },
                 onToggleSeasonWatched: { Task { await viewModel.toggleSelectedSeasonWatched() } },
+                isNotInterested: viewModel.isNotInterested,
+                onToggleNotInterested: { Task { await viewModel.toggleNotInterested() } },
                 onPersonTap: { personId in
                     if !personId.isEmpty {
                         router.navigate(to: .personDetail(personId: personId))
@@ -580,6 +582,8 @@ struct TVItemDetailView: View {
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
+                isNotInterested: viewModel.isNotInterested,
+                onToggleNotInterested: { Task { await viewModel.toggleNotInterested() } },
                 onPersonTap: { personId in
                     if !personId.isEmpty {
                         router.navigate(to: .personDetail(personId: personId))

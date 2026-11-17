@@ -58,6 +58,26 @@ enum HomeSectionsMutation {
         }
     }
 
+    /// The rows a Not interested title leaves: the recommendation rows and the
+    /// discovery rows the server filters (`sections.HidesNotInterested`, and
+    /// web's `NOT_INTERESTED_HIDING_SECTION_TYPES`). Rows of what is new, in
+    /// progress, saved or chosen keep it.
+    static let notInterestedSectionTypes: Set<String> = [
+        "recommended_for_you", "because_you_watched", "similar_users_liked", "taste_match",
+        "hidden_gems", "critically_acclaimed", "award_winners", "forgotten_favorites",
+        "format_showcase", "editorial_spotlight", "seasonal_themed", "mood_collection",
+        "trending_on_server", "most_watched", "trending_discover", "genre_roulette",
+        "anniversaries", "short_watches",
+    ]
+
+    /// Removes a title marked Not interested from the rows that suggest it.
+    static func removingNotInterested(
+        contentId: String,
+        from sections: [ResolvedSection]
+    ) -> [ResolvedSection] {
+        removingItems(from: sections, sectionTypes: notInterestedSectionTypes) { $0.contentId == contentId }
+    }
+
     /// Removes a newly completed item from rows whose membership is derived
     /// from playback state. Other Home rows can still show the same title.
     static func removingCompletedItem(

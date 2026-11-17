@@ -247,6 +247,26 @@ final class SectionCollectionRowsTests: XCTestCase {
         XCTAssertEqual(cached?.sections.first { $0.id == "franchises" }?.collections, cards)
     }
 
+    @MainActor
+    func testMarkingNotInterestedLeavesCollectionRows() async throws {
+        ResponseCache.shared.remove(CacheKey.homeSections)
+        defer { ResponseCache.shared.remove(CacheKey.homeSections) }
+        let marked = try item("movie:marked")
+        let cards = [libraryCard("a"), userCard("b")]
+        let response = SectionsResponse(sections: [
+            section(id: "recommended", type: "recommended_for_you", items: [marked]),
+            section(id: "franchises", type: ResolvedSection.collectionPostersType, collections: cards),
+        ])
+        let viewModel = HomeViewModel(fetchHomeSections: { response })
+        await viewModel.loadSections()
+
+        viewModel.removeNotInterested(contentId: marked.contentId)
+
+        // The emptied recommendation row goes; the collections stay.
+        XCTAssertEqual(viewModel.sections.map(\.id), ["franchises"])
+        XCTAssertEqual(viewModel.sections[0].collections, cards)
+    }
+
     // MARK: - Row limit and library scope
 
     func testRowLimitLeavesEveryCollectionCard() throws {

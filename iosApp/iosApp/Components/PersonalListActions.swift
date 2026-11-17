@@ -55,3 +55,43 @@ enum PersonalListSync {
         PersonalStateSync.invalidateDerivedLists()
     }
 }
+
+/// Server sync behind Not interested, from a card menu or a detail page.
+@MainActor
+enum NotInterestedSync {
+    /// Only movies and series take the mark; a series mark covers its episodes.
+    static func canMark(_ type: String?) -> Bool {
+        type == "movie" || type == "series"
+    }
+
+    /// Anything but `.applied` means nothing changed locally. A new mark tells
+    /// a mounted Home to drop the card from its recommendation rows at once;
+    /// the refetch that follows already leaves it out.
+    static func set(contentId: String, to marked: Bool) async -> PersonalStateOutcome {
+        let outcome = await PersonalStateSync.outcome {
+            try await PersonalStateSync.set(.notInterested, contentId: contentId, to: marked)
+        }
+        if outcome == .applied {
+            applied(contentId: contentId, marked: marked)
+        }
+        return outcome
+    }
+
+    /// Local follow-up to a mark or clear the server applied.
+    static func applied(contentId: String, marked: Bool) {
+        if marked {
+            NotificationCenter.default.post(
+                name: .titleMarkedNotInterested, object: nil, userInfo: [contentIdKey: contentId]
+            )
+        }
+        PersonalStateSync.invalidateItemState(contentId: contentId)
+    }
+
+    static let contentIdKey = "contentId"
+}
+
+extension Notification.Name {
+    /// Posted on the main actor after the server applied a Not interested
+    /// mark; `userInfo[NotInterestedSync.contentIdKey]` holds the title.
+    static let titleMarkedNotInterested = Notification.Name("titleMarkedNotInterested")
+}

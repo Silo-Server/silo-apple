@@ -85,6 +85,9 @@ struct MediaItemUserState: Codable, Hashable {
     let played: Bool
     let isFavorite: Bool
     let inWatchlist: Bool
+    /// The profile marked the movie or series Not interested. Nil when the
+    /// server predates the mark, which then can't be offered.
+    var notInterested: Bool? = nil
     /// Episodes the profile has watched, and available episodes it has not.
     /// The v2 catalog sends them only for a series or season the profile has
     /// not finished.
@@ -95,12 +98,14 @@ struct MediaItemUserState: Codable, Hashable {
         played: Bool = false,
         isFavorite: Bool = false,
         inWatchlist: Bool = false,
+        notInterested: Bool? = nil,
         watchedCount: Int? = nil,
         unplayedCount: Int? = nil
     ) {
         self.played = played
         self.isFavorite = isFavorite
         self.inWatchlist = inWatchlist
+        self.notInterested = notInterested
         self.watchedCount = watchedCount
         self.unplayedCount = unplayedCount
     }

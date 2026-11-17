@@ -283,6 +283,10 @@ struct MediaCard: View {
 
     private var isInWatchlist: Bool { personalState.inWatchlist(userState) }
 
+    private var offersNotInterested: Bool {
+        hasPersonalActions && MediaCardPersonalState.offersNotInterested(type: mediaType, userState)
+    }
+
     private var canSetWatched: Bool {
         onSetWatched != nil || (hasPersonalActions && aspect != .square)
     }
@@ -294,10 +298,12 @@ struct MediaCard: View {
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: isInWatchlist,
+            isNotInterested: personalState.isNotInterested(userState),
             isUpdating: personalState.feedback.isUpdating,
             onToggleWatched: canSetWatched ? toggleWatched : nil,
             onToggleFavorite: hasPersonalActions ? togglePersonalFavorite : nil,
-            onToggleWatchlist: hasPersonalActions ? togglePersonalWatchlist : nil
+            onToggleWatchlist: hasPersonalActions ? togglePersonalWatchlist : nil,
+            onToggleNotInterested: offersNotInterested ? toggleNotInterested : nil
         )
     }
 
@@ -322,6 +328,11 @@ struct MediaCard: View {
     private func togglePersonalWatchlist() {
         guard let contentId else { return }
         personalState.toggleWatchlist(contentId: contentId, from: userState, onApplied: onUserStateChanged)
+    }
+
+    private func toggleNotInterested() {
+        guard let contentId else { return }
+        personalState.toggleNotInterested(contentId: contentId, from: userState, onApplied: onUserStateChanged)
     }
 
     private var cardContent: some View {

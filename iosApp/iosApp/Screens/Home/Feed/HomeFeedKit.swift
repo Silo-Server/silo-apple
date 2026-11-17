@@ -240,10 +240,13 @@ private struct HomeCardMenu: ViewModifier {
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: inWatchlist,
+            isNotInterested: personalState.isNotInterested(item.userState),
             isUpdating: personalState.feedback.isUpdating,
             onToggleWatched: canSetWatched ? toggleWatched : nil,
             onToggleFavorite: hasPersonalActions ? toggleFavorite : nil,
-            onToggleWatchlist: hasPersonalActions ? toggleWatchlist : nil
+            onToggleWatchlist: hasPersonalActions ? toggleWatchlist : nil,
+            onToggleNotInterested: MediaCardPersonalState.offersNotInterested(type: item.type, item.userState)
+                ? toggleNotInterested : nil
         )
 
         if let onRemoveFromContinueWatching {
@@ -269,6 +272,10 @@ private struct HomeCardMenu: ViewModifier {
 
     private func toggleWatchlist() {
         personalState.toggleWatchlist(contentId: item.contentId, from: item.userState)
+    }
+
+    private func toggleNotInterested() {
+        personalState.toggleNotInterested(contentId: item.contentId, from: item.userState)
     }
 }
 

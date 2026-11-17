@@ -111,6 +111,25 @@ final class HomeSectionsMutationTests: XCTestCase {
         XCTAssertEqual(result[2].totalCount, 1)
     }
 
+    func testNotInterestedLeavesOnlyTheRowsThatSuggestIt() throws {
+        let target = try makeItem(contentId: "target")
+        let other = try makeItem(contentId: "other")
+        let sections = [
+            makeSection(id: "recommended", type: "recommended_for_you", totalCount: 2, items: [target, other]),
+            makeSection(id: "gems", type: "hidden_gems", totalCount: 1, items: [target]),
+            makeSection(id: "continue", type: "continue_watching", totalCount: 1, items: [target]),
+            makeSection(id: "recent", type: "recently_added", totalCount: 1, items: [target]),
+            makeSection(id: "watchlist", type: "watchlist", totalCount: 1, items: [target]),
+        ]
+
+        let result = HomeSectionsMutation.removingNotInterested(contentId: target.contentId, from: sections)
+
+        XCTAssertEqual(result.map { $0.items.map(\.contentId) }, [
+            ["other"], [], ["target"], ["target"], ["target"],
+        ])
+        XCTAssertEqual(result.map(\.totalCount), [1, 0, 1, 1, 1])
+    }
+
     @MainActor
     func testSuccessfulDismissalUpdatesVisibleAndCachedSections() async throws {
         let target = try makeItem(contentId: "target")

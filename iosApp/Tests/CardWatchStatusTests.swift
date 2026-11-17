@@ -22,6 +22,7 @@ final class CardWatchStatusTests: XCTestCase {
         let state = try HTTPClient.makeJSONDecoder().decode(MediaItemUserState.self, from: Data(json.utf8))
         XCTAssertEqual(state.episodesLeft, 73)
         XCTAssertTrue(state.inWatchlist)
+        XCTAssertEqual(state.notInterested, false)
 
         let finished = #"{"played":true,"is_favorite":false,"in_watchlist":false,"not_interested":false}"#
         let decoded = try HTTPClient.makeJSONDecoder().decode(MediaItemUserState.self, from: Data(finished.utf8))

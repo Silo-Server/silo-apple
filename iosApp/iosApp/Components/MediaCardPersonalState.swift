@@ -1,6 +1,6 @@
 import Observation
 
-/// The favorite, watchlist and watched values a card shows after the viewer
+/// The favorite, watchlist, watched and Not interested values a card shows after the viewer
 /// changes one from the card's menu, and the one change it runs at a time.
 ///
 /// A card's `userState` comes from a list its parent loaded earlier, and that
@@ -26,6 +26,9 @@ final class MediaCardPersonalState {
         var watched: @MainActor (_ contentId: String, _ played: Bool, _ seriesId: String?) async -> PersonalStateOutcome
         var favorite: @MainActor (_ contentId: String, _ isFavorite: Bool, _ inWatchlist: Bool) async -> PersonalStateOutcome
         var watchlist: @MainActor (_ contentId: String, _ isFavorite: Bool, _ inWatchlist: Bool) async -> PersonalStateOutcome
+        var notInterested: @MainActor (_ contentId: String, _ marked: Bool) async -> PersonalStateOutcome = {
+            await NotInterestedSync.set(contentId: $0, to: $1)
+        }
 
         static var live: Writes {
             Writes(
@@ -42,6 +45,7 @@ final class MediaCardPersonalState {
     private var playedOverride: Bool?
     private var favoriteOverride: Bool?
     private var watchlistOverride: Bool?
+    private var notInterestedOverride: Bool?
     private let writes: Writes
 
     init(writes: Writes = .live) {
@@ -67,11 +71,22 @@ final class MediaCardPersonalState {
         watchlistOverride ?? (base?.inWatchlist == true)
     }
 
+    func isNotInterested(_ base: MediaItemUserState?) -> Bool {
+        notInterestedOverride ?? (base?.notInterested == true)
+    }
+
+    /// Whether the card can offer Not interested: a movie or series from a
+    /// server that sends the mark.
+    static func offersNotInterested(type: String?, _ base: MediaItemUserState?) -> Bool {
+        base?.notInterested != nil && NotInterestedSync.canMark(type)
+    }
+
     /// The card's `userState` changed: show it instead of any earlier request.
     func reset() {
         playedOverride = nil
         favoriteOverride = nil
         watchlistOverride = nil
+        notInterestedOverride = nil
     }
 
     /// `base` is the card's `userState` at the tap. `onApplied` gets the
@@ -95,9 +110,7 @@ final class MediaCardPersonalState {
                 return await writes.watched(contentId, played, seriesId)
             }
         } applied: {
-            onApplied?(MediaItemUserState(
-                played: played, isFavorite: self.isFavorite(base), inWatchlist: self.inWatchlist(base)
-            ))
+            onApplied?(self.state(from: base, played: played))
         }
     }
 
@@ -111,7 +124,7 @@ final class MediaCardPersonalState {
         run(.favorite, to: favorite) { [writes] in
             await writes.favorite(contentId, favorite, watchlist)
         } applied: {
-            onApplied?(MediaItemUserState(played: self.isPlayed(base), isFavorite: favorite, inWatchlist: watchlist))
+            onApplied?(self.state(from: base, isFavorite: favorite))
         }
     }
 
@@ -125,8 +138,39 @@ final class MediaCardPersonalState {
         run(.watchlist, to: watchlist) { [writes] in
             await writes.watchlist(contentId, favorite, watchlist)
         } applied: {
-            onApplied?(MediaItemUserState(played: self.isPlayed(base), isFavorite: favorite, inWatchlist: watchlist))
+            onApplied?(self.state(from: base, inWatchlist: watchlist))
         }
+    }
+
+    func toggleNotInterested(
+        contentId: String,
+        from base: MediaItemUserState?,
+        onApplied: ((MediaItemUserState) -> Void)? = nil
+    ) {
+        let marked = !isNotInterested(base)
+        run(.notInterested, to: marked) { [writes] in
+            await writes.notInterested(contentId, marked)
+        } applied: {
+            onApplied?(self.state(from: base, notInterested: marked))
+        }
+    }
+
+    /// The item's state after a change: the card's effective flags with the
+    /// changed one replaced. Episode counts are dropped; a watched change
+    /// leaves them stale, and `episodesLeft` hides them meanwhile anyway.
+    private func state(
+        from base: MediaItemUserState?,
+        played: Bool? = nil,
+        isFavorite: Bool? = nil,
+        inWatchlist: Bool? = nil,
+        notInterested: Bool? = nil
+    ) -> MediaItemUserState {
+        MediaItemUserState(
+            played: played ?? isPlayed(base),
+            isFavorite: isFavorite ?? self.isFavorite(base),
+            inWatchlist: inWatchlist ?? self.inWatchlist(base),
+            notInterested: notInterested ?? base?.notInterested.map { _ in isNotInterested(base) }
+        )
     }
 
     /// Shows `value` while `write` runs. On `.applied` it stays and `applied`
@@ -156,6 +200,7 @@ final class MediaCardPersonalState {
         case .watched: playedOverride
         case .favorite: favoriteOverride
         case .watchlist: watchlistOverride
+        case .notInterested: notInterestedOverride
         }
     }
 
@@ -164,6 +209,7 @@ final class MediaCardPersonalState {
         case .watched: playedOverride = value
         case .favorite: favoriteOverride = value
         case .watchlist: watchlistOverride = value
+        case .notInterested: notInterestedOverride = value
         }
     }
 }

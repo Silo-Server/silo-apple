@@ -218,6 +218,9 @@ class ItemDetailViewModel {
     var isFavorite = false
     var inWatchlist = false
     var isWatched = false
+    /// Nil when the page can't offer Not interested: anything but a movie or
+    /// series, or a server that predates the mark.
+    var isNotInterested: Bool?
     /// Invalidates favorite/watchlist lookups that began before a local
     /// mutation. Without this, a slow entry load can overwrite an optimistic
     /// button tap and put the stale pair back into `ResponseCache`.
@@ -382,6 +385,7 @@ class ItemDetailViewModel {
                userStateMutationGeneration == userStateGeneration {
                 isFavorite = userState.isFavorite
                 inWatchlist = userState.inWatchlist
+                isNotInterested = NotInterestedSync.canMark(item.type) ? userState.notInterested : nil
                 ResponseCache.shared.set(
                     UserItemState(isFavorite: userState.isFavorite, inWatchlist: userState.inWatchlist),
                     for: CacheKey.itemUserState(contentId)
@@ -723,6 +727,7 @@ class ItemDetailViewModel {
                 isFavorite = userState.isFavorite
                 inWatchlist = userState.inWatchlist
                 isWatched = userState.played
+                isNotInterested = NotInterestedSync.canMark(seed.type) ? userState.notInterested : nil
             }
             if seed.type == "series" {
                 seriesContentId = contentId
@@ -1625,6 +1630,21 @@ class ItemDetailViewModel {
         } else {
             if inWatchlist == requested { inWatchlist = !requested }
             ResponseCache.shared.remove(CacheKey.itemUserState(contentId))
+            personalStateNotice = PersonalStateNotice(outcome)
+        }
+    }
+
+    /// Marks or clears Not interested on this movie or series.
+    func toggleNotInterested() async {
+        guard let contentId = detail?.contentId, let current = isNotInterested else { return }
+        userStateMutationGeneration += 1
+        let requested = !current
+        isNotInterested = requested
+        let outcome = await dispatchPersonalState(.notInterested, contentId: contentId, to: requested)
+        if outcome == .applied {
+            NotInterestedSync.applied(contentId: contentId, marked: requested)
+        } else {
+            if isNotInterested == requested { isNotInterested = current }
             personalStateNotice = PersonalStateNotice(outcome)
         }
     }
