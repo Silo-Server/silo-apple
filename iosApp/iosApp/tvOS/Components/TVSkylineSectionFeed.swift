@@ -113,7 +113,8 @@ struct TVSkylineSectionFeed: View {
         }
         // Rows mount only after the async section load; a deferred entry
         // token re-fires once they exist.
-        .onChange(of: sections.map(\.id)) { _, _ in
+        .onChange(of: sections.map(\.id)) { oldIds, newIds in
+            handOffFocusRestoration(from: oldIds, to: newIds)
             seedMarqueeFromFirstItem()
             if let pending = pendingFocusRequest { requestEntryFocus(pending) }
         }
@@ -290,6 +291,17 @@ struct TVSkylineSectionFeed: View {
               let firstSectionId = sections.first?.id else { return }
         focusRestorationOwnerSectionId = firstSectionId
         contentFocusToken += 1
+    }
+
+    /// Not interested on a title page can empty the row it was opened from,
+    /// and Home then drops that row. Hand restoration to the row that took its
+    /// place (or the one above, when it was last), so Back still lands on a card.
+    private func handOffFocusRestoration(from oldIds: [String], to newIds: [String]) {
+        guard let ownerId = focusRestorationOwnerSectionId,
+              !newIds.contains(ownerId),
+              let ownerIndex = oldIds.firstIndex(of: ownerId),
+              !newIds.isEmpty else { return }
+        focusRestorationOwnerSectionId = newIds[min(ownerIndex, newIds.count - 1)]
     }
 
     private func previewFocusedItem(_ item: SectionItem, in section: ResolvedSection) {

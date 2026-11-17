@@ -62,6 +62,16 @@ class RecommendationsViewModel {
         isRefreshing = false
     }
 
+    /// Drops a title the server just marked Not interested, so it leaves the
+    /// rows on screen at once instead of on the next load.
+    func removeNotInterested(contentId: String) {
+        sections = HomeSectionsMutation.removingNotInterestedFromRecommendations(
+            contentId: contentId,
+            from: sections
+        )
+        .filter { !$0.items.isEmpty }
+    }
+
     private func sortedNonEmptySections(from raw: [ResolvedSection]) -> [ResolvedSection] {
         let nonEmpty = raw.filter { !$0.items.isEmpty }
         let forYou = nonEmpty.filter { $0.title.lowercased() == Self.forYouTitle }

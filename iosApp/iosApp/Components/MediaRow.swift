@@ -256,6 +256,8 @@ struct MediaRow: View {
         // the detail-return restore lands on it when the page pops.
         guard isOnScreen else {
             Self.focusLogger.debug("mediaRow.removal while covered: remembered replacement")
+            // Cancel any claim still retrying from before the page opened.
+            focusRestorationGeneration += 1
             lastFocusedItemId = replacementId
             return
         }
@@ -319,6 +321,8 @@ struct MediaRow: View {
     /// which also leaves Up unable to reach the top menu. The Skyline host
     /// retains the launch row as the sole restoration owner; scroll its exact
     /// last card into the lazy strip, then reclaim it after the pop transaction.
+    /// A row handed ownership because the launch row left Home has never held
+    /// focus, so it lands on its first card.
     private func restoreFocusAfterDetailReturn(
         _ request: Int,
         proxy: ScrollViewProxy
@@ -326,9 +330,10 @@ struct MediaRow: View {
         guard request > 0,
               request != lastAppliedDetailReturnFocusRequest,
               focusRestorationOwner?.wrappedValue == true,
-              let targetId = lastFocusedItemId,
+              let targetId = lastFocusedItemId ?? items.first?.contentId,
               isFocusTarget(targetId) else { return }
 
+        lastFocusedItemId = targetId
         lastAppliedDetailReturnFocusRequest = request
         focusRestorationGeneration += 1
         let generation = focusRestorationGeneration

@@ -78,6 +78,15 @@ enum HomeSectionsMutation {
         removingItems(from: sections, sectionTypes: notInterestedSectionTypes) { $0.contentId == contentId }
     }
 
+    /// For You's rows are all live recommendation lists, which the server
+    /// filters for marks, so a marked title leaves every one of them.
+    static func removingNotInterestedFromRecommendations(
+        contentId: String,
+        from sections: [ResolvedSection]
+    ) -> [ResolvedSection] {
+        removingItems(from: sections, sectionTypes: nil) { $0.contentId == contentId }
+    }
+
     /// Removes a newly completed item from rows whose membership is derived
     /// from playback state. Other Home rows can still show the same title.
     static func removingCompletedItem(
@@ -96,13 +105,14 @@ enum HomeSectionsMutation {
         return seriesId
     }
 
+    /// `sectionTypes` limits which rows lose the card; `nil` means every row.
     private static func removingItems(
         from sections: [ResolvedSection],
-        sectionTypes: Set<String>,
+        sectionTypes: Set<String>?,
         where isRemoved: (SectionItem) -> Bool
     ) -> [ResolvedSection] {
         sections.map { section in
-            guard sectionTypes.contains(section.sectionType.lowercased()) else {
+            guard sectionTypes?.contains(section.sectionType.lowercased()) ?? true else {
                 return section
             }
 

@@ -49,6 +49,10 @@ struct RecommendationsView: View {
             .task {
                 await viewModel.loadRecommendations()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .titleMarkedNotInterested)) { note in
+                guard let contentId = note.userInfo?[NotInterestedSync.contentIdKey] as? String else { return }
+                viewModel.removeNotInterested(contentId: contentId)
+            }
         #if !os(tvOS)
             .refreshable {
                 async let overlayRefresh: Void = OverlayPrefsStore.shared.refresh()
