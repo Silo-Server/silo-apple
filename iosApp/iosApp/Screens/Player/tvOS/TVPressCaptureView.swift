@@ -318,6 +318,17 @@ final class PressCaptureUIView: UIView {
 
     override var canBecomeFocused: Bool { true }
 
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        // SwiftUI removes this view whenever the player covers it (Up Next,
+        // an item change, the HUD), so the end of a touch already in progress
+        // may never reach it. End the contact here so nothing keyed to it,
+        // such as the timeline preview, stays up waiting for that report.
+        guard window == nil, !activeIndirectTouchIDs.isEmpty else { return }
+        activeIndirectTouchIDs.removeAll()
+        onTouchSurfaceContactCancelled()
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         let indirectTouches = touches.filter { $0.type == .indirect }
         let wasInactive = activeIndirectTouchIDs.isEmpty
@@ -394,9 +405,10 @@ final class PressCaptureUIView: UIView {
     }
 
     private func finishIndirectTouches(_ touches: Set<UITouch>, cancelled: Bool) {
-        let endedIDs = touches
+        let endedIDs = Set(touches
             .filter { $0.type == .indirect }
-            .map(ObjectIdentifier.init)
+            .map(ObjectIdentifier.init))
+            .intersection(activeIndirectTouchIDs)
         guard !endedIDs.isEmpty else { return }
         activeIndirectTouchIDs.subtract(endedIDs)
         if activeIndirectTouchIDs.isEmpty {
