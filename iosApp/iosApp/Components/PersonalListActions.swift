@@ -61,7 +61,8 @@ enum PersonalListSync {
 enum NotInterestedSync {
     /// Only movies and series take the mark; a series mark covers its episodes.
     static func canMark(_ type: String?) -> Bool {
-        type == "movie" || type == "series"
+        guard let type else { return false }
+        return SiloMediaType.isMovieLibrary(type) || SiloMediaType.isSeries(type)
     }
 
     /// Anything but `.applied` means nothing changed locally. A new mark tells

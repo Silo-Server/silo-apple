@@ -381,15 +381,21 @@ class ItemDetailViewModel {
             // payload, so it still applies to a superseded load; an absent
             // `user_state` keeps whatever was hydrated from cache.
             if let userState = item.userState,
-               !Task.isCancelled, loadGeneration == detailLoadGeneration,
-               userStateMutationGeneration == userStateGeneration {
-                isFavorite = userState.isFavorite
-                inWatchlist = userState.inWatchlist
-                isNotInterested = NotInterestedSync.canMark(item.type) ? userState.notInterested : nil
-                ResponseCache.shared.set(
-                    UserItemState(isFavorite: userState.isFavorite, inWatchlist: userState.inWatchlist),
-                    for: CacheKey.itemUserState(contentId)
-                )
+               !Task.isCancelled, loadGeneration == detailLoadGeneration {
+                if userStateMutationGeneration == userStateGeneration {
+                    isFavorite = userState.isFavorite
+                    inWatchlist = userState.inWatchlist
+                    isNotInterested = NotInterestedSync.canMark(item.type) ? userState.notInterested : nil
+                    ResponseCache.shared.set(
+                        UserItemState(isFavorite: userState.isFavorite, inWatchlist: userState.inWatchlist),
+                        for: CacheKey.itemUserState(contentId)
+                    )
+                } else if isNotInterested == nil {
+                    // A favorite or watchlist change raced this load. Not
+                    // interested can't have changed, since the page couldn't
+                    // offer it yet, so take the server's value.
+                    isNotInterested = NotInterestedSync.canMark(item.type) ? userState.notInterested : nil
+                }
             }
             let enriched = await adoptDetail(
                 item,
