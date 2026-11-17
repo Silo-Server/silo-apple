@@ -460,6 +460,11 @@ struct SectionCollectionCard: Codable, Hashable, Identifiable {
     /// collection placeholder.
     @ArtworkURL var posterUrl: String?
     let posterThumbhash: String?
+    /// A server collection's wide backdrop, at the size its page draws it,
+    /// for the hero while the card is focused. Nil when it has none, always
+    /// for a personal collection, and from a server that predates it.
+    @ArtworkURL var backdropUrl: String?
+    let backdropThumbhash: String?
     /// The titles the viewer sees in the collection.
     let itemCount: Int
 
@@ -489,6 +494,8 @@ struct SectionCollectionCard: Codable, Hashable, Identifiable {
         title: String,
         posterUrl: String? = nil,
         posterThumbhash: String? = nil,
+        backdropUrl: String? = nil,
+        backdropThumbhash: String? = nil,
         itemCount: Int
     ) {
         self.id = id
@@ -496,11 +503,14 @@ struct SectionCollectionCard: Codable, Hashable, Identifiable {
         self.title = title
         self.posterUrl = posterUrl
         self.posterThumbhash = posterThumbhash
+        self.backdropUrl = backdropUrl
+        self.backdropThumbhash = backdropThumbhash
         self.itemCount = itemCount
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, source, title, posterUrl, posterThumbhash, itemCount, libraryId, creatorProfileId
+        case id, source, title, posterUrl, posterThumbhash, backdropUrl, backdropThumbhash
+        case itemCount, libraryId, creatorProfileId
     }
 
     /// Throws for an unknown source and for a server collection without a
@@ -511,6 +521,11 @@ struct SectionCollectionCard: Codable, Hashable, Identifiable {
         title = try c.decode(String.self, forKey: .title)
         posterUrl = try c.decode(ArtworkURL.self, forKey: .posterUrl).wrappedValue.flatMap { $0.isEmpty ? nil : $0 }
         posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash).flatMap { $0.isEmpty ? nil : $0 }
+        // Optional extras: a malformed backdrop leaves the card without one
+        // rather than dropping the card.
+        backdropUrl = (try? c.decode(ArtworkURL.self, forKey: .backdropUrl))?.wrappedValue.flatMap { $0.isEmpty ? nil : $0 }
+        backdropThumbhash = ((try? c.decodeIfPresent(String.self, forKey: .backdropThumbhash)) ?? nil)
+            .flatMap { $0.isEmpty ? nil : $0 }
         itemCount = try c.decodeIfPresent(Int.self, forKey: .itemCount) ?? 0
         switch try c.decode(String.self, forKey: .source) {
         case "library":
@@ -541,6 +556,8 @@ struct SectionCollectionCard: Codable, Hashable, Identifiable {
         try c.encode(title, forKey: .title)
         try c.encodeIfPresent(posterUrl, forKey: .posterUrl)
         try c.encodeIfPresent(posterThumbhash, forKey: .posterThumbhash)
+        try c.encodeIfPresent(backdropUrl, forKey: .backdropUrl)
+        try c.encodeIfPresent(backdropThumbhash, forKey: .backdropThumbhash)
         try c.encode(itemCount, forKey: .itemCount)
         switch source {
         case .library(let libraryId):

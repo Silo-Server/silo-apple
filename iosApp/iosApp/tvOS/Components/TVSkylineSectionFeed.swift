@@ -291,10 +291,12 @@ struct TVSkylineSectionFeed: View {
         )
     }
 
-    /// A collection has no backdrop, so its neighbours have none to warm.
     private func previewFocusedCollection(_ card: SectionCollectionCard, in section: ResolvedSection) {
         marqueeSource = .collection(card, section: section)
-        marqueeModel.preview(marqueeContent(for: card, in: section))
+        marqueeModel.preview(
+            marqueeContent(for: card, in: section),
+            neighborBackdropURLs: neighborBackdropURLs(around: card, in: section)
+        )
     }
 
     private func marqueeContent(for source: TVSkylineMarqueeSource) -> TVMarqueeContent {
@@ -316,9 +318,10 @@ struct TVSkylineSectionFeed: View {
     }
 
     /// A collection preview, built like the Requests page's previews: no
-    /// content id, so the marquee requests no title detail, and the poster
-    /// framed as a cover where a backdrop would be. A collection without a
-    /// poster shows no artwork, only the text.
+    /// content id, so the marquee requests no title detail. A server
+    /// collection's backdrop fills the hero as a title's does; without one
+    /// the poster is framed as a cover there, and a collection with neither
+    /// shows only the text.
     private func marqueeContent(for card: SectionCollectionCard, in section: ResolvedSection) -> TVMarqueeContent {
         var meta: [String] = []
         if card.itemCount > 0 {
@@ -344,8 +347,8 @@ struct TVSkylineSectionFeed: View {
             runtimeMetaIndex: meta.count,
             runtimeText: nil,
             synopsis: nil,
-            backdropUrl: nil,
-            backdropThumbhash: nil,
+            backdropUrl: card.backdropUrl,
+            backdropThumbhash: card.backdropThumbhash,
             fallbackArtworkUrl: card.posterUrl,
             fallbackArtworkThumbhash: card.posterThumbhash,
             fallbackArtworkAspect: .poster,
@@ -358,6 +361,17 @@ struct TVSkylineSectionFeed: View {
             seriesContextId: nil,
             seriesContextSeasonNumber: nil
         )
+    }
+
+    /// Backdrops of the collections on either side of `card` in its row.
+    private func neighborBackdropURLs(
+        around card: SectionCollectionCard,
+        in section: ResolvedSection
+    ) -> [String] {
+        guard let index = section.collections.firstIndex(where: { $0.rowKey == card.rowKey }) else { return [] }
+        let radius = SiloTheme.Skyline.marqueeNeighborBackdropPrefetchRadius
+        let window = section.collections.indices.clamped(to: (index - radius)..<(index + radius + 1))
+        return window.compactMap { $0 == index ? nil : section.collections[$0].backdropUrl }
     }
 
     /// Section-level backdrops of the cards on either side of `item` in its

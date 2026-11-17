@@ -12,8 +12,9 @@ final class SectionCollectionRowsTests: XCTestCase {
 
     private static let marvelId = "01J9Z8C3W4R5T6Y7U8I9O0P1Q2"
 
-    /// The row as the server sends it (silo-server#4410).
-    private static let franchisesJSON = #"{"id":"franchises","section_type":"collection_posters","title":"Franchises","featured":false,"item_limit":20,"total_count":2,"is_custom":false,"customized":false,"items":[],"collections":[{"id":"01J9Z8C3W4R5T6Y7U8I9O0P1Q2","source":"library","title":"Marvel","poster_url":"https://s3.example.test/marvel.jpg","poster_is_collage":false,"item_count":12,"library_id":"1"},{"id":"c-ghibli","source":"user","title":"Ghibli nights","poster_url":"https://s3.example.test/collage.jpg","poster_is_collage":true,"item_count":5,"creator_profile_id":"p-owner"}]}"#
+    /// The row as the server sends it (silo-server#4410, with the server
+    /// collection's backdrop from silo-server#4415).
+    private static let franchisesJSON = #"{"id":"franchises","section_type":"collection_posters","title":"Franchises","featured":false,"item_limit":20,"total_count":2,"is_custom":false,"customized":false,"items":[],"collections":[{"id":"01J9Z8C3W4R5T6Y7U8I9O0P1Q2","source":"library","title":"Marvel","poster_url":"https://s3.example.test/marvel.jpg","poster_is_collage":false,"backdrop_url":"https://s3.example.test/marvel-backdrop.jpg","backdrop_thumbhash":"3OcRJYB4d3h/iIeHeEh3eIhw+j2w","item_count":12,"library_id":"1"},{"id":"c-ghibli","source":"user","title":"Ghibli nights","poster_url":"https://s3.example.test/collage.jpg","poster_is_collage":true,"item_count":5,"creator_profile_id":"p-owner"}]}"#
 
     private static let titleRowJSON = #"{"id":"recent","section_type":"recently_added","title":"Recently Added","items":[{"content_id":"movie:heat","type":"movie","title":"Heat"}]}"#
 
@@ -51,12 +52,17 @@ final class SectionCollectionRowsTests: XCTestCase {
         XCTAssertEqual(marvel.title, "Marvel")
         XCTAssertEqual(marvel.itemCount, 12)
         XCTAssertEqual(marvel.posterUrl, "https://s3.example.test/marvel.jpg")
+        XCTAssertEqual(marvel.backdropUrl, "https://s3.example.test/marvel-backdrop.jpg")
+        XCTAssertEqual(marvel.backdropThumbhash, "3OcRJYB4d3h/iIeHeEh3eIhw+j2w")
 
         let ghibli = row.collections[1]
         XCTAssertEqual(ghibli.source, .user(creatorProfileId: "p-owner"))
         XCTAssertEqual(ghibli.title, "Ghibli nights")
         XCTAssertEqual(ghibli.itemCount, 5)
         XCTAssertEqual(ghibli.posterUrl, "https://s3.example.test/collage.jpg")
+        // A personal collection has no backdrop.
+        XCTAssertNil(ghibli.backdropUrl)
+        XCTAssertNil(ghibli.backdropThumbhash)
 
         let titles = read.sections[1]
         XCTAssertFalse(titles.holdsCollections)
@@ -126,6 +132,28 @@ final class SectionCollectionRowsTests: XCTestCase {
         XCTAssertFalse(section(id: "none", type: "recently_added").hasCards)
     }
 
+    /// A server without backdrops, or a malformed one, leaves the card
+    /// without a backdrop rather than dropping it.
+    func testMissingOrMalformedBackdropKeepsTheCard() throws {
+        let json = #"""
+        {"sections":[{"id":"mixed","section_type":"collection_posters","title":"Mixed","items":[],"collections":[
+          {"id":"none","source":"library","title":"No backdrop","poster_url":"https://s3.example.test/p.jpg","item_count":3,"library_id":"1"},
+          {"id":"bad","source":"library","title":"Bad backdrop","backdrop_url":7,"backdrop_thumbhash":false,"item_count":2,"library_id":"1"},
+          {"id":"empty","source":"library","title":"Empty backdrop","backdrop_url":"","backdrop_thumbhash":"","item_count":1,"library_id":"1"}
+        ]}]}
+        """#
+
+        let response = try HTTPClient.makeJSONDecoder().decode(SectionsResponse.self, from: Data(json.utf8))
+
+        let cards = try XCTUnwrap(response.sections.first?.collections)
+        XCTAssertEqual(cards.map(\.id), ["none", "bad", "empty"])
+        for card in cards {
+            XCTAssertNil(card.backdropUrl, card.id)
+            XCTAssertNil(card.backdropThumbhash, card.id)
+        }
+        XCTAssertEqual(cards[0].posterUrl, "https://s3.example.test/p.jpg")
+    }
+
     // MARK: - Snapshots
 
     func testSnapshotKeepsCollectionsOfBothSources() throws {
@@ -136,7 +164,8 @@ final class SectionCollectionRowsTests: XCTestCase {
             serverId: "server-a", localAccountId: "6F9619FF-8B86-D011-B42D-00C04FC964FF", profileId: "adult"
         )
         let cards = [
-            libraryCard("lib", libraryId: 4, posterUrl: "https://s3.example.test/p.jpg", thumbhash: "abc"),
+            libraryCard("lib", libraryId: 4, posterUrl: "https://s3.example.test/p.jpg", thumbhash: "abc",
+                        backdropUrl: "https://s3.example.test/b.jpg", backdropThumbhash: "def"),
             userCard("mine", creator: "p-owner"),
         ]
         let response = SectionsResponse(sections: [
@@ -335,10 +364,13 @@ final class SectionCollectionRowsTests: XCTestCase {
         _ id: String,
         libraryId: Int = 1,
         posterUrl: String? = nil,
-        thumbhash: String? = nil
+        thumbhash: String? = nil,
+        backdropUrl: String? = nil,
+        backdropThumbhash: String? = nil
     ) -> SectionCollectionCard {
         SectionCollectionCard(id: id, source: .library(libraryId: libraryId), title: "Title \(id)",
-                              posterUrl: posterUrl, posterThumbhash: thumbhash, itemCount: 4)
+                              posterUrl: posterUrl, posterThumbhash: thumbhash,
+                              backdropUrl: backdropUrl, backdropThumbhash: backdropThumbhash, itemCount: 4)
     }
 
     private func userCard(_ id: String, creator: String? = "p-owner") -> SectionCollectionCard {
