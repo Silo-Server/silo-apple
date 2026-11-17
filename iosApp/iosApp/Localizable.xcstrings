@@ -19891,26 +19891,26 @@
       "localizations" : {
         "ar" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "غير مهتم"
           }
         },
         "cs" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Nezajímá mě"
           }
         },
         "da" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Ikke interesseret"
           }
         },
         "de" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Kein Interesse"
           }
         },
         "en" : {
@@ -19921,104 +19921,104 @@
         },
         "es" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "No me interesa"
           }
         },
         "fi" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Ei kiinnosta"
           }
         },
         "fr" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Pas intéressé"
           }
         },
         "hr" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Ne zanima me"
           }
         },
         "it" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Non mi interessa"
           }
         },
         "ja" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "興味なし"
           }
         },
         "ko" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "관심 없음"
           }
         },
         "nb" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Ikke interessert"
           }
         },
         "nl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Niet geïnteresseerd"
           }
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Nie interesuje mnie"
           }
         },
         "pt-BR" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Não tenho interesse"
           }
         },
         "ru" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Не интересует"
           }
         },
         "sv" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Inte intresserad"
           }
         },
         "tr" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "İlgilenmiyorum"
           }
         },
         "uk" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "Не цікавить"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "不感兴趣"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Not Interested"
+            "state" : "translated",
+            "value" : "不感興趣"
           }
         }
       }
@@ -20581,26 +20581,26 @@
       "localizations" : {
         "ar" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "العرض في التوصيات"
           }
         },
         "cs" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Zobrazovat v doporučeních"
           }
         },
         "da" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Vis i anbefalinger"
           }
         },
         "de" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "In Empfehlungen anzeigen"
           }
         },
         "en" : {
@@ -20611,104 +20611,104 @@
         },
         "es" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Mostrar en recomendaciones"
           }
         },
         "fi" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Näytä suosituksissa"
           }
         },
         "fr" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Afficher dans les recommandations"
           }
         },
         "hr" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Prikaži u preporukama"
           }
         },
         "it" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Mostra nei consigli"
           }
         },
         "ja" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "おすすめに表示"
           }
         },
         "ko" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "추천에 표시"
           }
         },
         "nb" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Vis i anbefalinger"
           }
         },
         "nl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Tonen in aanbevelingen"
           }
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Pokazuj w polecanych"
           }
         },
         "pt-BR" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Mostrar nas recomendações"
           }
         },
         "ru" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Показывать в рекомендациях"
           }
         },
         "sv" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Visa i rekommendationer"
           }
         },
         "tr" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Önerilerde göster"
           }
         },
         "uk" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "Показувати в рекомендаціях"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "在推荐中显示"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Show in Recommendations"
+            "state" : "translated",
+            "value" : "在推薦中顯示"
           }
         }
       }
