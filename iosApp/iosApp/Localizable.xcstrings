@@ -32282,7 +32282,7 @@
         "uk" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "від %1$@"
+            "value" : "Власник: %1$@"
           }
         },
         "zh-Hans" : {
