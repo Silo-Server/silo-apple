@@ -24,7 +24,10 @@ enum SectionRowLimit {
                 customized: section.customized,
                 items: Array(section.items.prefix(cards)),
                 titleKey: section.titleKey,
-                titleArgs: section.titleArgs
+                titleArgs: section.titleArgs,
+                // `item_limit` does not apply to a row of collections: it
+                // shows every collection it lists.
+                collections: section.collections
             )
         })
     }

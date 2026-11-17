@@ -110,7 +110,8 @@ enum HomeSectionsMutation {
                 customized: section.customized,
                 items: items,
                 titleKey: section.titleKey,
-                titleArgs: section.titleArgs
+                titleArgs: section.titleArgs,
+                collections: section.collections
             )
         }
     }

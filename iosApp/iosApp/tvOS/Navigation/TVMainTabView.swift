@@ -1735,8 +1735,8 @@ struct TVMainTabView: View {
             HistoryView()
         case .collections:
             CollectionsView()
-        case .collectionDetail(let id):
-            CollectionDetailView(collectionId: id)
+        case .collectionDetail(let id, let title):
+            CollectionDetailView(collectionId: id, title: title)
         case .watchParty:
             #if os(iOS) || os(tvOS)
             WatchPartyHubView(session: .shared)

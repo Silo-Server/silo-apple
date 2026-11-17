@@ -3,11 +3,12 @@ import SwiftUI
 func libraryCollectionAccessibilityLabel(
     _ collection: LibraryCollection,
     showItemCount: Bool = true,
+    byline: String? = nil,
     locale: Locale
 ) -> String {
-    let type = collection.kind == .userCollections
+    let type = byline ?? (collection.kind == .userCollections
         ? AppLanguage.string(.collectionsUserCollection, locale: locale)
-        : collection.collectionType?.capitalized ?? AppLanguage.string(.collectionsCollection, locale: locale)
+        : collection.collectionType?.capitalized ?? AppLanguage.string(.collectionsCollection, locale: locale))
     let count = if let itemCount = collection.itemCount {
         AppLanguage.string(.collectionsItemCount(count: itemCount, LocaleFormat.groupedCount(itemCount, locale: locale)), locale: locale)
     } else {
@@ -673,10 +674,13 @@ struct LibraryCollectionsView: View {
     }
 }
 
-private struct LibraryCollectionCard: View {
+struct LibraryCollectionCard: View {
     let collection: LibraryCollection
     let cardWidthOverride: CGFloat?
     var showItemCount = true
+    /// Replaces the type line under the name, as "by Name" does for another
+    /// profile's collection in a Home or library row.
+    var byline: String? = nil
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(\.locale) private var locale
 
@@ -685,7 +689,12 @@ private struct LibraryCollectionCard: View {
             ?? (SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale)
     }
     private var cardHeight: CGFloat {
-        cardWidth * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
+        Self.artworkSize(width: cardWidth).height
+    }
+
+    /// The poster's size at `width`, as the card draws and decodes it.
+    static func artworkSize(width: CGFloat) -> CGSize {
+        CGSize(width: width, height: width * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth))
     }
 
     var body: some View {
@@ -754,6 +763,7 @@ private struct LibraryCollectionCard: View {
     }
 
     private var typeLabel: String {
+        if let byline { return byline }
         if collection.kind == .userCollections {
             return AppLanguage.string(.collectionsUserCollection, locale: locale)
         }

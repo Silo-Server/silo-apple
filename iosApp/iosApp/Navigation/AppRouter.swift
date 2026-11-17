@@ -3,6 +3,9 @@ import SwiftUI
 extension EnvironmentValues {
     /// Set only by library browse surfaces; detail destinations carry a copy in their route.
     @Entry var browseLibraryId: Int? = nil
+    /// The Movies or Shows filter of the library page around a row, set
+    /// with `browseLibraryId`. A collection the row opens keeps it.
+    @Entry var browseMediaScope: LibraryVideoScope? = nil
     /// False where picking a title must not start solo playback (the Watch
     /// Party picker). Cards keep Select but drop their Play/Pause action.
     @Entry var allowsDirectPlayback = true

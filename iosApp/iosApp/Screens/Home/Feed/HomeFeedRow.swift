@@ -65,14 +65,18 @@ struct HomeFeedRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
-            HomeSectionHeader(
-                title: section.displayTitle(in: locale),
-                icon: isResume ? "play.circle.fill" : nil,
-                action: exploreAll
-            )
+        if section.holdsCollections {
+            HomeCollectionsRow(section: section)
+        } else {
+            VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
+                HomeSectionHeader(
+                    title: section.displayTitle(in: locale),
+                    icon: isResume ? "play.circle.fill" : nil,
+                    action: exploreAll
+                )
 
-            rowScroller
+                rowScroller
+            }
         }
     }
 

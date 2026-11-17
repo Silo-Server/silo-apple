@@ -81,7 +81,7 @@ class HomeViewModel {
         // Hydrate from the shared cache so the first render after a
         // navigation paints last-known data without any network wait.
         if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.homeSections) {
-            sections = cached.sections.filter { !$0.items.isEmpty }
+            sections = cached.sections.filter(\.hasCards)
         }
     }
 
@@ -168,7 +168,7 @@ class HomeViewModel {
             StartupContentPrefetcher.invalidateHomeSectionsInFlight()
             // Dismissing a row's last card removes the row.
             sections = HomeSectionsMutation.removingDismissedItem(item, from: sections)
-                .filter { !$0.items.isEmpty }
+                .filter(\.hasCards)
             ResponseCache.shared.update(CacheKey.homeSections, as: SectionsResponse.self) { response in
                 response = SectionsResponse(
                     sections: HomeSectionsMutation.removingDismissedItem(item, from: response.sections)
@@ -207,7 +207,7 @@ class HomeViewModel {
                 sections = HomeSectionsMutation.removingCompletedItem(
                     contentId: item.contentId,
                     from: sections
-                ).filter { !$0.items.isEmpty }
+                ).filter(\.hasCards)
                 ResponseCache.shared.update(CacheKey.homeSections, as: SectionsResponse.self) { response in
                     response = SectionsResponse(
                         sections: HomeSectionsMutation.removingCompletedItem(
@@ -237,7 +237,7 @@ class HomeViewModel {
     private func fetchAndApplySections(_ generation: Int) async throws {
         let response = try await fetchHomeSections()
         guard generation == loadGeneration else { return }
-        sections = response.sections.filter { !$0.items.isEmpty }
+        sections = response.sections.filter(\.hasCards)
         error = nil
     }
 

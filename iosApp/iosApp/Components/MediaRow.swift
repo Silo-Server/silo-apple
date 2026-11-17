@@ -776,7 +776,7 @@ struct MediaRow: View {
 #if os(tvOS)
 /// Observe focus outside the row's body so moving between cards does not
 /// reconstruct the LazyHStack, artwork requests, and context-menu closures.
-private struct TVRowFocusObserver: ViewModifier {
+struct TVRowFocusObserver: ViewModifier {
     let focusedItemId: FocusState<String?>.Binding
     let onItemFocus: (String) -> Void
 
@@ -792,7 +792,7 @@ private struct TVRowFocusObserver: ViewModifier {
 /// row that should stay out of the focus path (e.g. a non-paged row)
 /// never intercepts the commands the focus engine needs for normal
 /// row-to-row movement.
-private struct TVRowMoveHandler: ViewModifier {
+struct TVRowMoveHandler: ViewModifier {
     let onMoveUp: (() -> Void)?
     let onMoveDown: (() -> Void)?
 
@@ -812,7 +812,7 @@ private struct TVRowMoveHandler: ViewModifier {
     }
 }
 
-private extension View {
+extension View {
     /// Routes both initial and user-initiated (d-pad) focus into the
     /// row's first card. The `.userInitiated` priority is the bit that
     /// `prefersDefaultFocus(_:in:)` lacks — it makes default focus win

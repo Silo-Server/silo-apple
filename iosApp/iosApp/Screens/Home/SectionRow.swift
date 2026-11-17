@@ -62,6 +62,9 @@ struct SectionRow: View {
     var onItemFocus: ((SectionItem) -> Void)? = nil
     /// tvOS-only: forwarded to `MediaRow.onExploreAllFocus`.
     var onExploreAllFocus: (() -> Void)? = nil
+    /// tvOS-only: a row of collections reports the card that took focus,
+    /// as `onItemFocus` does for a row of titles.
+    var onCollectionFocus: ((SectionCollectionCard) -> Void)? = nil
     /// Optional poster/square card width forwarded to `MediaRow` —
     /// Skyline's dense landing rows (§5.6) pass a compact width.
     var cardWidth: CGFloat? = nil
@@ -148,11 +151,18 @@ struct SectionRow: View {
 
     var body: some View {
         #if os(tvOS)
-        mediaRow
+        if section.holdsCollections {
+            collectionsRow
+        } else {
+            mediaRow
+        }
         #else
         // Continue Watching uses Home's row on every page, so a library's
-        // resume cards keep Home's stills, size and play button.
-        if isContinueWatching {
+        // resume cards keep Home's stills, size and play button. A row of
+        // collections does too, so its cards match on every page.
+        if section.holdsCollections {
+            HomeCollectionsRow(section: section)
+        } else if isContinueWatching {
             HomeFeedRow(
                 section: section,
                 onExploreAll: onExploreAll,
@@ -167,6 +177,25 @@ struct SectionRow: View {
         }
         #endif
     }
+
+    #if os(tvOS)
+    /// No Explore all card: each collection is its own page.
+    private var collectionsRow: some View {
+        TVCollectionsRow(
+            section: section,
+            prefersDefaultFocusOnFirstItem: prefersDefaultFocusOnFirstItem,
+            defaultFocusPriority: defaultFocusPriority,
+            focusRequest: focusRequest,
+            detailReturnFocusRequest: detailReturnFocusRequest,
+            onMoveUp: onMoveUp,
+            onCollectionFocus: onCollectionFocus,
+            cardWidth: cardWidth,
+            cardVerticalPadding: cardVerticalPadding,
+            onMoveDown: onMoveDown,
+            focusRestorationOwner: focusRestorationOwner
+        )
+    }
+    #endif
 
     private var mediaRow: some View {
         MediaRow(

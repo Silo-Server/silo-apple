@@ -3,6 +3,8 @@ import SwiftUI
 /// Shows the items within a specific collection.
 struct CollectionDetailView: View {
     let collectionId: String
+    /// The collection's name, when the page that opened it knows it.
+    var title: String? = nil
 
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
@@ -28,7 +30,7 @@ struct CollectionDetailView: View {
             }
         }
         .siloPageBackground()
-        .navigationTitle(Text(.collectionsCollection))
+        .navigationTitle(title.map { Text($0) } ?? Text(.collectionsCollection))
         .siloNavigationTitleDisplayMode(.large)
         .task {
             await loadItems()
