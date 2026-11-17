@@ -119,6 +119,15 @@ struct TVSkylineSectionFeed: View {
         }
         .onChange(of: sections.map(\.items)) { _, _ in refreshMarqueeSource() }
         .onChange(of: sections.map(\.collections)) { _, _ in refreshMarqueeSource() }
+        // A collection preview names another profile's collection from the
+        // profile list, which can arrive after the first preview is built.
+        .task(id: sections.flatMap(\.collections).compactMap(\.creatorProfileId)) {
+            let cards = sections.flatMap(\.collections)
+            guard CollectionOwnerName.needsProfiles(cards),
+                  await CollectionOwnerName.profiles() != nil,
+                  case .collection = marqueeSource else { return }
+            refreshMarqueeSource()
+        }
         .onChange(of: EpisodeSpoilerPreferences.shared.settings) { _, _ in
             guard let source = marqueeSource else { return }
             marqueeModel.replaceContent(marqueeContent(for: source))
