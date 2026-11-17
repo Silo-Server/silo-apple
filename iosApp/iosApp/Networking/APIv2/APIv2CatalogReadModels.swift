@@ -223,6 +223,8 @@ enum APIv2CatalogRead {
     struct CatalogItemUserState: Decodable {
         let inWatchlist: Bool
         let isFavorite: Bool
+        /// Required since the server added Not interested; absent before.
+        let notInterested: Bool?
         let played: Bool
         /// Present on a series or season the profile has not finished.
         let unplayedCount: Int64?

@@ -84,6 +84,7 @@ extension ItemDetail {
                 played: $0.played,
                 isFavorite: $0.isFavorite,
                 inWatchlist: $0.inWatchlist,
+                notInterested: $0.notInterested,
                 watchedCount: try $0.watchedCount.map { try catalogLegacyInt($0) },
                 unplayedCount: try $0.unplayedCount.map { try catalogLegacyInt($0) }
             )

@@ -7,6 +7,10 @@ struct RecommendationsView: View {
     /// tvOS: focus hand-down token from `TVMainTabView`, forwarded to the
     /// Skyline feed so the screen never opens with a dead remote.
     var focusRequest: Int = 0
+    /// tvOS: bumped when a title page opened from a card pops, so the launch
+    /// row reclaims focus, as on Home. Not interested on that page can remove
+    /// the launching card, leaving the engine nothing to restore.
+    var detailReturnFocusRequest: Int = 0
     /// tvOS: the custom top menu owns focus, so deferred content focus
     /// claims must not yank focus away from it.
     var isTopMenuFocused: Bool = false
@@ -34,11 +38,13 @@ struct RecommendationsView: View {
 
     init(
         focusRequest: Int = 0,
+        detailReturnFocusRequest: Int = 0,
         isTopMenuFocused: Bool = false,
         onTopMenuFocusRequest: (() -> Void)? = nil,
         viewModel: RecommendationsViewModel? = nil
     ) {
         self.focusRequest = focusRequest
+        self.detailReturnFocusRequest = detailReturnFocusRequest
         self.isTopMenuFocused = isTopMenuFocused
         self.onTopMenuFocusRequest = onTopMenuFocusRequest
         _viewModel = State(initialValue: viewModel ?? RecommendationsViewModel())
@@ -48,6 +54,10 @@ struct RecommendationsView: View {
         rootLayout
             .task {
                 await viewModel.loadRecommendations()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .titleMarkedNotInterested)) { note in
+                guard let contentId = note.userInfo?[NotInterestedSync.contentIdKey] as? String else { return }
+                viewModel.removeNotInterested(contentId: contentId)
             }
         #if !os(tvOS)
             .refreshable {
@@ -143,6 +153,7 @@ struct RecommendationsView: View {
             TVSkylineSectionFeed(
                 sections: viewModel.sections,
                 focusRequest: focusRequest,
+                detailReturnFocusRequest: detailReturnFocusRequest,
                 isTopMenuFocused: isTopMenuFocused,
                 onTopMenuFocusRequest: onTopMenuFocusRequest,
                 onItemTap: { destinationContentId, item in

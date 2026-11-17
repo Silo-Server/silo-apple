@@ -42,6 +42,9 @@ struct TVMovieDetailView: View {
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
+    /// Nil hides Not interested: the server predates it.
+    var isNotInterested: Bool? = nil
+    var onToggleNotInterested: (() -> Void)? = nil
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     /// On-view description translation status, drawn inside the synopsis.
@@ -208,7 +211,7 @@ struct TVMovieDetailView: View {
     // MARK: - More menu
 
     private enum MoreAction: String {
-        case watchParty, favorite, watched, trailers, translate
+        case watchParty, favorite, watched, trailers, translate, notInterested
     }
 
     @Environment(AppRouter.self) private var partyRouter
@@ -252,6 +255,16 @@ struct TVMovieDetailView: View {
                         systemImage: MachineTranslation.symbol
                     ))
                 }
+                if let isNotInterested, onToggleNotInterested != nil {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.notInterested.rawValue,
+                        title: AppLanguage.string(
+                            isNotInterested ? .cardMenuShowInRecommendations : .cardMenuNotInterested,
+                            locale: locale
+                        ),
+                        systemImage: isNotInterested ? "hand.thumbsup" : "hand.thumbsdown"
+                    ))
+                }
                 if WatchPartyEntry.isAvailable {
                     items.append(TVActionPopoverItem(id: MoreAction.watchParty.rawValue,
                         title: WatchPartyEntry.actionTitle, systemImage: "person.3"))
@@ -272,6 +285,8 @@ struct TVMovieDetailView: View {
                     onFindTrailers()
                 case .translate:
                     onTranslateDescription?()
+                case .notInterested:
+                    onToggleNotInterested?()
                 case .none:
                     break
                 }

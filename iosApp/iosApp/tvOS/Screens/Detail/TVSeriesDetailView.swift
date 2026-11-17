@@ -232,6 +232,9 @@ struct TVSeriesDetailView: View {
     let onToggleWatchlist: () -> Void
     let onToggleSeriesWatched: () -> Void
     let onToggleSeasonWatched: () -> Void
+    /// Nil hides Not interested: the server predates it.
+    var isNotInterested: Bool? = nil
+    var onToggleNotInterested: (() -> Void)? = nil
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     /// On-view translation status of the series overview, drawn inside the
@@ -943,7 +946,8 @@ struct TVSeriesDetailView: View {
     }
 
     private enum MoreAction: String {
-        case shuffleSeason, shuffleSeries, watchParty, overview, favorite, seriesWatched, watched, trailers, translate
+        case shuffleSeason, shuffleSeries, watchParty, overview, favorite, seriesWatched, watched, trailers, translate,
+            notInterested
     }
 
     private var canShuffleSeries: Bool {
@@ -1035,6 +1039,16 @@ struct TVSeriesDetailView: View {
                         systemImage: MachineTranslation.symbol
                     ))
                 }
+                if let isNotInterested, onToggleNotInterested != nil {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.notInterested.rawValue,
+                        title: AppLanguage.string(
+                            isNotInterested ? .cardMenuShowInRecommendations : .cardMenuNotInterested,
+                            locale: locale
+                        ),
+                        systemImage: isNotInterested ? "hand.thumbsup" : "hand.thumbsdown"
+                    ))
+                }
                 if WatchPartyEntry.isAvailable && displayedEpisode != nil {
                     items.append(TVActionPopoverItem(id: MoreAction.watchParty.rawValue,
                         title: WatchPartyEntry.actionTitle, systemImage: "person.3"))
@@ -1065,6 +1079,7 @@ struct TVSeriesDetailView: View {
                 case .watched: onToggleSeasonWatched()
                 case .trailers: onFindTrailers()
                 case .translate: onTranslateDescription?()
+                case .notInterested: onToggleNotInterested?()
                 case .none: break
                 }
             }

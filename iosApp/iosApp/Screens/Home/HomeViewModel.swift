@@ -184,6 +184,15 @@ class HomeViewModel {
         await loadSections()
     }
 
+    /// Drops a title the profile just marked Not interested from the rows
+    /// that suggest it. The server already applied the mark;
+    /// `NotInterestedSync.applied` then drops the cached Home and starts the
+    /// refetch, which leaves it out too.
+    func removeNotInterested(contentId: String) {
+        sections = HomeSectionsMutation.removingNotInterested(contentId: contentId, from: sections)
+            .filter(\.hasCards)
+    }
+
     /// Updates playback state through the server, then immediately removes a
     /// completed item from membership-driven Home rows. A fresh Home fetch
     /// reconciles replacement Next Up episodes and watched state elsewhere.

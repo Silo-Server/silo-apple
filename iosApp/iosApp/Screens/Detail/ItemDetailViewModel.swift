@@ -218,6 +218,9 @@ class ItemDetailViewModel {
     var isFavorite = false
     var inWatchlist = false
     var isWatched = false
+    /// Nil when the page can't offer Not interested: anything but a movie or
+    /// series, or a server that predates the mark.
+    var isNotInterested: Bool?
     /// Invalidates favorite/watchlist lookups that began before a local
     /// mutation. Without this, a slow entry load can overwrite an optimistic
     /// button tap and put the stale pair back into `ResponseCache`.
@@ -378,14 +381,21 @@ class ItemDetailViewModel {
             // payload, so it still applies to a superseded load; an absent
             // `user_state` keeps whatever was hydrated from cache.
             if let userState = item.userState,
-               !Task.isCancelled, loadGeneration == detailLoadGeneration,
-               userStateMutationGeneration == userStateGeneration {
-                isFavorite = userState.isFavorite
-                inWatchlist = userState.inWatchlist
-                ResponseCache.shared.set(
-                    UserItemState(isFavorite: userState.isFavorite, inWatchlist: userState.inWatchlist),
-                    for: CacheKey.itemUserState(contentId)
-                )
+               !Task.isCancelled, loadGeneration == detailLoadGeneration {
+                if userStateMutationGeneration == userStateGeneration {
+                    isFavorite = userState.isFavorite
+                    inWatchlist = userState.inWatchlist
+                    isNotInterested = NotInterestedSync.canMark(item.type) ? userState.notInterested : nil
+                    ResponseCache.shared.set(
+                        UserItemState(isFavorite: userState.isFavorite, inWatchlist: userState.inWatchlist),
+                        for: CacheKey.itemUserState(contentId)
+                    )
+                } else if isNotInterested == nil {
+                    // A favorite or watchlist change raced this load. Not
+                    // interested can't have changed, since the page couldn't
+                    // offer it yet, so take the server's value.
+                    isNotInterested = NotInterestedSync.canMark(item.type) ? userState.notInterested : nil
+                }
             }
             let enriched = await adoptDetail(
                 item,
@@ -723,6 +733,7 @@ class ItemDetailViewModel {
                 isFavorite = userState.isFavorite
                 inWatchlist = userState.inWatchlist
                 isWatched = userState.played
+                isNotInterested = NotInterestedSync.canMark(seed.type) ? userState.notInterested : nil
             }
             if seed.type == "series" {
                 seriesContentId = contentId
@@ -1625,6 +1636,21 @@ class ItemDetailViewModel {
         } else {
             if inWatchlist == requested { inWatchlist = !requested }
             ResponseCache.shared.remove(CacheKey.itemUserState(contentId))
+            personalStateNotice = PersonalStateNotice(outcome)
+        }
+    }
+
+    /// Marks or clears Not interested on this movie or series.
+    func toggleNotInterested() async {
+        guard let contentId = detail?.contentId, let current = isNotInterested else { return }
+        userStateMutationGeneration += 1
+        let requested = !current
+        isNotInterested = requested
+        let outcome = await dispatchPersonalState(.notInterested, contentId: contentId, to: requested)
+        if outcome == .applied {
+            NotInterestedSync.applied(contentId: contentId, marked: requested)
+        } else {
+            if isNotInterested == requested { isNotInterested = current }
             personalStateNotice = PersonalStateNotice(outcome)
         }
     }

@@ -119,6 +119,8 @@ struct MediaRow: View {
     @State private var lastFocusedItemId: String?
     @State private var focusRestorationGeneration = 0
     @State private var lastAppliedDetailReturnFocusRequest = 0
+    /// False while a pushed page covers the row (or it is scrolled away).
+    @State private var isOnScreen = false
     private static let focusLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVFocus"
@@ -150,6 +152,8 @@ struct MediaRow: View {
         .onChange(of: items.map(\.contentId)) { oldIds, newIds in
             restoreFocusAfterItemRemoval(from: oldIds, to: newIds)
         }
+        .onAppear { isOnScreen = true }
+        .onDisappear { isOnScreen = false }
         .onChange(of: focusRestorationOwner?.wrappedValue ?? false) { _, ownsRestoration in
             guard !ownsRestoration else { return }
             focusRestorationGeneration += 1
@@ -234,7 +238,8 @@ struct MediaRow: View {
     }
 
     /// Context-menu mutations can remove the focused card from a
-    /// membership-driven row (Continue Watching, Next Up). Preserve its old
+    /// membership-driven row (Continue Watching, Next Up, or a recommendation
+    /// row after Not interested). Preserve its old
     /// position and claim the card that slid into that slot, falling back to
     /// the preceding card when the removed item was last.
     private func restoreFocusAfterItemRemoval(from oldIds: [String], to newIds: [String]) {
@@ -245,6 +250,17 @@ struct MediaRow: View {
               !newIds.isEmpty else { return }
 
         let replacementId = newIds[min(removedIndex, newIds.count - 1)]
+        // A page pushed over Home can remove the card it was opened from
+        // (Not interested on a title page). Claiming focus in the covered row
+        // would pull focus off that page, so only move the remembered card;
+        // the detail-return restore lands on it when the page pops.
+        guard isOnScreen else {
+            Self.focusLogger.debug("mediaRow.removal while covered: remembered replacement")
+            // Cancel any claim still retrying from before the page opened.
+            focusRestorationGeneration += 1
+            lastFocusedItemId = replacementId
+            return
+        }
         focusRestorationGeneration += 1
         let generation = focusRestorationGeneration
         Self.focusLogger.debug("mediaRow.restoreFocus after removal")
@@ -305,16 +321,20 @@ struct MediaRow: View {
     /// which also leaves Up unable to reach the top menu. The Skyline host
     /// retains the launch row as the sole restoration owner; scroll its exact
     /// last card into the lazy strip, then reclaim it after the pop transaction.
+    /// A row handed ownership because the launch row left Home may never have
+    /// held focus, or remember a card it no longer shows, so it lands on its
+    /// first card.
     private func restoreFocusAfterDetailReturn(
         _ request: Int,
         proxy: ScrollViewProxy
     ) {
+        let remembered = lastFocusedItemId.flatMap { isFocusTarget($0) ? $0 : nil }
         guard request > 0,
               request != lastAppliedDetailReturnFocusRequest,
               focusRestorationOwner?.wrappedValue == true,
-              let targetId = lastFocusedItemId,
-              isFocusTarget(targetId) else { return }
+              let targetId = remembered ?? items.first?.contentId else { return }
 
+        lastFocusedItemId = targetId
         lastAppliedDetailReturnFocusRequest = request
         focusRestorationGeneration += 1
         let generation = focusRestorationGeneration
@@ -352,7 +372,11 @@ struct MediaRow: View {
             onItemFocus?(targetItem)
         }
 
-        guard attempt < 4 else { return }
+        // The engine restores the launching card itself when it is still
+        // here. When it was removed while covered (Not interested on its
+        // page), the engine finds nothing and drops writes until the pop
+        // transition ends, so keep claiming for about as long as that runs.
+        guard attempt < 10 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             guard generation == focusRestorationGeneration,
                   focusRestorationOwner?.wrappedValue == true,

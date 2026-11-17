@@ -111,6 +111,67 @@ final class HomeSectionsMutationTests: XCTestCase {
         XCTAssertEqual(result[2].totalCount, 1)
     }
 
+    func testNotInterestedLeavesOnlyTheRowsThatSuggestIt() throws {
+        let target = try makeItem(contentId: "target")
+        let other = try makeItem(contentId: "other")
+        let sections = [
+            makeSection(id: "recommended", type: "recommended_for_you", totalCount: 2, items: [target, other]),
+            makeSection(id: "gems", type: "hidden_gems", totalCount: 1, items: [target]),
+            makeSection(id: "continue", type: "continue_watching", totalCount: 1, items: [target]),
+            makeSection(id: "recent", type: "recently_added", totalCount: 1, items: [target]),
+            makeSection(id: "watchlist", type: "watchlist", totalCount: 1, items: [target]),
+        ]
+
+        let result = HomeSectionsMutation.removingNotInterested(contentId: target.contentId, from: sections)
+
+        XCTAssertEqual(result.map { $0.items.map(\.contentId) }, [
+            ["other"], [], ["target"], ["target"], ["target"],
+        ])
+        XCTAssertEqual(result.map(\.totalCount), [1, 0, 1, 1, 1])
+    }
+
+    /// For You rows are all server-filtered recommendation lists, including
+    /// types Home doesn't list, so a mark clears the title from each of them.
+    @MainActor
+    func testNotInterestedLeavesEveryForYouRowAndDropsEmptiedRows() throws {
+        let target = try makeItem(contentId: "target")
+        let other = try makeItem(contentId: "other")
+        let viewModel = RecommendationsViewModel()
+        viewModel.sections = [
+            makeSection(id: "discover_0_top_picks", type: "top_picks", totalCount: 2, items: [target, other]),
+            makeSection(id: "discover_1_because", type: "because_you_watched", totalCount: 1, items: [target]),
+        ]
+
+        viewModel.removeNotInterested(contentId: target.contentId)
+
+        XCTAssertEqual(viewModel.sections.map(\.id), ["discover_0_top_picks"])
+        XCTAssertEqual(viewModel.sections.first?.items.map(\.contentId), ["other"])
+    }
+
+    /// A For You load the server answered before the mark still lists the
+    /// title; it must not bring the card back.
+    @MainActor
+    func testForYouLoadStartedBeforeAMarkLeavesTheTitleOut() async throws {
+        let target = try makeItem(contentId: "target")
+        let other = try makeItem(contentId: "other")
+        let staleResponse = SectionsResponse(sections: [
+            makeSection(id: "discover_0_top_picks", type: "top_picks", totalCount: 2, items: [target, other]),
+        ])
+        let gate = AsyncStream<Void>.makeStream()
+        let viewModel = RecommendationsViewModel(fetchRecommendations: {
+            for await _ in gate.stream { break }
+            return staleResponse
+        })
+
+        let load = Task { await viewModel.loadRecommendations() }
+        while !viewModel.isLoading && !viewModel.isRefreshing { await Task.yield() }
+        viewModel.removeNotInterested(contentId: target.contentId)
+        gate.continuation.yield(())
+        await load.value
+
+        XCTAssertEqual(viewModel.sections.flatMap(\.items).map(\.contentId), ["other"])
+    }
+
     @MainActor
     func testSuccessfulDismissalUpdatesVisibleAndCachedSections() async throws {
         let target = try makeItem(contentId: "target")

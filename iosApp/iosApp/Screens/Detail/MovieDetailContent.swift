@@ -33,6 +33,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
+    /// Nil hides Not interested: the server predates it.
+    var isNotInterested: Bool? = nil
+    var onToggleNotInterested: (() -> Void)? = nil
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     /// Play a local extra from the trailers rail. Routed separately from
@@ -307,6 +310,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             }
             .disabled(isFindingTrailers)
         }
+        NotInterestedMenuButton(isNotInterested: isNotInterested, action: onToggleNotInterested)
     }
 
     // MARK: - Below the fold

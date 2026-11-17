@@ -712,6 +712,12 @@ struct APIv2Client: Sendable {
         try await setMembership(method: included ? "PUT" : "DELETE", collection: "watchlist", id: id, auth: auth)
     }
 
+    /// Marks or clears Not interested on a movie or series. The server
+    /// refuses episodes and seasons with 422.
+    func setNotInterested(id: String, included: Bool, auth: CapturedOrdinaryRequestAuth) async throws {
+        try await setMembership(method: included ? "PUT" : "DELETE", collection: "not-interested", id: id, auth: auth)
+    }
+
     private func setMembership(method: String, collection: String, id: String,
                                auth: CapturedOrdinaryRequestAuth) async throws {
         try await gate()

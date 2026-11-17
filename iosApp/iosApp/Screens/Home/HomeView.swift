@@ -202,6 +202,10 @@ struct HomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
             Task { await viewModel.loadSections() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .titleMarkedNotInterested)) { note in
+            guard let contentId = note.userInfo?[NotInterestedSync.contentIdKey] as? String else { return }
+            viewModel.removeNotInterested(contentId: contentId)
+        }
         // Home stays mounted while the app is away. A load that failed or
         // was cut off meanwhile runs again as the app returns, instead of
         // leaving an error up until the person taps Retry.

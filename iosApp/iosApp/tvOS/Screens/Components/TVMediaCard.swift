@@ -139,10 +139,13 @@ struct TVMediaCard: View {
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: isInWatchlist,
+            isNotInterested: personalState.isNotInterested(userState),
             isUpdating: personalState.feedback.isUpdating,
             onToggleWatched: aspect != .square ? toggleWatched : nil,
             onToggleFavorite: togglePersonalFavorite,
-            onToggleWatchlist: togglePersonalWatchlist
+            onToggleWatchlist: togglePersonalWatchlist,
+            onToggleNotInterested: MediaCardPersonalState.offersNotInterested(type: mediaType, userState)
+                ? toggleNotInterested : nil
         )
     }
 
@@ -159,6 +162,11 @@ struct TVMediaCard: View {
     private func togglePersonalWatchlist() {
         guard let contentId else { return }
         personalState.toggleWatchlist(contentId: contentId, from: userState)
+    }
+
+    private func toggleNotInterested() {
+        guard let contentId else { return }
+        personalState.toggleNotInterested(contentId: contentId, from: userState)
     }
 
     @ViewBuilder

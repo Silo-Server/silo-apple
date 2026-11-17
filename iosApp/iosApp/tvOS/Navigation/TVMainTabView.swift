@@ -121,6 +121,7 @@ private struct TVRootPage: View, Equatable {
         case .root(.recommendations):
             RecommendationsView(
                 focusRequest: focusRequest,
+                detailReturnFocusRequest: detailReturnFocusRequest,
                 isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: requestTopMenuFocus
             )
