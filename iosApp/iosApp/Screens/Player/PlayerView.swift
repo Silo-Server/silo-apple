@@ -484,6 +484,13 @@ struct PlayerView: View {
                 hideTimelinePreview()
             }
         }
+        // Up Next replaces the controls, so the preview must not carry over
+        // to the next episode's first frame.
+        .onChange(of: viewModel.showNextUpScreen) { _, shown in
+            if shown {
+                hideTimelinePreview(immediately: true)
+            }
+        }
         .onChange(of: viewModel.bufferingPill?.kind) { _, _ in
             bufferingSelectTarget = .primary
         }
