@@ -233,13 +233,16 @@ struct TVCollectionsRow: View {
     }
 
     /// Returning from a collection's page: when this row launched it, scroll
-    /// its last focused card back into the strip and reclaim it.
+    /// its last focused card back into the strip and reclaim it. A row handed
+    /// ownership because the launch row left Home may never have held focus, or
+    /// remember a card it no longer shows, so it lands on its first card.
     private func restoreFocusAfterDetailReturn(_ request: Int, proxy: ScrollViewProxy) {
+        let remembered = lastFocusedKey.flatMap { key in cards.contains { $0.rowKey == key } ? key : nil }
         guard request > 0,
               request != lastAppliedDetailReturnFocusRequest,
               focusRestorationOwner?.wrappedValue == true,
-              let key = lastFocusedKey,
-              cards.contains(where: { $0.rowKey == key }) else { return }
+              let key = remembered ?? cards.first?.rowKey else { return }
+        lastFocusedKey = key
         lastAppliedDetailReturnFocusRequest = request
         focusRestorationGeneration += 1
         let generation = focusRestorationGeneration

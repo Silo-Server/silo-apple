@@ -13,7 +13,16 @@ class RecommendationsViewModel {
     /// server's order.
     private static let forYouTitle = "for you"
 
-    init() {
+    typealias FetchRecommendations = () async throws -> SectionsResponse
+    private let fetchRecommendations: FetchRecommendations
+    /// Loads now running, and the titles marked Not interested while any of
+    /// them ran. A response the server built before the mark can still hold
+    /// the title, so it is filtered out of what those loads return.
+    private var loadsInFlight = 0
+    private var markedDuringLoad: Set<String> = []
+
+    init(fetchRecommendations: @escaping FetchRecommendations = StartupContentPrefetcher.fetchRecommendations) {
+        self.fetchRecommendations = fetchRecommendations
         if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.recommendations) {
             sections = sortedNonEmptySections(from: cached.sections)
         }
@@ -36,8 +45,7 @@ class RecommendationsViewModel {
         error = nil
 
         do {
-            let response = try await StartupContentPrefetcher.fetchRecommendations()
-            sections = sortedNonEmptySections(from: response.sections)
+            try await loadSections()
         } catch let err {
             if sections.isEmpty {
                 self.error = ErrorState(err)
@@ -53,8 +61,7 @@ class RecommendationsViewModel {
     func refresh() async {
         isRefreshing = true
         do {
-            let response = try await StartupContentPrefetcher.fetchRecommendations()
-            sections = sortedNonEmptySections(from: response.sections)
+            try await loadSections()
             error = nil
         } catch let err {
             self.error = ErrorState(err)
@@ -65,11 +72,29 @@ class RecommendationsViewModel {
     /// Drops a title the server just marked Not interested, so it leaves the
     /// rows on screen at once instead of on the next load.
     func removeNotInterested(contentId: String) {
+        if loadsInFlight > 0 {
+            markedDuringLoad.insert(contentId)
+        }
         sections = HomeSectionsMutation.removingNotInterestedFromRecommendations(
             contentId: contentId,
             from: sections
         )
         .filter { !$0.items.isEmpty }
+    }
+
+    /// Filters and assigns in the same turn as the response arrives, so no
+    /// mark can land between the two.
+    private func loadSections() async throws {
+        loadsInFlight += 1
+        defer {
+            loadsInFlight -= 1
+            if loadsInFlight == 0 { markedDuringLoad.removeAll() }
+        }
+        let response = try await fetchRecommendations()
+        let unmarked = markedDuringLoad.reduce(response.sections) { sections, contentId in
+            HomeSectionsMutation.removingNotInterestedFromRecommendations(contentId: contentId, from: sections)
+        }
+        sections = sortedNonEmptySections(from: unmarked)
     }
 
     private func sortedNonEmptySections(from raw: [ResolvedSection]) -> [ResolvedSection] {

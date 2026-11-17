@@ -321,17 +321,18 @@ struct MediaRow: View {
     /// which also leaves Up unable to reach the top menu. The Skyline host
     /// retains the launch row as the sole restoration owner; scroll its exact
     /// last card into the lazy strip, then reclaim it after the pop transaction.
-    /// A row handed ownership because the launch row left Home has never held
-    /// focus, so it lands on its first card.
+    /// A row handed ownership because the launch row left Home may never have
+    /// held focus, or remember a card it no longer shows, so it lands on its
+    /// first card.
     private func restoreFocusAfterDetailReturn(
         _ request: Int,
         proxy: ScrollViewProxy
     ) {
+        let remembered = lastFocusedItemId.flatMap { isFocusTarget($0) ? $0 : nil }
         guard request > 0,
               request != lastAppliedDetailReturnFocusRequest,
               focusRestorationOwner?.wrappedValue == true,
-              let targetId = lastFocusedItemId ?? items.first?.contentId,
-              isFocusTarget(targetId) else { return }
+              let targetId = remembered ?? items.first?.contentId else { return }
 
         lastFocusedItemId = targetId
         lastAppliedDetailReturnFocusRequest = request

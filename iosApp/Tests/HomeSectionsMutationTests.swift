@@ -148,6 +148,30 @@ final class HomeSectionsMutationTests: XCTestCase {
         XCTAssertEqual(viewModel.sections.first?.items.map(\.contentId), ["other"])
     }
 
+    /// A For You load the server answered before the mark still lists the
+    /// title; it must not bring the card back.
+    @MainActor
+    func testForYouLoadStartedBeforeAMarkLeavesTheTitleOut() async throws {
+        let target = try makeItem(contentId: "target")
+        let other = try makeItem(contentId: "other")
+        let staleResponse = SectionsResponse(sections: [
+            makeSection(id: "discover_0_top_picks", type: "top_picks", totalCount: 2, items: [target, other]),
+        ])
+        let gate = AsyncStream<Void>.makeStream()
+        let viewModel = RecommendationsViewModel(fetchRecommendations: {
+            for await _ in gate.stream { break }
+            return staleResponse
+        })
+
+        let load = Task { await viewModel.loadRecommendations() }
+        while !viewModel.isLoading && !viewModel.isRefreshing { await Task.yield() }
+        viewModel.removeNotInterested(contentId: target.contentId)
+        gate.continuation.yield(())
+        await load.value
+
+        XCTAssertEqual(viewModel.sections.flatMap(\.items).map(\.contentId), ["other"])
+    }
+
     @MainActor
     func testSuccessfulDismissalUpdatesVisibleAndCachedSections() async throws {
         let target = try makeItem(contentId: "target")
