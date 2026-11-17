@@ -36,7 +36,7 @@ struct TVLibraryBrowseView: View {
     // MARK: - Derived
 
     private var contentSections: [ResolvedSection] {
-        sections.filter { !$0.isFeatured && !$0.items.isEmpty }
+        sections.filter { !$0.isFeatured && $0.hasCards }
     }
 
     // MARK: - Body
@@ -78,6 +78,7 @@ struct TVLibraryBrowseView: View {
                         )))
                     }
                 )
+                .environment(\.browseMediaScope, mediaScope)
                 .id(library.id)
             }
         }

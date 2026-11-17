@@ -47,7 +47,8 @@ enum Route: Hashable {
     case watchlist
     case history
     case collections
-    case collectionDetail(collectionId: String)
+    /// A personal collection. `title` heads its page when the opener knows it.
+    case collectionDetail(collectionId: String, title: String? = nil)
     case settings
     case serverList
     /// Settings › Accounts: saved servers and their accounts (spec §4.5).

@@ -647,7 +647,7 @@ private class LibraryRecommendedViewModel {
             }
             guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
             guard run == generation, !Task.isCancelled else { return }
-            sections = loaded.filter { !$0.items.isEmpty }
+            sections = loaded.filter(\.hasCards)
             scopeIncomplete = incomplete
             if mediaScope != nil {
                 ResponseCache.shared.set((sections: sections, incomplete: incomplete), for: key, fetchedAt: writeToken)
@@ -664,7 +664,7 @@ private class LibraryRecommendedViewModel {
     }
 
     private static func displayed(_ sections: [ResolvedSection]) -> [ResolvedSection] {
-        sections.filter { !$0.isFeatured && !$0.items.isEmpty }
+        sections.filter { !$0.isFeatured && $0.hasCards }
     }
 }
 
@@ -752,6 +752,7 @@ struct LibraryRecommendedView: View {
         .reportsPageChromeScroll()
         .scrollsToTopOnLibraryDockRequest()
         .environment(\.browseLibraryId, libraryId)
+        .environment(\.browseMediaScope, mediaScope)
     }
 
     private var scopeNotice: some View {

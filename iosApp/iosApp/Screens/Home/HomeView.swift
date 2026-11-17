@@ -308,6 +308,9 @@ struct HomeView: View {
         ArtworkLookahead.warmRows(next, items: \.items) { section, item in
             HomeFeedRow.cardArtwork(for: item, in: section)
         }
+        ArtworkLookahead.warmRows(next, items: \.collections) { _, card in
+            HomeCollectionsRow.cardArtwork(for: card)
+        }
     }
     #endif
 
