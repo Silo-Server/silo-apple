@@ -293,7 +293,6 @@ struct ForYouDockedView: View {
                         )
                     }
                 }
-                .padding(.top, SiloTheme.smallPadding)
                 .padding(.bottom, SiloTheme.largePadding)
             }
             .reportsPageChromeScroll()

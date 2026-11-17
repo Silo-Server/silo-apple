@@ -32,10 +32,6 @@ struct HomeView: View {
         SiloTheme.smallPadding + (statusColumn == nil ? 0 : 6)
     }
     @Environment(\.statusColumn) private var statusColumn
-    /// The LazyVStack already contributes its normal section spacing after the
-    /// header runway. Adding a second large header gap pushed the first row
-    /// far down the screen.
-    private let headerToContentGap: CGFloat = 0
     #endif
     #endif
     @Environment(AppRouter.self) private var router
@@ -250,16 +246,20 @@ struct HomeView: View {
         let sections = feedSections
         return ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
-                // Clear runway under the pinned header so the first row
-                // starts below the wordmark and utilities.
-                Color.clear
-                    .frame(height: topRunwaySpacing(topSafeAreaInset: topSafeAreaInset))
+                #if os(macOS)
+                // The stack's section spacing after this marker is the Mac's
+                // only top gap; the featured hero takes it back.
+                Color.clear.frame(height: 0)
+                #endif
 
                 ForEach(sections) { section in
                     feedSection(section, leadsPage: section.id == sections.first?.id)
                         .onAppear { warmRows(after: section) }
                 }
             }
+            // Clear runway under the pinned header. The first row starts right
+            // below it, at the same height as on the Libraries and For You tabs.
+            .padding(.top, topRunwaySpacing(topSafeAreaInset: topSafeAreaInset))
             .padding(.bottom, HomeFeedMetrics.bottomRunway)
         }
         .reportsPageChromeScroll(to: chromeScrollState)
@@ -351,9 +351,9 @@ struct HomeView: View {
 
     #if !os(tvOS)
     private func topRunwaySpacing(topSafeAreaInset: CGFloat) -> CGFloat {
-        // Mirror the floating header's vertical footprint (icon-frame height +
-        // bottom padding) so the first row clears it. LazyVStack supplies the
-        // remaining row gap; don't double-count it here.
+        // Mirror the floating header's vertical footprint (top inset +
+        // icon-frame height + bottom padding) so the first row starts right
+        // below it, as it does under the Libraries and For You headers.
         #if os(macOS)
         // The Mac sidebar carries the logo and utilities, so Home has no
         // floating header to clear, and the feed already starts below the
@@ -362,7 +362,7 @@ struct HomeView: View {
         #else
         var runway = topSafeAreaInset + SiloTheme.topBarIconHitSize + SiloTheme.smallPadding
         #if os(iOS)
-        runway += headerTopInset + headerToContentGap
+        runway += headerTopInset
         #else
         runway += SiloTheme.largePadding + SiloTheme.smallPadding
         #endif
