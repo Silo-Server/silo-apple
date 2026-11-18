@@ -8,8 +8,9 @@ enum DetailVersionSelection {
     /// The pinned file when the viewer picked one in Version. Otherwise Auto
     /// within the current edition: the one picked on the page (`editionId`),
     /// else the one last played (`lastEditionKey`, else the edition of
-    /// `lastFileId`), else the edition whose Auto file compares best, with
-    /// the server's edition order (`variants`, else `versions`) last.
+    /// `lastFileId`), else the best-named edition (standard, then
+    /// theatrical, then the rest) whose Auto file compares best, with the
+    /// server's edition order (`variants`, else `versions`) last.
     ///
     /// While the item has a resume point (`lastFileInProgress`, from
     /// `LeafItemUserData.hasResumePoint`) and `lastFileId` is a later part of
@@ -182,10 +183,12 @@ enum DetailVersionSelection {
         return known.first { resolutionRank($0.resolution) == lowest }
     }
 
-    /// With no history, each edition's Auto file competes: fitting the cap
-    /// beats above it beats unknown; then the higher rank (the lower one
-    /// above the cap); then HDR; then the standard cut, then a theatrical
-    /// one; then server order. File size is not compared across cuts.
+    /// With no history, the name picks the cut first: only editions in the
+    /// best `editionPreference` class present compete, so a standard cut
+    /// isn't passed over for a longer one in better quality. Among those,
+    /// each edition's Auto file competes: fitting the cap beats above it
+    /// beats unknown; then the higher rank (the lower one above the cap);
+    /// then HDR; then server order. File size is not compared across cuts.
     private static func openingFile(
         editions: [PlaybackEditions.Edition],
         cap: Int?,
@@ -211,10 +214,10 @@ enum DetailVersionSelection {
                 fit = 0
             }
             return [
+                editionPreference(pick.edition),
                 fit,
                 fit == 1 ? rank : -rank,
                 pick.file.hdr == true ? 0 : 1,
-                editionPreference(pick.edition),
                 pick.order,
             ]
         }
