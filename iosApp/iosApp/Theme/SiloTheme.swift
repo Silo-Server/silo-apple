@@ -314,8 +314,12 @@ enum SiloTheme {
         /// thrashing large backdrops. Matches Android's
         /// `TvMarqueeFocusRestMillis`.
         static let marqueeRestDebounceMilliseconds = 150
-        /// Backdrop + tint crossfade between rested selections (§4.2).
+        /// Backdrop art crossfade between rested selections (§4.2).
         static let marqueeCrossfadeDuration: Double = 0.24
+        /// The sampled-color wash behind the backdrop blends over longer
+        /// than the art, so a change of focus drifts the page colors from
+        /// one item to the next instead of switching them.
+        static let marqueeWashCrossfadeDuration: Double = 0.7
         /// Longest a row-change scroll may hold the backdrop swap. The hold
         /// keeps the crossfade out of the row animation, but the band's
         /// scroll phase stays non-idle for over a second after a single

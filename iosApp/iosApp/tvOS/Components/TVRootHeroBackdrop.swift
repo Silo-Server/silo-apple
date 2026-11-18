@@ -133,9 +133,11 @@ struct TVRootHeroBackdrop: View {
     /// of stretching it across the backdrop area.
     var artworkCoverAspect: MediaCardAspect? = nil
     var isVisible: Bool = true
-    /// Artwork/tint crossfade duration. Focus-marquee hosts pass the §4.2
+    /// Artwork crossfade duration. Focus-marquee hosts pass the §4.2
     /// 240 ms swap; other surfaces keep the slower ambient default.
     var crossfadeDuration: Double = 0.55
+    /// Crossfade of the sampled-color wash and a framed cover's glow.
+    var washCrossfadeDuration: Double = 0.55
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -198,7 +200,7 @@ struct TVRootHeroBackdrop: View {
             // The first tint (cold-entry seed with a prefetch-warmed sample)
             // snaps in with the artwork; only tint→tint changes crossfade.
             animatesChanges: !reduceMotion && hasDisplayedArtwork,
-            crossfadeDuration: crossfadeDuration
+            crossfadeDuration: washCrossfadeDuration
         )
     }
 
