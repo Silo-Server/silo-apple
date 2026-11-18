@@ -44,7 +44,7 @@ struct TVDetailPageSurface<Content: View>: View {
         ZStack {
             Color.black
             sampledTints.base.opacity(0.42)
-            TVBackdropTintWash(tints: sampledTints, includesBase: false)
+            TVBackdropTintWash(tints: sampledTints)
             content()
         }
         .ignoresSafeArea()

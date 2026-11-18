@@ -54,46 +54,62 @@ struct TVBackdropArtworkFadeMask: View {
     }
 }
 
-/// Page wash sampled from the backdrop, shared by the root landings and
-/// item details so both pages carry the same colors. The base tint is
-/// richest in the top-right behind the art and carried dimmed down to the
-/// bottom-left; the art's accent glows up from the bottom edge under the
-/// right half of the rows, stopping below where the art ends so it never
-/// tints the artwork, and its shadow tone pools in the bottom-left corner.
-/// The page keeps the art's colors without washing out the metadata or row
-/// captions.
+/// Item details' wash around the art: the accent glows up from the bottom
+/// edge under the right half of the rows, stopping below where the art ends
+/// so it never tints the artwork, and the shadow tone pools in the
+/// bottom-left corner.
 struct TVBackdropTintWash: View {
     let tints: HeroBackdropPalette.Tints
-    var isVisible: Bool = true
-    /// The base gradient sits behind the art and shows through its fade.
-    /// Item details turn it off to keep their own dimmer tint behind the art.
-    var includesBase: Bool = true
 
     var body: some View {
         ZStack {
-            if includesBase {
-                LinearGradient(
-                    stops: [
-                        .init(color: tints.base, location: 0.0),
-                        .init(color: tints.base.opacity(isVisible ? 0.5 : 0.0), location: 0.45),
-                        .init(color: tints.base.opacity(isVisible ? 0.18 : 0.0), location: 1.0),
-                    ],
-                    startPoint: .topTrailing,
-                    endPoint: .bottomLeading
-                )
-            }
-
             EllipticalGradient(
-                colors: [tints.accent.opacity(isVisible ? 0.3 : 0.0), tints.accent.opacity(0)],
+                colors: [tints.accent.opacity(0.3), tints.accent.opacity(0)],
                 center: UnitPoint(x: 0.7, y: 1.0),
                 endRadiusFraction: 0.3
             )
 
             EllipticalGradient(
-                colors: [tints.shadow.opacity(isVisible ? 0.55 : 0.0), tints.shadow.opacity(0)],
+                colors: [tints.shadow.opacity(0.55), tints.shadow.opacity(0)],
                 center: .bottomLeading,
                 endRadiusFraction: 0.42
             )
+        }
+    }
+}
+
+/// Home and library page wash: each screen corner glows with the color
+/// sampled from the same quarter of the art, fading over black, and the
+/// four overlap so the colors blend into each other across the page.
+/// Corners are drawn bottom-trailing, bottom-leading, top-trailing, then
+/// top-leading, which is the darkest and sits behind the marquee's title.
+struct TVBackdropCornerWash: View {
+    let corners: HeroBackdropPalette.Corners
+    var isVisible: Bool = true
+
+    /// How far each corner's color reaches before it is fully faded, as a
+    /// fraction of the screen's width and height.
+    nonisolated static let reach: CGFloat = 4.0 / 3.0
+
+    /// Bottom to top, with each corner's position on the screen.
+    nonisolated static func layers(_ corners: HeroBackdropPalette.Corners) -> [(color: Color, center: UnitPoint)] {
+        [
+            (corners.bottomTrailing, .bottomTrailing),
+            (corners.bottomLeading, .bottomLeading),
+            (corners.topTrailing, .topTrailing),
+            (corners.topLeading, .topLeading),
+        ]
+    }
+
+    var body: some View {
+        ZStack {
+            ForEach(Array(Self.layers(corners).enumerated()), id: \.offset) { _, layer in
+                EllipticalGradient(
+                    colors: [layer.color.opacity(isVisible ? 1 : 0), layer.color.opacity(0)],
+                    center: layer.center,
+                    endRadiusFraction: Self.reach
+                )
+            }
         }
     }
 }
@@ -105,9 +121,8 @@ struct TVBackdropTintWash: View {
 /// On Home and the library Browse landings the artwork tracks the
 /// marquee's focused item (Skyline §5.4): a crisp image is anchored in the
 /// top-right corner and fades out toward the leading edge and the bottom
-/// into colors sampled from the art itself, which are carried (dimmed)
-/// across the rest of the page so the metadata and rows below sit on the
-/// same tint. Calendar passes nil artwork with flat `.siloBackground` tints
+/// into colors sampled from the art itself, one per screen corner, so the
+/// metadata and rows below sit on the art's colors. Calendar passes nil artwork with flat `.siloBackground` tints
 /// and renders flat.
 struct TVRootHeroBackdrop: View {
     let tints: HeroBackdropPalette.Tints
