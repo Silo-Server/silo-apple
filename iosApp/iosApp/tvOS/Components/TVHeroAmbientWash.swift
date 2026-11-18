@@ -52,7 +52,7 @@ struct TVHeroAmbientWash: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                TVBackdropTintWash(tints: tints, isVisible: isVisible)
+                TVBackdropCornerWash(corners: tints.corners, isVisible: isVisible)
                     .animation(animatesChanges ? .easeInOut(duration: crossfadeDuration) : nil, value: tints)
                     .animation(animatesChanges ? .easeInOut(duration: 0.24) : nil, value: isVisible)
 
@@ -108,8 +108,9 @@ struct TVHeroAmbientWash: View {
     }
 }
 
-/// Draws the wash with the same stops and geometry as `TVBackdropTintWash`,
-/// in gamma-encoded sRGB like SwiftUI, but with float precision.
+/// Draws the wash with the same layers and geometry as
+/// `TVBackdropCornerWash`, in gamma-encoded sRGB like SwiftUI, but with
+/// float precision.
 enum TVHeroAmbientRenderer {
     /// Canvas points per bitmap pixel. The ramps are far smoother than this,
     /// and the dither is invisible at TV distance.
@@ -126,15 +127,14 @@ enum TVHeroAmbientRenderer {
 
     struct Colors: Sendable {
         let background: SIMD3<Float>
-        let base: SIMD3<Float>
-        let accent: SIMD3<Float>
-        let shadow: SIMD3<Float>
+        /// Corner colors with their unit-square centers, bottom layer first.
+        let corners: [(rgb: SIMD3<Float>, center: CGPoint)]
 
         init(tints: HeroBackdropPalette.Tints) {
             background = Self.components(Color.siloBackground)
-            base = Self.components(tints.base)
-            accent = Self.components(tints.accent)
-            shadow = Self.components(tints.shadow)
+            corners = TVBackdropCornerWash.layers(tints.corners).map {
+                (Self.components($0.color), CGPoint(x: $0.center.x, y: $0.center.y))
+            }
         }
 
         private static func components(_ color: Color) -> SIMD3<Float> {
@@ -172,20 +172,13 @@ enum TVHeroAmbientRenderer {
         context.setFillColor(color(colors.background, alpha: 1))
         context.fill(CGRect(origin: .zero, size: canvas))
 
-        let visible: CGFloat = isVisible ? 1 : 0
-        // Base: top-trailing to bottom-leading.
-        if let gradient = gradient(colors.base, stops: [(0, 1), (0.45, 0.5 * visible), (1, 0.18 * visible)]) {
-            context.drawLinearGradient(
-                gradient,
-                start: CGPoint(x: canvas.width, y: 0),
-                end: CGPoint(x: 0, y: canvas.height),
-                options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
-            )
-        }
         // EllipticalGradient lays its center and radius out in a unit square
         // stretched over the frame.
-        drawEllipse(colors.accent, alpha: 0.3 * visible, center: CGPoint(x: 0.7, y: 1), radius: 0.3, in: context, canvas: canvas)
-        drawEllipse(colors.shadow, alpha: 0.55 * visible, center: CGPoint(x: 0, y: 1), radius: 0.42, in: context, canvas: canvas)
+        if isVisible {
+            for corner in colors.corners {
+                drawEllipse(corner.rgb, alpha: 1, center: corner.center, radius: TVBackdropCornerWash.reach, in: context, canvas: canvas)
+            }
+        }
 
         if let cover {
             guard !Task.isCancelled else { return nil }
