@@ -5865,8 +5865,14 @@ class PlayerViewModel {
             playShufflePart(nextPart)
             return
         }
-        // A Next Up the viewer opened stays up, without a countdown.
-        if !isPremature, closesAtEndInsteadOfNextUp, !showNextUpScreen {
+        // A Next Up the viewer opened stays up, without a countdown. The Mac
+        // player draws no Next Up screen, so there it always closes.
+        #if os(macOS)
+        let keepsOpenNextUp = false
+        #else
+        let keepsOpenNextUp = showNextUpScreen
+        #endif
+        if !isPremature, closesAtEndInsteadOfNextUp, !keepsOpenNextUp {
             #if os(iOS)
             // In picture in picture the cover is gone, so nothing observes the
             // token; end the session here, as closing the window would.
