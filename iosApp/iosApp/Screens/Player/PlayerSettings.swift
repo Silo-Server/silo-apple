@@ -167,16 +167,22 @@ extension SettingKey {
     /// The cellular quality pair (iPhone and iPad), resolution first like the
     /// main pair. Kept out of ``playerReadSettings``: the pair arrived in
     /// manifest revision 20, and a batch fails as a whole on a key the server
-    /// does not define, so it is read in a batch of its own once the server
-    /// reports that revision. Written at the same scope as the main pair.
+    /// does not define, so it is read apart from it, in the revision-gated
+    /// batch, once the server reports that revision. Written at the same
+    /// scope as the main pair.
     static let playerCellularQualitySettings: [SettingKey] = [
         .playbackCellularPreferredQuality,
         .playbackCellularMaxBitrateKbps,
     ]
 
-    /// `playback.buffering_quality_mode`, read in a batch of its own like the
-    /// cellular pair: it arrived in manifest revision 23.
+    /// `playback.buffering_quality_mode`, read in a batch of its own: it
+    /// arrived in manifest revision 23.
     static let playerBufferingQualitySettings: [SettingKey] = [.playbackBufferingQualityMode]
+
+    /// `playback.next_up_enabled` (Show Next Up Off), read in the
+    /// revision-gated batch with the cellular pair once the server reports
+    /// revision 30.
+    static let playerNextUpSettings: [SettingKey] = [.playbackNextUpEnabled]
 }
 
 /// A Playback setting the profile can hold as well as this device, so the
@@ -208,7 +214,8 @@ enum ProfileBackedPlaybackSetting: CaseIterable {
         case .introSkipMode: return [.playbackIntroSkipMode]
         case .autoSkipCredits: return [.playbackAutoSkipCredits]
         case .autoPlayNext: return [.playbackAutoPlayNext]
-        case .nextUpPrompt: return [.playbackNextUpPromptSeconds]
+        // One picker: the timing and Off are written and cleared together.
+        case .nextUpPrompt: return [.playbackNextUpPromptSeconds] + SettingKey.playerNextUpSettings
         }
     }
 }
@@ -230,6 +237,7 @@ private extension SettingKey {
     static var autoSkipRecap: SettingKey { .playbackAutoSkipRecap }
     static var autoPlayNext: SettingKey { .playbackAutoPlayNext }
     static var nextUpPromptSeconds: SettingKey { .playbackNextUpPromptSeconds }
+    static var nextUpEnabled: SettingKey { .playbackNextUpEnabled }
     static var subtitleAppearance: SettingKey { .playbackSubtitleAppearance }
     static var hdrEnabled: SettingKey { .playerHdrEnabled }
     static var dolbyVisionEnabled: SettingKey { .playerDolbyVisionEnabled }
@@ -680,6 +688,15 @@ final class PlayerSettings {
         }
     }
 
+    /// `playback.next_up_enabled` as this device last knew it. The player reads
+    /// ``showsNextUp``, which keeps Next Up on where the server predates it.
+    private(set) var nextUpEnabled: Bool {
+        didSet {
+            guard !isLoadingCache else { return }
+            defaults.set(nextUpEnabled, forKey: Self.cacheKey(Keys.nextUpEnabled))
+        }
+    }
+
     /// Episodes that may auto-play in a row before Next Up waits for the
     /// viewer. Client-local in the settings contract; 0 never waits.
     private(set) var stillWatchingThreshold: Int {
@@ -814,6 +831,7 @@ final class PlayerSettings {
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
         )
+        nextUpEnabled = Self.cachedBool(defaults, key: Keys.nextUpEnabled, defaultValue: true)
         stillWatchingThreshold = Self.clampStillWatchingThreshold(
             Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: Self.defaultStillWatchingThreshold)
         )
@@ -876,6 +894,22 @@ final class PlayerSettings {
         return knownManifestRevision >= SettingKey.subtitleTextOpacityRevision
     }
 
+    /// Whether Show Next Up offers Off: once the server is known to store
+    /// `playback.next_up_enabled`, and while this device's last choice is Off
+    /// and the revision is not known yet, so that choice can be changed.
+    var offersNextUpOff: Bool {
+        guard let knownManifestRevision else { return !nextUpEnabled }
+        return SettingKey.nextUpEnabled.isServed(atRevision: knownManifestRevision)
+    }
+
+    /// Whether the player shows Next Up. Off applies only where the server
+    /// stores it; until the revision is known this device's last choice stands.
+    var showsNextUp: Bool {
+        if nextUpEnabled { return true }
+        guard let knownManifestRevision else { return false }
+        return !SettingKey.nextUpEnabled.isServed(atRevision: knownManifestRevision)
+    }
+
     /// Pull every synced setting from the server and adopt it.
     ///
     /// One batched call: the server resolves every key in
@@ -925,15 +959,15 @@ final class PlayerSettings {
             let scopeUnchanged = (scopeIdentifier() ?? "") == refreshScopeID
             manifestRevisionScopeID = knownManifestRevision != nil && scopeUnchanged ? refreshScopeID : nil
             var effectiveByKey = response.byKey
-            // A failed cellular or buffering read keeps this device's values
-            // for those keys.
-            let cellular = (try? await cellularQualityValues(atRevision: response.revision)) ?? [:]
+            // A failed revision-gated or buffering read keeps this device's
+            // values for those keys.
+            let gated = (try? await revisionGatedValues(atRevision: response.revision)) ?? [:]
             let buffering = await bufferingQualityValues()
             // Applying caches under the scope active now. If it changed while
             // any read awaited, no response belongs to it, so nothing is
             // adopted; that scope's own refresh paints its values.
             guard (scopeIdentifier() ?? "") == refreshScopeID else { return .unavailable }
-            effectiveByKey.merge(cellular) { _, cellularValue in cellularValue }
+            effectiveByKey.merge(gated) { _, gatedValue in gatedValue }
             effectiveByKey.merge(adopt(buffering) ?? [:]) { _, bufferingValue in bufferingValue }
             applyEffectiveSettings(overlayingUnsettledValues(on: effectiveByKey))
 
@@ -970,17 +1004,25 @@ final class PlayerSettings {
         }
     }
 
-    /// The cellular pair's rows, or none when this platform does not offer the
-    /// pair or the server predates it. A missing row keeps this device's own
-    /// value (see ``applyEffectiveSettings(_:)``). Read in its own batch, since
-    /// a server rejects a batch that names a key it does not know.
+    /// The key groups read only once the server reports the revision that
+    /// added them: the cellular pair (where this platform offers it) and Show
+    /// Next Up Off.
+    private static var revisionGatedSettings: [[SettingKey]] {
+        (offersCellularQuality ? [SettingKey.playerCellularQualitySettings] : [])
+            + [SettingKey.playerNextUpSettings]
+    }
+
+    /// The rows of every ``revisionGatedSettings`` group a server at
+    /// `revision` serves in full, in one batch kept apart from the main read,
+    /// since a server rejects a batch that names a key it does not know. A
+    /// missing row keeps this device's own value (see
+    /// ``applyEffectiveSettings(_:)``).
     @MainActor
-    private func cellularQualityValues(atRevision revision: Int) async throws -> [SettingKey: EffectiveSettingValue] {
-        let keys = SettingKey.playerCellularQualitySettings
-        guard Self.offersCellularQuality,
-              keys.allSatisfy({ $0.isServed(atRevision: revision) }) else {
-            return [:]
-        }
+    private func revisionGatedValues(atRevision revision: Int) async throws -> [SettingKey: EffectiveSettingValue] {
+        let keys = Self.revisionGatedSettings
+            .filter { group in group.allSatisfy { $0.isServed(atRevision: revision) } }
+            .flatMap { $0 }
+        guard !keys.isEmpty else { return [:] }
         return try await flusher.effectiveValues(keys: keys).byKey.filter { keys.contains($0.key) }
     }
 
@@ -1111,6 +1153,16 @@ final class PlayerSettings {
 
     func setStillWatchingThreshold(_ threshold: Int) {
         stillWatchingThreshold = Self.clampStillWatchingThreshold(threshold)
+    }
+
+    /// Saved for this device with the timing. Settings offers Off only where
+    /// the server stores it (``offersNextUpOff``).
+    func setNextUpEnabled(_ enabled: Bool) {
+        // Turning Next Up back on always goes through; the flusher holds it
+        // until the server is known to serve the key.
+        guard enabled || offersNextUpOff else { return }
+        nextUpEnabled = enabled
+        enqueueDeviceValue(.nextUpEnabled, value: .bool(enabled))
     }
 
     func setNextUpPromptSeconds(_ seconds: Int) {
@@ -1351,8 +1403,12 @@ final class PlayerSettings {
     /// this device holds its own value for (the cellular pair's two keys
     /// count once), plus each device-only preference away from its default.
     var deviceChangedSettingCount: Int {
-        let overridden = Set(deviceOverriddenKeys.map {
-            $0 == .cellularMaxBitrateKbps ? .cellularPreferredQuality : $0
+        let overridden = Set(deviceOverriddenKeys.map { key -> SettingKey in
+            switch key {
+            case .cellularMaxBitrateKbps: return .cellularPreferredQuality
+            case .nextUpEnabled: return .nextUpPromptSeconds
+            default: return key
+            }
         })
         return overridden.count + changedDeviceLocalPreferenceCount
     }
@@ -1494,7 +1550,7 @@ final class PlayerSettings {
             }
             resetCellularQualityWhereNotServed()
         }
-        for key in SettingKey.playerBufferingQualitySettings {
+        for key in SettingKey.playerBufferingQualitySettings + SettingKey.playerNextUpSettings {
             enqueueDeviceClear(key)
         }
         await flushPendingDeviceSettings()
@@ -1557,10 +1613,10 @@ final class PlayerSettings {
     /// a held key on this device is the discarded value itself, so dropping
     /// the hold would leave playback using that value with nothing saying it
     /// is unsaved. The hold stays until the server can be reached. Returns
-    /// false when the discard did not happen for that reason. The cellular
-    /// pair is read too, where the server has it, so a discarded cellular
-    /// edit is repainted like any other; if only that read fails, the holds
-    /// stay too.
+    /// false when the discard did not happen for that reason. The
+    /// revision-gated keys (the cellular pair and Show Next Up Off) are read
+    /// too, where the server has them, so a discarded edit to one is
+    /// repainted like any other; if only that read fails, the holds stay too.
     ///
     /// Each read answers for the scope (server and profile) active when it is
     /// sent, so a scope change while either awaits also returns false:
@@ -1583,7 +1639,7 @@ final class PlayerSettings {
         }
         guard scopeIdentifier() == discardScopeID else { return false }
         knownManifestRevision = flusher.knownManifestRevision
-        guard let cellular = try? await cellularQualityValues(atRevision: response.revision) else {
+        guard let gated = try? await revisionGatedValues(atRevision: response.revision) else {
             return false
         }
         let bufferingRead = await bufferingQualityValues()
@@ -1593,7 +1649,7 @@ final class PlayerSettings {
         flusher.discardHeldChanges()
         applyEffectiveSettings(overlayingUnsettledValues(
             on: response.byKey
-                .merging(cellular) { _, cellularValue in cellularValue }
+                .merging(gated) { _, gatedValue in gatedValue }
                 .merging(buffering) { _, bufferingValue in bufferingValue }
         ))
         return true
@@ -1663,7 +1719,7 @@ final class PlayerSettings {
             $0 > 0 ? $0 : nil
         }
         // The cellular pair has rows only when its own read ran (see
-        // ``cellularQualityValues(atRevision:)``) or a change is still owed.
+        // ``revisionGatedValues(atRevision:)``) or a change is still owed.
         // Without one this device keeps its value, which is the only copy on
         // a server older than revision 20.
         if let entry = effectiveByKey[.cellularPreferredQuality] {
@@ -1693,6 +1749,11 @@ final class PlayerSettings {
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             effectiveByKey[.nextUpPromptSeconds]?.value.intValue ?? 30
         )
+        // Like the cellular pair: a row only from its own read or an owed
+        // change. Without one this device keeps its value.
+        if let enabled = effectiveByKey[.nextUpEnabled]?.value.boolValue {
+            nextUpEnabled = enabled
+        }
         hdrEnabled = effectiveBool(.hdrEnabled, in: effectiveByKey, default: true)
         dolbyVisionEnabled = effectiveBool(.dolbyVisionEnabled, in: effectiveByKey, default: true)
         seekCacheEnabled = effectiveBool(.seekCacheEnabled, in: effectiveByKey, default: true)
@@ -1716,7 +1777,11 @@ final class PlayerSettings {
         // A cellular or buffering key with no row keeps what this device last
         // knew, like its value above, unless the server doesn't define it:
         // then this device has no value of its own there.
-        var unreadGated = Set(SettingKey.playerCellularQualitySettings + SettingKey.playerBufferingQualitySettings)
+        var unreadGated = Set(
+            SettingKey.playerCellularQualitySettings
+                + SettingKey.playerBufferingQualitySettings
+                + SettingKey.playerNextUpSettings
+        )
             .subtracting(effectiveByKey.keys)
         if serverLacksBufferingQualityMode {
             unreadGated.subtract(SettingKey.playerBufferingQualitySettings)
@@ -1911,6 +1976,7 @@ final class PlayerSettings {
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
         )
+        nextUpEnabled = Self.cachedBool(defaults, key: Keys.nextUpEnabled, defaultValue: true)
         stillWatchingThreshold = Self.clampStillWatchingThreshold(
             Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: Self.defaultStillWatchingThreshold)
         )
@@ -2340,6 +2406,7 @@ final class PlayerSettings {
         defaults.set(false, forKey: key(Keys.autoSkipRecap))
         defaults.set(true, forKey: key(Keys.autoPlayNextEpisode))
         defaults.set(30, forKey: key(Keys.nextUpPromptSeconds))
+        defaults.set(true, forKey: key(Keys.nextUpEnabled))
         defaults.set(true, forKey: key(Keys.hdrEnabled))
         defaults.set(true, forKey: key(Keys.dolbyVisionEnabled))
         defaults.set(true, forKey: key(Keys.seekCacheEnabled))
@@ -2558,6 +2625,7 @@ final class PlayerSettings {
         static let autoPlayNextEpisode = "autoPlayNext"
         static let legacyAutoPlayNextEpisode = "player.autoPlayNextEpisode"
         static let nextUpPromptSeconds = "player.nextUpPromptSeconds"
+        static let nextUpEnabled = "playback.nextUpEnabled"
         static let stillWatchingThreshold = "player.passoutThreshold"
         static let deviceOverriddenKeys = "player.deviceOverriddenKeys"
     }

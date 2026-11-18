@@ -250,6 +250,11 @@ struct TVPlaybackSettingsPane: View {
         TVSettingsFooter(.verbatim(streamingFooterText))
     }
 
+    /// Show Next Up's choices: Off first where the server stores it.
+    private var nextUpOptions: [TVSettingsOption] {
+        (viewModel.offersNextUpOff ? [TVSettingsOptions.nextUpOff] : []) + TVSettingsOptions.nextUpPrompt
+    }
+
     private var streamingFooterText: String {
         var text = SettingsViewModel.hdrFooterText
         text += " " + AppLanguage.string(.settingsPlaybackSurroundFooter, locale: locale)
@@ -280,7 +285,7 @@ struct TVPlaybackSettingsPane: View {
 
         TVSettingsPickerRow(
             title: .settingsNextUpTitle,
-            value: TVSettingsOptions.label(for: String(viewModel.nextUpPromptSeconds), in: TVSettingsOptions.nextUpPrompt)
+            value: TVSettingsOptions.label(for: viewModel.nextUpChoiceTag, in: nextUpOptions)
         ) { showPicker(.nextUpPrompt) }
         .focused(detailFocus, equals: .playbackNextUpPrompt)
 
@@ -528,7 +533,7 @@ struct TVPlaybackSettingsPane: View {
         case .nextUpPrompt:
             TVSettingsPickerRequest(
                 title: .settingsNextUpTitle,
-                options: [TVSettingsOptions.useProfileSetting] + TVSettingsOptions.nextUpPrompt,
+                options: [TVSettingsOptions.useProfileSetting] + nextUpOptions,
                 selection: selection(.nextUpPrompt),
                 returnFocus: .playbackNextUpPrompt
             )

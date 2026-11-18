@@ -124,6 +124,15 @@ final class SettingsViewModel {
         set { PlayerSettings.shared.setNextUpPromptSeconds(newValue) }
     }
 
+    /// Show Next Up offers Off first, where the server stores it.
+    var offersNextUpOff: Bool { PlayerSettings.shared.offersNextUpOff }
+
+    /// The Show Next Up choice: ``offTag`` for Off, otherwise the seconds.
+    var nextUpChoiceTag: String {
+        let settings = PlayerSettings.shared
+        return settings.showsNextUp ? String(settings.nextUpPromptSeconds) : Self.offTag
+    }
+
     var introSkipMode: IntroSkipMode {
         get { PlayerSettings.shared.introSkipMode }
         set { PlayerSettings.shared.setIntroSkipMode(newValue) }
@@ -809,7 +818,7 @@ final class SettingsViewModel {
         case .introSkipMode: return introSkipMode.wireValue
         case .autoSkipCredits: return skipCredits ? Self.onTag : Self.offTag
         case .autoPlayNext: return autoPlayNext ? Self.onTag : Self.offTag
-        case .nextUpPrompt: return String(nextUpPromptSeconds)
+        case .nextUpPrompt: return nextUpChoiceTag
         }
     }
 
@@ -850,7 +859,13 @@ final class SettingsViewModel {
         case .autoPlayNext:
             autoPlayNext = tag == Self.onTag
         case .nextUpPrompt:
+            // Off leaves the timing alone; a time turns Next Up back on.
+            if tag == Self.offTag {
+                PlayerSettings.shared.setNextUpEnabled(false)
+                return
+            }
             guard let seconds = Int(tag) else { return }
+            if !PlayerSettings.shared.nextUpEnabled { PlayerSettings.shared.setNextUpEnabled(true) }
             nextUpPromptSeconds = seconds
         }
     }

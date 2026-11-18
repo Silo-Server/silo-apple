@@ -521,6 +521,10 @@ struct PlayerView: View {
             guard newValue != nil else { return }
             dismissPlayer()
         }
+        .onChange(of: viewModel.endOfPlaybackDismissToken) { _, newValue in
+            guard newValue != nil else { return }
+            dismissPlayer()
+        }
         #if os(tvOS)
         // A tvOS sheet is a narrow centered card; the lobby needs the screen.
         .fullScreenCover(isPresented: $showsPartyPanel) {
