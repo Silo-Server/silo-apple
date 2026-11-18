@@ -5867,6 +5867,14 @@ class PlayerViewModel {
         }
         // A Next Up the viewer opened stays up, without a countdown.
         if !isPremature, closesAtEndInsteadOfNextUp, !showNextUpScreen {
+            #if os(iOS)
+            // In picture in picture the cover is gone, so nothing observes the
+            // token; end the session here, as closing the window would.
+            if !isPlayerPresentationVisible, PictureInPictureCoordinator.shared.ownsEngagedSession(self) {
+                cleanup()
+                return
+            }
+            #endif
             endOfPlaybackDismissToken = UUID()
             return
         }

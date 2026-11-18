@@ -859,13 +859,16 @@ final class SettingsViewModel {
         case .autoPlayNext:
             autoPlayNext = tag == Self.onTag
         case .nextUpPrompt:
-            // Off leaves the timing alone; a time turns Next Up back on.
+            // Off leaves the timing alone. Where the server stores Off, a time
+            // writes both keys, so the row's choice is this device's whole
+            // choice and a later profile Off does not override half of it.
+            let settings = PlayerSettings.shared
             if tag == Self.offTag {
-                PlayerSettings.shared.setNextUpEnabled(false)
+                settings.setNextUpEnabled(false)
                 return
             }
             guard let seconds = Int(tag) else { return }
-            if !PlayerSettings.shared.nextUpEnabled { PlayerSettings.shared.setNextUpEnabled(true) }
+            if !settings.nextUpEnabled || settings.offersNextUpOff { settings.setNextUpEnabled(true) }
             nextUpPromptSeconds = seconds
         }
     }
