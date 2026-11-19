@@ -85,6 +85,22 @@ final class ItemCollectionsTests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths.filter { $0 == path }.count, 2)
     }
 
+    /// A movie page reads its box set and its collections; one capabilities
+    /// read answers both.
+    func testBoxSetAndCollectionsShareOneCapabilitiesRead() async throws {
+        let api = try await api()
+        stub.reply(path: Self.capabilitiesPath, 200,
+                   #"{"revision":"r","state":"available","allowed":true,"box_sets":true,"item_collections":true}"#)
+        stub.reply(path: "/api/v2/catalog/items/m1/box-set", 200, "{}")
+        stub.reply(path: "/api/v2/catalog/items/m1/collections", 200, #"{"items":[],"preview_items":[]}"#)
+
+        _ = try await api.itemBoxSet(contentId: "m1", libraryId: 1)
+        let read = try await api.itemCollections(contentId: "m1", libraryId: 1)
+
+        XCTAssertEqual(read?.cards.count, 0)
+        XCTAssertEqual(stub.requestedPaths.filter { $0 == Self.capabilitiesPath }.count, 1)
+    }
+
     // MARK: The row
 
     private func card(_ id: String, _ title: String) -> SectionCollectionCard {

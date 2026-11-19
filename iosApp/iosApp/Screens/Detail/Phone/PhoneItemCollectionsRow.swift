@@ -48,7 +48,6 @@ struct PhoneItemCollectionsRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder
     private func titles(_ items: [BrowseItem], in collection: SectionCollectionCard) -> some View {
         Group {
             ForEach(items) { item in

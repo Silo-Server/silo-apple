@@ -27,9 +27,7 @@ struct TVItemCollectionsRow: View {
             .onChange(of: focusedItemId != nil) { _, focused in
                 onFocusChange?(focused)
             }
-            .onChange(of: focusedItemId) { _, id in
-                if let id { lastFocusedItemId = id }
-            }
+            .modifier(TVRowFocusObserver(focusedItemId: $focusedItemId) { lastFocusedItemId = $0 })
     }
 
     @ViewBuilder

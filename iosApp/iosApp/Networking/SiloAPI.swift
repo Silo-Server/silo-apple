@@ -24,13 +24,13 @@ actor SiloAPI {
     private let imageSizeCapability: ImageSizeCapability?
     /// Test seam for row sizes; production reads `SectionItemLimitSupport.shared`.
     private let sectionItemLimitSupport: SectionItemLimitSupport?
-    /// Servers (`RefreshAccountIdentity.serverId`) that advertised
-    /// `box_sets`, so movie pages do not reread the search capabilities on
-    /// every visit. Only a yes is kept: a server upgraded to box sets while
-    /// the app runs shows its rows on the next movie page.
-    private var boxSetServerIds: Set<String> = []
-    /// Servers that advertised `item_collections`, kept the same way.
-    private var itemCollectionServerIds: Set<String> = []
+    /// Per server (`RefreshAccountIdentity.serverId`), the title-page
+    /// features it advertised (`box_sets`, `item_collections`), so title
+    /// pages do not reread the search capabilities on every visit. Only a
+    /// yes is kept: a server upgraded while the app runs shows its rows on
+    /// the next title page.
+    private var advertisedFeatures: [String: Set<KeyPath<CatalogSearchFeatures, Bool>>] = [:]
+    private static let titlePageFeatures: [KeyPath<CatalogSearchFeatures, Bool>] = [\.boxSets, \.itemCollections]
 
     init(
         http: HTTPClient = .shared,
@@ -450,7 +450,7 @@ actor SiloAPI {
     /// `box_sets`.
     func itemBoxSet(contentId: String, libraryId: Int?) async throws -> CatalogBoxSetDetail? {
         let auth = try await detailReadAuth()
-        guard try await serverHasBoxSets(auth) else { return nil }
+        guard try await serverAdvertises(\.boxSets, auth: auth) else { return nil }
         let detail: CatalogBoxSetDetail?
         do {
             detail = try await apiV2Client.catalogItemBoxSet(
@@ -469,16 +469,20 @@ actor SiloAPI {
         return detail
     }
 
-    /// The `box_sets` search capability of `auth`'s server, read with that
+    /// A title-page search capability of `auth`'s server, read with that
     /// same auth so a server switch mid-read cannot file one server's answer
-    /// under another. Kept once the server says yes.
-    private func serverHasBoxSets(_ auth: CapturedOrdinaryRequestAuth) async throws -> Bool {
+    /// under another. Every feature the read says yes to is kept, so the
+    /// box set and collections rows share one capabilities read.
+    private func serverAdvertises(
+        _ feature: KeyPath<CatalogSearchFeatures, Bool>,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws -> Bool {
         let serverId = auth.account.serverId
-        if boxSetServerIds.contains(serverId) { return true }
-        let supported = try await catalogSearchFeatures(auth: auth).boxSets
+        if advertisedFeatures[serverId]?.contains(feature) == true { return true }
+        let features = try await catalogSearchFeatures(auth: auth)
         try await requireCurrentOwner(auth)
-        if supported { boxSetServerIds.insert(serverId) }
-        return supported
+        advertisedFeatures[serverId, default: []].formUnion(Self.titlePageFeatures.filter { features[keyPath: $0] })
+        return features[keyPath: feature]
     }
 
     /// The collections holding the movie or series `contentId` for the
@@ -486,12 +490,7 @@ actor SiloAPI {
     /// request, when the server does not advertise `item_collections`.
     func itemCollections(contentId: String, libraryId: Int?) async throws -> CatalogItemCollections? {
         let auth = try await detailReadAuth()
-        if !itemCollectionServerIds.contains(auth.account.serverId) {
-            let supported = try await catalogSearchFeatures(auth: auth).itemCollections
-            try await requireCurrentOwner(auth)
-            guard supported else { return nil }
-            itemCollectionServerIds.insert(auth.account.serverId)
-        }
+        guard try await serverAdvertises(\.itemCollections, auth: auth) else { return nil }
         let read = try await apiV2Client.catalogItemCollections(
             id: contentId, libraryId: libraryId.map(String.init),
             artwork: await artworkQuery(.detail), auth: auth
