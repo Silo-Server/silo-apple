@@ -8,6 +8,9 @@ import SwiftUI
 /// `TVSimilarRail`: one focus section, entered on its first card.
 struct TVItemCollectionsRow: View {
     let content: ItemCollectionsRowContent
+    /// Each new value moves focus onto the row's entry card, for a page that
+    /// hands focus to its first supporting rail.
+    var focusRequest = 0
     /// Reports focus entering and leaving the row.
     var onFocusChange: ((Bool) -> Void)? = nil
 
@@ -28,19 +31,31 @@ struct TVItemCollectionsRow: View {
                 onFocusChange?(focused)
             }
             .modifier(TVRowFocusObserver(focusedItemId: $focusedItemId) { lastFocusedItemId = $0 })
+            .onChange(of: focusRequest) { _, request in
+                guard request > 0, let entry = entryItemId(itemIds) else { return }
+                focusedItemId = entry
+            }
     }
 
     @ViewBuilder
     private var rows: some View {
         switch content {
         case .titles(let collection, let items):
-            section(title: collection.title, entryItemId: entryItemId(items.map(\.contentId) + [SectionExploreAllCard.focusId])) {
+            section(title: collection.title, entryItemId: entryItemId(itemIds)) {
                 titles(items, in: collection)
             }
         case .collections(let cards):
-            section(title: AppLanguage.string(.detailAlsoIn, locale: locale), entryItemId: entryItemId(cards.map(\.rowKey))) {
+            section(title: AppLanguage.string(.detailAlsoIn, locale: locale), entryItemId: entryItemId(itemIds)) {
                 collections(cards)
             }
+        }
+    }
+
+    /// The focus ids of the row's cards, in order.
+    private var itemIds: [String] {
+        switch content {
+        case .titles(_, let items): items.map(\.contentId) + [SectionExploreAllCard.focusId]
+        case .collections(let cards): cards.map(\.rowKey)
         }
     }
 

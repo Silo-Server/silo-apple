@@ -529,8 +529,8 @@ class ItemDetailViewModel {
     }
 
     /// Reads the collections holding the movie or series beside the page's
-    /// own refresh. A failed reread keeps the row on screen, as the box set
-    /// row does; the server answering "none" removes it.
+    /// own refresh. A failed read removes the row, as does the server
+    /// answering "none"; a cancelled one changes nothing.
     private func refreshItemCollections(for item: ItemDetail) {
         itemCollectionsTask?.cancel()
         guard SiloMediaType.isMovieLibrary(item.type) || SiloMediaType.isSeries(item.type) else {
@@ -543,7 +543,7 @@ class ItemDetailViewModel {
             do {
                 fresh = try await SiloAPI.shared.itemCollections(contentId: contentId, libraryId: libraryId)
             } catch {
-                return
+                fresh = nil
             }
             guard let self, !Task.isCancelled, self.detail?.contentId == contentId else { return }
             if self.itemCollections != fresh { self.itemCollections = fresh }
