@@ -266,6 +266,32 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertNil(counter.advance([:]))
     }
 
+    /// Server HLS: the plan's share of the engine relay's running totals of
+    /// media bytes and the time they spent arriving, each segment timed from
+    /// its first byte to its last. Segments the server answered in bursts
+    /// after waiting for its encoder add nothing to either.
+    func testTheRelayMeterTakesThePlansShareOfTheRelaysTotals() {
+        var meter = RelayPlanThroughput()
+        meter.planAdopted(networkKey: "wifi")
+        meter.note(totals: (0, 0), networkKey: "wifi")
+        XCTAssertNil(meter.throughputKbps, "nothing timed")
+        meter.note(totals: (2_500_000, 1_000), networkKey: "wifi")
+        XCTAssertEqual(meter.throughputKbps, 20_000)
+        meter.note(totals: (5_000_000, 2_000), networkKey: "wifi", counts: false)
+        XCTAssertEqual(meter.throughputKbps, 20_000, "a replacement's loading is not this plan's")
+
+        meter.planAdopted(networkKey: "wifi")
+        XCTAssertNil(meter.throughputKbps, "a new plan's books")
+        meter.note(totals: (6_000_000, 3_000), networkKey: "wifi")
+        XCTAssertEqual(meter.throughputKbps, 8_000, "1 MB over the second since adoption")
+        meter.note(totals: (500_000, 1_000), networkKey: "wifi")
+        XCTAssertEqual(meter.throughputKbps, 6_000, "a new load's relay counts from 0: 1.5 MB over 2 s")
+        meter.note(totals: nil, networkKey: "wifi")
+        XCTAssertEqual(meter.throughputKbps, 6_000, "no relay adds nothing")
+        meter.note(totals: (900_000, 2_000), networkKey: "cellular")
+        XCTAssertNil(meter.throughputKbps, "the network changed under the plan")
+    }
+
     /// Opening a plan's source: the same 45 s, held by an outage, cancelling
     /// the step in flight and any step begun once it has run out.
     @MainActor

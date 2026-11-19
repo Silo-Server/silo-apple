@@ -558,6 +558,9 @@ class PlayerViewModel {
     /// What the engine's reader receives from the origin: outage silence and
     /// the plan's `throughput_kbps`.
     @ObservationIgnored private var upstreamMeter = UpstreamReadMeter()
+    /// On server HLS, what the plan's segments arrived at while they were
+    /// arriving, from the engine relay's transfer totals.
+    @ObservationIgnored private var relayMeter = RelayPlanThroughput()
     /// The device's own receive count, for what a shared link delivered.
     @ObservationIgnored private var interfaceReceiveCounter = InterfaceReceiveCounter()
     /// Numbers each adopted plan, so a replan that comes back with the same
@@ -11779,15 +11782,17 @@ extension PlayerViewModel {
             && streamLoadGeneration != bufferingAdoptedStreamLoadGeneration
     }
 
-    /// What the plan's media arrived at, the buffering controller's evidence
-    /// of a slow link: the reader's rate where Aether reads the origin, or on
-    /// server HLS the access log's rate on the relay hop, the closest
-    /// equivalent there. The meter leaves out what the reader receives while
-    /// another reader may share the link: its share is no evidence the link
-    /// is slow.
+    /// What the plan's media arrived at while it was arriving, the buffering
+    /// controller's evidence of a slow link: the reader's rate where Aether
+    /// reads the origin, or on server HLS the rate the relay timed the
+    /// plan's segments at, first byte to last. Neither counts the time the
+    /// server spends producing media before it sends it, which is no
+    /// evidence about the link. The reader's meter leaves out what it
+    /// receives while another reader may share the link: its share is no
+    /// evidence the link is slow.
     private var bufferingPlanArrivalKbps: Int? {
         aetherPlaybackController.activeSpec?.options.nativeRemoteHLS == true
-            ? aetherPlaybackController.relayThroughputKbps
+            ? relayMeter.throughputKbps
             : upstreamMeter.throughputKbps
     }
 
@@ -11910,6 +11915,11 @@ extension PlayerViewModel {
             deviceBytes: totalBytes == nil ? nil : interfaceReceiveCounter.read()
         )
         if arrived { bufferingSignals.noteMediaDataArrived() }
+        relayMeter.note(
+            totals: aetherPlaybackController.relayMediaTransfer,
+            networkKey: BandwidthProbeScheduler.shared.network.key,
+            counts: !bufferingReplacementLoading
+        )
     }
 
     /// A seek, scrub commit or hold-seek has not landed yet.
@@ -12109,6 +12119,7 @@ extension PlayerViewModel {
         // still names the entry this replaces and carries its throughput.
         bufferingPlan = entry
         upstreamMeter.planAdopted(networkKey: BandwidthProbeScheduler.shared.network.key)
+        relayMeter.planAdopted(networkKey: BandwidthProbeScheduler.shared.network.key)
         // The new plan hears whether playback is already waiting.
         bufferingSignals.planAdopted()
         softwareSeekLanding.reset()
@@ -12201,7 +12212,7 @@ extension PlayerViewModel {
         switch output {
         case .replan(let request):
             Self.logger.info(
-                "[CMP-BUFFERING] trigger replan quality=\(request.qualityPreference, privacy: .public) estimate=\(request.bandwidthEstimateKbps.map(String.init) ?? "none", privacy: .public) source=\(request.bandwidthEstimateSource ?? "none", privacy: .public) learned_limit=\(request.learnedLimit ?? "none", privacy: .public)"
+                "[CMP-BUFFERING] trigger replan quality=\(request.qualityPreference, privacy: .public) estimate=\(request.bandwidthEstimateKbps.map(String.init) ?? "none", privacy: .public) source=\(request.bandwidthEstimateSource ?? "none", privacy: .public) observed=\(request.observedThroughputKbps.map(String.init) ?? "none", privacy: .public) plan_arrival=\(self.bufferingPlanArrivalKbps.map(String.init) ?? "none", privacy: .public) learned_limit=\(request.learnedLimit ?? "none", privacy: .public)"
             )
             // Issued on the next turn: the controller is still inside the
             // event that fired it, and the replan feeds it events of its own.

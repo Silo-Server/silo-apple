@@ -220,3 +220,61 @@ struct InterfaceReceiveCounter {
         return counts
     }
 }
+
+/// On server HLS, the rate the playing plan's segments arrived at while they
+/// were arriving, for the buffering controller's evidence of a slow link.
+///
+/// AVPlayer fetches the origin through AetherEngine's relay on 127.0.0.1, so
+/// its access log times the loopback hop, from when each request was sent.
+/// The Silo server answers a transcode segment only once its encoder has
+/// written all of it, so that clock reads an encode slower than real time
+/// (or burn-in, a source read, a node starting) as a slow link. The relay
+/// times each media body on its own connection to the origin instead, from
+/// its first byte to its last, leaves out bodies under a second and counts
+/// overlapping time once (AetherEngine's `RelayTransferMeter`, the rules of
+/// Android's `PlaybackThroughputMeter`), and publishes running totals with
+/// each telemetry tick. This takes the playing plan's share of them. It holds
+/// no clock and performs no I/O.
+struct RelayPlanThroughput {
+    /// The relay's totals at the last tick; nil while there is no relay.
+    private var last: (bytes: Int64, receivingMs: Int64)?
+    private var bytes: Int64 = 0
+    private var receivingMs: Int64 = 0
+    private var networkKey: String?
+    private var networkChanged = false
+
+    /// Takes one telemetry tick: the relay's running totals, or nil without
+    /// a relay. Totals below the last ones are a new load's relay, which
+    /// counts from 0. What arrived counts toward the plan only when
+    /// `counts`: not while a replacement loads in its place.
+    mutating func note(totals: (bytes: Int64, receivingMs: Int64)?, networkKey key: String, counts: Bool = true) {
+        if networkKey != nil, key != networkKey { networkChanged = true }
+        guard let totals else {
+            last = nil
+            return
+        }
+        let base: (bytes: Int64, receivingMs: Int64) =
+            last.flatMap { $0.bytes <= totals.bytes && $0.receivingMs <= totals.receivingMs ? $0 : nil } ?? (0, 0)
+        last = totals
+        guard counts else { return }
+        bytes += totals.bytes - base.bytes
+        receivingMs += totals.receivingMs - base.receivingMs
+    }
+
+    /// A plan was adopted: its books start empty on `networkKey`.
+    mutating func planAdopted(networkKey key: String) {
+        bytes = 0
+        receivingMs = 0
+        networkKey = key
+        networkChanged = false
+    }
+
+    /// The plan's segments' rate while they arrived, once the relay timed
+    /// `UpstreamReadMeter.minReceivingMs` of it. Nil before that, when the
+    /// network changed under the plan, or below `MIN_ESTIMATE_KBPS`; capped
+    /// at 1,000,000.
+    var throughputKbps: Int? {
+        guard !networkChanged, receivingMs >= Int64(UpstreamReadMeter.minReceivingMs) else { return nil }
+        return UpstreamReadMeter.reportable(kbps: bytes * 8 / receivingMs)
+    }
+}
