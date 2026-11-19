@@ -101,11 +101,13 @@ with an idea in Ideas. Open an
 [issue](https://github.com/Silo-Server/silo-apple/issues) before implementing a
 navigation or behavior change, large refactor, or work that changes the shared
 server contract. Documentation, narrow fixes, and
-well-scoped parity corrections can go straight to a pull request. That
-covers documentation in this repository. For the docs on
-[siloserver.org](https://siloserver.org/docs), open a docs issue in
-[`siloserver.org`](https://github.com/Silo-Server/siloserver.org) instead of a
-pull request: select **Suggest a change** at the bottom of the page, or use the
+well-scoped parity corrections in this repository can go straight to a pull request.
+
+The docs on [siloserver.org](https://siloserver.org/docs) don't take pull
+requests from contributors. To report a guide that is wrong, missing, or out
+of date, open a docs issue in
+[`siloserver.org`](https://github.com/Silo-Server/siloserver.org): select
+**Suggest a change** at the bottom of the page, or use the
 [Suggest a docs change](https://github.com/Silo-Server/siloserver.org/issues/new?template=docs.yml) form.
 
 This repository owns the iOS, tvOS, and macOS clients. Server/API work belongs
