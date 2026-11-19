@@ -85,6 +85,7 @@ struct TVBackdropTintWash: View {
 /// top-leading, which is the darkest and sits behind the marquee's title.
 struct TVBackdropCornerWash: View {
     let corners: HeroBackdropPalette.Corners
+    let includesTopTrailing: Bool
     var isVisible: Bool = true
 
     /// How far each corner's color reaches before it is fully faded, as a
@@ -92,18 +93,24 @@ struct TVBackdropCornerWash: View {
     nonisolated static let reach: CGFloat = 4.0 / 3.0
 
     /// Bottom to top, with each corner's position on the screen.
-    nonisolated static func layers(_ corners: HeroBackdropPalette.Corners) -> [(color: Color, center: UnitPoint)] {
-        [
+    nonisolated static func layers(
+        _ corners: HeroBackdropPalette.Corners,
+        includesTopTrailing: Bool
+    ) -> [(color: Color, center: UnitPoint)] {
+        var layers: [(color: Color, center: UnitPoint)] = [
             (corners.bottomTrailing, .bottomTrailing),
             (corners.bottomLeading, .bottomLeading),
-            (corners.topTrailing, .topTrailing),
-            (corners.topLeading, .topLeading),
         ]
+        if includesTopTrailing {
+            layers.append((corners.topTrailing, .topTrailing))
+        }
+        layers.append((corners.topLeading, .topLeading))
+        return layers
     }
 
     var body: some View {
         ZStack {
-            ForEach(Array(Self.layers(corners).enumerated()), id: \.offset) { _, layer in
+            ForEach(Self.layers(corners, includesTopTrailing: includesTopTrailing), id: \.center) { layer in
                 EllipticalGradient(
                     colors: [layer.color.opacity(isVisible ? 1 : 0), layer.color.opacity(0)],
                     center: layer.center,
@@ -120,10 +127,8 @@ struct TVBackdropCornerWash: View {
 /// gives the custom top menu, marquee, and rows one shared visual plane.
 /// On Home and the library Browse landings the artwork tracks the
 /// marquee's focused item (Skyline §5.4): a crisp image is anchored in the
-/// top-right corner and fades out toward the leading edge and the bottom
-/// into colors sampled from the art itself, one per screen corner, so the
-/// metadata and rows below sit on the art's colors. Calendar passes nil artwork with flat `.siloBackground` tints
-/// and renders flat.
+/// top-right corner and fades into the sampled wash from the other three
+/// corners. Framed covers use all four corner colors and a glow.
 struct TVRootHeroBackdrop: View {
     let tints: HeroBackdropPalette.Tints
     let artworkURL: String?
@@ -188,15 +193,15 @@ struct TVRootHeroBackdrop: View {
         }
     }
 
-    /// Sampled-color wash, with a framed cover's glow and shadow, dithered
-    /// so its dark ramps don't band. When the caller passes flat
-    /// `.siloBackground` tints (Calendar) every stop collapses to the app
-    /// background, so the wash renders flat.
+    /// The wash skips the top-right color beneath wide artwork. A framed
+    /// cover keeps the full wash, glow, and shadow.
     private var tintBackground: some View {
-        TVHeroAmbientWash(
+        let cover = displayedCover
+        return TVHeroAmbientWash(
             tints: tints,
             isVisible: isVisible,
-            cover: displayedCover,
+            includesTopTrailing: cover != nil,
+            cover: cover,
             // The first tint (cold-entry seed with a prefetch-warmed sample)
             // snaps in with the artwork; only tint→tint changes crossfade.
             animatesChanges: !reduceMotion && hasDisplayedArtwork,
