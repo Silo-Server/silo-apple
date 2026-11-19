@@ -471,8 +471,8 @@ actor SiloAPI {
 
     /// A title-page search capability of `auth`'s server, read with that
     /// same auth so a server switch mid-read cannot file one server's answer
-    /// under another. Every feature the read says yes to is kept, so the
-    /// box set and collections rows share one capabilities read.
+    /// under another. Every feature the read says yes to is kept, so a later
+    /// check for the other feature on that server needs no read.
     private func serverAdvertises(
         _ feature: KeyPath<CatalogSearchFeatures, Bool>,
         auth: CapturedOrdinaryRequestAuth

@@ -85,9 +85,9 @@ final class ItemCollectionsTests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths.filter { $0 == path }.count, 2)
     }
 
-    /// A movie page reads its box set and its collections; one capabilities
-    /// read answers both.
-    func testBoxSetAndCollectionsShareOneCapabilitiesRead() async throws {
+    /// A capabilities read that says yes to box sets and collections is kept
+    /// for both, so a later collections check asks the server nothing.
+    func testOneCapabilitiesReadIsKeptForBothTitlePageFeatures() async throws {
         let api = try await api()
         stub.reply(path: Self.capabilitiesPath, 200,
                    #"{"revision":"r","state":"available","allowed":true,"box_sets":true,"item_collections":true}"#)
