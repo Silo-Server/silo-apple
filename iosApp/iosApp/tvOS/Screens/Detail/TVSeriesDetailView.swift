@@ -184,6 +184,8 @@ struct TVSeriesDetailView: View {
     let isSeriesWatched: Bool
     /// The selected season's state for More's season entry.
     let isSeasonWatched: Bool
+    /// The collections holding the series; nil draws no row.
+    var itemCollections: CatalogItemCollections? = nil
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
@@ -290,6 +292,14 @@ struct TVSeriesDetailView: View {
                             episodeExperience
                             if let cast = detail.cast, !cast.isEmpty {
                                 castSection(cast: cast)
+                            }
+                            if let collections = ItemCollectionsRowContent(itemCollections) {
+                                TVItemCollectionsRow(content: collections) { focused in
+                                    // Below Cast when there is one; native
+                                    // scrolling reveals it either way.
+                                    guard focused else { return }
+                                    supportingRailDidFocus(centerFirstSection: false)
+                                }
                             }
                             trailersSection
                             similarSection

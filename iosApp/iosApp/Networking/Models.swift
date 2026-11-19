@@ -487,6 +487,12 @@ struct SectionCollectionCard: Codable, Hashable, Identifiable {
         return false
     }
 
+    /// A server collection's library.
+    var libraryId: Int? {
+        if case .library(let libraryId) = source { return libraryId }
+        return nil
+    }
+
     /// The profile that made a personal collection.
     var creatorProfileId: String? {
         if case .user(let creatorProfileId) = source { return creatorProfileId }

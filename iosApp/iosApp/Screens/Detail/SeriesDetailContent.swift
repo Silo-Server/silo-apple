@@ -12,6 +12,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
+    /// The collections holding the series; nil draws no row.
+    let itemCollections: CatalogItemCollections?
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
@@ -604,6 +606,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             episodesSection
             if let cast = detail.cast, !cast.isEmpty {
                 castSection(cast: cast)
+            }
+            if let collections = ItemCollectionsRowContent(itemCollections) {
+                PhoneItemCollectionsRow(content: collections)
             }
             trailersSection
             // A seed's facts are a partial list; show the detail's whole one.

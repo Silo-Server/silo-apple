@@ -29,6 +29,8 @@ actor SiloAPI {
     /// every visit. Only a yes is kept: a server upgraded to box sets while
     /// the app runs shows its rows on the next movie page.
     private var boxSetServerIds: Set<String> = []
+    /// Servers that advertised `item_collections`, kept the same way.
+    private var itemCollectionServerIds: Set<String> = []
 
     init(
         http: HTTPClient = .shared,
@@ -477,6 +479,25 @@ actor SiloAPI {
         try await requireCurrentOwner(auth)
         if supported { boxSetServerIds.insert(serverId) }
         return supported
+    }
+
+    /// The collections holding the movie or series `contentId` for the
+    /// acting profile, opened from `libraryId` when known. Nil, without a
+    /// request, when the server does not advertise `item_collections`.
+    func itemCollections(contentId: String, libraryId: Int?) async throws -> CatalogItemCollections? {
+        let auth = try await detailReadAuth()
+        if !itemCollectionServerIds.contains(auth.account.serverId) {
+            let supported = try await catalogSearchFeatures(auth: auth).itemCollections
+            try await requireCurrentOwner(auth)
+            guard supported else { return nil }
+            itemCollectionServerIds.insert(auth.account.serverId)
+        }
+        let read = try await apiV2Client.catalogItemCollections(
+            id: contentId, libraryId: libraryId.map(String.init),
+            artwork: await artworkQuery(.detail), auth: auth
+        )
+        try await requireCurrentOwner(auth)
+        return read
     }
 
     /// Box sets matching `query` for the acting profile, best match first.
