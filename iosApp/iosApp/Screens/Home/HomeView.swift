@@ -19,6 +19,12 @@ struct HomeView: View {
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = HomeViewModel()
+    @State private var watchStateRefresh: Task<Void, Never>?
+    @State private var watchStateRefreshPending = false
+    @State private var hasObservedWatchState = false
+    #if os(macOS)
+    @State private var watchStateWindowVisible = false
+    #endif
     #if !os(tvOS)
     /// Feeds the glass strip behind the floating header as rows scroll under it.
     @State private var chromeScrollState = PageChromeScrollState()
@@ -37,6 +43,21 @@ struct HomeView: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.locale) private var locale
+
+    private var observesWatchState: Bool {
+        guard scenePhase == .active, router.path.isEmpty, router.presentedPlayer == nil else { return false }
+        #if os(iOS)
+        return router.presentedItemDetail == nil
+        #elseif os(macOS)
+        return watchStateWindowVisible
+        #else
+        return true
+        #endif
+    }
+
+    private var watchStateOwner: SessionOwner? {
+        observesWatchState ? SessionOwner.current() : nil
+    }
 
     var body: some View {
         @Bindable var viewModel = viewModel
@@ -196,7 +217,7 @@ struct HomeView: View {
         #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
-            Task { await viewModel.loadSections() }
+            scheduleWatchStateRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: .titleMarkedNotInterested)) { note in
             guard let contentId = note.userInfo?[NotInterestedSync.contentIdKey] as? String else { return }
@@ -211,6 +232,18 @@ struct HomeView: View {
                 Task { await viewModel.reloadIfInterrupted() }
             }
         }
+        #if os(macOS)
+        .background(MacWindowVisibilityReader { watchStateWindowVisible = $0 })
+        #endif
+        .task(id: [String(observesWatchState), watchStateOwner?.accountID, AuthService.shared.profileId]) {
+            cancelWatchStateRefresh()
+            guard observesWatchState else { return }
+            // Return to the server even if the socket is unavailable.
+            if hasObservedWatchState { scheduleWatchStateRefresh() }
+            hasObservedWatchState = true
+            await HomeWatchStateRealtime.observe { scheduleWatchStateRefresh() }
+        }
+        .onDisappear { cancelWatchStateRefresh() }
         .alert(
             Text(.homeUpdateFailedTitle),
             isPresented: $viewModel.isShowingActionError
@@ -224,6 +257,29 @@ struct HomeView: View {
             }
         }
         .personalStateNoticeAlert($viewModel.personalStateNotice)
+    }
+
+    private func scheduleWatchStateRefresh() {
+        guard observesWatchState else { return }
+        watchStateRefreshPending = true
+        guard watchStateRefresh == nil else { return }
+        let owner = watchStateOwner
+        watchStateRefresh = Task {
+            while watchStateRefreshPending && !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+                guard observesWatchState, watchStateOwner == owner else { break }
+                watchStateRefreshPending = false
+                StartupContentPrefetcher.invalidateHomeSectionsInFlight()
+                await viewModel.loadSections()
+            }
+            if !Task.isCancelled { watchStateRefresh = nil }
+        }
+    }
+
+    private func cancelWatchStateRefresh() {
+        watchStateRefresh?.cancel()
+        watchStateRefresh = nil
+        watchStateRefreshPending = false
     }
 
     // MARK: - Content
