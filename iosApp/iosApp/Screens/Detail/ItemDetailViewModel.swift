@@ -533,7 +533,7 @@ class ItemDetailViewModel {
     /// row does; the server answering "none" removes it.
     private func refreshItemCollections(for item: ItemDetail) {
         itemCollectionsTask?.cancel()
-        guard item.type == "movie" || item.type == "series" else {
+        guard SiloMediaType.isMovieLibrary(item.type) || SiloMediaType.isSeries(item.type) else {
             itemCollections = nil
             return
         }
