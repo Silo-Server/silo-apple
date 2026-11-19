@@ -33,6 +33,16 @@ import Foundation
 /// frame. Without evidence the start runs on to the player's deadline and
 /// failure path.
 ///
+/// After a plan of the attempt has played, any stall can lower, since a
+/// smaller output also helps a server encoding slower than real time. A
+/// lowering reports a link fact, `observed_rebuffer` (which the server learns
+/// as this device's limit) and `observed_throughput_kbps`, only on the same
+/// evidence: the plan's media arrived below its delivered bitrate while it
+/// was arriving. Time the server spends producing media before it sends it
+/// says nothing about the link, so a lowering without that evidence carries
+/// the step-down estimate alone, which the server plans under and never
+/// records.
+///
 /// ### Timing
 ///
 /// Arithmetic is in integer milliseconds of the clock's elapsed real time
@@ -143,16 +153,15 @@ final class BufferingQualityController {
         var operation: String = PlaybackProtocolV3.ReplanOperation.qualityChange
         var qualityPreference: String
         var bandwidthEstimateKbps: Int? = nil
-        /// `observed_rebuffer`. Only sent to a server that advertises
-        /// `buffering_quality_v1`.
+        /// `observed_rebuffer`, on a lowering with evidence of a slow link.
+        /// Only sent to a server that advertises `buffering_quality_v1`.
         var bandwidthEstimateSource: String? = nil
         /// `clear`. Only sent to a server that advertises `buffering_quality_v1`.
         var learnedLimit: String? = nil
-        /// What the plan's media measurably arrived at, the evidence an
-        /// automatic lowering before anything of the attempt played, or at a
-        /// missed start deadline, rested on; sent as `observed_throughput_kbps`.
-        /// Nil on every other replan: the player adds the playing plan's own
-        /// figure.
+        /// What the plan's media measurably arrived at, the evidence a
+        /// lowering with `observed_rebuffer` rests on; sent as
+        /// `observed_throughput_kbps`. Nil on every other replan; the player
+        /// adds the playing plan's own figure to a sourced one.
         var observedThroughputKbps: Int? = nil
 
         /// **Restore quality**: Auto with no estimate. Every lowering on Auto
@@ -529,7 +538,7 @@ final class BufferingQualityController {
         withdrawPill()
         sendReplan(
             .lowered, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: delivered,
-            observedThroughputKbps: observedThroughputKbps(of: state.plan)
+            slowLink: true
         )
         return true
     }
@@ -546,7 +555,10 @@ final class BufferingQualityController {
                 cantLower()
                 return
             }
-            sendReplan(.accepted, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: plan.deliveredKbps)
+            sendReplan(
+                .accepted, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: plan.deliveredKbps,
+                slowLink: arrivesSlowly(plan)
+            )
         } else {
             // This playback only: the saved preference does not change.
             sendReplan(
@@ -677,9 +689,10 @@ final class BufferingQualityController {
         current?.endedStalls.removeAll { now - $0.at >= Self.stallWindowMs }
         guard Self.triggered(state, at: now) else { return }
         // Before anything of the attempt played, the wait is the network's
-        // only on evidence; without it, as if nothing triggered.
-        guard attemptStage == .played || arrivesSlowly(state.plan) else { return }
-        let evidenceKbps = attemptStage == .played ? nil : observedThroughputKbps(of: state.plan)
+        // only on evidence; without it, as if nothing triggered. After that a
+        // stall lowers either way, but only evidence makes it a link fact.
+        let slowLink = arrivesSlowly(state.plan)
+        guard attemptStage == .played || slowLink else { return }
 
         // A suppressed trigger leaves history intact for a later evaluation.
         if answered || pickPending || rearmTimer != nil || presented != nil { return }
@@ -704,7 +717,7 @@ final class BufferingQualityController {
             if mode == .always {
                 sendReplan(
                     .lowered, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: plan.deliveredKbps,
-                    observedThroughputKbps: evidenceKbps
+                    slowLink: slowLink
                 )
                 return
             }
@@ -799,21 +812,33 @@ final class BufferingQualityController {
 
     /// Sends the replan for `action`, which becomes the plan's
     /// `buffering_action`.
+    ///
+    /// An estimate is `observed_rebuffer`, which the server learns as this
+    /// device's limit, only when `slowLink`: the plan's media measurably
+    /// arrived below its delivered bitrate while it was arriving. That figure
+    /// goes with it as `observed_throughput_kbps`. A stall without that
+    /// evidence may be the server's own work, such as an encoder slower than
+    /// real time, which says nothing about the link: its estimate goes
+    /// without a source, so the server plans under it and records nothing.
     private func sendReplan(
         _ action: Action,
         qualityPreference: String,
         estimateKbps: Int? = nil,
         learnedLimit: String? = nil,
         fromKbps: Int? = nil,
-        observedThroughputKbps: Int? = nil
+        slowLink: Bool = false
     ) {
         let now = nowMs
         current?.action = action
         var request = ReplanRequest(qualityPreference: qualityPreference, bandwidthEstimateKbps: estimateKbps)
         if sendsBufferingQualityFields {
-            request.bandwidthEstimateSource = estimateKbps == nil ? nil : PlaybackProtocolV3.BandwidthEstimateSource.observedRebuffer
+            request.bandwidthEstimateSource = estimateKbps != nil && slowLink
+                ? PlaybackProtocolV3.BandwidthEstimateSource.observedRebuffer
+                : nil
             request.learnedLimit = learnedLimit
-            request.observedThroughputKbps = observedThroughputKbps
+            request.observedThroughputKbps = request.bandwidthEstimateSource == nil
+                ? nil
+                : current.flatMap { observedThroughputKbps(of: $0.plan) }
         }
         // Only an Auto lowering sends an estimate; the next one replaces it.
         let priorKept = keptEstimateKbps
