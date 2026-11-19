@@ -13,8 +13,9 @@ struct TVItemCollectionsRow: View {
 
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
-    @Environment(\.browseLibraryId) private var pageLibraryId
     @FocusState private var focusedItemId: String?
+    /// The card the viewer last left the row on, so coming back lands there.
+    @State private var lastFocusedItemId: String?
 
     /// The detail page's poster rails' size.
     private let cardWidth: CGFloat = 220
@@ -26,23 +27,32 @@ struct TVItemCollectionsRow: View {
             .onChange(of: focusedItemId != nil) { _, focused in
                 onFocusChange?(focused)
             }
+            .onChange(of: focusedItemId) { _, id in
+                if let id { lastFocusedItemId = id }
+            }
     }
 
     @ViewBuilder
     private var rows: some View {
         switch content {
         case .titles(let collection, let items):
-            section(title: collection.title, firstItemId: items.first?.contentId) {
+            section(title: collection.title, entryItemId: entryItemId(items.map(\.contentId) + [SectionExploreAllCard.focusId])) {
                 titles(items, in: collection)
             }
         case .collections(let cards):
-            section(title: AppLanguage.string(.detailAlsoIn, locale: locale), firstItemId: cards.first?.rowKey) {
+            section(title: AppLanguage.string(.detailAlsoIn, locale: locale), entryItemId: entryItemId(cards.map(\.rowKey))) {
                 collections(cards)
             }
         }
     }
 
-    private func section(title: String, firstItemId: String?, @ViewBuilder content: () -> some View) -> some View {
+    /// The card the viewer left, while the row still shows it; else the first.
+    private func entryItemId(_ ids: [String]) -> String? {
+        if let lastFocusedItemId, ids.contains(lastFocusedItemId) { return lastFocusedItemId }
+        return ids.first
+    }
+
+    private func section(title: String, entryItemId: String?, @ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
             TVSectionHeader(title: title)
             ScrollView(.horizontal, showsIndicators: false) {
@@ -52,7 +62,7 @@ struct TVItemCollectionsRow: View {
                 .padding(.vertical, railVerticalPadding)
             }
             .focusSection()
-            .tvDefaultFocus(firstItemId, in: $focusedItemId)
+            .tvDefaultFocus(entryItemId, in: $focusedItemId)
             .scrollClipDisabled()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -60,9 +70,6 @@ struct TVItemCollectionsRow: View {
 
     @ViewBuilder
     private func titles(_ items: [BrowseItem], in collection: SectionCollectionCard) -> some View {
-        // A server collection's titles open in its library, as its page
-        // opens them; a personal collection's keep the page's library.
-        let libraryId = collection.libraryId ?? pageLibraryId
         ForEach(items) { item in
             TVMediaCard(
                 title: item.title,
@@ -72,7 +79,9 @@ struct TVItemCollectionsRow: View {
                 year: item.year,
                 userState: item.userState,
                 overlayData: OverlayData.from(item),
-                action: { router.navigate(to: .itemDetail(browseItem: item, libraryId: libraryId)) },
+                // Unscoped, as the collection's page opens them: a
+                // collection's titles can live in other libraries.
+                action: { router.navigate(to: .itemDetail(browseItem: item)) },
                 cardWidth: cardWidth,
                 focusTreatment: .ring,
                 focusBinding: $focusedItemId,

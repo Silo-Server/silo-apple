@@ -487,12 +487,6 @@ struct SectionCollectionCard: Codable, Hashable, Identifiable {
         return false
     }
 
-    /// A server collection's library.
-    var libraryId: Int? {
-        if case .library(let libraryId) = source { return libraryId }
-        return nil
-    }
-
     /// The profile that made a personal collection.
     var creatorProfileId: String? {
         if case .user(let creatorProfileId) = source { return creatorProfileId }
@@ -608,7 +602,7 @@ struct SectionCollectionCard: Codable, Hashable, Identifiable {
 
 /// Decodes one element of a list, keeping nil for an element that fails, so
 /// one bad card leaves the rest of its row.
-private struct LossyElement<Element: Decodable>: Decodable {
+struct LossyElement<Element: Decodable>: Decodable {
     let value: Element?
 
     init(from decoder: Decoder) throws {

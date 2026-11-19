@@ -11,7 +11,6 @@ struct PhoneItemCollectionsRow: View {
 
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
-    @Environment(\.browseLibraryId) private var pageLibraryId
     /// This login's profiles, to name the owner of another profile's
     /// collection.
     @State private var profiles: [UserProfile]?
@@ -73,9 +72,10 @@ struct PhoneItemCollectionsRow: View {
                 action: { router.navigate(to: collection.route()) }
             )
         }
-        // A server collection's titles open in its library, as its page
-        // opens them; a personal collection's keep the page's library.
-        .environment(\.browseLibraryId, collection.libraryId ?? pageLibraryId)
+        // Unscoped, as the collection's page opens them: a collection's
+        // titles can live in other libraries, and a library-scoped read
+        // 404s for those.
+        .environment(\.browseLibraryId, nil)
     }
 
     private func collections(_ cards: [SectionCollectionCard]) -> some View {

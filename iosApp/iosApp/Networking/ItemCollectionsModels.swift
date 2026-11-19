@@ -22,13 +22,9 @@ struct CatalogItemCollections: Decodable, Equatable {
     /// One card or title the app cannot open drops out, not the row.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        cards = try c.decode([Lossy<SectionCollectionCard>].self, forKey: .items).compactMap(\.value)
-        preview = (try c.decodeIfPresent([Lossy<BrowseItem>].self, forKey: .previewItems) ?? []).compactMap(\.value)
-    }
-
-    private struct Lossy<Element: Decodable>: Decodable {
-        let value: Element?
-        init(from decoder: Decoder) throws { value = try? Element(from: decoder) }
+        cards = try c.decode([LossyElement<SectionCollectionCard>].self, forKey: .items).compactMap(\.value)
+        preview = (try c.decodeIfPresent([LossyElement<BrowseItem>].self, forKey: .previewItems) ?? [])
+            .compactMap(\.value)
     }
 }
 
