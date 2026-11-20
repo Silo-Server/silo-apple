@@ -255,12 +255,18 @@ private struct MarqueeTVSeedFocus<F: Hashable, ID: Equatable>: ViewModifier {
 
     private struct Trigger: Equatable {
         let value: F
+        let isProvisional: Bool
         let id: ID
         let canFocus: Bool
     }
 
     func body(content: Content) -> some View {
-        content.task(id: Trigger(value: value, id: reseedOn, canFocus: isEnabled && !isStartupSplashVisible)) {
+        content.task(id: Trigger(
+            value: value,
+            isProvisional: isProvisional,
+            id: reseedOn,
+            canFocus: isEnabled && !isStartupSplashVisible
+        )) {
             guard isEnabled, !isStartupSplashVisible else { return }
             await seed()
         }
@@ -268,6 +274,9 @@ private struct MarqueeTVSeedFocus<F: Hashable, ID: Equatable>: ViewModifier {
 
     @MainActor
     private func seed() async {
+        await Task.yield()
+        guard !Task.isCancelled else { return }
+        // Decided after the yield, so a move the person made meanwhile counts.
         let reseed = seededID.map { $0 != reseedOn } ?? false
         seededID = reseedOn
         // A settled default replaces a provisional one only while focus
@@ -275,17 +284,21 @@ private struct MarqueeTVSeedFocus<F: Hashable, ID: Equatable>: ViewModifier {
         let follows = placed.map {
             $0.wasProvisional && $0.value != value && focus.wrappedValue == $0.value
         } ?? false
-        var claim = reseed || follows
-        await Task.yield()
+        // Once the default has settled, a later change to it never moves focus.
+        if !isProvisional, let last = placed { placed = (last.value, false) }
+        let isClaiming = reseed || follows
+        let claimedFrom = focus.wrappedValue
         for _ in 0..<20 {
             guard !Task.isCancelled else { return }
-            if let current = focus.wrappedValue, !claim || current == value {
-                if current == value { placed = (value, isProvisional) }
+            let current = focus.wrappedValue
+            if current == value {
+                placed = (value, isProvisional)
                 return
             }
+            // Focus held elsewhere stands, unless a claim is still waiting
+            // for it to leave where it was when the claim began.
+            if current != nil, !isClaiming || current != claimedFrom { return }
             focus.wrappedValue = value
-            // Claim once; after that, a focus the person moved stands.
-            claim = false
             do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
         }
     }
