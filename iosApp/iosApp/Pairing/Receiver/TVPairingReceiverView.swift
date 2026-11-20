@@ -28,10 +28,10 @@ struct TVPairingReceiverView: View {
             MarqueeTVCard { card }
         }
         .defaultFocus($focused, .primary, priority: .userInitiated)
-        .marqueeTVSeedFocus($focused, .primary)
         // Each state draws its own buttons, so the one that had focus is gone;
-        // hand focus to the new state's main action.
-        .onChange(of: coordinator.state) { _, _ in focused = .primary }
+        // hand focus to the new state's main action. A state with no buttons
+        // (signed in, finishing) leaves nothing to focus until the next one.
+        .marqueeTVSeedFocus($focused, .primary, reseedOn: coordinator.state)
     }
 
     private var isSignIn: Bool { coordinator.mode.isSignIn }

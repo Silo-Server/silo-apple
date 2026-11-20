@@ -132,6 +132,21 @@ of a page. Apply `tvPageFocusOwner` to any placeholder that can be a page's
 entire content. It makes the placeholder a real focus target, routes Up back to
 the top menu, and seeds itself from the shell's content hand-down token.
 
+Signed-out screens (setup, sign-in, the pairing panels) seed their first
+focus with `marqueeTVSeedFocus`, because `defaultFocus` alone leaves a newly
+shown screen with nothing focused. The seed waits for the startup splash to
+lift and keeps asking for about two seconds while the previous screen lets go.
+A screen still learning its default passes `isProvisional`, and focus placed
+then follows the settled default unless the person has moved it: sign-in
+adds "Continue as …" once discovery answers, which can take seconds on a first
+connection.
+
+Do not animate a navigation pop inside a stack that an auth-state change is
+removing. A pop still running when the stack goes leaves the next screen
+refusing every programmatic focus request until the person presses the remote.
+`AppRouter.clearStack(before:)` empties the path without animation when the
+state changes.
+
 `TVFocusWatchdogModifier` is the backstop, not the fix. Its first repair re-arms
 page content, which cannot land on a page with no focus target, so a repeated
 outage at the root escalates to the top menu (`tvFocusRepairAction`).

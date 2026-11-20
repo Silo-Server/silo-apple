@@ -179,13 +179,14 @@ struct TVLoginView: View {
             MarqueeTVCard { codeCard }
         }
         .defaultFocus($focusedField, defaultCodeScreenFocus, priority: .userInitiated)
-        .marqueeTVSeedFocus($focusedField, defaultCodeScreenFocus)
+        .marqueeTVSeedFocus($focusedField, defaultCodeScreenFocus, isProvisional: loginVM.discovery == .loading)
         .onExitCommand(perform: router.canReturnToPicker ? leave : nil)
     }
 
     /// Where focus enters the code screen: "Continue as …" when this TV can
     /// sign in through its network provider, else the password button.
-    /// Discovery answering after focus landed does not move it.
+    /// Focus placed while discovery loads follows its answer, unless the
+    /// person has moved it.
     private var defaultCodeScreenFocus: Field {
         if networkProvider != nil { return .networkSignIn }
         // An update requirement hides the password button.
