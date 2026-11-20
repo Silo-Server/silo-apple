@@ -11,6 +11,18 @@
             "value" : "يستخدم Silo شبكتك المحلية للعثور على خوادم Silo."
           }
         },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo използва локалната ви мрежа, за да намира сървъри на Silo."
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo utilitza la xarxa local per trobar servidors de Silo."
+          }
+        },
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
@@ -29,6 +41,12 @@
             "value" : "Silo verwendet dein lokales Netzwerk, um Silo-Server zu finden."
           }
         },
+        "el" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Το Silo χρησιμοποιεί το τοπικό σας δίκτυο για να βρίσκει διακομιστές Silo."
+          }
+        },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
@@ -39,6 +57,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo usa tu red local para encontrar servidores de Silo."
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo kasutab teie kohtvõrku, et leida Silo servereid."
           }
         },
         "fi" : {
@@ -53,10 +77,34 @@
             "value" : "Silo utilise votre réseau local pour trouver des serveurs Silo."
           }
         },
+        "he" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "הרשת המקומית שלך משמשת את Silo כדי למצוא שרתי Silo."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo सर्वर ढूँढने के लिए Silo आपके लोकल नेटवर्क का इस्तेमाल करता है।"
+          }
+        },
         "hr" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo upotrebljava vašu lokalnu mrežu za pronalaženje poslužitelja Silo."
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A Silo a helyi hálózatot használja a Silo szerverek megkereséséhez."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo menggunakan jaringan lokal Anda untuk menemukan server Silo."
           }
         },
         "it" : {
@@ -75,6 +123,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo는 로컬 네트워크를 사용해 Silo 서버를 찾아요."
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "„Silo“ naudoja jūsų vietinį tinklą, kad rastų „Silo“ serverius."
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo izmanto jūsu lokālo tīklu, lai atrastu Silo serverus."
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo menggunakan rangkaian setempat anda untuk mencari pelayan Silo."
           }
         },
         "nb" : {
@@ -101,16 +167,46 @@
             "value" : "O Silo usa sua rede local para encontrar servidores Silo."
           }
         },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Silo usa a sua rede local para encontrar servidores Silo."
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo folosește rețeaua locală pentru a găsi servere Silo."
+          }
+        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo использует локальную сеть, чтобы находить серверы Silo."
           }
         },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo používa vašu lokálnu sieť na vyhľadávanie serverov Silo."
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo uporablja vaše lokalno omrežje za iskanje strežnikov Silo."
+          }
+        },
         "sv" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo använder ditt lokala nätverk för att hitta Silo-servrar."
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo ใช้เครือข่ายภายในเพื่อค้นหาเซิร์ฟเวอร์ Silo"
           }
         },
         "tr" : {
@@ -123,6 +219,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo використовує вашу локальну мережу, щоб знаходити сервери Silo."
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo dùng mạng cục bộ của bạn để tìm máy chủ Silo."
           }
         },
         "zh-Hans" : {
