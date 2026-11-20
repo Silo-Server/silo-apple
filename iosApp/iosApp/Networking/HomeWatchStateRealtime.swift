@@ -9,9 +9,6 @@ enum HomeWatchStateRealtime {
 
     static func observe(onChange: () -> Void) async {
         let tokens = TokenStore.shared
-        guard let owner = await tokens.captureOrdinaryRequestAuth(),
-              let profileID = owner.profileId, !profileID.isEmpty,
-              owner.credentialOwner != .temporary else { return }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
         configuration.urlCredentialStorage = nil
@@ -20,11 +17,13 @@ enum HomeWatchStateRealtime {
         defer { session.invalidateAndCancel() }
         var retrySeconds = 1
         while !Task.isCancelled {
-            guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else { return }
+            guard let owner = await tokens.captureOrdinaryRequestAuth(),
+                  let profileID = owner.profileId, !profileID.isEmpty,
+                  owner.credentialOwner != .temporary else { return }
             do {
                 let ticket = try await SiloAPI.shared.apiV2Client.homeWatchStateTicket(owner: owner, profileID: profileID)
                 try Task.checkCancellation()
-                guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else { return }
+                guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else { continue }
                 let endpoint = try ticket.endpoint(serverURL: owner.account.serverURL)
                 let socket = session.webSocketTask(with: endpoint, protocols: [wireProtocol, "silo.ticket.\(ticket.ticket)"])
                 socket.maximumMessageSize = 64 * 1024
@@ -45,7 +44,9 @@ enum HomeWatchStateRealtime {
                               let frame = try? JSONDecoder().decode(Frame.self, from: Data(text.utf8)) else { continue }
                         guard await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil,
                               !Task.isCancelled else { return }
-                        if frame.type == "subscribed", frame.channels?.contains(channel) == true, !subscribed {
+                        if frame.type == "hello", frame.requiredAction != "none" {
+                            try await socket.send(.string(#"{"type":"subscribe","channels":["user_state"]}"#))
+                        } else if frame.type == "subscribed", frame.channels?.contains(channel) == true, !subscribed {
                             subscribed = true
                             retrySeconds = 1
                             onChange()
@@ -71,10 +72,16 @@ enum HomeWatchStateRealtime {
         }
 
         let type: String
+        let requiredAction: String?
         let channels: [String]?
         let channel: String?
         let event: String?
         let data: Change?
+
+        enum CodingKeys: String, CodingKey {
+            case type, channels, channel, event, data
+            case requiredAction = "required_action"
+        }
 
         func isWatchStateChange(profileID: String) -> Bool {
             type == "event" && channel == "user_state" && event == "user_state.changed"

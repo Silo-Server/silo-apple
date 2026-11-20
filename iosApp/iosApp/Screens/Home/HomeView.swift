@@ -55,8 +55,16 @@ struct HomeView: View {
         #endif
     }
 
-    private var watchStateOwner: SessionOwner? {
-        observesWatchState ? SessionOwner.current() : nil
+    private struct WatchStateScope: Equatable {
+        let serverID: String?
+        let owner: SessionOwner?
+        let credential: CredentialOwnerSnapshot
+    }
+
+    private var watchStateScope: WatchStateScope? {
+        guard observesWatchState else { return nil }
+        return WatchStateScope(serverID: ServerRegistry.shared.activeServerId, owner: SessionOwner.current(),
+                               credential: TokenStore.shared.ownerSnapshot)
     }
 
     var body: some View {
@@ -235,7 +243,7 @@ struct HomeView: View {
         #if os(macOS)
         .background(MacWindowVisibilityReader { watchStateWindowVisible = $0 })
         #endif
-        .task(id: [String(observesWatchState), watchStateOwner?.accountID, AuthService.shared.profileId]) {
+        .task(id: watchStateScope) {
             cancelWatchStateRefresh()
             guard observesWatchState else { return }
             // Return to the server even if the socket is unavailable.
@@ -263,11 +271,11 @@ struct HomeView: View {
         guard observesWatchState else { return }
         watchStateRefreshPending = true
         guard watchStateRefresh == nil else { return }
-        let owner = watchStateOwner
+        let scope = watchStateScope
         watchStateRefresh = Task {
             while watchStateRefreshPending && !Task.isCancelled {
                 do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
-                guard observesWatchState, watchStateOwner == owner else { break }
+                guard watchStateScope == scope else { break }
                 watchStateRefreshPending = false
                 StartupContentPrefetcher.invalidateHomeSectionsInFlight()
                 await viewModel.loadSections()
