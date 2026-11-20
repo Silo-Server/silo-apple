@@ -11,8 +11,8 @@ extension APIv2Client {
                        auth: CapturedOrdinaryRequestAuth) async throws -> CatalogBoxSetDetail {
         var query = artwork
         query["library_id"] = libraryId
-        let raw = try await boxSetRead(path: "/api/v2/catalog/box-sets/\(try catalogPathSegment(id))",
-                                       query: query, auth: auth)
+        let raw = try await profileCatalogRead(path: "/api/v2/catalog/box-sets/\(try catalogPathSegment(id))",
+                                               query: query, auth: auth)
         let detail = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url)
             .decode(CatalogBoxSetDetail.self, from: raw.data)
         guard detail.boxSet.id == id else { throw APIv2Error.incompleteCatalogRead }
@@ -26,8 +26,8 @@ extension APIv2Client {
                            auth: CapturedOrdinaryRequestAuth) async throws -> CatalogBoxSetDetail? {
         var query = artwork
         if let libraryId { query["library_id"] = libraryId }
-        let raw = try await boxSetRead(path: "/api/v2/catalog/items/\(try catalogPathSegment(id))/box-set",
-                                       query: query, auth: auth)
+        let raw = try await profileCatalogRead(path: "/api/v2/catalog/items/\(try catalogPathSegment(id))/box-set",
+                                               query: query, auth: auth)
         return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url)
             .decode(CatalogItemBoxSet.self, from: raw.data).boxSet
     }
@@ -36,13 +36,15 @@ extension APIv2Client {
     /// movies' titles, match `query`, best match first.
     func searchCatalogBoxSets(query: String, limit: Int,
                               auth: CapturedOrdinaryRequestAuth) async throws -> [CatalogBoxSet] {
-        let raw = try await boxSetRead(path: "/api/v2/catalog/box-sets",
-                                       query: ["q": query, "limit": String(limit)], auth: auth)
+        let raw = try await profileCatalogRead(path: "/api/v2/catalog/box-sets",
+                                               query: ["q": query, "limit": String(limit)], auth: auth)
         return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url)
             .decode(CatalogBoxSetList.self, from: raw.data).items
     }
 
-    private func boxSetRead(path: String, query: [String: String],
+    /// A GET for the acting profile in `auth`, refused once that owner is no
+    /// longer current. Anything but 200 throws `httpStatus`.
+    func profileCatalogRead(path: String, query: [String: String],
                             auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,

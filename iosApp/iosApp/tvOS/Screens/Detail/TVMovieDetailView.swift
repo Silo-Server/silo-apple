@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Movie detail for tvOS: a full-width hero with Play, the version/audio/
 /// subtitle selectors and More, then cast, trailers and extras, the box set,
-/// recommendations and details rails.
+/// the movie's collections, recommendations and details rails.
 struct TVMovieDetailView: View {
     let detail: ItemDetail
     let isFavorite: Bool
@@ -11,6 +11,8 @@ struct TVMovieDetailView: View {
     let isWatched: Bool
     /// The box set the movie belongs to; nil draws no row.
     var boxSet: CatalogBoxSetDetail? = nil
+    /// The collections holding the movie; nil draws no row.
+    var itemCollections: CatalogItemCollections? = nil
     let selectedVersionFileId: Int?
     /// The edition picked on this visit; nil opens on the last-played one.
     let selectedEditionId: String?
@@ -59,13 +61,15 @@ struct TVMovieDetailView: View {
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
-    /// Whole poster rail focus (box set, recommendations), used only to keep
+    /// Whole poster rail focus (box set, collections, recommendations), used only to keep
     /// the rail's heading and focused poster comfortably framed during native
     /// vertical reveal.
     @FocusState private var boxSetRailFocused: Bool
+    @FocusState private var collectionsRailFocused: Bool
     @FocusState private var similarRailFocused: Bool
     private let heroScrollId = "detail-hero"
     private let boxSetSectionScrollId = "detail-box-set-section"
+    private let collectionsSectionScrollId = "detail-collections-section"
     private let similarSectionScrollId = "detail-similar-section"
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
     @Environment(\.locale) private var locale
@@ -119,6 +123,11 @@ struct TVMovieDetailView: View {
                                     .focused($boxSetRailFocused)
                                     .id(boxSetSectionScrollId)
                             }
+                            if let collections = ItemCollectionsRowContent(itemCollections) {
+                                TVItemCollectionsRow(content: collections)
+                                    .focused($collectionsRailFocused)
+                                    .id(collectionsSectionScrollId)
+                            }
                             similarSection
                                 .focused($similarRailFocused)
                                 .id(similarSectionScrollId)
@@ -145,6 +154,7 @@ struct TVMovieDetailView: View {
     /// The poster rail section holding focus, which the page centers.
     private var focusedPosterRailId: String? {
         if boxSetRailFocused { return boxSetSectionScrollId }
+        if collectionsRailFocused { return collectionsSectionScrollId }
         if similarRailFocused { return similarSectionScrollId }
         return nil
     }

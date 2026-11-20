@@ -913,9 +913,9 @@ final class AppRouter {
         // Person pages reached from Cast & Crew belong to the detail card's
         // navigation stack. Keeping them inside the sheet means Back returns to
         // the title the user opened instead of revealing an unrelated route that
-        // was pushed behind the still-presented card.
-        if presentedItemDetail != nil,
-           case .personDetail = route {
+        // was pushed behind the still-presented card. A collection opened
+        // from a title's collections row stays in the card the same way.
+        if presentedItemDetail != nil, route.opensInsideItemDetail {
             appendToItemDetail(route)
             return
         }
@@ -1681,6 +1681,18 @@ private struct DetailZoomSource: ViewModifier {
             content.matchedTransitionSource(id: id, in: namespace)
         } else {
             content
+        }
+    }
+}
+#endif
+
+#if os(iOS)
+private extension Route {
+    /// Pages pushed inside an open detail card rather than behind it.
+    var opensInsideItemDetail: Bool {
+        switch self {
+        case .personDetail, .libraryCollection, .collectionDetail: true
+        default: false
         }
     }
 }

@@ -44,6 +44,11 @@ class ItemDetailViewModel {
     /// loads, for a movie in no box set, and for anything but a movie.
     private(set) var boxSet: CatalogBoxSetDetail?
     @ObservationIgnored private var boxSetTask: Task<Void, Never>?
+    /// The collections holding the movie or series, drawn as a row on its
+    /// page. Nil while it loads, when the first read fails, on a server
+    /// without the read, and for anything but a movie or series.
+    private(set) var itemCollections: CatalogItemCollections?
+    @ObservationIgnored private var itemCollectionsTask: Task<Void, Never>?
 
     // Catalog metadata and the hierarchy finish independently. An empty array
     // is only an empty result after its request has succeeded.
@@ -68,6 +73,7 @@ class ItemDetailViewModel {
         detailLoadGeneration += 1
         _ = beginDetailWrite()
         boxSetTask?.cancel()
+        itemCollectionsTask?.cancel()
         seasonsLoadGeneration += 1
         episodeLoadGeneration += 1
         episodePersonalListRefreshGeneration += 1
@@ -295,6 +301,8 @@ class ItemDetailViewModel {
         if let detail, detail.contentId != contentId {
             boxSetTask?.cancel()
             boxSet = nil
+            itemCollectionsTask?.cancel()
+            itemCollections = nil
             self.detail = nil
             seedArtwork = nil
             resetSeriesState()
@@ -416,6 +424,7 @@ class ItemDetailViewModel {
             }
 
             refreshBoxSet(for: enriched)
+            refreshItemCollections(for: enriched)
 
             #if os(tvOS)
             if cachedDetailForRelatedStructure != nil {
@@ -516,6 +525,28 @@ class ItemDetailViewModel {
             }
             guard let self, !Task.isCancelled, self.detail?.contentId == contentId else { return }
             self.boxSet = fresh
+        }
+    }
+
+    /// Reads the collections holding the movie or series beside the page's
+    /// own refresh. A failed read removes the row, as does the server
+    /// answering "none"; a cancelled one changes nothing.
+    private func refreshItemCollections(for item: ItemDetail) {
+        itemCollectionsTask?.cancel()
+        guard SiloMediaType.isMovieLibrary(item.type) || SiloMediaType.isSeries(item.type) else {
+            itemCollections = nil
+            return
+        }
+        let contentId = item.contentId
+        itemCollectionsTask = Task { [weak self, libraryId] in
+            let fresh: CatalogItemCollections?
+            do {
+                fresh = try await SiloAPI.shared.itemCollections(contentId: contentId, libraryId: libraryId)
+            } catch {
+                fresh = nil
+            }
+            guard let self, !Task.isCancelled, self.detail?.contentId == contentId else { return }
+            if self.itemCollections != fresh { self.itemCollections = fresh }
         }
     }
 

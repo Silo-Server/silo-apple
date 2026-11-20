@@ -2,7 +2,7 @@
 import SwiftUI
 
 /// Phone movie detail: artwork hero, then cast, trailers and extras, the
-/// box set, More Like This and Details. Mirrors TVMovieDetailView's metadata and actions, sized for touch.
+/// box set, its collections, More Like This and Details. Mirrors TVMovieDetailView's metadata and actions, sized for touch.
 struct MovieDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
     let isFavorite: Bool
@@ -10,6 +10,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let isWatched: Bool
     /// The box set the movie belongs to; nil draws no row.
     let boxSet: CatalogBoxSetDetail?
+    /// The collections holding the movie; nil draws no row.
+    let itemCollections: CatalogItemCollections?
     let selectedVersionFileId: Int?
     /// The edition picked on this visit; nil opens on the last-played one.
     let selectedEditionId: String?
@@ -325,6 +327,10 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
             if let boxSet {
                 PhoneBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
+            }
+
+            if let collections = ItemCollectionsRowContent(itemCollections) {
+                PhoneItemCollectionsRow(content: collections)
             }
 
             similarSection
