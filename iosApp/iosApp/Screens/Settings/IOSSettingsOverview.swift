@@ -237,7 +237,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesSignInTV: Bool {
-        matches(.settingsSearchIosTermsSignInTv, "sign in a tv", "tv", "apple tv", "android tv", "code", "device")
+        matches(.settingsSearchIosTermsSignInTv, "sign in a tv", "sign in a device", "approve", "tv", "apple tv", "android tv", "code", "device", "app")
     }
 
     private var aboutSection: some View {

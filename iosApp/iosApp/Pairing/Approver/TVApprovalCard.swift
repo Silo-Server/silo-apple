@@ -43,7 +43,7 @@ struct TVApprovalCard: View {
                 result(
                     symbol: "checkmark.circle.fill", tint: .green,
                     title: Text(signedIn ? LocalizedStringResource.signInTvSignedIn : .signInTvSigningIn),
-                    detail: signedIn ? Text(.tvPairApprovalChooseProfile(request.deviceName)) : nil
+                    detail: signedIn ? request.deviceName.map { Text(.tvPairApprovalChooseProfile($0)) } : nil
                 )
                 closeButton(.commonDone)
             case .unconfirmed:
@@ -100,10 +100,17 @@ struct TVApprovalCard: View {
     private func review(_ request: TVApprovalRequest, busy: Bool, declining: Bool) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(.signInTvCardTitle(request.deviceName))
-                    .font(.siloTitle)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let platform = request.platformLabel {
+                Group {
+                    if let deviceName = request.deviceName {
+                        Text(.signInTvCardTitle(deviceName))
+                    } else {
+                        Text(.signInTvCardTitleGeneric)
+                    }
+                }
+                .font(.siloTitle)
+                .fixedSize(horizontal: false, vertical: true)
+                if let platform = request.platformLabel,
+                   request.deviceName.map({ platform.caseInsensitiveCompare($0) != .orderedSame }) ?? true {
                     Text(platform).font(.siloCaption).foregroundStyle(.secondary)
                 }
             }
