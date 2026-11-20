@@ -203,19 +203,22 @@ extension View {
     /// the remote does nothing until a swipe. Never overrides a focus the
     /// person or the page already set.
     ///
-    /// A page can appear while focus still belongs to what it replaces: the
-    /// Sign Out alert closing over Settings, or the old screen mid-crossfade.
-    /// The focus engine drops a request made then, so keep asking until one
-    /// lands, for about a second and a half.
-    func marqueeTVSeedFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, _ value: F) -> some View {
-        task {
-            await Task.yield()
-            for _ in 0..<15 {
-                guard focus.wrappedValue == nil else { return }
-                focus.wrappedValue = value
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-            }
-        }
+    /// `value` is the page's default. While `isProvisional`, the page is
+    /// still learning what that default is, as sign-in is until discovery
+    /// says whether "Continue as …" is offered: a seed placed then moves to
+    /// the settled default, unless the person has moved focus meanwhile. A
+    /// change to `reseedOn` hands focus to `value` again, for a page that
+    /// swaps its controls in place.
+    func marqueeTVSeedFocus<F: Hashable>(
+        _ focus: FocusState<F?>.Binding, _ value: F, isProvisional: Bool = false
+    ) -> some View {
+        modifier(MarqueeTVSeedFocus(focus: focus, value: value, isProvisional: isProvisional, reseedOn: 0))
+    }
+
+    func marqueeTVSeedFocus<F: Hashable, ID: Equatable>(
+        _ focus: FocusState<F?>.Binding, _ value: F, reseedOn id: ID
+    ) -> some View {
+        modifier(MarqueeTVSeedFocus(focus: focus, value: value, isProvisional: false, reseedOn: id))
     }
 
     /// Moves focus after Done on the system keyboard. Each field's
@@ -225,6 +228,66 @@ extension View {
     /// gets overwritten. So the first focus that returns takes `pending`.
     func marqueeTVFocusAfterKeyboard<F: Hashable>(_ focus: FocusState<F?>.Binding, pending: Binding<F?>) -> some View {
         modifier(FocusAfterKeyboard(focus: focus, pending: pending))
+    }
+}
+
+/// See `marqueeTVSeedFocus`.
+///
+/// The startup splash disables the page under it for its four seconds, and
+/// the engine drops a request made then, so seeding waits until the page is
+/// enabled and the splash has lifted. A page can also appear while focus
+/// still belongs to what it replaces (the old screen mid-crossfade, an alert
+/// closing), when the engine drops requests too, so keep asking until one
+/// lands, for about two seconds.
+private struct MarqueeTVSeedFocus<F: Hashable, ID: Equatable>: ViewModifier {
+    var focus: FocusState<F?>.Binding
+    let value: F
+    let isProvisional: Bool
+    let reseedOn: ID
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
+    /// What the seed last placed, and whether the page's default was still
+    /// provisional then. Focus still resting there means the person has not
+    /// moved it.
+    @State private var placed: (value: F, wasProvisional: Bool)?
+    @State private var seededID: ID?
+
+    private struct Trigger: Equatable {
+        let value: F
+        let id: ID
+        let canFocus: Bool
+    }
+
+    func body(content: Content) -> some View {
+        content.task(id: Trigger(value: value, id: reseedOn, canFocus: isEnabled && !isStartupSplashVisible)) {
+            guard isEnabled, !isStartupSplashVisible else { return }
+            await seed()
+        }
+    }
+
+    @MainActor
+    private func seed() async {
+        let reseed = seededID.map { $0 != reseedOn } ?? false
+        seededID = reseedOn
+        // A settled default replaces a provisional one only while focus
+        // rests where the seed left it.
+        let follows = placed.map {
+            $0.wasProvisional && $0.value != value && focus.wrappedValue == $0.value
+        } ?? false
+        var claim = reseed || follows
+        await Task.yield()
+        for _ in 0..<20 {
+            guard !Task.isCancelled else { return }
+            if let current = focus.wrappedValue, !claim || current == value {
+                if current == value { placed = (value, isProvisional) }
+                return
+            }
+            focus.wrappedValue = value
+            // Claim once; after that, a focus the person moved stands.
+            claim = false
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+        }
     }
 }
 
