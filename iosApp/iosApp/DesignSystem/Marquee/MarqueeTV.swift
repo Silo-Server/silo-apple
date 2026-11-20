@@ -247,10 +247,10 @@ private struct MarqueeTVSeedFocus<F: Hashable, ID: Equatable>: ViewModifier {
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
-    /// What the seed last placed, and whether the page's default was still
-    /// provisional then. Focus still resting there means the person has not
-    /// moved it.
-    @State private var placed: (value: F, wasProvisional: Bool)?
+    /// What the seed last placed, and whether a settled default may still
+    /// replace it: only while the page's default was provisional when it was
+    /// placed and focus has not been on any other control since.
+    @State private var placed: (value: F, mayFollow: Bool)?
     @State private var seededID: ID?
 
     private struct Trigger: Equatable {
@@ -270,6 +270,12 @@ private struct MarqueeTVSeedFocus<F: Hashable, ID: Equatable>: ViewModifier {
             guard isEnabled, !isStartupSplashVisible else { return }
             await seed()
         }
+        .onChange(of: focus.wrappedValue) { _, current in
+            // The person moved off the seeded control. Coming back to it later
+            // is their choice too, so the seed may no longer follow.
+            guard let current, let last = placed, current != last.value else { return }
+            placed = (last.value, false)
+        }
     }
 
     @MainActor
@@ -282,7 +288,7 @@ private struct MarqueeTVSeedFocus<F: Hashable, ID: Equatable>: ViewModifier {
         // A settled default replaces a provisional one only while focus
         // rests where the seed left it.
         let follows = placed.map {
-            $0.wasProvisional && $0.value != value && focus.wrappedValue == $0.value
+            $0.mayFollow && $0.value != value && focus.wrappedValue == $0.value
         } ?? false
         // Once the default has settled, a later change to it never moves focus.
         if !isProvisional, let last = placed { placed = (last.value, false) }
@@ -292,12 +298,17 @@ private struct MarqueeTVSeedFocus<F: Hashable, ID: Equatable>: ViewModifier {
             guard !Task.isCancelled else { return }
             let current = focus.wrappedValue
             if current == value {
-                placed = (value, isProvisional)
+                // A focus already recorded keeps what it has lost: the person
+                // may have left it and come back.
+                if placed?.value != value { placed = (value, isProvisional) }
                 return
             }
             // Focus held elsewhere stands, unless a claim is still waiting
             // for it to leave where it was when the claim began.
             if current != nil, !isClaiming || current != claimedFrom { return }
+            // Recorded with the write: a default that changes before the
+            // request lands restarts this task, and the next run follows it.
+            placed = (value, isProvisional)
             focus.wrappedValue = value
             do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
         }
