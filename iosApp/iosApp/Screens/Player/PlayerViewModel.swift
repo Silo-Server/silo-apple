@@ -11916,7 +11916,7 @@ extension PlayerViewModel {
         )
         if arrived { bufferingSignals.noteMediaDataArrived() }
         relayMeter.note(
-            totals: aetherPlaybackController.relayMediaTransfer,
+            aetherPlaybackController.relayMediaTransfer,
             networkKey: BandwidthProbeScheduler.shared.network.key,
             counts: !bufferingReplacementLoading
         )

@@ -188,12 +188,13 @@ final class AetherPlaybackController {
     /// On server HLS, the engine relay's running totals of the media bytes it
     /// received from the origin and of the time they spent arriving, each
     /// segment timed from its first byte to its last, as of the latest
-    /// telemetry. Nil on other routes and without a relay.
+    /// telemetry, with the load whose relay counted them. Nil on other routes
+    /// and without a relay.
     ///
     /// Not AVPlayer's access log: it times each request on the loopback hop
     /// from when it was sent, so a segment the server answers only once its
     /// encoder has written it reads the encode as a slow link.
-    private(set) var relayMediaTransfer: (bytes: Int64, receivingMs: Int64)?
+    private(set) var relayMediaTransfer: RelayPlanThroughput.Totals?
 
     /// Another reader of the load's source may be receiving beside the one
     /// `upstreamBytesFetched` counts. An embedded subtitle the engine decodes
@@ -1381,9 +1382,9 @@ final class AetherPlaybackController {
                 let serverHLS = activeSpec?.options.nativeRemoteHLS == true
                 let hasReader = !serverHLS && activeSpec?.options.audioOnly != true
                 upstreamBytesFetched = hasReader ? telemetry?.demuxerBytesFetched : nil
-                if serverHLS, let bytes = telemetry?.relayMediaReceivedBytes,
+                if serverHLS, let load = activeLoadEpoch, let bytes = telemetry?.relayMediaReceivedBytes,
                    let receivingMs = telemetry?.relayMediaReceivingMs {
-                    relayMediaTransfer = (bytes, receivingMs)
+                    relayMediaTransfer = .init(load: load.rawValue, bytes: bytes, receivingMs: receivingMs)
                 } else {
                     relayMediaTransfer = nil
                 }

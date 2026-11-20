@@ -236,29 +236,41 @@ struct InterfaceReceiveCounter {
 /// each telemetry tick. This takes the playing plan's share of them. It holds
 /// no clock and performs no I/O.
 struct RelayPlanThroughput {
-    /// The relay's totals at the last tick; nil while there is no relay.
-    private var last: (bytes: Int64, receivingMs: Int64)?
+    /// One telemetry tick of the relay's running totals, and the load whose
+    /// relay counted them. Each load has its own relay, counting from 0, and
+    /// the engine can rebuild it within a load, after a tick without one.
+    struct Totals: Equatable {
+        var load: UInt64
+        var bytes: Int64
+        var receivingMs: Int64
+    }
+
+    /// The relay's totals at the last tick that counted toward a plan.
+    private var last: Totals?
     private var bytes: Int64 = 0
     private var receivingMs: Int64 = 0
     private var networkKey: String?
     private var networkChanged = false
 
     /// Takes one telemetry tick: the relay's running totals, or nil without
-    /// a relay. Totals below the last ones are a new load's relay, which
-    /// counts from 0. What arrived counts toward the plan only when
-    /// `counts`: not while a replacement loads in its place.
-    mutating func note(totals: (bytes: Int64, receivingMs: Int64)?, networkKey key: String, counts: Bool = true) {
+    /// a relay. What arrived since the last counted tick on the same relay,
+    /// or everything a new relay counted, goes to the plan only when
+    /// `counts`: not while a replacement loads in its place. Such a tick is
+    /// not a baseline either, so the replacement's relay is its plan's from
+    /// its first byte once adopted, wherever the ticks fall.
+    mutating func note(_ totals: Totals?, networkKey key: String, counts: Bool = true) {
         if networkKey != nil, key != networkKey { networkChanged = true }
         guard let totals else {
             last = nil
             return
         }
-        let base: (bytes: Int64, receivingMs: Int64) =
-            last.flatMap { $0.bytes <= totals.bytes && $0.receivingMs <= totals.receivingMs ? $0 : nil } ?? (0, 0)
-        last = totals
         guard counts else { return }
-        bytes += totals.bytes - base.bytes
-        receivingMs += totals.receivingMs - base.receivingMs
+        let base = last.flatMap {
+            $0.load == totals.load && $0.bytes <= totals.bytes && $0.receivingMs <= totals.receivingMs ? $0 : nil
+        }
+        last = totals
+        bytes += totals.bytes - (base?.bytes ?? 0)
+        receivingMs += totals.receivingMs - (base?.receivingMs ?? 0)
     }
 
     /// A plan was adopted: its books start empty on `networkKey`.
