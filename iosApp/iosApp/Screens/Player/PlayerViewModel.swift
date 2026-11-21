@@ -508,6 +508,9 @@ class PlayerViewModel {
     static let connectionLostMessage =
         "Connection lost\nSilo couldn't reconnect to the server. Check your connection, then try again to continue where you left off."
     var remoteDismissToken: UUID?
+    /// Set when an episode ends with Show Next Up off: the player closes the
+    /// way Close does instead of opening Next Up.
+    var endOfPlaybackDismissToken: UUID?
     var audioTracks: [PlayerTrack] = [] {
         didSet { audioTracksFileId = currentSelectedVersion?.fileId }
     }
@@ -4012,6 +4015,7 @@ class PlayerViewModel {
 
     private func shouldShowNextUpBeforeEnd(at movieTime: Double) -> Bool {
         canShowNextUpScreen
+            && closesAtEndInsteadOfNextUp == false
             && nextShufflePart == nil
             && PlayerNextUpCompletionPolicy.isInPromptWindow(
                 currentTime: movieTime,
@@ -4025,6 +4029,13 @@ class PlayerViewModel {
         guard canShowNextUpScreen else { return }
         stillWatchingGuard.recordViewerAction()
         beginNextUpPostroll(videoEnded: false, source: .hud)
+    }
+
+    /// Show Next Up is off: no Next Up before or at the end, and the player
+    /// closes when the item ends. A shuffle still moves on, and a Watch
+    /// Together room decides for everyone.
+    private var closesAtEndInsteadOfNextUp: Bool {
+        !settings.showsNextUp && shuffleState == nil && !isWatchPartyPlayback
     }
 
     private func beginNextUpPostroll(
@@ -4063,6 +4074,9 @@ class PlayerViewModel {
     /// into, so it waits for Play Now.
     private var nextUpPickAutoPlays: Bool {
         guard settings.autoPlayNextEpisode, let pick = nextUpEpisode else { return false }
+        // With Show Next Up off nothing plays on by itself; a Next Up the
+        // viewer opened waits for Play Now. A shuffle still moves on.
+        guard settings.showsNextUp || shuffleState != nil else { return false }
         #if !os(macOS)
         // The Mac player has no Next Up screen to wait on, so it never gates.
         guard !stillWatchingGuard.shouldGate(threshold: settings.stillWatchingThreshold) else { return false }
@@ -5849,6 +5863,25 @@ class PlayerViewModel {
 
         if !isPremature, let nextPart = nextShufflePart {
             playShufflePart(nextPart)
+            return
+        }
+        // A Next Up the viewer opened stays up, without a countdown. The Mac
+        // player draws no Next Up screen, so there it always closes.
+        #if os(macOS)
+        let keepsOpenNextUp = false
+        #else
+        let keepsOpenNextUp = showNextUpScreen
+        #endif
+        if !isPremature, closesAtEndInsteadOfNextUp, !keepsOpenNextUp {
+            #if os(iOS)
+            // In picture in picture the cover is gone, so nothing observes the
+            // token; end the session here, as closing the window would.
+            if !isPlayerPresentationVisible, PictureInPictureCoordinator.shared.ownsEngagedSession(self) {
+                cleanup()
+                return
+            }
+            #endif
+            endOfPlaybackDismissToken = UUID()
             return
         }
         beginNextUpPostroll(videoEnded: true)
@@ -8423,8 +8456,10 @@ class PlayerViewModel {
     /// Returns false when the caller should finish the item at EOF instead.
     private func presentNextUpOverCredits() -> Bool {
         // A shuffle plays every part of a multi-part item first: skipping
-        // credits finishes the part at EOF, which starts the next one.
+        // credits finishes the part at EOF, which starts the next one. With
+        // Next Up off, finishing at EOF closes the player.
         guard !isWatchPartyPlayback,
+              !closesAtEndInsteadOfNextUp,
               canShowNextUpScreen,
               nextShufflePart == nil,
               !hasReachedEndOfFile,

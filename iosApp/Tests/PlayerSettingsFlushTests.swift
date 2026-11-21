@@ -1378,11 +1378,13 @@ final class PlayerSettingsFlushTests: XCTestCase {
             .init(key: SettingKey.playerHdrEnabled.rawValue, value: .bool(!initialHDR), source: .scope(.profile)),
         ]
 
-        var switchingBatches = [SettingKey.playerReadSettings]
-        #if os(iOS)
-        switchingBatches.append(SettingKey.playerCellularQualitySettings)
-        #endif
-        switchingBatches.append(SettingKey.playerBufferingQualitySettings)
+        // The player batch, the revision-gated batch and the buffering mode.
+        let cellular = PlayerSettings.offersCellularQuality ? SettingKey.playerCellularQualitySettings : []
+        let switchingBatches = [
+            SettingKey.playerReadSettings,
+            cellular + SettingKey.playerNextUpSettings,
+            SettingKey.playerBufferingQualitySettings,
+        ]
         for batch in switchingBatches {
             scope.value = "scope-a"
             transport.onEffectiveValues = { keys in
@@ -1426,11 +1428,13 @@ final class PlayerSettingsFlushTests: XCTestCase {
         await settings.flushPendingDeviceSettings()
         try await waitUntil("the change is held") { settings.heldDeviceSettingKeys == [.playerHdrEnabled] }
 
-        var switchingBatches = [SettingKey.playerReadSettings]
-        #if os(iOS)
-        switchingBatches.append(SettingKey.playerCellularQualitySettings)
-        #endif
-        switchingBatches.append(SettingKey.playerBufferingQualitySettings)
+        // The player batch, the revision-gated batch and the buffering mode.
+        let cellular = PlayerSettings.offersCellularQuality ? SettingKey.playerCellularQualitySettings : []
+        let switchingBatches = [
+            SettingKey.playerReadSettings,
+            cellular + SettingKey.playerNextUpSettings,
+            SettingKey.playerBufferingQualitySettings,
+        ]
         for batch in switchingBatches {
             scope.value = "scope-a"
             transport.onEffectiveValues = { keys in
@@ -2004,15 +2008,18 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         await harness.settings.refreshFromServer()
 
-        // One batch for the player's keys. iPhone and iPad read the cellular
-        // pair in a second one, and every platform reads the buffering mode
-        // in its own, since a server that predates a newer key would refuse
-        // the whole first batch over it.
+        // One batch for the player's keys, one for the keys gated on the
+        // manifest revision (Show Next Up Off, plus the cellular pair on
+        // iPhone and iPad) and one for the buffering mode, since a server that
+        // predates a newer key would refuse the whole first batch over it.
         let calls = harness.transport.effectiveCalls()
-        let cellular = PlayerSettings.offersCellularQuality ? [SettingKey.playerCellularQualitySettings] : []
-        XCTAssertEqual(calls.count, 2 + cellular.count, "a refresh must be batched, not one call per key")
+        let cellular = PlayerSettings.offersCellularQuality ? SettingKey.playerCellularQualitySettings : []
+        XCTAssertEqual(calls.count, 3, "a refresh must be batched, not one call per key")
         XCTAssertEqual(Set(calls[0]), Set(SettingKey.playerReadSettings))
-        XCTAssertEqual(Array(calls.dropFirst()), cellular + [SettingKey.playerBufferingQualitySettings])
+        XCTAssertEqual(
+            Array(calls.dropFirst()),
+            [cellular + SettingKey.playerNextUpSettings, SettingKey.playerBufferingQualitySettings]
+        )
     }
 
     /// Apple has no player setting for recaps: the player follows the
@@ -2180,11 +2187,14 @@ final class PlayerSettingsFlushTests: XCTestCase {
         await harness.settings.resetAllDeviceSettings()
 
         // iPhone and iPad also clear the cellular pair this device can hold,
-        // and every platform the buffering mode.
+        // and every platform the buffering mode and Show Next Up Off.
         let cellular = PlayerSettings.offersCellularQuality ? SettingKey.playerCellularQualitySettings : []
         XCTAssertEqual(
             Set(harness.transport.deletes()),
-            Set(SettingKey.playerReadSettings + cellular + SettingKey.playerBufferingQualitySettings)
+            Set(
+                SettingKey.playerReadSettings + cellular
+                    + SettingKey.playerBufferingQualitySettings + SettingKey.playerNextUpSettings
+            )
         )
     }
 

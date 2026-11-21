@@ -1,6 +1,6 @@
 {
   "api_version": 1,
-  "revision": 28,
+  "revision": 30,
   "option_sets": {
     "playback_audio_languages": {
       "type": "language_tag",
@@ -743,6 +743,20 @@
       "notes": "Android currently writes player.next_up_prompt_seconds. That alias is migrated to this key and removed from production writes."
     },
     {
+      "key": "playback.next_up_enabled",
+      "introduced_in": 30,
+      "persistence": "remote",
+      "allowed_scopes": ["profile", "profile_device"],
+      "resolution_order": ["profile_device", "profile", "default"],
+      "value_schema": { "type": "boolean" },
+      "default_value": true,
+      "category": "playback",
+      "label": "Show Next Up",
+      "description": "Show the Next Up card near the end of an episode.",
+      "recommended_control": "switch",
+      "notes": "false turns Next Up off: no card before or at the end of an episode, no countdown and no automatic next episode, whatever playback.auto_play_next says. The episode plays to its end and the player closes as its Close action does. playback.next_up_prompt_seconds only applies while this is true. Clients may show the two as one picker with an Off choice. A client that predates this key keeps showing Next Up."
+    },
+    {
       "key": "catalog.metadata_language",
       "introduced_in": 1,
       "persistence": "remote",
@@ -1254,7 +1268,7 @@
       "category": "appearance",
       "label": "Poster badges",
       "description": "Which badges appear on poster cards, and where.",
-      "notes": "Registered from the legacy unprefixed key card_overlays, which reached the server only through the unknown-key extension bag — stored as an arbitrary string with no validation. null means the user has expressed no preference, which is what lets the server-wide admin default in the overlay-config endpoint apply; writing a resolved-but-unchosen value would silently pin them. The server-wide default configuration stays in server_settings and is not a user setting. This key describes which badges to show, not whether to show them — that is ui.card_overlays_enabled. Revision 13 adds the advisory_age overlay id; a server below revision 13 rejects a value that contains it, so a client offers that badge only when manifest_revision is at least 13. Revision 15 adds the request_status overlay id (a watchlist title's request status on its poster) under the same rule: a client offers it only when manifest_revision is at least 15. Revision 25 reserves the top-right corner for the watch-status indicator, which every client always draws and no setting controls, and adds the left-edge and right-edge positions, the plate and band presets, style, and the per-badge image and valueImages references to uploaded images; a server below revision 25 rejects a value that uses any of them, so a client writes them only when manifest_revision is at least 25. top-right stays valid so stored values keep validating, but from revision 25 a client draws a badge stored there on the right edge and writes right-edge instead. Revision 26 adds the resolution_hdr_audio overlay id (one badge combining resolution, dynamic range and audio codec); a server below revision 26 rejects a value that contains it, so a client offers that badge only when manifest_revision is at least 26."
+      "notes": "Registered from the legacy unprefixed key card_overlays, which reached the server only through the unknown-key extension bag — stored as an arbitrary string with no validation. null means the user has expressed no preference, which is what lets the server-wide admin default in the overlay-config endpoint apply; writing a resolved-but-unchosen value would silently pin them. The server-wide default configuration stays in server_settings and is not a user setting. This key describes which badges to show, not whether to show them — that is ui.card_overlays_enabled. Revision 13 adds the advisory_age overlay id; a server below revision 13 rejects a value that contains it, so a client offers that badge only when manifest_revision is at least 13. Revision 15 adds the request_status overlay id (a watchlist title's request status on its poster) under the same rule: a client offers it only when manifest_revision is at least 15. Revision 25 reserves the top-right corner for the watch-status indicator, which every client always draws and no setting controls, and adds the left-edge and right-edge positions, the plate and band presets, style, and the per-badge image and valueImages references to uploaded images; a server below revision 25 rejects a value that uses any of them, so a client writes them only when manifest_revision is at least 25. top-right stays valid so stored values keep validating, but from revision 25 a client draws a badge stored there on the right edge and writes right-edge instead. Revision 26 adds the resolution_hdr_audio overlay id (one badge combining resolution, dynamic range and audio codec); a server below revision 26 rejects a value that contains it, so a client offers that badge only when manifest_revision is at least 26. Revision 29 adds the availability overlay id (complete seasons on a series poster, episodes in the library on a season poster) under the same rule: a client offers it only when manifest_revision is at least 29."
     },
     {
       "key": "ui.card_overlays_enabled",

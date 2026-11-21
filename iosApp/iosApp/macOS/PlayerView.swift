@@ -225,6 +225,10 @@ private struct MacPlayerScreen: View {
             guard newValue != nil else { return }
             dismiss()
         }
+        .onChange(of: viewModel.endOfPlaybackDismissToken) { _, newValue in
+            guard newValue != nil else { return }
+            dismiss()
+        }
         .onAppear {
             viewModel.loadAndPlay(
                 contentId: request.contentId,
