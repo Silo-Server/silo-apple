@@ -302,10 +302,15 @@ final class DownloadManager {
     /// or replaced. Network responses captured under an older generation are
     /// discarded before they can mutate the newly active scope.
     private var registrationScopeGeneration: UInt64 = 0
-    /// The last activation outcome recorded as a breadcrumb. Activation runs
-    /// on every title page, so a state that persists (Who's Watching, signed
-    /// out) is recorded once rather than crowding the journal.
-    @ObservationIgnored private var lastActivationBreadcrumb: String?
+    /// Activation outcomes recorded since the last clean activation.
+    /// Activation runs on every title page, so a state that persists (Who's
+    /// Watching, signed out, a disagreeing selection) is recorded once rather
+    /// than crowding the journal.
+    @ObservationIgnored private var recordedActivationOutcomes: Set<String> = []
+    /// Capability reads started, and the newest one whose answer was stored.
+    /// An older reply that lands after a newer one is dropped.
+    @ObservationIgnored private var capabilityReadsStarted: UInt64 = 0
+    @ObservationIgnored private var newestCapabilityReadStored: UInt64 = 0
     var canDownloadSeason: Bool { downloadsEnabled && capability?.seasonDownload == true }
     var canMonitorSeries: Bool { downloadsEnabled && capability?.seriesMonitoring == true }
 
@@ -727,25 +732,14 @@ final class DownloadManager {
     func activateScopeIfNeeded() async -> Bool {
         await Self.timed("legacy storage removal") { await removeLegacyDownloadsIfNeeded() }
         await Self.timed("legacy session drain") { await drainLegacySessionIfNeeded() }
-        // Capturing the session also loads the token store's account, which
-        // selects one when nothing has yet in this install (the first launch
-        // after accounts arrived, or a cold background wake), from the
-        // keychain alone.
-        let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
-        // Read after the await, in one turn, so a server, account, or profile
-        // switch that landed during it can't pair the old identity with the
-        // new selection. `downloadScope` takes the profile from this fresh
-        // selection when it names the session's account.
-        let activeServerId = ServerRegistry.shared.activeServerId ?? ""
-        let selected = AccountScope.current
-        let choice = Self.downloadScope(
-            activeServerId: activeServerId,
-            signedIn: auth.map {
-                SignedInIdentity(serverId: $0.account.serverId, localAccountId: $0.account.localAccountId,
-                                 profileId: $0.profileId)
-            },
-            selection: selected
-        )
+        var choice = await currentDownloadScope()
+        if choice.selectionDisagreed {
+            // An account switch that landed during the session capture shows
+            // up here as a disagreement: the token store writes the
+            // selection in the same turn as it switches. Capture again
+            // before trusting the session over the selection.
+            choice = await currentDownloadScope()
+        }
         if choice.selectionDisagreed {
             // A store loaded for the mirror's account could never read its
             // capability under the session's identity; worth knowing when
@@ -776,7 +770,7 @@ final class DownloadManager {
             releaseHeldSessionEvents()
             return false
         }
-        if !choice.selectionDisagreed { lastActivationBreadcrumb = nil }
+        if !choice.selectionDisagreed { recordedActivationOutcomes.removeAll() }
         if serverId == scopeServerId, accountId == scopeAccountId, profileId == scopeProfileId,
            fileServerId == serverId, fileAccountId == accountId, fileProfileId == profileId,
            !file.records.isEmpty || file.capability != nil {
@@ -865,6 +859,26 @@ final class DownloadManager {
         return true
     }
 
+    /// The scope the store should load now. Capturing the session also loads
+    /// the token store's account, which selects one when nothing has yet in
+    /// this install (the first launch after accounts arrived, or a cold
+    /// background wake), from the keychain alone.
+    private func currentDownloadScope() async -> ScopeChoice {
+        let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
+        // Read after the await, in one turn, so a server or profile switch
+        // that landed during it can't pair the old identity with the new
+        // selection. `downloadScope` takes the profile from this fresh
+        // selection when it names the session's account.
+        return Self.downloadScope(
+            activeServerId: ServerRegistry.shared.activeServerId ?? "",
+            signedIn: auth.map {
+                SignedInIdentity(serverId: $0.account.serverId, localAccountId: $0.account.localAccountId,
+                                 profileId: $0.profileId)
+            },
+            selection: AccountScope.current
+        )
+    }
+
     /// Runs one activation step, warning when it holds activation (and so
     /// the capability check behind it) for more than a few seconds.
     private static func timed<T>(_ step: StaticString, _ body: () async -> T) async -> T {
@@ -878,12 +892,16 @@ final class DownloadManager {
         return result
     }
 
-    /// Records an activation outcome unless the previous activation recorded
-    /// the same one.
+    /// Records an activation outcome once until an activation succeeds with
+    /// nothing to report.
     private func recordActivation(outcome: String, reason: String) {
         let key = outcome + ": " + reason
-        guard key != lastActivationBreadcrumb else { return }
-        lastActivationBreadcrumb = key
+        guard !recordedActivationOutcomes.contains(key) else { return }
+        #if os(iOS)
+        // Before diagnostics capture opens (early launch), the log line is
+        // dropped, so the outcome is recorded again on a later activation.
+        if DiagTrace.shouldCapture(.essential) { recordedActivationOutcomes.insert(key) }
+        #endif
         Self.recordCapabilityCheck(phase: "activate", outcome: outcome, reason: reason)
     }
 
@@ -1336,11 +1354,12 @@ final class DownloadManager {
         let wasUsable = downloadsEnabled
         await refreshCapability()
         // The app-active pass that could not read the capability stopped
-        // before its reconcile and sync. Each step captures the current
-        // scope's owner itself, and they already run alongside the passes
-        // that push and background wakes start.
-        guard !wasUsable, downloadsEnabled, !Task.isCancelled else { return }
-        await syncAfterUsableCapability()
+        // before its reconcile and sync. They run outside the page's task, so
+        // leaving the page doesn't cut them short. Each step captures the
+        // current scope's owner itself, and they already run alongside the
+        // passes that push and background wakes start.
+        guard !wasUsable, downloadsEnabled else { return }
+        Task { await self.syncAfterUsableCapability() }
     }
 
     /// Reads the capability for the loaded scope. On failure the cached
@@ -1355,6 +1374,8 @@ final class DownloadManager {
             Self.recordCapabilityCheck(phase: "read", outcome: "skipped", reason: reason)
             return
         }
+        capabilityReadsStarted += 1
+        let read = capabilityReadsStarted
         do {
             let capability = try await SiloAPI.shared.apiV2Client.downloadCapability(auth: owner.auth)
             guard isCurrent(owner) else {
@@ -1362,6 +1383,11 @@ final class DownloadManager {
                 Self.recordCapabilityCheck(phase: "read", outcome: "discarded", reason: "scope changed during the request")
                 return
             }
+            guard read > newestCapabilityReadStored else {
+                Self.logger.notice("Download capability discarded: a newer read already answered")
+                return
+            }
+            newestCapabilityReadStored = read
             file.capability = capability
             file.capabilityFetchedAt = Date()
             persist()
