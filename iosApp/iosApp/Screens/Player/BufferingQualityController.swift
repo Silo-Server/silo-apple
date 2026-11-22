@@ -38,10 +38,12 @@ import Foundation
 /// lowering reports a link fact, `observed_rebuffer` (which the server learns
 /// as this device's limit) and `observed_throughput_kbps`, only on the same
 /// evidence: the plan's media arrived below its delivered bitrate while it
-/// was arriving. Time the server spends producing media before it sends it
-/// says nothing about the link, so a lowering without that evidence carries
-/// the step-down estimate alone, which the server plans under and never
-/// records.
+/// was arriving, and the device's own receive count, where it has one, was
+/// below it too (``reportsSlowLink(_:)``, for every lowering, before the
+/// first frame as well). Time the server spends producing media before it
+/// sends it says nothing about the link, so a lowering without that evidence
+/// carries the step-down estimate alone, which the server plans under and
+/// never records.
 ///
 /// ### Timing
 ///
@@ -514,9 +516,10 @@ final class BufferingQualityController {
     /// The plan failed before its first frame because the player's own start
     /// deadline passed: the attempt's first plan or a replacement, even one whose
     /// loading is a source reload and so never a stall. On Auto in `always`, when
-    /// ``measuredThroughputKbps`` shows the plan's media arriving below its
-    /// delivered bitrate, it lowers as a long stall would: a `quality_change`
-    /// with the step-down estimate, `observed_rebuffer` and that figure. True
+    /// ``measuredThroughputKbps``, else ``arrivalLowerBoundKbps``, shows the
+    /// plan's media arriving below its delivered bitrate, it lowers as a long
+    /// stall would: a `quality_change` with the step-down estimate, carrying
+    /// `observed_rebuffer` and the figure only on ``reportsSlowLink(_:)``. True
     /// when that replan was sent. False leaves the failure to the player's usual
     /// recovery, whose `failure_recovery` keeps the server's exclusion of the
     /// failed route: no measurement (nothing arrived, or the player cannot
