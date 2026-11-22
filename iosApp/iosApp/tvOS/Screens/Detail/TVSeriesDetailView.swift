@@ -225,7 +225,7 @@ struct TVSeriesDetailView: View {
     let onSelectNextUpSubtitleTrack: (Int?) -> Void
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
-    let onToggleSeriesWatched: () -> Void
+    let onToggleSeriesWatched: () async -> Void
     /// Nil hides Not interested: the server predates it.
     var isNotInterested: Bool? = nil
     var onToggleNotInterested: (() -> Void)? = nil
@@ -635,7 +635,7 @@ struct TVSeriesDetailView: View {
                                     season.userData?.played == true
                                         ? LocalizedStringResource.detailMoreMarkSeasonUnwatched
                                         : .detailMoreMarkSeasonWatched,
-                                    systemImage: season.userData?.played == true ? "circle" : "checkmark.circle"
+                                    systemImage: season.userData?.played == true ? "checkmark.circle.fill" : "checkmark.circle"
                                 )
                             }
                             .disabled(isUpdatingWatched || season.episodeCount == 0)
@@ -756,6 +756,15 @@ struct TVSeriesDetailView: View {
         Task {
             defer { isUpdatingWatched = false }
             reportWatchedOutcome(await onSetSeasonWatched(season, played))
+        }
+    }
+
+    private func toggleSeriesWatched() {
+        guard !isUpdatingWatched else { return }
+        isUpdatingWatched = true
+        Task {
+            defer { isUpdatingWatched = false }
+            await onToggleSeriesWatched()
         }
     }
 
@@ -1038,7 +1047,7 @@ struct TVSeriesDetailView: View {
                         id: "watched-submenu",
                         title: watchedTitle,
                         detail: scopeSummary(season: selectedSeason),
-                        systemImage: isSeriesWatched ? "checkmark.circle.fill" : "checkmark.circle",
+                        systemImage: "checklist",
                         isEnabled: !isUpdatingWatched,
                         children: [seasonWatchedItem, seriesWatchedItem]
                     ))
@@ -1115,7 +1124,7 @@ struct TVSeriesDetailView: View {
                 case .watched:
                     if let selectedSeason { setSeasonWatched(selectedSeason) }
                 case .seriesWatched:
-                    onToggleSeriesWatched()
+                    toggleSeriesWatched()
                 case .watchParty:
                     if let episode = displayedEpisode {
                         WatchPartyEntry.open(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode", // i18n-ignore: watch-party payload (D44)

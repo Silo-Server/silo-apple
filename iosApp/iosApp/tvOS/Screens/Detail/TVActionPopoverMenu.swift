@@ -68,13 +68,44 @@ struct TVActionPopoverMenu: View {
         return list
     }
 
+    private var currentSubmenuTitle: String? {
+        guard !submenuPath.isEmpty else { return nil }
+        var list = items
+        var title: String?
+        for parentId in submenuPath {
+            guard let parent = list.first(where: { $0.id == parentId }),
+                  let children = parent.children, !children.isEmpty else {
+                break
+            }
+            title = parent.title
+            list = children
+        }
+        return title
+    }
+
     private var isInSubmenu: Bool {
         !submenuPath.isEmpty
     }
 
     var body: some View {
-        rows
-            .padding(SiloTheme.Skyline.dropdownPadding)
+        VStack(alignment: .leading, spacing: 0) {
+            if let submenuTitle = currentSubmenuTitle {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(submenuTitle)
+                        .font(.system(size: 18, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Color.white.opacity(0.55))
+                .padding(.horizontal, SiloTheme.Skyline.cascadeRowPaddingHorizontal)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
+                .accessibilityAddTraits(.isHeader)
+            }
+            rows
+        }
+        .padding(SiloTheme.Skyline.dropdownPadding)
         .frame(width: Self.width, alignment: .leading)
         // Native tvOS context-menu look: Liquid Glass with a dark tint so
         // the page shows through, plus a faint lip so the edge reads on
@@ -93,8 +124,6 @@ struct TVActionPopoverMenu: View {
                 if let current = currentItems.first(where: { $0.id == highlightedId }),
                    current.hasSubmenu, current.isEnabled {
                     enterSubmenu(current)
-                } else if !isInSubmenu {
-                    onClose()
                 }
             default:
                 break

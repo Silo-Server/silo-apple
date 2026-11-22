@@ -447,7 +447,7 @@ struct TVItemDetailView: View {
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
-                onToggleSeriesWatched: { Task { await viewModel.toggleWatched() } },
+                onToggleSeriesWatched: { await viewModel.toggleWatched() },
                 isNotInterested: viewModel.isNotInterested,
                 onToggleNotInterested: { Task { await viewModel.toggleNotInterested() } },
                 onPersonTap: { personId in

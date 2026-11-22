@@ -575,6 +575,9 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         // pushed detail page, keeping focus on the action row; Up must never
         // behave like Back/Menu or pop the page to the root.
         .onMoveCommand { _ in }
+        .onPlayPauseCommand {
+            if playTitle != nil { onPlay() }
+        }
         .onChange(of: allowsInitialPlayFocus) { _, allowed in
             if !allowed {
                 didResetInitialPlayFocus = true
