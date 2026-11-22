@@ -498,6 +498,38 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         XCTAssertEqual(other.sessionTier, .metered)
     }
 
+    /// A connection change that lands while a fixed pick is active and an Auto
+    /// switch is in flight is dropped by `connectionDidChange()`. Once the Auto
+    /// pick commits, the controller reconciles the committed tier with the live
+    /// connection so Low Data Mode's 2 Mbps ceiling still applies; a commit
+    /// whose tier still matches the live connection schedules nothing.
+    func testAnAutoPickReconcilesAConnectionChangeThatLandedWhileInFlight() async throws {
+        let (controller, player) = makeController()
+        controller.sessionStarted(tier: .metered, keepsViewerPick: false)
+        controller.viewerDidPickQuality()
+
+        // Connection moves to Low Data Mode while the fixed pick is still in
+        // force (e.g., while an Auto switch built for `.metered` is in flight).
+        player.tier = .lowData
+        controller.connectionDidChange()
+        XCTAssertFalse(controller.hasPendingCheck, "dropped while fixed pick is active")
+
+        // Auto commits with the request-time `.metered` tier: schedules a check
+        // and replans to the 2 Mbps Low Data Mode ceiling.
+        controller.viewerDidPickAuto(tier: .metered)
+        XCTAssertTrue(controller.hasPendingCheck, "reconciles mismatch between committed and live tier")
+        try await waitUntil("the reconciled check runs") { !controller.hasPendingCheck }
+        XCTAssertEqual(player.replans, [lowDataPair])
+        XCTAssertEqual(controller.sessionTier, .lowData)
+
+        // When the committed tier still matches the live connection, no check
+        // or replan is scheduled.
+        controller.viewerDidPickQuality()
+        controller.viewerDidPickAuto(tier: .lowData)
+        XCTAssertFalse(controller.hasPendingCheck)
+        XCTAssertEqual(player.replans, [lowDataPair])
+    }
+
     func testAChangeIsFollowedOnlyOnceItHolds() async throws {
         let (controller, player) = makeController()
         controller.sessionStarted(tier: .unmetered, keepsViewerPick: false)

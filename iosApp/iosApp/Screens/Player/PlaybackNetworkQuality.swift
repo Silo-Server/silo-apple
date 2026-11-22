@@ -236,11 +236,20 @@ final class PlaybackNetworkQualityController {
 
     /// The viewer picked Auto, which follows the saved settings for the
     /// connection. Later connection changes replan again; the session now
-    /// uses this tier's cap.
+    /// uses this tier's cap. If the connection changed while the Auto pick
+    /// was in flight (when a prior fixed pick was still suppressing
+    /// `connectionDidChange()`), reconcile against the live tier now.
     func viewerDidPickAuto(tier: PlaybackNetworkTier) {
         viewerPickedQuality = false
-        if sessionTier != nil {
-            sessionTier = tier
+        guard sessionTier != nil else { return }
+        sessionTier = tier
+        if currentTier() != tier {
+            if pendingCheck == nil {
+                connectionDidChange()
+            }
+        } else {
+            pendingCheck?.cancel()
+            pendingCheck = nil
         }
     }
 
