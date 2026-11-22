@@ -620167,6 +620167,486 @@
         }
       }
     },
+    "servers.rename.localNote" : {
+      "comment" : "Apple (Mac): message of the rename-server prompt when the server doesn't report a name of its own. \"This name\" is the name the user types; the Mac keeps it locally and does not sync it.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "el" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Only you see this name. It stays on this Mac."
+          }
+        }
+      }
+    },
+    "servers.rename.localNoteNamed" : {
+      "comment" : "Apple (Mac): message of the rename-server prompt when the server reports a name of its own. {server}: the name the server reports. \"This name\" is the name the user types; the Mac keeps it locally and does not sync it.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "el" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "The server's own name is %1$@. Only you see this name. It stays on this Mac."
+          }
+        }
+      }
+    },
     "servers.rename.placeholder" : {
       "comment" : "Apple: placeholder in the empty name field of the rename-server prompt, shown when the server doesn't report a name of its own.",
       "extractionState" : "manual",
@@ -620888,7 +621368,7 @@
       }
     },
     "servers.rename.syncNote" : {
-      "comment" : "Apple: message of the rename-server prompt when the server doesn't report a name of its own. \"This name\" is the name the user types; it is kept in their iCloud account and shown only on their own devices.",
+      "comment" : "Apple (iPhone, iPad and Apple TV): message of the rename-server prompt when the server doesn't report a name of its own. \"This name\" is the name the user types; it is kept in their iCloud account and shown only on their own devices.",
       "extractionState" : "manual",
       "localizations" : {
         "ar" : {
@@ -621128,7 +621608,7 @@
       }
     },
     "servers.rename.syncNoteNamed" : {
-      "comment" : "Apple: message of the rename-server prompt when the server reports a name of its own. {server}: the name the server reports. \"This name\" is the name the user types; it is kept in their iCloud account and shown only on their own devices.",
+      "comment" : "Apple (iPhone, iPad and Apple TV): message of the rename-server prompt when the server reports a name of its own. {server}: the name the server reports. \"This name\" is the name the user types; it is kept in their iCloud account and shown only on their own devices.",
       "extractionState" : "manual",
       "localizations" : {
         "ar" : {

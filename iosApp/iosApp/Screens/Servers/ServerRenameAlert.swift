@@ -6,8 +6,14 @@ enum ServerRename {
     static let title: LocalizedStringResource = .serversRenamePromptTitle
 
     static func message(for entry: ServerEntry) -> LocalizedStringResource {
+        #if os(macOS)
+        // The Mac keeps names on the device: it has no iCloud store for them.
+        guard let serverName = entry.serverName else { return .serversRenameLocalNote }
+        return .serversRenameLocalNoteNamed(serverName)
+        #else
         guard let serverName = entry.serverName else { return .serversRenameSyncNote }
         return .serversRenameSyncNoteNamed(serverName)
+        #endif
     }
 
     static func placeholder(for entry: ServerEntry, locale: Locale) -> String {
