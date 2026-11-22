@@ -4,6 +4,8 @@ import SwiftUI
 struct SiloApp: App {
     #if os(iOS)
     @UIApplicationDelegateAdaptor(SiloAppDelegate.self) private var appDelegate
+    #elseif os(macOS)
+    @NSApplicationDelegateAdaptor(SiloMacAppDelegate.self) private var appDelegate
     #endif
 
     init() {
@@ -40,6 +42,13 @@ struct SiloApp: App {
         // is on mobile data (the cellular quality pair).
         PlaybackNetworkMonitor.shared.start()
         #endif
+        BandwidthProbeScheduler.shared.followNetwork()
+        #if os(macOS)
+        BandwidthProbeScheduler.shared.followMacVisibility()
+        #endif
+        // Before the first view, so the root starts in the language on screen
+        // and every request names it.
+        _ = AppLanguagePreferences.shared
     }
 
     var body: some Scene {
@@ -60,11 +69,43 @@ struct SiloApp: App {
                 // Deliver URLs to this window instead of opening a new one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 .background(MacWindowPlacement())
+                // Tall enough for the sign-in screens without scrolling.
+                .frame(minWidth: 900, minHeight: 640)
                 #endif
+                .modifier(AppLanguageEnvironment())
         }
         #if os(macOS)
-        .commands { MacSettingsCommands() }
+        // First launch only; after that MacWindowPlacement restores the
+        // last frame.
+        .defaultSize(width: 1280, height: 800)
+        .commands { MacAppCommands() }
         #endif
+    }
+}
+
+/// The app language at the root, live: every view's text, plurals and
+/// formatting follow `\.locale`, and layout follows its direction.
+private struct AppLanguageEnvironment: ViewModifier {
+    @State private var language = AppLanguagePreferences.shared
+
+    func body(content: Content) -> some View {
+        let direction: LayoutDirection = language.isRightToLeft ? .rightToLeft : .leftToRight
+        content
+            .environment(\.locale, language.locale)
+            .environment(\.layoutDirection, direction)
+            #if os(iOS) || os(tvOS)
+            // Sheets and full-screen covers get a new hosting controller that
+            // takes its direction from UIKit traits, not from this
+            // environment, so a live switch would leave them in the launch
+            // direction. The scene override reaches every presented page.
+            // App-wide UIKit direction (`userInterfaceLayoutDirection`) still
+            // follows `AppleLanguages`, so it changes at the next launch.
+            .onChange(of: direction, initial: true) { _, direction in
+                for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+                    scene.traitOverrides.layoutDirection = UITraitEnvironmentLayoutDirection(direction)
+                }
+            }
+            #endif
     }
 }
 

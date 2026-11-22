@@ -19,12 +19,20 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
         DownloadBackgroundRefresh.register()
         ApplePushRegistrationCoordinator.migrateLegacyDisplayToken()
         Self.recordApplePushDisplayOutcomes()
+        // A removed or signed-out server keeps pushing until its retirement
+        // lands. It needs no session, so it is retried before any sign-in.
+        Task { @MainActor in
+            await ApplePushRegistrationCoordinator.shared.retryPendingRetirements()
+        }
         NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
             object: nil,
             queue: .main
         ) { _ in
             Self.recordApplePushDisplayOutcomes()
+            Task { @MainActor in
+                await ApplePushRegistrationCoordinator.shared.retryPendingRetirements()
+            }
         }
         return true
     }
@@ -120,7 +128,16 @@ extension SiloAppDelegate: UNUserNotificationCenterDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         Task { @MainActor in
-            let fetchedDeliveries = await Self.syncWithDeadline(Self.backgroundSyncDeadlineSeconds)
+            let deadline = Self.backgroundSyncDeadlineSeconds
+            // The push may come from a server this device retired; retrying
+            // now runs beside the sync, inside the same budget.
+            let retirements = Task {
+                await ApplePushRegistrationCoordinator.waitAtMost(.seconds(deadline)) {
+                    await ApplePushRegistrationCoordinator.shared.retryPendingRetirements(afterPush: true)
+                }
+            }
+            let fetchedDeliveries = await Self.syncWithDeadline(deadline)
+            await retirements.value
             completionHandler(fetchedDeliveries ? .newData : .noData)
         }
     }

@@ -6,10 +6,10 @@ import SwiftUI
 /// the accessibility hint instead of printed. The containing NavigationLink
 /// supplies its own chevron; plain buttons ask for one with `showsChevron`.
 struct SettingsOverviewRow: View {
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringResource
+    let subtitle: LocalizedStringResource
     let systemImage: String
-    var value: String? = nil
+    var value: LocalizedStringResource? = nil
     var showsChevron = false
 
     var body: some View {
@@ -35,7 +35,7 @@ struct SettingsOverviewRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityHint(subtitle)
+        .accessibilityHint(Text(subtitle))
     }
 }
 

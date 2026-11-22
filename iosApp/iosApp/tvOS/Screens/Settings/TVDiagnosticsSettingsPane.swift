@@ -8,30 +8,31 @@ struct TVDiagnosticsSettingsPane: View {
     @State private var showConsentPicker = false
     @State private var showDestinationPicker = false
     @State private var selectedReport: PendingReport?
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TVSettingsSectionHeader("FEATURE STATE")
-            TVSettingsInfoRow(title: "Status", value: model.featureState.title)
-            TVSettingsInfoRow(title: "Destination", value: model.destinationServerName)
+            TVSettingsSectionHeader(.diagnosticsSectionFeatureStateTv)
+            TVSettingsInfoRow(title: .diagnosticsRowStatus, value: model.featureState.title)
+            TVSettingsInfoRow(title: .diagnosticsRowDestination, value: model.destinationServerName)
 
-            TVSettingsSectionHeader("CAPTURE")
+            TVSettingsSectionHeader(.diagnosticsSectionCaptureTv)
             TVSettingsPickerRow(
-                title: "Send Reports To",
+                title: .diagnosticsRowSendReportsTo,
                 value: model.selectedDestination.title,
                 action: { showDestinationPicker = true }
             )
             .focused(detailFocus, equals: .top)
 
             TVSettingsToggleRow(
-                title: "Debug Logging",
+                title: .diagnosticsRowDebugLogging,
                 isOn: model.debugLoggingEnabled
             ) {
                 model.debugLoggingEnabled.toggle()
             }
 
             TVSettingsPickerRow(
-                title: "Crash Reports",
+                title: .diagnosticsRowCrashReports,
                 value: modeTitle,
                 action: { showConsentPicker = true }
             )
@@ -40,12 +41,12 @@ struct TVDiagnosticsSettingsPane: View {
             if model.selectedDestination == .hosted {
                 TVSettingsFooter(model.hostedPrivacyDisclosure)
             } else {
-                TVSettingsFooter("Crash report consent is tied to this server account. Debug logging is a setting for this Apple TV.")
+                TVSettingsFooter(.diagnosticsCaptureSelfHostedFooterAppleTv)
             }
 
-            TVSettingsSectionHeader("PENDING REPORTS (\(model.pendingReports.count))")
+            TVSettingsSectionHeader(.diagnosticsSectionPendingTv(model.pendingReports.count))
             if model.pendingReports.isEmpty {
-                TVSettingsInfoRow(title: "Reports", value: "None")
+                TVSettingsInfoRow(title: .diagnosticsRowReports, value: .settingsDiagnosticsNone)
             } else {
                 ForEach(model.pendingReports) { report in
                     Button {
@@ -53,17 +54,19 @@ struct TVDiagnosticsSettingsPane: View {
                     } label: {
                         HStack(spacing: 16) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(typeTitle(for: report.binding.type))
+                                Text(report.binding.type.listTitle)
                                     .font(.system(size: 26))
                                 Text(report.binding.capturedAtDate, format: .dateTime.month().day().hour().minute())
                                     .font(.system(size: 19))
                                     .opacity(0.62)
                             }
                             Spacer(minLength: 16)
-                            Text("Expires \(expiryDate(for: report), format: .relative(presentation: .named))")
+                            Text(.diagnosticsReportExpiresRelative(
+                                expiryDate(for: report).formatted(.relative(presentation: .named).locale(locale))
+                            ))
                                 .font(.system(size: 20))
                                 .opacity(0.62)
-                            Image(systemName: "chevron.right")
+                            Image(systemName: "chevron.forward")
                                 .font(.system(size: 18, weight: .semibold))
                                 .opacity(0.55)
                         }
@@ -72,32 +75,34 @@ struct TVDiagnosticsSettingsPane: View {
                 }
             }
 
-            TVSettingsSectionHeader("MANUAL REPORT")
-            Button("Send Diagnostics Now", systemImage: "paperplane.fill") {
+            TVSettingsSectionHeader(.diagnosticsSectionManualReportTv)
+            Button(.settingsDiagnosticsSend, systemImage: "paperplane.fill") {
                 Task { await model.createAndSendManualReport() }
             }
             .buttonStyle(TVSettingsPaneRowStyle())
             .disabled(!model.featureState.isUploadAvailable || model.isWorking)
 
             if !model.debugLoggingEnabled {
-                TVSettingsFooter("Debug logging is off. This report contains only the last few minutes of basic logs.")
+                TVSettingsFooter(.diagnosticsSendDebugOffFooterTv)
             }
 
             if model.isWorking {
-                ProgressView("Preparing diagnostics…")
+                ProgressView {
+                    Text(.diagnosticsPreparing)
+                }
                     .padding(.horizontal, 24)
             }
 
             if let notice = model.notice {
-                TVSettingsFooter(notice.message)
+                TVSettingsFooter(.verbatim(notice.text(in: locale)))
             }
 
-            TVSettingsSectionHeader("SENT HISTORY")
+            TVSettingsSectionHeader(.diagnosticsSectionSentHistoryTv)
             if model.sentHistory.isEmpty {
-                TVSettingsInfoRow(title: "Reports", value: "None")
+                TVSettingsInfoRow(title: .diagnosticsRowReports, value: .settingsDiagnosticsNone)
             } else {
                 ForEach(model.sentHistory) { item in
-                    TVSettingsInfoRow(title: item.shortID, value: sentDate(item.sentAt))
+                    TVSettingsInfoRow(title: .verbatim(item.shortID), value: sentDate(item.sentAt))
                 }
             }
         }
@@ -112,20 +117,11 @@ struct TVDiagnosticsSettingsPane: View {
         }
     }
 
-    private var modeTitle: String {
+    private var modeTitle: LocalizedStringResource {
         switch model.consentMode {
-        case .ask: return "Ask"
-        case .always: return "Always"
-        case .never: return "Never"
-        }
-    }
-
-    private func typeTitle(for type: ReportType) -> String {
-        switch type {
-        case .crash, .nativeCrash: return "Crash"
-        case .hang, .anr: return "Not Responding"
-        case .abnormalExit: return "Unclean Shutdown"
-        case .manual: return "Manual Report"
+        case .ask: return .diagnosticsCrashReportsAsk
+        case .always: return .diagnosticsCrashReportsAlways
+        case .never: return .diagnosticsCrashReportsNever
         }
     }
 
@@ -133,9 +129,9 @@ struct TVDiagnosticsSettingsPane: View {
         report.binding.capturedAtDate.addingTimeInterval(PendingReportStore.expiryInterval)
     }
 
-    private func sentDate(_ value: String) -> String {
-        guard let date = DiagnosticsDates.date(from: value) else { return "Sent" }
-        return date.formatted(.dateTime.month().day().hour().minute())
+    private func sentDate(_ value: String) -> LocalizedStringResource {
+        guard let date = DiagnosticsDates.date(from: value) else { return .diagnosticsSentHistorySentFallback }
+        return .verbatim(date.formatted(.dateTime.month().day().hour().minute().locale(locale)))
     }
 }
 #endif

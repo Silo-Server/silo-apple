@@ -7,14 +7,16 @@ struct SeriesEpisodeWindow {
     let previousSeason: Int?
     let nextSeason: Int?
 
+    /// The tvOS rail pins the focused card to the leading slot, so it needs a
+    /// viewport of cards past it (about six at the Compact size) and one behind.
+    /// Series of one-episode seasons need more than the five nearest pages.
+    static let minimumEpisodesPerSide = 8
+
+    /// Display order (Specials first, then numbered seasons ascending), one
+    /// entry per season number.
     static func orderedSeasons(_ seasons: [Season]) -> [Season] {
         var seen = Set<Int>()
-        return seasons.sorted {
-            let lhsSpecial = $0.isSpecials == true || $0.seasonNumber == 0
-            let rhsSpecial = $1.isSpecials == true || $1.seasonNumber == 0
-            if lhsSpecial != rhsSpecial { return !lhsSpecial }
-            return $0.seasonNumber < $1.seasonNumber
-        }.filter { seen.insert($0.seasonNumber).inserted }
+        return seasons.sortedForDisplay().filter { seen.insert($0.seasonNumber).inserted }
     }
 
     static func snapshot(
@@ -40,8 +42,9 @@ struct SeriesEpisodeWindow {
         )
     }
 
-    /// Retain five nonempty season pages around the selected episode. Empty
-    /// results stay as inexpensive markers so they aren't repeatedly fetched.
+    /// Retain five nonempty season pages around the selected episode, plus
+    /// enough nearer pages on each side to hold `minimumEpisodesPerSide`.
+    /// Empty results stay as inexpensive markers so they aren't repeatedly fetched.
     static func retainedPages(
         seasons: [Season], selected: Int, pages: [Int: [EpisodeListItem]]
     ) -> [Int: [EpisodeListItem]] {
@@ -53,7 +56,19 @@ struct SeriesEpisodeWindow {
                 let rhs = abs($1.offset - index)
                 return lhs == rhs ? $0.offset < $1.offset : lhs < rhs
             }.prefix(5).map(\.element)
-        let keep = Set(nearest)
+        var keep = Set(nearest)
+        for direction in [-1, 1] {
+            // Count cards, not rows: the snapshot drops repeated episode ids.
+            var seen = Set((pages[selected] ?? []).map(\.contentId))
+            var count = 0
+            var neighbor = index + direction
+            while count < minimumEpisodesPerSide, order.indices.contains(neighbor),
+                  let page = pages[order[neighbor]] {
+                keep.insert(order[neighbor])
+                count += page.filter { seen.insert($0.contentId).inserted }.count
+                neighbor += direction
+            }
+        }
         return pages.filter { order.contains($0.key) && ($0.value.isEmpty || keep.contains($0.key)) }
     }
 }

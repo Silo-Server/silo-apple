@@ -69,7 +69,7 @@ final class PlaybackNetworkMonitor: @unchecked Sendable {
             monitor.pathUpdateHandler = { [weak self] path in
                 self?.update(path)
             }
-            monitor.start(queue: DispatchQueue(label: "org.siloserver.silo.playback-network-path"))
+            monitor.start(queue: DispatchQueue(label: "org.siloserver.silo.playback-network-path")) // i18n-ignore: queue label
             self.monitor = monitor
         }
     }
@@ -105,6 +105,30 @@ final class PlaybackNetworkMonitor: @unchecked Sendable {
     }
 }
 
+/// Whether the connection is metered, as observable state. A detail page
+/// ranks its files with the connection's quality pair, so reading this in a
+/// view redraws it when the connection changes, and Play then starts the
+/// file the page shows. The monitor itself is not observable.
+@Observable
+final class PlaybackConnection {
+    static let shared = PlaybackConnection()
+
+    private(set) var isMetered = false
+    @ObservationIgnored private var observation: PlaybackNetworkMonitor.ObserverToken?
+
+    private init() {
+        // Subscribe before the first read, so a change between them isn't lost.
+        observation = PlaybackNetworkMonitor.shared.observe {
+            DispatchQueue.main.async { PlaybackConnection.shared.refresh() }
+        }
+        isMetered = PlaybackNetworkMonitor.shared.isMetered
+    }
+
+    private func refresh() {
+        isMetered = PlaybackNetworkMonitor.shared.isMetered
+    }
+}
+
 /// Replans an active playback when the connection moves between metered and
 /// unmetered and the two quality pairs differ. Owned by the player.
 @MainActor
@@ -126,8 +150,11 @@ final class PlaybackNetworkQualityController {
     /// pick; it hands quality back to the saved settings for the connection.
     private(set) var viewerPickedQuality = false
 
-    /// How long the connection must stay changed before playback follows, so
-    /// a brief flap does not reload the stream twice.
+    /// How long the connection must stay changed before playback follows.
+    /// Each follow is a full reload, and a phone on steady Wi-Fi can read as
+    /// metered for several seconds while Wi-Fi Assist or a roam between access
+    /// points puts its path on cellular. Leaving Wi-Fi for mobile data holds
+    /// far longer than that.
     private let debounce: Duration
     private let isMetered: () -> Bool
     private let pair: (_ metered: Bool) -> AppleQualityAxes
@@ -138,7 +165,7 @@ final class PlaybackNetworkQualityController {
     var hasPendingCheck: Bool { pendingCheck != nil }
 
     init(
-        debounce: Duration = .seconds(4),
+        debounce: Duration = .seconds(30),
         isMetered: @escaping () -> Bool,
         pair: @escaping (_ metered: Bool) -> AppleQualityAxes,
         replan: @escaping (AppleQualityAxes) -> ReplanOutcome
@@ -184,14 +211,22 @@ final class PlaybackNetworkQualityController {
     /// The connection changed. Checks once it has held for ``debounce``; a
     /// newer change restarts the wait.
     func connectionDidChange() {
-        pendingCheck?.cancel()
         guard sessionUsesMeteredPair != nil, !viewerPickedQuality else {
+            pendingCheck?.cancel()
             pendingCheck = nil
             return
         }
-        let debounce = debounce
+        // Without this line a report shows a reload but not what caused it,
+        // and a blip that never reloaded leaves no trace at all.
+        let side = isMetered() ? "metered" : "unmetered"
+        cmpLog("[CMP-NET] connection now \(side); quality follows if it holds for \(debounce)")
+        scheduleCheck(after: debounce)
+    }
+
+    private func scheduleCheck(after wait: Duration) {
+        pendingCheck?.cancel()
         pendingCheck = Task { [weak self] in
-            try? await Task.sleep(for: debounce)
+            try? await Task.sleep(for: wait)
             guard !Task.isCancelled else { return }
             self?.pendingCheck = nil
             self?.checkConnection()
@@ -213,8 +248,13 @@ final class PlaybackNetworkQualityController {
         switch replan(target) {
         case .issued:
             sessionUsesMeteredPair = metered
+            cmpLog(metered
+                ? "[CMP-NET] connection stayed metered; reloading at the cellular quality"
+                : "[CMP-NET] connection stayed unmetered; reloading at the main quality")
         case .busy:
-            connectionDidChange()
+            // The change has already held; only the reload in flight is in
+            // the way, so ask again soon rather than waiting out the debounce.
+            scheduleCheck(after: min(debounce, .seconds(4)))
         case .unavailable:
             break
         }

@@ -17,10 +17,13 @@ enum PhoneHeroMetadata {
 
     // MARK: - Source row
 
-    static func movieSourceTokens(from detail: ItemDetail) -> [String] {
+    static func movieSourceTokens(
+        from detail: ItemDetail,
+        locale: Locale = AppLanguage.displayedLocale
+    ) -> [String] {
         if detail.type == "episode" {
             var tokens: [String] = []
-            if let label = episodeNumberLabel(from: detail) { tokens.append(label) }
+            if let label = episodeNumberLabel(from: detail, locale: locale) { tokens.append(label) }
             if let genres = detail.genres, !genres.isEmpty {
                 tokens.append(genres.prefix(1).joined(separator: ", "))
             }
@@ -54,7 +57,7 @@ enum PhoneHeroMetadata {
            let airDate = DetailDateFormatting.abbreviatedDate(detail.airDate) {
             tokens.append(.text(airDate))
         } else if let year = detail.year, year > 0 {
-            tokens.append(.text(String(year)))
+            tokens.append(.text(LocaleFormat.integer(year)))
         }
         let runtime = SelectedMediaRuntime.minutes(detail: detail, selectedVersion: selectedVersion)
         if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) {
@@ -66,12 +69,16 @@ enum PhoneHeroMetadata {
 
     /// `seasons` is the season list the page loaded from the library; the
     /// count stays off the line until it arrives.
-    static func seriesFactsLine(from detail: ItemDetail, seasons: [Season]) -> [PhoneHeroFactToken] {
+    static func seriesFactsLine(
+        from detail: ItemDetail,
+        seasons: [Season],
+        locale: Locale = AppLanguage.displayedLocale
+    ) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
-        if let year = detail.year, year > 0 { tokens.append(.text(String(year))) }
+        if let year = detail.year, year > 0 { tokens.append(.text(LocaleFormat.integer(year, locale: locale))) }
         let count = seasons.librarySeasonCount
         if count > 0 {
-            tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
+            tokens.append(.text(AppLanguage.string(.catalogSeasons(count), locale: locale)))
         }
         tokens.append(contentsOf: qualityTokens(from: detail))
         return tokens
@@ -79,7 +86,10 @@ enum PhoneHeroMetadata {
 
     // MARK: - Eyebrow
 
-    static func eyebrow(from detail: ItemDetail) -> String? {
+    static func eyebrow(
+        from detail: ItemDetail,
+        locale: Locale = AppLanguage.displayedLocale
+    ) -> String? {
         if detail.type == "episode" {
             if let seriesTitle = detail.seriesTitle?
                 .trimmingCharacters(in: .whitespaces), !seriesTitle.isEmpty {
@@ -94,11 +104,11 @@ enum PhoneHeroMetadata {
             .first(where: { !$0.isEmpty }) {
             switch status.lowercased() {
             case "continuing", "returning series", "returning":
-                return "Continuing Series"
+                return AppLanguage.string(.detailSeriesStatusContinuing, locale: locale)
             case "ended":
-                return "Complete Series"
+                return AppLanguage.string(.detailSeriesStatusEnded, locale: locale)
             case "in production":
-                return "New Season Coming"
+                return AppLanguage.string(.detailSeriesStatusInProduction, locale: locale)
             default: break
             }
         }
@@ -107,17 +117,20 @@ enum PhoneHeroMetadata {
 
     // MARK: - Credits
 
-    static func creditText(from detail: ItemDetail) -> String? {
+    static func creditText(
+        from detail: ItemDetail,
+        locale: Locale = AppLanguage.displayedLocale
+    ) -> String? {
         if detail.type == "movie" {
             let directors = detail.crew?
                 .filter { $0.job?.caseInsensitiveCompare("Director") == .orderedSame }
                 .map(\.name) ?? []
             guard !directors.isEmpty else { return nil }
-            return "Directed by " + directors.prefix(2).joined(separator: ", ")
+            return AppLanguage.string(.detailDirectedBy(directors.prefix(2).joined(separator: ", ")), locale: locale)
         }
         if detail.type == "episode" { return nil }
         guard let cast = detail.cast, !cast.isEmpty else { return nil }
-        return "Starring " + cast.prefix(3).map(\.name).joined(separator: ", ")
+        return AppLanguage.string(.detailStarring(cast.prefix(3).map(\.name).joined(separator: ", ")), locale: locale)
     }
 
     // MARK: - Title parts
@@ -141,19 +154,22 @@ enum PhoneHeroMetadata {
 
     // MARK: - Helpers
 
-    private static func episodeNumberLabel(from detail: ItemDetail) -> String? {
+    private static func episodeNumberLabel(from detail: ItemDetail, locale: Locale) -> String? {
         let seasonPart: String?
         if let season = detail.seasonNumber {
-            seasonPart = season == 0 ? "Specials" : "Season \(season)"
+            seasonPart = AppLanguage.string(
+                season == 0 ? .detailSpecials : .detailSeason(LocaleFormat.integer(season)),
+                locale: locale
+            )
         } else {
             seasonPart = nil
         }
-        let episodePart = detail.episodeNumber.flatMap { n in n > 0 ? "Episode \(n)" : nil }
+        let episode = detail.episodeNumber.flatMap { n in n > 0 ? n : nil }
 
-        switch (seasonPart, episodePart) {
-        case let (.some(s), .some(e)): return "\(s) \u{00B7} \(e)"
+        switch (seasonPart, episode) {
+        case let (.some(s), .some(e)): return AppLanguage.string(.detailEpisodeEyebrow(s, LocaleFormat.integer(e, locale: locale)), locale: locale)
         case let (.some(s), .none):    return s
-        case let (.none, .some(e)):    return e
+        case let (.none, .some(e)):    return AppLanguage.string(.detailEpisode(LocaleFormat.integer(e, locale: locale)), locale: locale)
         case (.none, .none):           return nil
         }
     }
@@ -163,10 +179,10 @@ enum PhoneHeroMetadata {
         var tokens: [PhoneHeroFactToken] = []
         if let res = resolutionLabel(version.resolution) { tokens.append(.chip(res)) }
         if version.hdr == true {
-            tokens.append(.chip(dolbyVisionLabel(version: version) ?? "HDR"))
+            tokens.append(.chip(dolbyVisionLabel(version: version) ?? "HDR")) // i18n-ignore: technical token
         }
         if let audio = primaryAudioLabel(version: version) { tokens.append(.chip(audio)) }
-        if hasSubtitles(version: version) { tokens.append(.chip("CC")) }
+        if hasSubtitles(version: version) { tokens.append(.chip("CC")) } // i18n-ignore: closed-captions badge
         return tokens
     }
 
@@ -181,17 +197,17 @@ enum PhoneHeroMetadata {
 
     private static func resolutionLabel(_ raw: String?) -> String? {
         guard let raw = raw?.lowercased() else { return nil }
-        if raw.contains("2160") || raw.contains("4k") { return "4K" }
-        if raw.contains("1080") { return "HD" }
-        if raw.contains("720") { return "HD" }
-        if raw.contains("480") { return "SD" }
+        if raw.contains("2160") || raw.contains("4k") { return "4K" } // i18n-ignore: technical token
+        if raw.contains("1080") { return "HD" } // i18n-ignore: technical token
+        if raw.contains("720") { return "HD" } // i18n-ignore: technical token
+        if raw.contains("480") { return "SD" } // i18n-ignore: technical token
         return nil
     }
 
     private static func dolbyVisionLabel(version: FileVersion) -> String? {
         let videoTracks = version.videoTracks ?? []
         if videoTracks.contains(where: { ($0.dolbyVision ?? "").isEmpty == false }) {
-            return "DOLBY VISION"
+            return "DOLBY VISION" // i18n-ignore: format brand name
         }
         return nil
     }
@@ -202,7 +218,7 @@ enum PhoneHeroMetadata {
         guard let track = defaultTrack else { return nil }
 
         if let layout = track.channelLayout?.lowercased() {
-            if layout.contains("atmos") { return "ATMOS" }
+            if layout.contains("atmos") { return "ATMOS" } // i18n-ignore: format brand name
             if layout.contains("7.1") { return "7.1" }
             if layout.contains("5.1") { return "5.1" }
             if layout.contains("stereo") || layout == "2.0" { return nil }

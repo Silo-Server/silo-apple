@@ -22,15 +22,20 @@ enum DetailResumeState: Equatable {
     /// resume prompt. Fresh server state wins over the page snapshot, even
     /// when the server reports no progress at all.
     func resumePosition(cached: LeafItemUserData?) -> Double? {
-        let userData: LeafItemUserData?
-        switch self {
-        case .refreshed(let fresh): userData = fresh
-        case .unavailable: userData = cached
-        }
+        let userData = userData(cached: cached)
         return PlaybackResumePoint.position(
             userData?.positionSeconds,
             duration: userData?.durationSeconds
         )
+    }
+
+    /// The watch state the position comes from, so Play resolves its file
+    /// from the same state: a multipart title's position belongs to one part.
+    func userData(cached: LeafItemUserData?) -> LeafItemUserData? {
+        switch self {
+        case .refreshed(let fresh): return fresh
+        case .unavailable: return cached
+        }
     }
 
     /// Runs `fetch`, mapping a thrown error, a fetch slower than `timeout`,

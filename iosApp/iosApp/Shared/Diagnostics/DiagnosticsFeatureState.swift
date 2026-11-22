@@ -9,20 +9,20 @@ enum DiagnosticsFeatureState: Equatable {
     case offline
     case permanentlyHidden
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
         case .loading:
-            return "Checking availability…"
+            return .diagnosticsAvailabilityChecking
         case .available:
-            return "Available"
+            return .diagnosticsAvailabilityAvailable
         case .disabledByServer:
-            return "Disabled by server"
+            return .diagnosticsAvailabilityDisabled
         case .storageUnavailable:
-            return "Storage unavailable"
+            return .diagnosticsAvailabilityStorageUnavailable
         case .offline:
-            return "Offline"
+            return .diagnosticsAvailabilityOffline
         case .permanentlyHidden:
-            return "Unavailable"
+            return .diagnosticsAvailabilityIneligible
         }
     }
 

@@ -14,7 +14,7 @@ struct TVDiagnosticsPromptScreen: View {
             SettingsBackdrop()
 
             VStack(alignment: .leading, spacing: 28) {
-                Text(isReviewing ? "Report Summary" : prompt.title)
+                Text(isReviewing ? LocalizedStringResource.diagnosticsSummaryTitle : prompt.title)
                     .font(.system(size: 48, weight: .bold))
 
                 if isReviewing {
@@ -41,9 +41,9 @@ struct TVDiagnosticsPromptScreen: View {
 
             if showAlwaysConfirmation {
                 TVSettingsConfirmationOverlay(
-                    title: "Always Send Crash Reports?",
-                    message: "These reports and future crash reports for this server account will be sent automatically.",
-                    confirmTitle: "Always Send",
+                    title: .diagnosticsAlwaysSendConfirmTitle,
+                    message: .diagnosticsAlwaysSendPromptMessageMany,
+                    confirmTitle: .diagnosticsAlwaysSendConfirm,
                     cancel: cancelAlwaysConfirmation,
                     confirm: confirmAlwaysSend
                 )
@@ -70,25 +70,25 @@ struct TVDiagnosticsPromptScreen: View {
 
     private var actionButtons: some View {
         HStack(spacing: 18) {
-            Button("Don't Send", action: model.declinePrompt)
+            Button(.diagnosticsPromptDontSendButton, action: model.declinePrompt)
                 .buttonStyle(TVSettingsPaneRowStyle())
                 .focused($focusedAction, equals: .dontSend)
 
-            Button(isReviewing ? "Back" : "View Report") {
+            Button(isReviewing ? LocalizedStringResource.commonBack : .diagnosticsPromptViewReport) {
                 isReviewing.toggle()
                 focusedAction = .dontSend
             }
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($focusedAction, equals: .review)
 
-            Button("Send") {
+            Button(.diagnosticsConsentConfirm) {
                 Task { await model.sendPrompt(always: false) }
             }
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($focusedAction, equals: .send)
 
             if model.allowsAlwaysSend {
-                Button("Always Send") {
+                Button(.diagnosticsAlwaysSendConfirm) {
                     showAlwaysConfirmation = true
                 }
                 .buttonStyle(TVSettingsPaneRowStyle())

@@ -76,16 +76,30 @@ extension ItemDetail {
         self.audiobook = try value.audiobook.map { try AudiobookDetail(catalog: $0) }
         self.pendingTranslationLanguage = value.pendingTranslationLanguage
         self.machineTranslatedFields = value.machineTranslatedFields
+        self.themes = value.themes
         self.videos = value.videos.map { $0.map { ItemVideo(catalog: $0) } }
         self.extras = try value.extras.map { try $0.map { try ItemExtra(catalog: $0) } }
-        self.userState = value.userState.map {
-            MediaItemUserState(played: $0.played, isFavorite: $0.isFavorite, inWatchlist: $0.inWatchlist)
+        self.userState = try value.userState.map {
+            MediaItemUserState(
+                played: $0.played,
+                isFavorite: $0.isFavorite,
+                inWatchlist: $0.inWatchlist,
+                notInterested: $0.notInterested,
+                watchedCount: try $0.watchedCount.map { try catalogLegacyInt($0) },
+                unplayedCount: try $0.unplayedCount.map { try catalogLegacyInt($0) }
+            )
         }
         self.posterIsEpisodeStill = value.posterIsEpisodeStill
         self.backdropIsEpisodeStill = value.backdropIsEpisodeStill
         self.posterUrl = value.posterUrl
         self.backdropUrl = value.backdropUrl
         self.logoUrl = value.logoUrl
+        self.seriesPosterUrl = value.seriesPosterUrl
+        self.seriesPosterThumbhash = value.seriesPosterThumbhash
+        self.seriesBackdropUrl = value.seriesBackdropUrl
+        self.seriesBackdropThumbhash = value.seriesBackdropThumbhash
+        self.seasonPosterUrl = value.seasonPosterUrl
+        self.seasonPosterThumbhash = value.seasonPosterThumbhash
     }
 }
 
@@ -201,6 +215,7 @@ extension LeafItemUserData {
         self.durationSeconds = value.durationSeconds
         self.lastFileId = try value.lastFileId.map { try catalogLegacyID($0) }
         self.lastResolution = value.lastResolution
+        self.lastEditionKey = value.lastEditionKey
     }
 }
 
@@ -223,6 +238,7 @@ extension FileVersion {
         self.intro = value.intro.map { TimeRange(catalog: $0) }
         self.credits = value.credits.map { TimeRange(catalog: $0) }
         self.recap = value.recap.map { TimeRange(catalog: $0) }
+        self.markerSegments = nil
         self.presentationKind = value.presentationKind
         self.presentationGroupKey = value.presentationGroupKey
         self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }
@@ -254,6 +270,7 @@ extension FileVersion {
         self.intro = value.intro.map { TimeRange(watch: $0) }
         self.credits = value.credits.map { TimeRange(watch: $0) }
         self.recap = value.recap.map { TimeRange(watch: $0) }
+        self.markerSegments = value.markerSegments
         self.presentationKind = value.presentationKind
         self.presentationGroupKey = value.presentationGroupKey
         self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }
@@ -287,6 +304,28 @@ extension WatchDetail {
         effectiveSubtitleMode = value.effectiveSubtitleMode
         effectiveShowForcedSubtitles = value.effectiveShowForcedSubtitles
         effectiveSubtitleTrackSignature = value.effectiveSubtitleTrackSignature.map { SubtitleTrackSignature(catalog: $0) }
+        playbackVariants = try value.playbackVariants.map { try $0.map { try PlaybackVariant(watch: $0) } }
+    }
+}
+
+extension PlaybackVariant {
+    init(watch value: APIv2CatalogRead.WatchPlaybackVariant) throws {
+        self.variantId = value.variantId
+        self.editionRaw = value.editionRaw
+        self.editionKey = value.editionKey
+        self.presentationKind = value.presentationKind
+        self.presentationGroupKey = value.presentationGroupKey
+        self.partCount = try catalogLegacyInt(value.partCount)
+        self.totalDuration = value.totalDurationSeconds.map(Double.init)
+        self.defaultFileId = try value.defaultFileId.map { try catalogLegacyID($0) }
+        self.parts = try value.parts.map { part in
+            PlaybackVariantPart(
+                partIndex: try catalogLegacyInt(part.partIndex),
+                defaultFileId: try part.defaultFileId.map { try catalogLegacyID($0) },
+                totalDuration: part.totalDurationSeconds.map(Double.init),
+                versions: try part.versions.map { try FileVersion(watch: $0) }
+            )
+        }
     }
 }
 
@@ -413,7 +452,9 @@ extension VideoTrack {
         self.colorPrimaries = value.colorPrimaries
         self.colorTransfer = value.colorTransfer
         self.videoRange = value.videoRange
+        self.videoRangeType = value.videoRangeType
         self.dolbyVision = value.dolbyVision
+        self.hdr10Plus = value.hdr10Plus
         self.title = value.title
         self.language = nil
     }

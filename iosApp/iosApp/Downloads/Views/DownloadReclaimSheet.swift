@@ -6,6 +6,7 @@ import SwiftUI
 /// The user can deselect anything they want to keep.
 struct DownloadReclaimSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     private var manager: DownloadManager { DownloadManager.shared }
 
     /// Record ids the user has chosen to keep (everything starts selected).
@@ -22,25 +23,27 @@ struct DownloadReclaimSheet: View {
                 if records.isEmpty {
                     EmptyStateView(
                         icon: "checkmark.circle",
-                        title: "All Caught Up",
-                        subtitle: "There are no watched downloads to clear right now."
+                        title: AppLanguage.string(.downloadsReclaimCaughtUpTitle, locale: locale),
+                        subtitle: AppLanguage.string(.downloadsReclaimCaughtUpBody, locale: locale)
                     )
                 } else {
                     list(records)
                 }
             }
             .siloSheetBackground()
-            .navigationTitle("Free Up Space")
+            .navigationTitle(Text(.downloadsReclaimSheetTitle))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button(.commonDone) { dismiss() }
                 }
                 if !records.isEmpty {
                     ToolbarItem(placement: .primaryAction) {
-                        Button(allSelected ? "Deselect All" : "Select All") { toggleAll(records) }
+                        Button { toggleAll(records) } label: {
+                            allSelected ? Text(.downloadsReclaimDeselectAll) : Text(.downloadsSelectAll)
+                        }
                     }
                 }
             }
@@ -66,7 +69,7 @@ struct DownloadReclaimSheet: View {
 
     private func header(count: Int) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(count) item\(count == 1 ? "" : "s") you've finished watching")
+            Text(.downloadsReclaimFinishedCount(count: count, LocaleFormat.integer(count)))
                 .font(.footnote)
                 .foregroundColor(.siloSecondaryText)
         }
@@ -93,7 +96,7 @@ struct DownloadReclaimSheet: View {
                         .font(.subheadline.weight(.medium))
                         .foregroundColor(.siloOnSurface)
                         .lineLimit(1)
-                    Text("Watched")
+                    Text(.downloadsRowWatched)
                         .font(.caption)
                         .foregroundColor(.siloSecondaryText)
                 }
@@ -118,7 +121,7 @@ struct DownloadReclaimSheet: View {
             } label: {
                 HStack(spacing: 9) {
                     Image(systemName: "trash")
-                    Text("Delete \(selected.count) · Free \(DownloadFormatting.bytes(selectedBytes))")
+                    Text(.downloadsBulkDeleteButton(LocaleFormat.integer(selected.count), DownloadFormatting.bytes(selectedBytes)))
                         .fontWeight(.bold)
                 }
                 .font(.subheadline)
@@ -131,7 +134,7 @@ struct DownloadReclaimSheet: View {
             .buttonStyle(.plain)
             .disabled(selected.isEmpty)
 
-            Button("Not now") { dismiss() }
+            Button(.downloadsReclaimNotNow) { dismiss() }
                 .font(.subheadline.weight(.semibold))
                 .foregroundColor(.siloOnSurface)
                 .frame(maxWidth: .infinity)
@@ -153,12 +156,12 @@ struct DownloadReclaimSheet: View {
     }
 
     private func label(_ record: DownloadRecord) -> String {
-        guard record.seriesId != nil else { return record.title ?? record.contentId }
-        let tag = [record.seasonNumber.map { "S\($0)" }, record.episodeNumber.map { "E\($0)" }]
-            .compactMap { $0 }
-            .joined()
-        let series = record.seriesTitle ?? record.title ?? ""
-        return tag.isEmpty ? (record.title ?? series) : "\(series) · \(tag)"
+        guard record.seriesId != nil else { return record.displayTitle(locale: locale) }
+        let series = record.seriesTitle ?? record.shownTitle(locale: locale) ?? ""
+        guard let tag = record.episodeTag(locale: locale, both: { .catalogEpisodeTag($0, $1) }) else {
+            return record.shownTitle(locale: locale) ?? series
+        }
+        return "\(AppLanguage.isolated(series, language: AppLanguage.language(of: locale))) · \(tag)"
     }
 
     private func toggle(_ id: String) {

@@ -40,18 +40,20 @@ final class ErrorStateTests: XCTestCase {
     }
 
     func testForbiddenProblemsWithProtocolDetailUseLocalCopy() {
-        let localCopy = ErrorState(APIv2Error.httpStatus(403)).message
-        let problems = [
-            problem(403, "profile_verification_required",
-                detail: "The declared profile is locked; verify it and retry with X-Profile-Token."),
-            problem(403, "password_change_required",
-                detail: "The account holds a temporary password; change it, then refresh the session."),
-        ]
-        for error in problems {
-            let message = ErrorState(error).message
-            XCTAssertEqual(message, localCopy)
-            XCTAssertNotEqual(message, unauthorizedMessage)
-        }
+        let protocolDetail = "The declared profile is locked; verify it and retry with X-Profile-Token."
+        let state = ErrorState(problem(403, "profile_verification_required", detail: protocolDetail))
+        XCTAssertEqual(state.message, ErrorState(APIv2Error.httpStatus(403)).message)
+        XCTAssertNotEqual(state.message, unauthorizedMessage)
+    }
+
+    /// #872: a temporary password read as "You don't have permission… Ask
+    /// your server admin", and the admin saw nothing wrong.
+    func testPasswordChangeRequiredSaysThePasswordIsTemporary() {
+        let protocolDetail = "The account holds a temporary password; change it, then refresh the session."
+        let state = ErrorState(problem(403, "password_change_required", detail: protocolDetail))
+        XCTAssertEqual(state.message, ErrorState.passwordChangeRequiredMessage)
+        XCTAssertNotEqual(state.message, ErrorState(APIv2Error.httpStatus(403)).message)
+        XCTAssertTrue(state.isForbidden)
     }
 
     func testForbiddenNeverOffersSignIn() {

@@ -25,7 +25,7 @@ struct StartupSplashView: View {
             }
             .ignoresSafeArea()
         }
-        .accessibilityLabel("Loading Silo")
+        .accessibilityLabel(.shellSplashLoading)
         .task {
             startDate = Date()
             try? await Task.sleep(for: reduceMotion ? .seconds(1) : Self.displayDuration)

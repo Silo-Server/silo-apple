@@ -1,12 +1,13 @@
 import Foundation
 import os
 
-/// The three per-item personal flags a viewer can change from a card or a
-/// detail page. Each maps to one v2 mutation pair.
+/// The per-item personal flags a viewer can change from a card or a detail
+/// page. Each maps to one v2 mutation pair.
 enum PersonalStateTarget: String, Sendable {
     case favorite
     case watchlist
     case watched
+    case notInterested
 }
 
 /// A mutation that was sent but never answered. Every v2 favorite, watchlist
@@ -45,7 +46,7 @@ enum PersonalStateMutationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .held: return PersonalStateNotice.heldMessage
-        case .inFlight: return "Another change to this item is still being saved."
+        case .inFlight: return AppLanguage.string(.errorsApplePersonalStateInFlight)
         }
     }
 }
@@ -140,6 +141,8 @@ enum PersonalStateSync {
                 try await api.setWatchlistMembership(id: contentId, included: included, auth: owner)
             case .watched:
                 try await api.setWatchedState(id: contentId, included: included, auth: owner)
+            case .notInterested:
+                try await api.setNotInterested(id: contentId, included: included, auth: owner)
             }
         } catch {
             let delivery = MutationDelivery(error)

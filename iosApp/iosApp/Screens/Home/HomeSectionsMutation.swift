@@ -1,3 +1,5 @@
+import Foundation
+
 /// Which Home list a card's dismissal goes to, and so what its menu calls it.
 ///
 /// The server keys the two lists differently. In-progress items are
@@ -22,11 +24,11 @@ enum HomeDismissal: Equatable {
     }
 
     /// The long-press label names the list the card is removed from.
-    static func menuTitle(for item: SectionItem) -> String {
+    static func menuTitle(for item: SectionItem) -> LocalizedStringResource {
         if case .nextUp = HomeDismissal(item) {
-            return "Remove from Next Up"
+            return .cardMenuRemoveNextUp
         }
-        return "Remove from Continue Watching"
+        return .cardMenuRemoveContinueWatching
     }
 }
 
@@ -56,6 +58,35 @@ enum HomeSectionsMutation {
         }
     }
 
+    /// The rows a Not interested title leaves: the recommendation rows and the
+    /// discovery rows the server filters (`sections.HidesNotInterested`, and
+    /// web's `NOT_INTERESTED_HIDING_SECTION_TYPES`). Rows of what is new, in
+    /// progress, saved or chosen keep it.
+    static let notInterestedSectionTypes: Set<String> = [
+        "recommended_for_you", "because_you_watched", "similar_users_liked", "taste_match",
+        "hidden_gems", "critically_acclaimed", "award_winners", "forgotten_favorites",
+        "format_showcase", "editorial_spotlight", "seasonal_themed", "mood_collection",
+        "trending_on_server", "most_watched", "trending_discover", "genre_roulette",
+        "anniversaries", "short_watches",
+    ]
+
+    /// Removes a title marked Not interested from the rows that suggest it.
+    static func removingNotInterested(
+        contentId: String,
+        from sections: [ResolvedSection]
+    ) -> [ResolvedSection] {
+        removingItems(from: sections, sectionTypes: notInterestedSectionTypes) { $0.contentId == contentId }
+    }
+
+    /// For You's rows are all live recommendation lists, which the server
+    /// filters for marks, so a marked title leaves every one of them.
+    static func removingNotInterestedFromRecommendations(
+        contentId: String,
+        from sections: [ResolvedSection]
+    ) -> [ResolvedSection] {
+        removingItems(from: sections, sectionTypes: nil) { $0.contentId == contentId }
+    }
+
     /// Removes a newly completed item from rows whose membership is derived
     /// from playback state. Other Home rows can still show the same title.
     static func removingCompletedItem(
@@ -74,13 +105,14 @@ enum HomeSectionsMutation {
         return seriesId
     }
 
+    /// `sectionTypes` limits which rows lose the card; `nil` means every row.
     private static func removingItems(
         from sections: [ResolvedSection],
-        sectionTypes: Set<String>,
+        sectionTypes: Set<String>?,
         where isRemoved: (SectionItem) -> Bool
     ) -> [ResolvedSection] {
         sections.map { section in
-            guard sectionTypes.contains(section.sectionType.lowercased()) else {
+            guard sectionTypes?.contains(section.sectionType.lowercased()) ?? true else {
                 return section
             }
 
@@ -88,16 +120,28 @@ enum HomeSectionsMutation {
             let removedCount = section.items.count - items.count
             guard removedCount > 0 else { return section }
 
+            // A Continue Watching row cut at its limit can hold more than its
+            // count says, so losing a card must not make it read as its whole
+            // section.
+            let totalCount = section.totalCount.map { total in
+                let remaining = max(0, total - removedCount)
+                guard section.isContinueWatchingSection, !section.showsWholeSection else { return remaining }
+                return max(remaining, items.count + 1)
+            }
+
             return ResolvedSection(
                 id: section.id,
                 sectionType: section.sectionType,
                 title: section.title,
                 featured: section.featured,
                 itemLimit: section.itemLimit,
-                totalCount: section.totalCount.map { max(0, $0 - removedCount) },
+                totalCount: totalCount,
                 isCustom: section.isCustom,
                 customized: section.customized,
-                items: items
+                items: items,
+                titleKey: section.titleKey,
+                titleArgs: section.titleArgs,
+                collections: section.collections
             )
         }
     }

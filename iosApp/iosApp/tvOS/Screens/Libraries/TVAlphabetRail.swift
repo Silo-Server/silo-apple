@@ -26,7 +26,7 @@ struct TVAlphabetRail: View {
     private var isExpanded: Bool { focusedLetter != nil }
 
     private static let letters: [String] = {
-        var result: [String] = ["All", "#"]
+        var result: [String] = [TVAlphabetRail.allEntry, "#"]
         result.append(contentsOf: (UnicodeScalar("A").value...UnicodeScalar("Z").value)
             .compactMap { UnicodeScalar($0).map { String($0) } })
         return result
@@ -78,8 +78,12 @@ struct TVAlphabetRail: View {
 
     /// "All" clears the prefix; every other entry, "#" included, is one.
     private static func prefix(for letter: String) -> String? {
-        letter == "All" ? nil : letter
+        letter == allEntry ? nil : letter
     }
+
+    /// Identity of the rail's first entry, which clears the prefix. Shown as
+    /// `catalog.letters.all`; never sent to the server.
+    fileprivate static let allEntry = "All" // i18n-ignore: rail entry identity, label comes from the catalog
 }
 
 private struct LetterButton: View {
@@ -90,7 +94,7 @@ private struct LetterButton: View {
 
     var body: some View {
         Button(action: action) {
-            Text(letter)
+            label
                 // Monospaced per §6.4 ("mono 15"): SF Mono at the spec size
                 // when expanded, a slim mono peek when collapsed. Mono keeps
                 // every letter the same advance width so the column reads as
@@ -107,6 +111,11 @@ private struct LetterButton: View {
                 .opacity(isExpanded ? 1 : 0.35)
         }
         .buttonStyle(LetterButtonStyle(isSelected: isSelected))
+    }
+
+    /// "#" and A–Z are the server's `name_prefix` values, shown as is.
+    private var label: Text {
+        letter == TVAlphabetRail.allEntry ? Text(.catalogLettersAll) : Text(verbatim: letter)
     }
 }
 

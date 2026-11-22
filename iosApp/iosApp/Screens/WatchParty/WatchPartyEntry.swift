@@ -27,9 +27,9 @@ enum WatchPartyEntry {
     /// else adds a suggestion, so the entry point says so.
     static var actionTitle: String {
         let session = WatchPartySession.shared
-        guard session.isEngaged else { return "Watch Party" }
-        return session.room?.selfCanManageRoom == true && session.room?.selectionMode == .hostPick
-            ? "Watch Party" : "Suggest to Party"
+        guard session.isEngaged else { return AppLanguage.string(.watchPartyEntryWatchParty) }
+        return AppLanguage.string(session.room?.selfCanManageRoom == true && session.room?.selectionMode == .hostPick
+            ? .watchPartyEntryWatchParty : .watchPartyEntrySuggest)
     }
 
     /// `preview` is what the caller already shows for the title; the lobby
@@ -50,7 +50,7 @@ enum WatchPartyEntry {
                     // preview's art the lobby shows a blank poster.
                     await session.addSuggestion(WatchPartyNewSuggestion(
                         contentId: contentId, contentType: type, title: title,
-                        subtitle: preview?.subtitle, posterUrl: preview?.posterUrl))
+                        subtitle: preview?.suggestionSubtitle, posterUrl: preview?.posterUrl))
                 }
             } else {
                 await session.create(selection: selection, preview: preview)
@@ -70,6 +70,8 @@ struct WatchPartyMenuButton: View {
     @Environment(\.browseLibraryId) private var libraryId
     @Environment(\.watchPartyEpisodePreview) private var episodePreview
     @Environment(AppRouter.self) private var router
+    /// The app language, so a switch re-renders the resolved title.
+    @Environment(\.locale) private var locale
 
     var body: some View {
         if WatchPartyEntry.isAvailable {

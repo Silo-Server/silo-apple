@@ -11,6 +11,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         var preview = false
         var hasPreviewBounds = true
         var viewport: CGSize?
+        var fitsSafeArea = false
     }
 
     private struct Harness: View {
@@ -20,13 +21,13 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         var nextUpModel: PlayerViewModel?
 
         var body: some View {
-            PlayerSurfaceLayout(isPreview: presentation.preview) {
+            PlayerSurfaceLayout(isPreview: presentation.preview, fitsSafeArea: presentation.fitsSafeArea) {
                 AetherPlayerSurface(engine: engine)
             } content: {
                 ZStack {
                     Color.black.ignoresSafeArea()
                     if presentation.preview, let nextUpModel {
-                        PlayerNextUpScreen(viewModel: nextUpModel, onBack: {})
+                        PlayerNextUpScreen(viewModel: nextUpModel, onClose: {})
                     } else if presentation.preview && presentation.hasPreviewBounds {
                         Color.clear
                             .frame(width: 240, height: 135)
@@ -109,7 +110,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.preview = $0 }
             } panel: { compact in
                 // Measure the real production metadata/buttons.
-                PlayerNextUpScreen(viewModel: model, onBack: {}).mobileNextUpPanel(compact: compact)
+                PlayerNextUpScreen(viewModel: model, onClose: {}).mobileNextUpPanel(compact: compact)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("mobile-layout")) } action: { frames.panel = $0 }
             }
             let viewport = layout
@@ -195,7 +196,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         let presentation: Presentation
         let model: PlayerViewModel
         var body: some View {
-            PlayerNextUpScreen(viewModel: model, onBack: {})
+            PlayerNextUpScreen(viewModel: model, onClose: {})
                 .frame(width: presentation.viewport?.width, height: presentation.viewport?.height)
         }
     }
@@ -248,7 +249,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
     private func mobileControlsWindow(model: PlayerViewModel, size: CGSize, insets: EdgeInsets) -> UIWindow {
         let content = ZStack {
             Color(red: 0.2, green: 0.3, blue: 0.4)
-            MobilePlayerControls(viewModel: model, onDismiss: {})
+            MobilePlayerControls(viewModel: model, showsLoadingSpinner: false, onDismiss: {})
                 .safeAreaPadding(insets)
         }
         .frame(width: size.width, height: size.height)
@@ -330,6 +331,36 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
             XCTAssertGreaterThan(original.bounds.width, 240)
         }
         print("Preview lifecycle: 40 transitions, 1 Aether view, 0 replacements")
+    }
+
+    /// A scope-width video in Fit ran under the Dynamic Island because the
+    /// surface spanned the whole landscape screen. The picture must also stay
+    /// centred, so the top inset is mirrored at the bottom.
+    func testFitKeepsThePictureClearOfTheSensorHousing() async throws {
+        let engine = try AetherEngine()
+        let presentation = Presentation()
+        let window = makeWindow(Harness(presentation: presentation, engine: engine)
+            .safeAreaPadding(EdgeInsets(top: 30, leading: 62, bottom: 21, trailing: 62)))
+        defer { window.isHidden = true; window.rootViewController = nil; engine.stop() }
+        try await settle(window)
+        let surface = try XCTUnwrap(surfaces(in: window).first)
+        let fullWidth = surface.bounds.width
+        let fullFrame = surface.convert(surface.bounds, to: window)
+        XCTAssertEqual(fullWidth, window.bounds.width, accuracy: 1)
+
+        presentation.fitsSafeArea = true
+        try await settle(window) { surface.bounds.width < fullWidth - 1 }
+        XCTAssertTrue(surfaces(in: window).first === surface)
+        XCTAssertLessThanOrEqual(surface.bounds.width, fullWidth - 124 + 1)
+        let fitFrame = surface.convert(surface.bounds, to: window)
+        XCTAssertEqual(fitFrame.midX, window.bounds.midX, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(fitFrame.minY, fullFrame.minY + 30 - 1)
+        // A top-only inset pushed portrait video below the screen's centre.
+        XCTAssertEqual(fitFrame.midY, fullFrame.midY, accuracy: 1)
+
+        presentation.fitsSafeArea = false
+        try await settle(window) { abs(surface.bounds.width - fullWidth) < 1 }
+        XCTAssertEqual(surface.bounds.width, fullWidth, accuracy: 1)
     }
 
     func testEarlyExpansionAndMissingPreviewGeometryKeepTheSurface() async throws {

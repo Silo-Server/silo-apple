@@ -10,12 +10,20 @@ typealias PairingSession = FramedJSONSession<PairingMessage>
 
 extension FramedJSONSession where Message == PairingMessage {
     /// Outbound side (Companion): connect to a discovered TV endpoint.
-    init(endpoint: NWEndpoint) {
-        self.init(endpoint: endpoint, parameters: Self.tlsParameters())
+    init(endpoint: NWEndpoint, isRoku: Bool = false) {
+        self.init(endpoint: endpoint, parameters: Self.parameters(isRoku: isRoku))
     }
 
     static func tlsParameters() -> NWParameters {
         SiloLANTLS.parameters(psk: "silo-companion-pairing-v1", identity: "silo-pairing")
+    }
+
+    /// TLS-PSK for the Apple and Android TVs; plain TCP for a Roku
+    /// (`_silopair-roku._tcp`), which can't accept TLS. The PSK is public, so
+    /// this gives up nothing: no pairing message carries a token, and the
+    /// code the person compares is what stops an impostor.
+    static func parameters(isRoku: Bool) -> NWParameters {
+        isRoku ? NWParameters(tls: nil, tcp: NWProtocolTCP.Options()) : tlsParameters()
     }
 }
 

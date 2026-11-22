@@ -1,23 +1,23 @@
 import SwiftUI
 
-func calendarEventAccessibilityLabel(_ event: CalendarEvent) -> String {
+func calendarEventAccessibilityLabel(_ event: CalendarEvent, locale: Locale) -> String {
     var components = [event.title]
     components.append(contentsOf: [
-        event.episodeSubtitle,
+        event.episodeSubtitle(locale: locale),
         event.episodeTitle,
     ].compactMap { value in
         guard let value, !value.isEmpty else { return nil }
         return value
     })
     if event.type == "movie" {
-        components.append("Movie")
+        components.append(AppLanguage.string(.calendarMovie, locale: locale))
     }
     if let displayAirTime = event.displayAirTime {
         components.append(displayAirTime)
     }
-    components.append(contentsOf: event.displayBadges.map(\.label))
+    components.append(contentsOf: event.displayBadges.map { AppLanguage.string($0.label, locale: locale) })
     if event.isWatched {
-        components.append("Watched")
+        components.append(AppLanguage.string(.calendarWatched, locale: locale))
     }
     return components.joined(separator: ", ")
 }
@@ -33,6 +33,7 @@ struct CalendarEventCard: View {
     /// default focus to a specific card.
     var focusedItemId: FocusState<String?>.Binding? = nil
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @Environment(\.locale) private var locale
 
     private var cardWidth: CGFloat {
         SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
@@ -46,7 +47,6 @@ struct CalendarEventCard: View {
         FocusableCalendarCard(
             event: event,
             cardWidth: cardWidth,
-            captionStyle: uiCustomization.cardPresentation.caption,
             action: action,
             focusedItemId: focusedItemId
         ) {
@@ -56,9 +56,7 @@ struct CalendarEventCard: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 4) {
                 posterImage
-                if uiCustomization.cardPresentation.caption.showsTitle {
-                    captionText
-                }
+                captionText
             }
         }
         .buttonStyle(.plain)
@@ -126,15 +124,11 @@ struct CalendarEventCard: View {
 
     @ViewBuilder
     fileprivate var captionText: some View {
-        CalendarCardCaption(
-            event: event,
-            cardWidth: cardWidth,
-            showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata
-        )
+        CalendarCardCaption(event: event, cardWidth: cardWidth)
     }
 
     private var accessibilityDescription: String {
-        calendarEventAccessibilityLabel(event)
+        calendarEventAccessibilityLabel(event, locale: locale)
     }
 
     // MARK: - Metrics
@@ -246,8 +240,8 @@ private struct CalendarBadgePill: View {
 private struct CalendarCardCaption: View {
     let event: CalendarEvent
     let cardWidth: CGFloat
-    var showsMetadata: Bool = true
     var isFocused: Bool = false
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -256,7 +250,7 @@ private struct CalendarCardCaption: View {
                 .foregroundColor(isFocused ? .siloOnSurface : .siloOnSurface.opacity(0.85))
                 .lineLimit(2, reservesSpace: true)
 
-            if showsMetadata, let subtitle {
+            if let subtitle {
                 Text(subtitle)
                     .font(.siloCardMetadata)
                     .foregroundColor(.siloSecondaryText)
@@ -270,14 +264,14 @@ private struct CalendarCardCaption: View {
     /// "Movie" for film releases — mirrors the web calendar card.
     private var subtitle: String? {
         var parts: [String] = []
-        if let episodeSubtitle = event.episodeSubtitle {
+        if let episodeSubtitle = event.episodeSubtitle(locale: locale) {
             parts.append(episodeSubtitle)
         }
         if event.type == "episode", let episodeTitle = event.episodeTitle, !episodeTitle.isEmpty {
             parts.append(episodeTitle)
         }
         if event.type == "movie" {
-            parts.append("Movie")
+            parts.append(AppLanguage.string(.calendarMovie, locale: locale))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -287,44 +281,41 @@ private struct CalendarCardCaption: View {
 
 #if os(tvOS)
 /// Mirrors `MediaCard`'s tvOS structure: the poster lives inside a
-/// `.card`-styled button (native focus lift + parallax) and the caption
+/// `TVCardOutlineButtonStyle` button (focus lift + outline) and the caption
 /// sits outside, brightening when the card is focused.
 private struct FocusableCalendarCard<Content: View>: View {
     let event: CalendarEvent
     let cardWidth: CGFloat
-    let captionStyle: CardCaptionStyle
     let action: () -> Void
     let focusedItemId: FocusState<String?>.Binding?
     @ViewBuilder var content: () -> Content
 
     @FocusState private var isFocused: Bool
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Button(action: action) {
                 content()
             }
-            .buttonStyle(.card)
+            .buttonStyle(TVCardOutlineButtonStyle())
             .focused($isFocused)
             .applyShelfFocus(focusedItemId, itemId: event.contentId)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityDescription)
 
-            if captionStyle.showsTitle {
-                CalendarCardCaption(
-                    event: event,
-                    cardWidth: cardWidth,
-                    showsMetadata: captionStyle.showsMetadata,
-                    isFocused: isFocused
-                )
-                .animation(.easeOut(duration: 0.15), value: isFocused)
-            }
+            CalendarCardCaption(
+                event: event,
+                cardWidth: cardWidth,
+                isFocused: isFocused
+            )
+            .animation(.easeOut(duration: 0.15), value: isFocused)
         }
         .frame(width: cardWidth)
     }
 
     private var accessibilityDescription: String {
-        calendarEventAccessibilityLabel(event)
+        calendarEventAccessibilityLabel(event, locale: locale)
     }
 }
 

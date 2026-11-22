@@ -25,8 +25,9 @@
 //      (PGS / DVD / DVB / VobSub, detected via `track.codec`) are never a
 //      translation source.
 //    - Transcribe: when no translatable text source exists, transcribe the
-//      default audio track (`-1`). If the target equals the spoken audio
-//      language it's a plain transcribe; otherwise transcribe-and-translate.
+//      spoken audio track (selected, else default, else first). If the
+//      target equals its language it's a plain transcribe; otherwise
+//      transcribe-and-translate.
 //      With translation off only the spoken language is served; when that
 //      language is unknown, a "Spoken language" row runs a plain transcribe.
 //
@@ -53,6 +54,7 @@ struct SubtitleTranslateMenu: View {
     /// The profile's preferred subtitle language, floated to the top of the
     /// list. Observed so a late hydration (below, in `.task`) refreshes the row.
     @ObservedObject private var profilePrefs = ProfilePrefsStore.shared
+    @Environment(\.locale) private var locale
 
     #if os(tvOS)
     /// Panel-level focus for the tvOS language list (rather than per-row
@@ -92,10 +94,19 @@ struct SubtitleTranslateMenu: View {
     /// The audio track whose language is treated as the "spoken" language:
     /// the selected one, else the default, else the first.
     private var spokenAudioTrack: PlayerTrack? {
-        let tracks = viewModel.audioTracks
-        return tracks.first(where: { $0.isSelected })
+        Self.spokenAudioTrack(in: viewModel.audioTracks)
+    }
+
+    static func spokenAudioTrack(in tracks: [PlayerTrack]) -> PlayerTrack? {
+        tracks.first(where: { $0.isSelected })
             ?? tracks.first(where: { $0.isDefault })
             ?? tracks.first
+    }
+
+    /// The audio ordinal a transcription sends: the spoken track's, or -1
+    /// (the server's default track) when no ordinal is known.
+    static func transcriptionSourceIndex(_ tracks: [PlayerTrack]) -> Int {
+        spokenAudioTrack(in: tracks)?.srcId ?? -1
     }
 
     private var spokenLanguageCode: String? {
@@ -120,13 +131,11 @@ struct SubtitleTranslateMenu: View {
     /// True while a job is in flight — the menu collapses to a progress view.
     private var isBusy: Bool { controller.isBusy }
 
-    private var title: String { "AI Subtitles" }
+    private var title: LocalizedStringResource { .playerAiTranslateAiSubtitles }
 
     /// One-line explainer under the title / list — sets the expectation that the
     /// single language tap does everything, without a wizard.
-    private var explainer: String {
-        "Pick a language. Silo translates an existing subtitle when it can, or transcribes the audio."
-    }
+    private var explainer: LocalizedStringResource { .playerAiTranslateExplainer }
 
     // MARK: - Language routing
 
@@ -208,8 +217,8 @@ struct SubtitleTranslateMenu: View {
         guard offersDetectedLanguage else { return nil }
         return SubtitleLanguageChoices.Choice(
             code: Self.detectedLanguageID,
-            label: "Spoken language",
-            hint: "Detected from the audio"
+            label: AppLanguage.string(.playerAiTranslateSpokenLanguage, locale: locale),
+            hint: .detectedFromAudio
         )
     }
 
@@ -228,7 +237,9 @@ struct SubtitleTranslateMenu: View {
         } else {
             guard canServe(target) else { return }
             let translateTo: String? = isSpokenLanguage(target) ? nil : target
-            viewModel.startSubtitleTranscription(audioIndex: -1, translateTo: translateTo)
+            // Transcribe the track whose language decided the job kind.
+            viewModel.startSubtitleTranscription(
+                audioIndex: Self.transcriptionSourceIndex(viewModel.audioTracks), translateTo: translateTo)
         }
         // The controller enters the player-surface preparing state on submit.
         // Close the whole subtitle UI so the pause/notice handoff plays out
@@ -282,11 +293,13 @@ struct SubtitleTranslateMenu: View {
     #if os(tvOS)
     private var tvOSPanel: some View {
         TVSubtitleDialog(
-            title: title,
-            subtitle: isBusy ? "Preparing your subtitles"
-                : controller.phase == .failed ? "AI subtitles could not finish"
-                : "Choose a language. Silo translates existing subtitles or transcribes the audio.",
-            backHint: "Back to Subtitles",
+            title: AppLanguage.string(title, locale: locale),
+            subtitle: AppLanguage.string(
+                isBusy ? .playerAiTranslatePreparing
+                    : controller.phase == .failed ? .playerAiTranslateFailedTitle
+                    : .playerAiTranslateExplainerShort,
+                locale: locale),
+            backHint: AppLanguage.string(.playerTracksBackToSubtitles, locale: locale),
             onDismiss: onDismiss
         ) {
             if isBusy || controller.phase == .failed {
@@ -338,11 +351,12 @@ struct SubtitleTranslateMenu: View {
         let choices = languageChoices
         let detected = detectedLanguageChoice
         if detected != nil || !choices.suggested.isEmpty {
-            sectionHeader("Suggested languages")
+            sectionHeader(.playerAiTranslateSuggestedHeader)
             if let detected { tvLanguageRow(detected) }
             ForEach(choices.suggested) { tvLanguageRow($0) }
         }
-        sectionHeader(detected == nil && choices.suggested.isEmpty ? "Language" : "All Languages")
+        sectionHeader(detected == nil && choices.suggested.isEmpty
+                      ? .subtitleSearchLanguageHeader : .subtitleSearchAllLanguagesHeader)
         ForEach(choices.other) { tvLanguageRow($0) }
     }
 
@@ -350,7 +364,7 @@ struct SubtitleTranslateMenu: View {
     private func tvLanguageRow(_ choice: SubtitleLanguageChoices.Choice) -> some View {
         TVLanguageRow(
             name: choice.label,
-            detail: choice.hint,
+            detail: choice.hint?.label,
             systemImage: Self.rowImage(for: choice),
             code: choice.code,
             isDisabled: !canServe(choice.code),
@@ -382,15 +396,19 @@ struct SubtitleTranslateMenu: View {
                             }
                         }
                         if detected != nil || !choices.suggested.isEmpty {
-                            Section("Suggested") {
+                            Section {
                                 if let detected { languageRow(detected) }
                                 ForEach(choices.suggested) { languageRow($0) }
+                            } header: {
+                                Text(.subtitleSearchSuggestedHeader)
                             }
                         }
                         Section {
                             ForEach(choices.other) { languageRow($0) }
                         } header: {
-                            Text(detected == nil && choices.suggested.isEmpty ? "Language" : "All Languages")
+                            Text(detected == nil && choices.suggested.isEmpty
+                                 ? LocalizedStringResource.subtitleSearchLanguageHeader
+                                 : .subtitleSearchAllLanguagesHeader)
                         } footer: {
                             Text(explainer)
                         }
@@ -398,11 +416,11 @@ struct SubtitleTranslateMenu: View {
                     .siloGroupedListStyle()
                 }
             }
-            .navigationTitle(title)
+            .navigationTitle(Text(title))
             .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { onDismiss() }
+                    Button { onDismiss() } label: { Text(.commonDone) }
                 }
             }
             .task { await controller.refreshQuota() }
@@ -423,7 +441,7 @@ struct SubtitleTranslateMenu: View {
     private func languageRow(_ choice: SubtitleLanguageChoices.Choice) -> some View {
         MenuRow(
             name: choice.label,
-            detail: choice.hint,
+            detail: choice.hint?.label,
             systemImage: Self.rowImage(for: choice),
             isDisabled: !canServe(choice.code)
         ) {
@@ -434,7 +452,7 @@ struct SubtitleTranslateMenu: View {
 
     private static func rowImage(for choice: SubtitleLanguageChoices.Choice) -> String {
         if choice.code == detectedLanguageID { return "waveform" }
-        return choice.hint == "Preferred" ? "star.fill" : "globe"
+        return choice.hint == .preferred ? "star.fill" : "globe"
     }
 
     // MARK: - Progress / failure panel
@@ -444,14 +462,21 @@ struct SubtitleTranslateMenu: View {
         let job = controller.activeJob
         VStack(alignment: .leading, spacing: 16) {
             if controller.phase == .failed {
-                Label(controller.errorMessage ?? "Subtitle translation failed.",
-                      systemImage: "exclamationmark.triangle")
+                Label {
+                    if let message = controller.errorMessage {
+                        Text(message)
+                    } else {
+                        Text(.playerAiTranslateFailed)
+                    }
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle")
+                }
                     .foregroundStyle(.secondary)
-                progressButton(title: "Dismiss") { onDismiss() }
+                progressButton(title: .playerAiTranslateDismiss) { onDismiss() }
                 if controller.hasHeldRequest {
                     // The request may have started a job, so it is not sent
                     // again until the user lets it go.
-                    progressButton(title: "Discard held request", focusID: "progress-discard",
+                    progressButton(title: .playerAiTranslateDiscardHeldRequest, focusID: "progress-discard",
                                    seedsFocus: false) {
                         controller.discardHeldRequest()
                     }
@@ -466,7 +491,7 @@ struct SubtitleTranslateMenu: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                progressButton(title: "Cancel") {
+                progressButton(title: .commonCancel) {
                     controller.cancelActiveJob()
                 }
             }
@@ -476,11 +501,11 @@ struct SubtitleTranslateMenu: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func progressTitle(for job: SubtitleJob?) -> String {
+    private func progressTitle(for job: SubtitleJob?) -> LocalizedStringResource {
         switch job?.kind {
-        case .transcribe: return "Transcribing audio…"
-        case .transcribeTranslate: return "Transcribing & translating…"
-        case .translate, .none: return "Translating subtitles…"
+        case .transcribe: return .playerAiTranslateTranscribingAudio
+        case .transcribeTranslate: return .playerAiTranslateTranscribingTranslating
+        case .translate, .none: return .playerAiTranslateTranslatingSubtitles
         }
     }
 
@@ -497,16 +522,19 @@ struct SubtitleTranslateMenu: View {
         return false
     }
 
-    private var quotaText: String? {
+    private var quotaText: LocalizedStringResource? {
         guard let quota = controller.quota, quota.limited else { return nil }
-        if isQuotaExhausted { return "Transcription limit reached" }
-        let used = quota.used ?? 0
+        if isQuotaExhausted { return .playerAiTranslateQuotaReached }
+        let used = LocaleFormat.integer(quota.used ?? 0)
         if let limit = quota.limit {
-            let period = quota.period.map { " / \($0)" } ?? ""
-            return "\(used) of \(limit) used\(period)"
+            // The period is the server's own token, shown as sent.
+            if let period = quota.period {
+                return .playerAiTranslateQuotaUsedPeriod(used, LocaleFormat.integer(limit), period)
+            }
+            return .playerAiTranslateQuotaUsed(used, LocaleFormat.integer(limit))
         }
         if let remaining = quota.remaining {
-            return "\(remaining) remaining"
+            return .playerAiTranslateQuotaRemaining(LocaleFormat.integer(remaining))
         }
         return nil
     }
@@ -514,17 +542,17 @@ struct SubtitleTranslateMenu: View {
     /// Footer shown when ASR quota is exhausted and the file relies on it.
     /// Hoisted so the iOS `List` footer and the tvOS inline footer render the
     /// identical copy from one source.
-    private static let quotaExhaustedFooter =
-        "You've used all your transcription credits for this period. Translating an existing subtitle track still works."
+    private static var quotaExhaustedFooter: LocalizedStringResource { .playerAiTranslateQuotaExhaustedNote }
 }
 
 // MARK: - Section header (tvOS inline) + quota row
 
 private extension SubtitleTranslateMenu {
     @ViewBuilder
-    func sectionHeader(_ text: String) -> some View {
+    func sectionHeader(_ text: LocalizedStringResource) -> some View {
         #if os(tvOS)
-        Text(text.uppercased())
+        Text(text)
+            .textCase(.uppercase)
             .font(.system(size: 14, weight: .semibold))
             .tracking(1.2)
             .foregroundStyle(.white.opacity(0.45))
@@ -550,7 +578,11 @@ private extension SubtitleTranslateMenu {
             .padding(.vertical, 6)
             #else
             HStack {
-                Label("Transcription quota", systemImage: "gauge.with.dots.needle.33percent")
+                Label {
+                    Text(.playerAiTranslateQuotaTitle)
+                } icon: {
+                    Image(systemName: "gauge.with.dots.needle.33percent")
+                }
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(quotaText)
@@ -562,15 +594,15 @@ private extension SubtitleTranslateMenu {
     }
 
     @ViewBuilder
-    func progressButton(title: String, focusID: String = "progress-action", seedsFocus: Bool = true,
+    func progressButton(title: LocalizedStringResource, focusID: String = "progress-action", seedsFocus: Bool = true,
                         action: @escaping () -> Void) -> some View {
         #if os(tvOS)
-        Button(title, action: action)
+        Button(action: action) { Text(title) }
             .buttonStyle(.bordered)
             .focused($focusedLanguageID, equals: focusID)
             .onAppear { if seedsFocus { focusedLanguageID = focusID } }
         #else
-        Button(title, action: action)
+        Button(action: action) { Text(title) }
             .buttonStyle(.bordered)
         #endif
     }
@@ -582,7 +614,7 @@ private extension SubtitleTranslateMenu {
 /// AI routing hints within the shared subtitle menu row.
 private struct TVLanguageRow: View {
     let name: String
-    let detail: String?
+    let detail: LocalizedStringResource?
     let systemImage: String
     let code: String
     var isDisabled: Bool = false
@@ -613,19 +645,19 @@ private struct TVLanguageRow: View {
                 }
             }
             Spacer(minLength: 8)
-            Image(systemName: "chevron.right")
+            Image(systemName: "chevron.forward")
                 .font(.system(size: 18, weight: .semibold))
                 .opacity(0.55)
         }
         .accessibilityLabel(name)
-        .accessibilityValue(detail ?? "")
+        .accessibilityValue(detail.map { Text($0) } ?? Text(verbatim: ""))
     }
 }
 #else
 /// iOS menu row: standard List row with a leading icon and a chevron.
 private struct MenuRow: View {
     let name: String
-    let detail: String?
+    let detail: LocalizedStringResource?
     let systemImage: String
     var isDisabled: Bool = false
     let action: () -> Void

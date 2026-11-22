@@ -97,7 +97,7 @@ final class AutoDownloadSchedule {
     // MARK: - Loading
 
     private var currentScopeKey: String {
-        "\(manager.scopeServerId)|\(manager.scopeProfileId)"
+        "\(manager.scopeServerId)|\(manager.scopeAccountId)|\(manager.scopeProfileId)"
     }
 
     private func resetIfScopeChanged() {

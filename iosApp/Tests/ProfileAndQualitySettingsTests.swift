@@ -407,7 +407,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await harness.settings.refreshFromServer()
 
         XCTAssertEqual(SiloQualityPresets.resolutionLabel(harness.settings.preferredQualityResolution), "4K")
-        XCTAssertEqual(SiloQualityPresets.bitrateLabel(harness.settings.maxBitrateKbps), "3 Mbps")
+        XCTAssertEqual(AppLanguage.string(SiloQualityPresets.bitrateLabel(harness.settings.maxBitrateKbps)), "3 Mbps")
         let choices = SiloQualityPresets.bitrateChoices(including: harness.settings.maxBitrateKbps)
         XCTAssertEqual(
             choices,
@@ -418,7 +418,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         // A cap a choice already covers is not listed twice.
         XCTAssertEqual(SiloQualityPresets.bitrateChoices(including: 6_000), SiloQualityPresets.bitrateChoicesKbps)
         XCTAssertEqual(SiloQualityPresets.bitrateChoices(including: nil), SiloQualityPresets.bitrateChoicesKbps)
-        XCTAssertEqual(SiloQualityPresets.bitrateLabel(nil), "No limit")
+        XCTAssertEqual(AppLanguage.string(SiloQualityPresets.bitrateLabel(nil)), "No limit")
     }
 
     func testEveryResolutionChoiceIsAContractMemberThatRoundTrips() {
@@ -488,8 +488,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         let harness = try PlayerSettingsHarness()
         harness.transport.revision = SettingKey.cellularQualityRevision - 1
         await harness.settings.refreshFromServer()
-        XCTAssertEqual(harness.transport.effectiveCalls().count, 1)
-        XCTAssertFalse(harness.transport.effectiveCalls()[0].contains(.playbackCellularPreferredQuality))
+        XCTAssertFalse(harness.transport.effectiveCalls().contains { $0.contains(.playbackCellularPreferredQuality) })
 
         let preset = try XCTUnwrap(SiloQualityPresets.preset(id: "1080p"))
         harness.settings.setCellularQualityPreset(preset)
@@ -554,7 +553,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await harness.settings.refreshFromServer()
 
         let calls = harness.transport.effectiveCalls()
-        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(calls.count, 3, "the player batch, the cellular pair and the buffering mode")
         XCTAssertFalse(calls[0].contains(.playbackCellularPreferredQuality))
         XCTAssertEqual(calls[1], SettingKey.playerCellularQualitySettings)
         XCTAssertEqual(harness.settings.cellularQualityAxes, AppleQualityAxes(resolution: "480p", bitrateKbps: 1_500))
@@ -626,6 +625,203 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         try await waitUntil("the hold clears") { settings.heldDeviceSettingKeys.isEmpty }
     }
     #endif
+
+    // MARK: - Buffering quality mode
+
+    private static func bufferingRow(_ mode: BufferingQualityMode, scope: SettingScope = .profile) -> EffectiveSettingValue {
+        .init(
+            key: SettingKey.playbackBufferingQualityMode.rawValue,
+            value: .string(mode.wireValue),
+            source: .scope(scope),
+            scope: scope
+        )
+    }
+
+    func testTheBufferingModeDefaultsToAutomaticAndIsSavedForThisDevice() async throws {
+        let harness = try PlayerSettingsHarness()
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .always)
+
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+        harness.settings.setBufferingQualityMode(.never)
+        await harness.settings.flushPendingDeviceSettings()
+
+        let write = try XCTUnwrap(harness.transport.writesByKey()[.playbackBufferingQualityMode])
+        XCTAssertEqual(write.value, .string("never"))
+        XCTAssertEqual(write.scope, .profileDevice)
+        XCTAssertEqual(harness.transport.writes().count, 1, "only the mode is written")
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+
+        let relaunched = PlayerSettings(
+            defaults: harness.defaults,
+            flusher: PlayerSettingsFlusher(transport: harness.transport)
+        )
+        XCTAssertEqual(relaunched.bufferingQualityMode, .never)
+    }
+
+    /// The profile mode applies until this device overrides it.
+    func testTheBufferingModeUsesTheProfileValueAndCanClearItsDeviceOverride() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [Self.bufferingRow(.ask)]
+        await harness.settings.refreshFromServer()
+
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .ask)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode), "the profile's value")
+
+        // "Use Profile Setting" clears this device's value and reads the
+        // profile's back.
+        harness.transport.effective = [Self.bufferingRow(.never, scope: .profileDevice)]
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+        harness.transport.reset()
+        harness.transport.effective = [Self.bufferingRow(.ask)]
+        await harness.settings.useProfileSetting(.bufferingQualityMode)
+        XCTAssertEqual(harness.transport.deletes(), [.playbackBufferingQualityMode])
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .ask)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+    }
+
+    /// A server whose settings don't define the key plays `always`: the
+    /// player uses the default whatever this device chose before, and
+    /// Settings hides the row. A server that gains the key shows it again.
+    func testAServerWithoutTheBufferingSettingPlaysAutomatically() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [Self.bufferingRow(.never, scope: .profileDevice)]
+        await harness.settings.refreshFromServer()
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .never)
+        XCTAssertFalse(harness.settings.serverLacksBufferingQualityMode)
+
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn - 1
+        let result = await harness.settings.refreshFromServer()
+        XCTAssertEqual(result, .refreshed, "the player batch still refreshes")
+        XCTAssertTrue(harness.settings.serverLacksBufferingQualityMode)
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .always)
+        let relaunched = PlayerSettings(
+            defaults: harness.defaults,
+            flusher: PlayerSettingsFlusher(transport: harness.transport)
+        )
+        XCTAssertEqual(relaunched.bufferingQualityMode, .always, "offline at the next launch too")
+        XCTAssertTrue(relaunched.serverLacksBufferingQualityMode, "and the row stays hidden")
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode),
+                       "the device value it had is not one this server keeps")
+
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn
+        harness.transport.effective = [Self.bufferingRow(.ask)]
+        await harness.settings.refreshFromServer()
+        XCTAssertFalse(harness.settings.serverLacksBufferingQualityMode)
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .ask)
+    }
+
+    /// Once the server is known to lack the setting, a picker still open
+    /// stores nothing: playback stays on Automatically.
+    func testAServerWithoutTheBufferingSettingTakesNoChoice() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn - 1
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.serverLacksBufferingQualityMode)
+        harness.transport.reset()
+        harness.settings.setBufferingQualityMode(.never)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .always)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+    }
+
+    /// The setting is found by its key, not by the manifest revision: a
+    /// server that answers the key has it.
+    func testTheBufferingSettingIsFoundByItsKey() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.onEffectiveValues = { [unowned transport = harness.transport] keys in
+            transport.effectiveError = keys == SettingKey.playerBufferingQualitySettings
+                ? .unknownSetting(key: SettingKey.playbackBufferingQualityMode.rawValue)
+                : nil
+        }
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.serverLacksBufferingQualityMode, "a current revision that refuses the key")
+    }
+
+    /// A server that answers the key has the setting, even at a revision
+    /// below the one this build records for it: the row shows, and a change
+    /// is saved there.
+    func testAServerThatAnswersTheKeyHasTheSettingWhateverItsRevision() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn - 2
+        harness.transport.alsoDefines = [.playbackBufferingQualityMode]
+        harness.transport.effective = [Self.bufferingRow(.ask)]
+        await harness.settings.refreshFromServer()
+        XCTAssertFalse(harness.settings.serverLacksBufferingQualityMode)
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .ask)
+
+        harness.transport.reset()
+        harness.settings.setBufferingQualityMode(.never)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertEqual(harness.transport.writesByKey()[.playbackBufferingQualityMode]?.value, .string("never"))
+    }
+
+    /// A server that stops answering the key no longer takes writes to it,
+    /// though an earlier read had its row.
+    func testAServerThatDropsTheKeyTakesNoWrites() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn - 2
+        harness.transport.alsoDefines = [.playbackBufferingQualityMode]
+        harness.transport.effective = [Self.bufferingRow(.ask)]
+        await harness.settings.refreshFromServer()
+
+        harness.transport.alsoDefines = []
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.serverLacksBufferingQualityMode)
+        harness.transport.reset()
+        harness.settings.setBufferingQualityMode(.never)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+    }
+
+    /// An answer that carries a key's row serves that key, whatever revision
+    /// it reports; one without the row, from a revision before the key,
+    /// doesn't.
+    func testAResponseServesAKeyItHasARowFor() {
+        let key = SettingKey.playbackBufferingQualityMode
+        let older = key.introducedIn - 2
+        let withRow = EffectiveSettingValuesResponse(settings: [Self.bufferingRow(.ask)], revision: older)
+        XCTAssertTrue(withRow.servesAll([key]))
+        XCTAssertFalse(EffectiveSettingValuesResponse(settings: [], revision: older).servesAll([key]))
+        XCTAssertTrue(EffectiveSettingValuesResponse(settings: [], revision: key.introducedIn).servesAll([key]))
+    }
+
+    /// An older server has no profile value to go back to, so "Use Profile
+    /// Setting" leaves the contract default and sends nothing.
+    func testUsingTheProfileBufferingModeOnAnOlderServerRestoresTheDefault() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn - 1
+        await harness.settings.refreshFromServer()
+
+        await harness.settings.useProfileSetting(.bufferingQualityMode)
+
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .default)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+    }
+
+    /// When the mode's read fails, this device keeps its mode and whether it
+    /// is its own.
+    func testAFailedBufferingModeReadKeepsThisDevicesMode() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [Self.bufferingRow(.never, scope: .profileDevice)]
+        await harness.settings.refreshFromServer()
+
+        harness.transport.onEffectiveValues = { [unowned transport = harness.transport] keys in
+            transport.effectiveError = keys == SettingKey.playerBufferingQualitySettings
+                ? .transport(description: "offline")
+                : nil
+        }
+        harness.transport.effective = []
+        let result = await harness.settings.refreshFromServer()
+
+        XCTAssertEqual(result, .refreshed, "the player batch still refreshes")
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .never)
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+    }
 
     // MARK: - Profile-scoped writes
 
@@ -1153,7 +1349,10 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await editor.setSubtitleLanguage("not a tag")
 
         XCTAssertEqual(transport.writes().count, 1)
-        XCTAssertEqual(editor.saveState, .failed("not a language tag"))
+        guard case .failed(let message) = editor.saveState else {
+            return XCTFail("expected a failed save, got \(String(describing: editor.saveState))")
+        }
+        XCTAssertEqual(AppLanguage.string(message), "not a language tag")
         XCTAssertFalse(editor.hasHeldChanges)
     }
 
@@ -1590,7 +1789,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             "the editor must show the still-winning device override, not the ineffective optimistic profile value"
         )
         XCTAssertTrue(
-            editor.subtitleProfileOverrideMessage?.contains("This device, for this profile") == true,
+            editor.subtitleProfileOverrideMessage.map { AppLanguage.string($0) }?.contains("This device, for this profile") == true,
             "the UI needs a visible explanation for why the saved profile value did not become effective"
         )
     }

@@ -20,19 +20,21 @@ struct TVDetailFactsSection: View {
     // and scroll it fully into view, the same idiom the other passive detail
     // rows use.
     @FocusState private var isFocused: Bool
+    @Environment(\.locale) private var locale
 
     var body: some View {
-        let facts = DetailFacts(detail: detail).assembleFacts()
+        let facts = DetailFacts(detail: detail).assembleFacts(locale: locale)
         if !facts.isEmpty {
             VStack(spacing: 0) {
-                ForEach(Array(facts.enumerated()), id: \.element.label) { index, fact in
+                // Labels are translated text, so they can't serve as identity.
+                ForEach(Array(facts.enumerated()), id: \.offset) { index, fact in
                     if index > 0 {
                         Rectangle()
                             .fill(Color.white.opacity(0.08))
                             .frame(height: 1)
                     }
                     HStack(alignment: .top, spacing: columnGap) {
-                        Text(fact.label.uppercased())
+                        Text(fact.label.uppercased(with: locale))
                             .font(.system(size: 18, weight: .bold))
                             .tracking(2.0)
                             .foregroundColor(.siloOnSurface.opacity(0.5))

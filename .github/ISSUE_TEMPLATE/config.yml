@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Suggest a feature
+    url: https://github.com/Silo-Server/silo-apple/discussions/categories/ideas
+    about: Post feature ideas in Discussions under Ideas, or upvote an existing one. Issues are for bugs.
   - name: Problem with the server or web app
     url: https://github.com/Silo-Server/silo-server/issues/new/choose
     about: Report it in silo-server, especially if it also happens in the web app.

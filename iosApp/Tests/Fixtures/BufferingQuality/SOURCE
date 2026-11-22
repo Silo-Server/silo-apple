@@ -1,0 +1,16 @@
+Source: silo-server docs/design/schemas/buffering-quality/v1/vectors.json
+Server commit: aadc7fdf85878ff7d682d738120aa3abd45787b4
+Vendored: 2026-10-21
+
+The buffering-quality conformance vectors, copied byte for byte. The spec is
+docs/design/2026-10-17-buffering-quality.md at the same commit.
+BufferingQualityControllerTests replays every controller case against a manual
+clock, and BandwidthProbeMeterTests replays every probe case.
+
+Never edit this copy. A case that contradicts the spec is a spec bug: fix it
+in silo-server, then re-vendor with
+
+  git -C <silo-server> show <commit>:docs/design/schemas/buffering-quality/v1/vectors.json \
+    > iosApp/Tests/Fixtures/BufferingQuality/vectors.json
+
+update the commit above, and run cd iosApp && xcodegen generate.

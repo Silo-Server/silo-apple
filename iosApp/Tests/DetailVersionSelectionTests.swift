@@ -54,6 +54,142 @@ final class DetailVersionSelectionTests: XCTestCase {
         ))
     }
 
+    /// Two files of one title rarely number their subtitle streams alike. A
+    /// track picked on one file becomes the other file's matching track, not
+    /// whatever sits at the same stream index there.
+    func testASubtitlePickFollowsItsTrackToAnotherVersion() {
+        let versions = decodedVersions("""
+        [
+          { "file_id": 14, "subtitle_tracks": [
+            { "index": 2, "codec": "subrip", "language": "en", "title": "SUBRIP" },
+            { "index": 3, "codec": "subrip", "language": "en", "title": "SDH" },
+            { "index": 4, "codec": "subrip", "language": "fr", "title": "SUBRIP" },
+            { "index": 5, "codec": "subrip", "language": "es", "title": "Latin American" },
+            { "index": 6, "codec": "subrip", "language": "de", "forced": true },
+            { "index": 7, "codec": "subrip", "language": "es", "title": "Castilian" }
+          ] },
+          { "file_id": 36, "subtitle_tracks": [
+            { "index": 3, "codec": "hdmv_pgs_subtitle", "language": "en", "title": "English" },
+            { "index": 4, "codec": "hdmv_pgs_subtitle", "language": "en", "title": "English (SDH)" },
+            { "index": 5, "codec": "hdmv_pgs_subtitle", "language": "zh" },
+            { "index": 6, "codec": "hdmv_pgs_subtitle", "language": "de" },
+            { "index": 11, "codec": "hdmv_pgs_subtitle", "language": "fr", "title": "French (Canadian)" },
+            { "index": 22, "codec": "hdmv_pgs_subtitle", "language": "es", "title": "Spanish (Castilian)" },
+            { "index": 23, "codec": "hdmv_pgs_subtitle", "language": "es", "title": "Spanish (Latin American)" }
+          ] }
+        ]
+        """)
+        func moved(
+            _ index: Int?,
+            from: Int,
+            to: Int,
+            signature: SubtitleTrackSignature? = nil,
+            manual: Bool = true
+        ) -> Int? {
+            DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
+                index,
+                movingFrom: versions.first { $0.fileId == from },
+                to: versions.first { $0.fileId == to },
+                isManualPick: manual,
+                signature: signature,
+                mode: SubtitleMode.always.rawValue,
+                showForced: true,
+                usesDeviceSettings: false
+            )
+        }
+        XCTAssertEqual(moved(4, from: 36, to: 14), 3, "English (SDH) stays English SDH, not stream 4 (French)")
+        XCTAssertEqual(moved(4, from: 14, to: 36), 11, "French, not stream 4 (English SDH)")
+        XCTAssertEqual(moved(5, from: 14, to: 36), 23, "the Spanish track with the same title")
+        XCTAssertEqual(moved(23, from: 36, to: 14), 5, "and back, not the first Spanish track")
+        XCTAssertEqual(moved(22, from: 36, to: 14), 7)
+        XCTAssertEqual(moved(3, from: 36, to: 14), 2, "plain English, not the SDH track")
+        XCTAssertNil(moved(6, from: 14, to: 36), "no forced German there: Auto, not stream 6")
+        XCTAssertNil(moved(5, from: 36, to: 14), "no Chinese there: Auto")
+        XCTAssertEqual(moved(-1, from: 14, to: 36), -1, "Off")
+        XCTAssertNil(moved(nil, from: 14, to: 36), "Auto")
+        XCTAssertEqual(moved(5, from: 14, to: 14), 5, "same file")
+        // A track the server preference chose is chosen again on the other
+        // file, as opening the page there would.
+        let english = SubtitleTrackSignature(language: "en", label: "SDH")
+        XCTAssertEqual(moved(3, from: 14, to: 36, signature: english, manual: false), 4)
+    }
+
+    /// The saved preference can resolve to a near match, here full English for
+    /// a forced-English preference. A viewer who picks that track themselves
+    /// keeps a full track on the next file; the preference alone moves to the
+    /// forced one there. `und` names no language, so it matches nothing, and
+    /// a regional tag prefers the same tag.
+    func testAPickedTrackIsNotTakenForTheSavedPreference() {
+        let versions = decodedVersions("""
+        [
+          { "file_id": 1, "subtitle_tracks": [
+            { "index": 2, "codec": "subrip", "language": "en" },
+            { "index": 3, "codec": "subrip", "language": "und", "title": "Commentary" },
+            { "index": 5, "codec": "subrip", "language": "zh-Hant" }
+          ] },
+          { "file_id": 2, "subtitle_tracks": [
+            { "index": 2, "codec": "subrip", "language": "en", "forced": true },
+            { "index": 3, "codec": "subrip", "language": "en" },
+            { "index": 4, "codec": "subrip", "language": "und", "title": "Spanish" },
+            { "index": 5, "codec": "subrip", "language": "zh-Hans" },
+            { "index": 6, "codec": "subrip", "language": "zh-Hant" }
+          ] }
+        ]
+        """)
+        func moved(_ index: Int, manual: Bool) -> Int? {
+            DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
+                index,
+                movingFrom: versions[0],
+                to: versions[1],
+                isManualPick: manual,
+                signature: SubtitleTrackSignature(language: "en", forced: true),
+                mode: SubtitleMode.always.rawValue,
+                showForced: true,
+                usesDeviceSettings: false
+            )
+        }
+        XCTAssertEqual(moved(2, manual: true), 3)
+        XCTAssertEqual(moved(2, manual: false), 2)
+        XCTAssertNil(moved(3, manual: true))
+        XCTAssertEqual(moved(5, manual: true), 6, "Traditional Chinese, not the first Chinese track")
+    }
+
+    /// A track moved to another version is numbered for that file. Its number
+    /// must not be read on the file it was picked on when the page reloads
+    /// there, as it does after Play clears the Version pin.
+    func testAMovedSubtitlePickIsNotKeptByItsNumberOnReload() {
+        let versions = decodedVersions("""
+        [
+          { "file_id": 14, "subtitle_tracks": [
+            { "index": 3, "codec": "subrip", "language": "fr" },
+            { "index": 4, "codec": "subrip", "language": "en" }
+          ] },
+          { "file_id": 36, "subtitle_tracks": [
+            { "index": 3, "codec": "subrip", "language": "en" }
+          ] }
+        ]
+        """)
+        func fileAfterPick(_ index: Int?, from: Int, to: Int) -> Int? {
+            DetailPlaybackFormatting.subtitlePickFileAfterVersionPick(
+                14,
+                index: index,
+                movingFrom: versions.first { $0.fileId == from },
+                to: versions.first { $0.fileId == to }
+            )
+        }
+        // English, picked as stream 4 of file 14, is stream 3 of file 36.
+        // Stream 3 of file 14 is French.
+        let moved = fileAfterPick(4, from: 14, to: 36)
+        for reloaded in [14, 36] {
+            XCTAssertFalse(DetailPlaybackFormatting.keepsManualSubtitlePick(
+                3, pickedFileId: moved, reloadedFileId: reloaded
+            ) { _ in true }, "reloaded on file \(reloaded)")
+        }
+        XCTAssertEqual(fileAfterPick(4, from: 14, to: 14), 14, "same file")
+        XCTAssertEqual(fileAfterPick(-1, from: 14, to: 36), 14, "Off")
+        XCTAssertEqual(fileAfterPick(nil, from: 14, to: 36), 14, "Auto")
+    }
+
     /// Server mode Off (profile or series) with show forced on is not an
     /// explicit Off: Play from the detail page lets the resolver start on the
     /// forced track in the audio language, like every other entry path. A
@@ -157,7 +293,8 @@ final class DetailVersionSelectionTests: XCTestCase {
         let selected = DetailVersionSelection.displayVersion(
             versions: versions,
             selectedFileId: nil,
-            lastFileId: nil
+            lastFileId: nil,
+            lastFileInProgress: false
         )
 
         XCTAssertTrue(
@@ -167,19 +304,31 @@ final class DetailVersionSelectionTests: XCTestCase {
     }
 
     #if !os(tvOS)
-    func testAutoDownloadPinsTheDisplayedLastPlayedVersion() {
-        // Auto displays the last-played 720p file (the one with the sidecar
-        // subtitles); sending nil let the server pick the 1080p file instead.
-        let versions = [
-            version(fileId: 1, resolution: "720p"),
-            version(fileId: 2, resolution: "1080p")
+    func testAutoDownloadPinsTheDisplayedVersion() {
+        // Auto displays the best file of the last-played edition; sending nil
+        // let the server pick its own default, another cut's file.
+        let versions = decodedVersions("""
+        [
+          { "file_id": 1, "edition_raw": "Extended", "edition_key": "extended", "resolution": "2160p" },
+          { "file_id": 2, "edition_raw": "Theatrical", "edition_key": "theatrical", "resolution": "720p" },
+          { "file_id": 3, "edition_raw": "Theatrical", "edition_key": "theatrical", "resolution": "1080p" }
         ]
+        """)
 
         XCTAssertEqual(DownloadRequestOptions.fileId(
             versions: versions,
             selectedFileId: nil,
-            lastFileId: 1,
+            lastFileId: 2,
+            lastFileInProgress: false,
             preferredQualityId: nil
+        ), 3)
+        XCTAssertEqual(DownloadRequestOptions.fileId(
+            versions: versions,
+            selectedFileId: nil,
+            lastFileId: 2,
+            lastFileInProgress: false,
+            preferredQualityId: nil,
+            editionId: "extended"
         ), 1)
     }
 
@@ -193,6 +342,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             versions: versions,
             selectedFileId: 2,
             lastFileId: 1,
+            lastFileInProgress: false,
             preferredQualityId: nil
         ), 2)
     }
@@ -202,6 +352,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             versions: [],
             selectedFileId: nil,
             lastFileId: 1,
+            lastFileInProgress: false,
             preferredQualityId: nil
         ))
     }
@@ -625,6 +776,44 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertEqual(label, "Auto: English · SRT", "preview must name the embedded track playback starts on; got \(label)")
     }
 
+    func testAutoSubtitlePreviewNamesTheDefaultTrackPlaybackStarts() {
+        // With no language or saved pick in Auto mode the resolver leaves the
+        // choice to the file, and playback starts its default track. The
+        // preview must name that track, not promise "Off".
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "subtitle_tracks": [
+              { "index": 2, "codec": "subrip", "language": "eng" },
+              { "index": 3, "codec": "subrip", "language": "fre", "default": true }
+            ]
+          }
+        ]
+        """)
+        let label = DetailPlaybackFormatting.subtitleValueLabel(
+            version: versions[0],
+            selectedSubtitleTrackIndex: nil,
+            autoContext: .init(preferredLanguage: nil, mode: "auto", audioLanguage: "ja")
+        )
+        let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            version: versions[0],
+            explicitFFmpegIndex: nil,
+            explicitCombinedIndex: nil,
+            preferredLanguage: nil,
+            mode: .auto,
+            showForced: false,
+            trackSignature: nil,
+            currentAudioLanguage: "ja"
+        )
+        XCTAssertEqual(intent.ffmpegStreamIndex, 3)
+        let french = DetailPlaybackFormatting.subtitleValueLabel(
+            version: versions[0],
+            selectedSubtitleTrackIndex: 3
+        )
+        XCTAssertEqual(label, "Auto: \(french)")
+    }
+
     func testAutoSubtitlePreviewKeepsEmbeddedStreamZero() {
         // The wire omits a zero stream index. An embedded row with no index is
         // FFmpeg stream 0, which the plan can select, so the preview must
@@ -646,6 +835,85 @@ final class DetailVersionSelectionTests: XCTestCase {
             autoContext: .init(preferredLanguage: "en", mode: "always", audioLanguage: "ja")
         )
         XCTAssertEqual(label, "Auto: English · SRT", "embedded stream 0 must remain a preview candidate; got \(label)")
+    }
+
+    func testDetailNeverOffersOrStartsOnASubtitleTheServerCannotDeliver() {
+        // An embedded track the server stored with no codec (a Matroska
+        // S_TEXT/WEBVTT track) is refused when a start asks for it, so the
+        // detail page can't offer it, Auto can't land on it even as the
+        // file's default, and an explicit pick of it starts without
+        // subtitles instead of failing the start.
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "subtitle_tracks": [
+              { "index": 2, "language": "eng", "default": true },
+              { "codec": "srt", "language": "eng", "file_name": "/subs/en.srt", "external": true }
+            ]
+          }
+        ]
+        """)
+        let version = versions[0]
+        XCTAssertEqual(version.subtitleTracks?[0].hasUnsupportedFormat, true)
+        XCTAssertEqual(version.subtitleTracks?[1].hasUnsupportedFormat, false)
+
+        let options = DetailPlaybackFormatting.subtitleOptions(
+            version: version, selectedSubtitleTrackIndex: nil, preferredLanguage: nil
+        )
+        guard let embedded = options.first(where: { $0.selectionIndex == 2 }) else {
+            return XCTFail("missing embedded option")
+        }
+        XCTAssertFalse(embedded.isSelectable)
+        XCTAssertTrue(embedded.detail.contains("Unsupported format"), embedded.detail)
+
+        func intent(mode: SubtitleMode, explicitFFmpeg: Int? = nil, explicitCombined: Int? = nil) -> PlaybackSessionBridge.InitialProtocolV3SubtitleIntent {
+            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version, explicitFFmpegIndex: explicitFFmpeg, explicitCombinedIndex: explicitCombined,
+                preferredLanguage: "en", mode: mode, showForced: false, trackSignature: nil,
+                currentAudioLanguage: "ja"
+            )
+        }
+        // Auto in English lands on the external sidecar, the only English
+        // track the server can deliver.
+        XCTAssertEqual(intent(mode: .always).combinedIndex, 0)
+        XCTAssertEqual(
+            DetailPlaybackFormatting.subtitleValueLabel(
+                version: version, selectedSubtitleTrackIndex: nil,
+                autoContext: .init(preferredLanguage: "en", mode: "always", audioLanguage: "ja")
+            ),
+            "Auto: English · SRT"
+        )
+        // Left to the file, playback would start its default track; that one
+        // can't be delivered, so it starts without subtitles.
+        let fileDefault = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            version: version, explicitFFmpegIndex: nil, explicitCombinedIndex: nil,
+            preferredLanguage: nil, mode: .auto, showForced: false, trackSignature: nil,
+            currentAudioLanguage: "ja"
+        )
+        XCTAssertNil(fileDefault.ffmpegStreamIndex)
+        XCTAssertNil(fileDefault.combinedIndex)
+        XCTAssertEqual(
+            DetailPlaybackFormatting.subtitleValueLabel(
+                version: version, selectedSubtitleTrackIndex: nil,
+                autoContext: .init(preferredLanguage: nil, mode: "auto", audioLanguage: "ja")
+            ),
+            "Auto: Off"
+        )
+        // A saved explicit pick of it, by stream or by combined ordinal.
+        for explicit in [intent(mode: .always, explicitFFmpeg: 2), intent(mode: .always, explicitCombined: 1)] {
+            XCTAssertNil(explicit.ffmpegStreamIndex)
+            XCTAssertNil(explicit.combinedIndex)
+        }
+        // A remembered pick of it doesn't seed the selector with it.
+        XCTAssertNotEqual(
+            DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                version: version,
+                signature: SubtitleTrackSignature(source: "embedded", language: "eng"),
+                mode: "always", showForced: false, usesDeviceSettings: false
+            ),
+            2
+        )
     }
 
     func testSubtitleOptionsKeepEmbeddedStreamZeroSelectable() {
@@ -684,7 +952,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             "English · SRT"
         )
         XCTAssertEqual(
-            TrackSelectionPersistence.subtitleRequest(version: versions[0], ffIndex: 0, showForced: nil)?.subtitleTrackIndex,
+            TrackSelectionPersistence.subtitleRequest(version: versions[0], ffIndex: 0)?.subtitleTrackIndex,
             0
         )
     }

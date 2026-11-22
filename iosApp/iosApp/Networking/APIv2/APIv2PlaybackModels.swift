@@ -24,6 +24,8 @@ struct APIv2PlaybackStartBody: Encodable {
     let clientCapabilities: PlaybackV3CodecCapabilities
     let clientPlaybackContext: PlaybackV3ClientContext
     let allowAlternateVersions: Bool?
+    let bandwidthEstimateSource: String?
+    let learnedLimit: String?
 
     init(_ request: PlaybackV3StartRequest, installationID: String) {
         installationId = installationID
@@ -46,6 +48,15 @@ struct APIv2PlaybackStartBody: Encodable {
         clientCapabilities = request.clientCapabilities
         clientPlaybackContext = request.clientPlaybackContext
         allowAlternateVersions = request.allowAlternateVersions
+        // Only the buffering-quality members the server accepts.
+        let permitted = PlaybackV3BufferingQualityRequest.permittedMembers(
+            clientFeatures: request.clientFeatures,
+            bandwidthEstimateKbps: request.bandwidthEstimateKbps,
+            bandwidthEstimateSource: request.bandwidthEstimateSource,
+            learnedLimit: request.learnedLimit
+        )
+        bandwidthEstimateSource = permitted.bandwidthEstimateSource
+        learnedLimit = permitted.learnedLimit
     }
 }
 
@@ -121,6 +132,7 @@ struct APIv2PlaybackPlan: Decodable {
     let source: APIv2PlaybackSource
     let subtitleFidelityPolicy: String
     let availableQualities: [PlaybackV3AvailableQuality]
+    let bandwidthLimit: PlaybackV3BandwidthLimit?
     let activeQuality: String?
 
     func legacy() throws -> PlaybackV3Plan {
@@ -147,6 +159,7 @@ struct APIv2PlaybackPlan: Decodable {
             source: try source.legacy(),
             subtitleFidelityPolicy: subtitleFidelityPolicy,
             availableQualities: availableQualities,
+            bandwidthLimit: bandwidthLimit,
             activeQuality: activeQuality)
     }
 }
@@ -190,6 +203,16 @@ struct APIv2PlaybackCapabilities: Decodable {
     let allowed: Bool
     let protocolVersions: [Int]
     let features: [String]
+    /// With `connection_speed_v1`: the bandwidth probe on the path this
+    /// client's media takes, on the origin the request arrived on.
+    let bandwidthProbeUrl: String?
+    /// The rate a quick speed test has to prove; absent when the server has
+    /// no target.
+    let bandwidthProbeTargetKbps: Int?
+    /// False when the admin turned automatic speed tests off.
+    let bandwidthProbeAutomatic: Bool?
+    /// How long a speed reading stays current.
+    let bandwidthProbeMaxAgeSeconds: Int?
 
     static let notConfigured = PlaybackV3TerminalFailure(reason: "playback_not_configured",
         message: "API v2 playback is not configured on this server. Ask the server administrator to finish playback setup.",
@@ -213,10 +236,102 @@ struct APIv2PlaybackCapabilities: Decodable {
                         PlaybackProtocolV3.headerAuthenticatedMediaFeature, PlaybackSequencedContract.feature]
         guard protocolVersions.contains(PlaybackProtocolV3.version), required.allSatisfy(features.contains) else {
             throw PlaybackV3TerminalFailure(reason: "server_upgrade_required",
-                message: UpdateRequirement.serverMessage, retryable: false)
+                message: AppLanguage.inEnglish { UpdateRequirement.serverMessage }, retryable: false,
+                displayMessage: UpdateRequirement.serverMessage)
         }
         guard let installationId, !installationId.isEmpty else { throw Self.notConfigured }
         return installationId
+    }
+}
+
+/// `GET /api/v2/playback/connection`: what the server knows about the calling
+/// device on the connection it is using now. Served when the capability
+/// document advertises `buffering_quality_v1`. Only `connection` is required:
+/// `learned_limit` is null when there is none, and `probe` and
+/// `auto_budget_kbps` arrive in a later phase, so a missing or malformed
+/// optional member reads as absent instead of failing the whole answer.
+struct APIv2PlaybackConnection: Decodable, Equatable, Sendable {
+    /// The Auto limit learned from repeated rebuffering. It lasts seven days
+    /// from `observedAt`, the most recent lowering.
+    struct LearnedLimit: Decodable, Equatable, Sendable {
+        let kbps: Int
+        let observedAt: Date
+        let expiresAt: Date
+    }
+
+    struct Probe: Decodable, Equatable, Sendable {
+        let kbps: Int
+        let measuredAt: Date
+        /// `wifi`, `ethernet`, `cellular` or `other`.
+        let transport: String
+        /// The link is at least this fast: a quick test that reached its
+        /// target, or a result over the probe's ceiling. Absent means false.
+        let lowerBound: Bool
+
+        private enum CodingKeys: String, CodingKey { case kbps, measuredAt, transport, lowerBound }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            kbps = try container.decode(Int.self, forKey: .kbps)
+            measuredAt = try container.decode(Date.self, forKey: .measuredAt)
+            transport = try container.decode(String.self, forKey: .transport)
+            lowerBound = (try? container.decodeIfPresent(Bool.self, forKey: .lowerBound)) ?? false
+        }
+    }
+
+    /// The throughput a plan's media requests received, kept as a lower
+    /// bound on the link.
+    struct PlaybackSample: Decodable, Equatable, Sendable {
+        let kbps: Int
+        let measuredAt: Date
+    }
+
+    /// `local`, `remote`, or `provider:<name>`.
+    let connection: String
+    let learnedLimit: LearnedLimit?
+    let probe: Probe?
+    let playbackSample: PlaybackSample?
+    /// Computed by the server; clients display it and never compute it.
+    let autoBudgetKbps: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case connection, learnedLimit, probe, playbackSample, autoBudgetKbps
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        connection = try container.decode(String.self, forKey: .connection)
+        learnedLimit = try? container.decodeIfPresent(LearnedLimit.self, forKey: .learnedLimit)
+        probe = try? container.decodeIfPresent(Probe.self, forKey: .probe)
+        playbackSample = try? container.decodeIfPresent(PlaybackSample.self, forKey: .playbackSample)
+        autoBudgetKbps = try? container.decodeIfPresent(Int.self, forKey: .autoBudgetKbps)
+    }
+}
+
+/// `POST /api/v2/playback/bandwidth-probe/results`: one probe measurement,
+/// which the server keeps as the latest for this device and connection.
+struct APIv2PlaybackBandwidthProbeResult: Encodable, Equatable, Sendable {
+    let kbps: Int
+    let bytes: Int
+    let durationMs: Int
+    /// `wifi`, `ethernet`, `cellular` or `other`.
+    let transport: String
+    /// The link is at least `kbps`. Sent only when true: `false` is the
+    /// default, and a server from before the speed-test redesign refuses
+    /// the member.
+    let lowerBound: Bool?
+    /// The viewer started this test with **Test speed**; never set for the
+    /// automatic quick test. A manual result above the stored learned limit
+    /// clears it. Sent only when true, like `lower_bound`.
+    let manual: Bool?
+
+    init(kbps: Int, bytes: Int, durationMs: Int, transport: String, lowerBound: Bool, manual: Bool = false) {
+        self.kbps = kbps
+        self.bytes = bytes
+        self.durationMs = durationMs
+        self.transport = transport
+        self.lowerBound = lowerBound ? true : nil
+        self.manual = manual ? true : nil
     }
 }
 
@@ -286,7 +401,7 @@ struct APIv2PlaybackReplanBody: Encodable {
     let request: PlaybackV3ReplanRequest
     private enum CodingKeys: String, CodingKey { case installationID = "installation_id" }
     func encode(to encoder: Encoder) throws {
-        try request.encode(to: encoder)
+        try request.withPermittedBufferingQualityMembers.encode(to: encoder)
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(installationID, forKey: .installationID)
     }

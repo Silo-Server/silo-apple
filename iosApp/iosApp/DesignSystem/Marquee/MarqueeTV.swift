@@ -60,16 +60,19 @@ struct MarqueeWaitingDots: View {
 /// each, with a small picture of exactly that action. Short titles only, so
 /// they read from across the room.
 struct MarqueeTVSetupSteps: View {
+    /// Re-renders the spoken step labels, which resolve in code, on a language switch.
+    @Environment(\.locale) private var locale
+
     var body: some View {
         VStack(alignment: .leading, spacing: 30) {
-            step(1, "Open Silo on your phone") { SetupAppIcon() }
-            step(2, "Tap Set Up") { SetupCardPicture() }
-            step(3, "Finish on your phone") { SetupDonePicture() }
+            step(1, .setupStepOpen) { SetupAppIcon() }
+            step(2, .setupStepTap) { SetupCardPicture() }
+            step(3, .setupStepFinish) { SetupDonePicture() }
         }
         .frame(width: 700, alignment: .leading)
     }
 
-    private func step(_ number: Int, _ title: String, @ViewBuilder picture: () -> some View) -> some View {
+    private func step(_ number: Int, _ title: LocalizedStringResource, @ViewBuilder picture: () -> some View) -> some View {
         HStack(spacing: 34) {
             RoundedRectangle(cornerRadius: 34, style: .continuous)
                 .fill(Color.white.opacity(0.06))
@@ -95,7 +98,7 @@ struct MarqueeTVSetupSteps: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Step \(number): \(title)")
+        .accessibilityLabel(.setupStepAudio(LocaleFormat.integer(number), AppLanguage.string(title)))
     }
 }
 
@@ -122,7 +125,7 @@ private struct SetupCardPicture: View {
         VStack(spacing: 8) {
             Capsule().fill(Color.white.opacity(0.3)).frame(width: 80, height: 8)
             Capsule().fill(Color.white.opacity(0.16)).frame(width: 56, height: 8)
-            Text("Set Up")
+            Text(.setupStepSetUp)
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(.black)
                 .frame(maxWidth: .infinity)
@@ -200,19 +203,22 @@ extension View {
     /// the remote does nothing until a swipe. Never overrides a focus the
     /// person or the page already set.
     ///
-    /// A page can appear while focus still belongs to what it replaces: the
-    /// Sign Out alert closing over Settings, or the old screen mid-crossfade.
-    /// The focus engine drops a request made then, so keep asking until one
-    /// lands, for about a second and a half.
-    func marqueeTVSeedFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, _ value: F) -> some View {
-        task {
-            await Task.yield()
-            for _ in 0..<15 {
-                guard focus.wrappedValue == nil else { return }
-                focus.wrappedValue = value
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-            }
-        }
+    /// `value` is the page's default. While `isProvisional`, the page is
+    /// still learning what that default is, as sign-in is until discovery
+    /// says whether "Continue as …" is offered: a seed placed then moves to
+    /// the settled default, unless the person has moved focus meanwhile. A
+    /// change to `reseedOn` hands focus to `value` again, for a page that
+    /// swaps its controls in place.
+    func marqueeTVSeedFocus<F: Hashable>(
+        _ focus: FocusState<F?>.Binding, _ value: F, isProvisional: Bool = false
+    ) -> some View {
+        modifier(MarqueeTVSeedFocus(focus: focus, value: value, isProvisional: isProvisional, reseedOn: 0))
+    }
+
+    func marqueeTVSeedFocus<F: Hashable, ID: Equatable>(
+        _ focus: FocusState<F?>.Binding, _ value: F, reseedOn id: ID
+    ) -> some View {
+        modifier(MarqueeTVSeedFocus(focus: focus, value: value, isProvisional: false, reseedOn: id))
     }
 
     /// Moves focus after Done on the system keyboard. Each field's
@@ -222,6 +228,90 @@ extension View {
     /// gets overwritten. So the first focus that returns takes `pending`.
     func marqueeTVFocusAfterKeyboard<F: Hashable>(_ focus: FocusState<F?>.Binding, pending: Binding<F?>) -> some View {
         modifier(FocusAfterKeyboard(focus: focus, pending: pending))
+    }
+}
+
+/// See `marqueeTVSeedFocus`.
+///
+/// The startup splash disables the page under it for its four seconds, and
+/// the engine drops a request made then, so seeding waits until the page is
+/// enabled and the splash has lifted. A page can also appear while focus
+/// still belongs to what it replaces (the old screen mid-crossfade, an alert
+/// closing), when the engine drops requests too, so keep asking until one
+/// lands, for about two seconds.
+private struct MarqueeTVSeedFocus<F: Hashable, ID: Equatable>: ViewModifier {
+    var focus: FocusState<F?>.Binding
+    let value: F
+    let isProvisional: Bool
+    let reseedOn: ID
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
+    /// What the seed last placed, and whether a settled default may still
+    /// replace it: only while the page's default was provisional when it was
+    /// placed and focus has not been on any other control since.
+    @State private var placed: (value: F, mayFollow: Bool)?
+    @State private var seededID: ID?
+
+    private struct Trigger: Equatable {
+        let value: F
+        let isProvisional: Bool
+        let id: ID
+        let canFocus: Bool
+    }
+
+    func body(content: Content) -> some View {
+        content.task(id: Trigger(
+            value: value,
+            isProvisional: isProvisional,
+            id: reseedOn,
+            canFocus: isEnabled && !isStartupSplashVisible
+        )) {
+            guard isEnabled, !isStartupSplashVisible else { return }
+            await seed()
+        }
+        .onChange(of: focus.wrappedValue) { _, current in
+            // The person moved off the seeded control. Coming back to it later
+            // is their choice too, so the seed may no longer follow.
+            guard let current, let last = placed, current != last.value else { return }
+            placed = (last.value, false)
+        }
+    }
+
+    @MainActor
+    private func seed() async {
+        await Task.yield()
+        guard !Task.isCancelled else { return }
+        // Decided after the yield, so a move the person made meanwhile counts.
+        let reseed = seededID.map { $0 != reseedOn } ?? false
+        seededID = reseedOn
+        // A settled default replaces a provisional one only while focus
+        // rests where the seed left it.
+        let follows = placed.map {
+            $0.mayFollow && $0.value != value && focus.wrappedValue == $0.value
+        } ?? false
+        // Once the default has settled, a later change to it never moves focus.
+        if !isProvisional, let last = placed { placed = (last.value, false) }
+        let isClaiming = reseed || follows
+        let claimedFrom = focus.wrappedValue
+        for _ in 0..<20 {
+            guard !Task.isCancelled else { return }
+            let current = focus.wrappedValue
+            if current == value {
+                // A focus already recorded keeps what it has lost: the person
+                // may have left it and come back.
+                if placed?.value != value { placed = (value, isProvisional) }
+                return
+            }
+            // Focus held elsewhere stands, unless a claim is still waiting
+            // for it to leave where it was when the claim began.
+            if current != nil, !isClaiming || current != claimedFrom { return }
+            // Recorded with the write: a default that changes before the
+            // request lands restarts this task, and the next run follows it.
+            placed = (value, isProvisional)
+            focus.wrappedValue = value
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+        }
     }
 }
 

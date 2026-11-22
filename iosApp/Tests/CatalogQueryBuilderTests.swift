@@ -47,14 +47,47 @@ final class CatalogQueryBuilderTests: XCTestCase {
     }
 
     /// Release Date sends the full-date `release_date` field, not `year`,
-    /// and is offered for every video library type.
+    /// and is offered for every library type, as on the web client.
     func testReleaseDateSortIsSignedDescending() throws {
         var s = CatalogFilterState(); s.sort = .releaseDate
         XCTAssertEqual(try build(s)["sort"], "-release_date", "release_date defaults to newest first")
-        for mediaType in [BrowseMediaType.movie, .series, .mixed] {
+        for mediaType in [BrowseMediaType.movie, .series, .mixed, .audiobook] {
             XCTAssertTrue(CatalogSortKey.available(for: mediaType).contains(.releaseDate), "\(mediaType)")
         }
-        XCTAssertFalse(CatalogSortKey.available(for: .audiobook).contains(.releaseDate))
+    }
+
+    /// The sort lists offer what the web client offers: the episode sorts
+    /// only for series (including a mixed library narrowed to Series), RT
+    /// sorts only while the server shows them, and the active sort always.
+    func testSortListsMatchTheWebClient() throws {
+        let ratings: Set<String> = ["imdb", "tmdb", "rt_critic", "rt_audience"]
+        XCTAssertEqual(
+            CatalogSortKey.available(for: .series, shownRatingSources: ratings),
+            [.title, .addedAt, .releaseDate, .lastAirDate, .latestEpisodeAdded, .year, .contentRating, .runtime,
+             .ratingImdb, .ratingTmdb, .ratingRtCritic, .ratingRtAudience, .resolution, .bitrate, .progress,
+             .dateViewed, .plays]
+        )
+        for mediaType in [BrowseMediaType.movie, .mixed] {
+            let keys = CatalogSortKey.available(for: mediaType, shownRatingSources: ratings)
+            XCTAssertFalse(keys.contains(.latestEpisodeAdded), "\(mediaType)")
+            XCTAssertFalse(keys.contains(.lastAirDate), "\(mediaType)")
+        }
+        var seriesOnly = CatalogFilterState(); seriesOnly.mediaScope = "series"
+        XCTAssertTrue(CatalogSortKey.available(for: CatalogSortKey.sortMediaType(.mixed, filter: seriesOnly))
+            .contains(.latestEpisodeAdded))
+        // Under Match Any another filter can let movies back in.
+        var matchAny = seriesOnly; matchAny.matchAll = false; matchAny.genres = ["Drama"]
+        XCTAssertFalse(CatalogSortKey.available(for: CatalogSortKey.sortMediaType(.mixed, filter: matchAny))
+            .contains(.latestEpisodeAdded))
+        XCTAssertEqual(
+            CatalogSortKey.available(for: .audiobook),
+            [.title, .addedAt, .releaseDate, .year, .runtime, .bitrate, .progress, .dateViewed, .plays,
+             .author, .narrator, .series]
+        )
+        XCTAssertFalse(CatalogSortKey.available(for: .series).contains(.ratingRtCritic))
+        XCTAssertTrue(CatalogSortKey.available(for: .movie, current: .latestEpisodeAdded).contains(.latestEpisodeAdded))
+        var s = CatalogFilterState(); s.sort = .latestEpisodeAdded
+        XCTAssertEqual(try build(s)["sort"], "-latest_episode_added", "latest_episode_added defaults to newest first")
     }
 
     func testSortOrderFlip() throws {

@@ -46,7 +46,7 @@ struct HoldSeekIndicator: View {
             Image(systemName: directionIcon)
                 .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(.white)
-            Text("\(abs(rate))×")
+            Text(verbatim: LocaleFormat.localized("\(abs(rate))") + "×")
                 .font(.system(size: 44, weight: .heavy, design: .rounded))
                 .foregroundStyle(.white)
                 .monospacedDigit()
@@ -85,9 +85,9 @@ struct HoldSeekIndicator: View {
     /// doesn't match the Apple TV app's momentary hold-to-FF.
     private var hint: some View {
         HStack(spacing: 18) {
-            Label("Speed", systemImage: "arrow.left.arrow.right")
-            Label("Play", systemImage: "circle.fill")
-            Label("Cancel", systemImage: "arrow.uturn.backward")
+            Label(.playerSettingsSpeed, systemImage: "arrow.left.arrow.right")
+            Label(.playerAudioPlay, systemImage: "circle.fill")
+            Label(.commonCancel, systemImage: "arrow.uturn.backward")
         }
         .font(.system(size: 15, weight: .medium))
         .foregroundStyle(.white.opacity(0.55))

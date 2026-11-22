@@ -27,11 +27,16 @@ struct TVPageFocusOwner: ViewModifier {
     let onMoveUp: (() -> Void)?
 
     @FocusState private var isFocused: Bool
+    /// The shell blocks hit testing on a page behind a top-bar menu, which
+    /// keeps its buttons out of reach of a native Down from the bar. That
+    /// does not stop a plain focusable view, so the placeholder steps aside
+    /// itself; the bar or the menu holds focus meanwhile.
+    @Environment(\.isTVPageBehindMenu) private var isBehindMenu
 
     func body(content: Content) -> some View {
         content
             .contentShape(Rectangle())
-            .focusable(true)
+            .focusable(!isBehindMenu)
             .focused($isFocused)
             // The placeholder is not actionable, so the system focus effect
             // would only draw a halo around static text.
@@ -56,6 +61,12 @@ struct TVPageFocusOwner: ViewModifier {
                 isFocused = true
             }
     }
+}
+
+extension EnvironmentValues {
+    /// True while the root page sits behind a top-bar menu, or behind bar
+    /// focus resting on an element that has one (`TVMainTabView`).
+    @Entry var isTVPageBehindMenu = false
 }
 
 extension View {

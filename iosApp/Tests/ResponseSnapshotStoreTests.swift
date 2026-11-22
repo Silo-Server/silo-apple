@@ -13,8 +13,9 @@ final class ResponseSnapshotStoreTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    private let adult = ResponseSnapshotStore.Scope(serverId: "server-a", profileId: "adult")
-    private let child = ResponseSnapshotStore.Scope(serverId: "server-a", profileId: "child")
+    private static let accountId = "6F9619FF-8B86-D011-B42D-00C04FC964FF"
+    private let adult = ResponseSnapshotStore.Scope(serverId: "server-a", localAccountId: accountId, profileId: "adult")
+    private let child = ResponseSnapshotStore.Scope(serverId: "server-a", localAccountId: accountId, profileId: "child")
 
     func testStoredResponsesComeBackForTheirOwnProfileOnly() throws {
         let libraries = LibrariesResponse(libraries: [
@@ -39,6 +40,20 @@ final class ResponseSnapshotStoreTests: XCTestCase {
         XCTAssertNotNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.tvLibrary(libraryId: 4, filterKey: "sort=title/asc")))
         XCTAssertNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.itemDetail("movie-1")))
         XCTAssertNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.profiles))
+    }
+
+    func testLetterPagesAreNotKept() {
+        var letter = CatalogFilterState()
+        letter.namePrefix = "M"
+        letter.genres = ["Drama"]
+        XCTAssertNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.browse(libraryId: 4, filterKey: letter.cacheKeyFragment)))
+        XCTAssertNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.browse(libraryId: 4, filterKey: letter.cacheKeyFragment, mediaScope: "movie")))
+        XCTAssertNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.tvLibrary(libraryId: 4, filterKey: letter.cacheKeyFragment)))
+
+        // A filter value that looks like a letter stays a filter: values are encoded.
+        var filtered = CatalogFilterState()
+        filtered.genres = ["|p=M"]
+        XCTAssertNotNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.browse(libraryId: 4, filterKey: filtered.cacheKeyFragment)))
     }
 
     /// Invalidating a key family also drops its snapshots, so a later seed

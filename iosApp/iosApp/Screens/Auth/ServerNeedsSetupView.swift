@@ -8,25 +8,26 @@ import SwiftUI
 struct ServerNeedsSetupView: View {
     var router: AppRouter
     @State private var retryModel = ServerNeedsSetupRetryModel()
+    @Environment(\.locale) private var locale
 
     private var serverURL: String { AuthService.shared.serverUrl }
 
     var body: some View {
         MarqueeStage(scrim: .bottom, frostStart: 0.45, onBack: changeServer) {
             MarqueeTopBar {
-                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Change server", action: changeServer)
+                MarqueeIconButton(systemImage: "chevron.backward", accessibilityLabel: AppLanguage.string(.commonChangeServer), action: changeServer)
             } trailing: { EmptyView() }
         } content: {
             MarqueeServerCard(
                 name: ServerBranding.hostLabel(serverURL),
                 address: serverURL,
                 showsInitial: false,
-                badge: .init(text: "Setup needed", systemImage: "clock", tone: .warning),
-                status: .init(text: "Reachable · not set up yet", tone: .warning)
+                badge: .init(text: AppLanguage.string(.notReadyBadge), systemImage: "clock", tone: .warning),
+                status: .init(text: AppLanguage.string(.setupNotReadyStatus), tone: .warning)
             )
             MarqueeHeadline(
-                title: "This server isn't ready",
-                lead: "Ask the server administrator to finish setup. When it's ready, return here and check again."
+                title: AppLanguage.string(.setupNotReadyTitle),
+                lead: AppLanguage.string(.setupNotReadyLead)
             )
             .padding(.top, 26)
 
@@ -36,7 +37,7 @@ struct ServerNeedsSetupView: View {
             }
 
             Button(action: retry) {
-                Text(retryModel.isChecking ? "Checking…" : "Check again")
+                Text(retryModel.isChecking ? LocalizedStringResource.notReadyChecking : .notReadyCheck)
             }
             .buttonStyle(.marquee(.primary, isLoading: retryModel.isChecking))
             .disabled(retryModel.isChecking)
@@ -44,13 +45,13 @@ struct ServerNeedsSetupView: View {
 
             if let url = URL(string: serverURL) {
                 Link(destination: url) {
-                    Label("Open setup in your browser", systemImage: "arrow.up.right.square")
+                    Label(.setupNotReadyOpenInBrowser, systemImage: "arrow.up.forward.square")
                 }
                 .buttonStyle(.marqueeGlass)
                 .padding(.top, 12)
             }
 
-            Button("Change server", action: changeServer)
+            Button(.commonChangeServer, action: changeServer)
                 .buttonStyle(.marqueePlain)
                 .padding(.top, 6)
         }

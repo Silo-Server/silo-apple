@@ -26,9 +26,29 @@ final class SeriesPlaybackReturnTests: XCTestCase {
     }
 
     func testFinishedRegularEpisodeDoesNotContinueIntoSpecials() throws {
-        // Specials sort after the last regular season in the Apple TV window.
+        // Guards lists where a special follows a regular episode, such as a
+        // caller that orders seasons differently from the Apple TV window.
         let episodes = try [episode(2, 1), episode(2, 2), episode(0, 1)]
         XCTAssertNil(playback("s2e2", season: 2, completed: true).episodeToSelect(in: episodes))
+    }
+
+    func testFinishedLastSpecialContinuesIntoTheFirstEpisode() throws {
+        // Specials sort before season 1 in the Apple TV window.
+        let episodes = try [episode(0, 1), episode(0, 2), episode(1, 1), episode(1, 2)]
+        XCTAssertEqual(playback("s0e2", season: 0, completed: true).episodeToSelect(in: episodes), "s1e1")
+    }
+
+    func testFinishedLastSpecialLoadsSeasonOne() async throws {
+        let model = try seriesModel(showing: 0, seasons: [0, 1, 2])
+        defer { clearCache() }
+
+        let selected = await model.prepareSeriesPlaybackReturn(
+            playback("s0e2", season: 0, completed: true),
+            fetchEpisodes: { _, season in try self.page(season, count: 2) }
+        )
+
+        XCTAssertEqual(selected, "s1e1")
+        XCTAssertEqual(model.selectedSeason?.seasonNumber, 1)
     }
 
     func testFinishedFinaleOfTheLastSeasonStaysOnTheFinale() async throws {
@@ -220,6 +240,32 @@ final class SeriesPlaybackReturnTests: XCTestCase {
         let returned = SeriesPlaybackReturnInbox.take(seriesContentId: "series-b")
         XCTAssertEqual(returned?.episodeContentId, "b-s3e4")
         XCTAssertEqual(returned?.seasonNumber, 3)
+    }
+
+    func testUpNextCountsDownOnlyForTheNextEpisodeNotAnOnDeckPick() throws {
+        let item = try JSONDecoder().decode(SectionItem.self, from: Data(
+            #"{"contentId":"half-watched-movie","type":"movie","title":"Elsewhere"}"#.utf8
+        ))
+        for fromOnDeck in [true, false] {
+            let model = PlayerViewModel()
+            defer { model.cleanup() }
+            // PlayerSettings.shared keeps a cached value; turning it on here
+            // would queue a server write and a device override.
+            try XCTSkipUnless(model.settings.autoPlayNextEpisode, "needs auto-play on, its default")
+            model.duration = 2600
+            model.currentTime = 2550
+            var pick = PlayerNextUpEpisode(onDeckItem: PlayerOnDeckItem(item: item))
+            pick.isFromOnDeck = fromOnDeck
+            model.nextUpEpisode = pick
+            // The controls' Up Next button, 50 s from the end.
+            model.showNextUpNow()
+            XCTAssertTrue(model.showNextUpScreen)
+            if fromOnDeck {
+                XCTAssertNil(model.nextUpCountdownSeconds, "an On Deck pick waits for Play Now")
+            } else {
+                XCTAssertEqual(model.nextUpCountdownSeconds, 50, "the next episode counts down")
+            }
+        }
     }
 
     // MARK: - Fixtures

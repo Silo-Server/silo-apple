@@ -89,7 +89,7 @@ final class DeviceSnapshotBuilderTests: XCTestCase {
         guard case .array(let codecs) = snapshot.videoCodecs else {
             return XCTFail("video codec diagnostics were not an array")
         }
-        XCTAssertEqual(codecs.count, AppleDecodeCapabilities.aetherOriginalHTTPVideoCodecs.count)
+        XCTAssertEqual(codecs.count, AppleDecodeCapabilities.declaredOnlineVideo.codecs.count)
         for codec in codecs {
             guard case .object(let fields) = codec else {
                 return XCTFail("video codec diagnostic was not an object")

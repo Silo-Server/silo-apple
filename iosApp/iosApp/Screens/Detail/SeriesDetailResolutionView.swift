@@ -6,13 +6,15 @@ struct SeriesDetailResolutionView: View {
     let onResolve: ((SeriesDetailContext) -> Void)?
     let onRetry: () -> Void
 
+    @Environment(\.locale) private var locale
+
     var body: some View {
         if let context = SeriesDetailContext(detail: detail), let onResolve {
             Color.clear
                 .task(id: context) { onResolve(context) }
         } else {
             ErrorView(
-                state: ErrorState(statusCode: nil, message: "Couldn't find the series for this item."),
+                state: ErrorState(statusCode: nil, message: AppLanguage.string(.detailErrorNoSeries, locale: locale)),
                 onRetry: onRetry
             )
         }

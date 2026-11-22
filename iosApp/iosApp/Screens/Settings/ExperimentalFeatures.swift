@@ -8,15 +8,15 @@ enum ExperimentalFeature: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .watchParty: return "Watch Party"
+        case .watchParty: return .settingsExperimentalWatchParty
         }
     }
 
-    var subtitle: String {
+    var subtitle: LocalizedStringResource {
         switch self {
-        case .watchParty: return "Watch together with synchronized playback"
+        case .watchParty: return .settingsExperimentalWatchPartySubtitle
         }
     }
 

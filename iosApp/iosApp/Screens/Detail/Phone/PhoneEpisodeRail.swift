@@ -9,7 +9,6 @@ struct PhoneEpisodeRail: View {
     var onPlay: ((String) -> Void)? = nil
     var currentContentId: String? = nil
     var selectsCenteredEpisode = false
-    var captionStyleOverride: CardCaptionStyle? = nil
     var onSetWatched: ((EpisodeListItem, Bool) -> Void)? = nil
     var isUpdatingWatched = false
     var favoriteStates: [String: Bool] = [:]
@@ -39,7 +38,6 @@ struct PhoneEpisodeRail: View {
                         cardWidth: cardWidth,
                         stillHeight: stillHeight,
                         stillCornerRadius: stillCornerRadius,
-                        captionStyle: captionStyleOverride ?? uiCustomization.cardPresentation.caption,
                         onSelect: { onSelect(episode.contentId) },
                         onPlay: onPlay.map { play in
                             { play(episode.contentId) }
@@ -58,6 +56,7 @@ struct PhoneEpisodeRail: View {
             .padding(.horizontal, HorizontalMediaRailLayout.isPhone ? 0 : SiloTheme.safePadding)
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
+            .mouseDragScrolling()
         }
         .contentMargins(.leading, leadingContentMargin, for: .scrollContent)
         .contentMargins(.trailing, trailingContentMargin, for: .scrollContent)
@@ -144,12 +143,12 @@ enum PhoneEpisodeRailLayout {
 }
 
 private struct PhoneEpisodeCard: View {
+    @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     let isCurrent: Bool
     let cardWidth: CGFloat
     let stillHeight: CGFloat
     let stillCornerRadius: CGFloat
-    let captionStyle: CardCaptionStyle
     let onSelect: () -> Void
     let onPlay: (() -> Void)?
     let onSetWatched: ((EpisodeListItem, Bool) -> Void)?
@@ -166,14 +165,12 @@ private struct PhoneEpisodeCard: View {
         VStack(alignment: .leading, spacing: 8) {
             thumbnailControls
 
-            if captionStyle.showsTitle {
-                Button(action: onSelect) {
-                    caption
-                }
-                .buttonStyle(.plain)
-                // The thumbnail exposes the same action and full episode description.
-                .accessibilityHidden(true)
+            Button(action: onSelect) {
+                caption
             }
+            .buttonStyle(.plain)
+            // The thumbnail exposes the same action and full episode description.
+            .accessibilityHidden(true)
         }
         .frame(width: cardWidth, alignment: .leading)
         .mediaActionFeedback(actionFeedback)
@@ -198,7 +195,7 @@ private struct PhoneEpisodeCard: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(
-                    "Play Season \(episode.seasonNumber), Episode \(episode.episodeNumber)"
+                    Text(.detailPlaySeasonEpisode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))
                 )
             }
         }
@@ -207,14 +204,14 @@ private struct PhoneEpisodeCard: View {
         #endif
         .contextMenu {
             #if os(iOS)
-            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",
+            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode", // i18n-ignore: watch-party payload (D44)
                 episode: episode)
             #endif
             MediaStateMenuItems(
                 isWatched: episode.userData?.played == true,
                 isFavorite: isFavorite,
                 inWatchlist: inWatchlist,
-                watchedSubject: "Episode",
+                watchedSubject: "Episode", // i18n-ignore: fragment for MediaStateMenuItems (shared component, not in this group)
                 isUpdating: isUpdatingWatched || actionFeedback.isUpdating,
                 onToggleWatched: onSetWatched.map { update in
                     { update(episode, !(episode.userData?.played ?? false)) }
@@ -235,42 +232,40 @@ private struct PhoneEpisodeCard: View {
                 nowViewingTag
             }
 
-            Text(EpisodeCardCaption.railTitle(for: episode))
+            Text(EpisodeCardCaption.railTitle(for: episode, locale: locale))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(titleColor)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .multilineTextAlignment(.leading)
 
-            if captionStyle.showsMetadata {
-                if let metadataLine = EpisodeCardCaption.railMetadata(for: episode) {
-                    HStack(spacing: 6) {
-                        Text(metadataLine)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Color.siloSecondaryText)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                            .multilineTextAlignment(.leading)
-                        if showsMachineTranslationMarker {
-                            MachineTranslatedLabel(compact: true)
-                        }
-                    }
-                } else if showsMachineTranslationMarker {
-                    MachineTranslatedLabel(compact: true)
-                }
-
-                // A hidden description is left out; the title and metadata
-                // stay so the card still identifies the episode.
-                if !spoilers.hidesOverview(for: watchState),
-                   let overview = episode.overview, !overview.isEmpty {
-                    let description = Text(overview)
-                        .font(.caption)
+            if let metadataLine = EpisodeCardCaption.railMetadata(for: episode) {
+                HStack(spacing: 6) {
+                    Text(metadataLine)
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(Color.siloSecondaryText)
-                        .lineSpacing(2)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                         .multilineTextAlignment(.leading)
-                    if dynamicTypeSize.isAccessibilitySize {
-                        description
-                    } else {
-                        description.lineLimit(3, reservesSpace: true)
+                    if showsMachineTranslationMarker {
+                        MachineTranslatedLabel(compact: true)
                     }
+                }
+            } else if showsMachineTranslationMarker {
+                MachineTranslatedLabel(compact: true)
+            }
+
+            // A hidden description is left out; the title and metadata
+            // stay so the card still identifies the episode.
+            if !spoilers.hidesOverview(for: watchState),
+               let overview = episode.overview, !overview.isEmpty {
+                let description = Text(overview)
+                    .font(.caption)
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .lineSpacing(2)
+                    .multilineTextAlignment(.leading)
+                if dynamicTypeSize.isAccessibilitySize {
+                    description
+                } else {
+                    description.lineLimit(3, reservesSpace: true)
                 }
             }
         }
@@ -290,7 +285,7 @@ private struct PhoneEpisodeCard: View {
     }
 
     private var nowViewingTag: some View {
-        Text("NOW VIEWING")
+        Text(.detailNowViewing)
             .font(.caption2.weight(.heavy))
             .tracking(0.8)
             .foregroundColor(.black)
@@ -300,7 +295,7 @@ private struct PhoneEpisodeCard: View {
     }
 
     private var accessibilityDescription: String {
-        PhoneEpisodeFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent)
+        PhoneEpisodeFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent, locale: locale)
     }
 
     private var spoilers: EpisodeSpoilerSettings {
@@ -335,7 +330,7 @@ private struct PhoneEpisodeCard: View {
             }
 
             if let progress = progressFraction {
-                progressBar(fraction: progress)
+                ProgressBar(value: progress)
             }
         }
         .frame(width: cardWidth, height: stillHeight)
@@ -365,17 +360,6 @@ private struct PhoneEpisodeCard: View {
                 .font(.system(size: 11, weight: .bold))
                 .foregroundColor(.black)
         }
-    }
-
-    private func progressBar(fraction: Double) -> some View {
-        ZStack(alignment: .leading) {
-            Rectangle()
-                .fill(Color.black.opacity(0.6))
-            Rectangle()
-                .fill(Color.white)
-                .frame(width: cardWidth * CGFloat(fraction))
-        }
-        .frame(width: cardWidth, height: 3)
     }
 
     private var progressFraction: Double? {

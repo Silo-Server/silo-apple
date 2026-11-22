@@ -6,6 +6,10 @@ import Synchronization
 struct WatchPartyRecentOwner: Codable, Equatable, Sendable {
     let accountID: String
     let accountEpoch: UUID
+    /// The saved account on this device (`Account.localAccountId`), so two
+    /// accounts on one server never see each other's recent room. An entry
+    /// from before accounts has none and matches no current owner.
+    let localAccountID: String?
     let serverID: String
     let serverURL: String
     let profileID: String
@@ -13,6 +17,7 @@ struct WatchPartyRecentOwner: Codable, Equatable, Sendable {
     init?(auth: CapturedDurableAccountAuth) {
         guard let profile = auth.request.profileId, !profile.isEmpty else { return nil }
         accountID = auth.accountID
+        localAccountID = auth.localAccountId
         accountEpoch = auth.accountEpoch
         serverID = auth.request.account.serverId
         serverURL = auth.request.account.serverURL

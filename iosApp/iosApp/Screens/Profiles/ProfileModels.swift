@@ -78,3 +78,17 @@ enum ProfilePIN {
         c.isASCII && c.isNumber
     }
 }
+
+extension AccountProfile {
+    /// The part of a fetched profile the picker draws, cached on its account.
+    init(_ profile: UserProfile) {
+        self.init(
+            id: profile.id,
+            name: profile.name,
+            avatarEmoji: profile.avatarEmoji,
+            avatarImageUrl: profile.avatarImageUrl,
+            hasPin: profile.hasPin,
+            isChild: profile.isChild
+        )
+    }
+}

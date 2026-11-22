@@ -28,28 +28,37 @@ struct TVIntroSkipPill: View {
             }
             Button(action: action) {
                 Text(pill.kind.actionTitle)
-                    .lineLimit(1)
-                    .fixedSize()
             }
-            .buttonStyle(TVIntroSkipPillButtonStyle(pill: pill, isSelectTarget: isSelectTarget))
+            .buttonStyle(TVPlayerPillButtonStyle(pill: pill, isSelectTarget: isSelectTarget))
             .accessibilityLabel(pill.kind.accessibilityLabel)
         }
     }
 }
 
-private struct TVIntroSkipPillButtonStyle: ButtonStyle {
-    let pill: IntroSkipPrompt.Pill
-    let isSelectTarget: Bool
+/// The player pills' capsule, shared by the intro-skip and buffering-quality
+/// pills. `pill` draws its countdown behind the label; a button without one,
+/// such as the buffering card's, gets the same capsule with no fill.
+struct TVPlayerPillButtonStyle: ButtonStyle {
+    let pill: (any PlayerTimedPill)?
+    var isSelectTarget = false
+    /// The label's white while unfocused.
+    var unfocusedLabelOpacity = 0.62
 
     func makeBody(configuration: Configuration) -> some View {
-        TVIntroSkipPillBody(configuration: configuration, pill: pill, isSelectTarget: isSelectTarget)
+        TVPlayerPillBody(
+            configuration: configuration,
+            pill: pill,
+            isSelectTarget: isSelectTarget,
+            unfocusedLabelOpacity: unfocusedLabelOpacity
+        )
     }
 }
 
-private struct TVIntroSkipPillBody: View {
+private struct TVPlayerPillBody: View {
     let configuration: ButtonStyleConfiguration
-    let pill: IntroSkipPrompt.Pill
+    let pill: (any PlayerTimedPill)?
     let isSelectTarget: Bool
+    let unfocusedLabelOpacity: Double
 
     @Environment(\.isFocused) private var hasFocus
 
@@ -57,14 +66,18 @@ private struct TVIntroSkipPillBody: View {
 
     var body: some View {
         configuration.label
+            .lineLimit(1)
+            .fixedSize()
             .font(.system(size: 28, weight: .semibold))
-            .foregroundStyle(isFocused ? Color.white : Color.white.opacity(0.62))
+            .foregroundStyle(isFocused ? Color.white : Color.white.opacity(unfocusedLabelOpacity))
             .padding(.horizontal, 40)
             .frame(height: 72)
             .background {
                 ZStack {
                     Capsule().fill(Color.black.opacity(0.65))
-                    IntroSkipPillProgress(pill: pill, color: fillColor)
+                    if let pill {
+                        PlayerPillProgress(pill: pill, color: fillColor)
+                    }
                 }
                 .clipShape(Capsule())
             }

@@ -18,6 +18,7 @@ struct PhoneSimilarRail: View {
     @State private var items: [SimilarPosterItem] = []
     @State private var isLoading = true
     @State private var loadedFor: String? = nil
+    @Environment(\.locale) private var locale
     private var uiCustomization: UICustomizationPreferences { .shared }
 
     var body: some View {
@@ -33,7 +34,7 @@ struct PhoneSimilarRail: View {
 
     private func section(@ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "More Like This")
+            PhoneSectionHeader(title: AppLanguage.string(.detailMoreLikeThis, locale: locale))
                 .padding(.horizontal, SiloTheme.safePadding)
             content()
         }
@@ -133,6 +134,7 @@ struct PhonePosterRailCards: View {
             LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: 12) {
                 ForEach(items) { item in
                     Button {
+                        DetailSeedStore.offer(item.card.map(DetailSeedSource.browse), opening: item.contentId)
                         onSelect(item.contentId)
                     } label: {
                         PhonePosterCard(
@@ -149,6 +151,7 @@ struct PhonePosterRailCards: View {
             .scrollTargetLayout()
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
+            .mouseDragScrolling()
         }
         .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
         .mediaRailScrolling()
@@ -172,9 +175,12 @@ struct SimilarPosterItem: Identifiable, Hashable {
     /// otherwise the rail's `placeholderSymbol` applies.
     let placeholderSymbol: String?
     let accessibilityDescription: String
+    /// The catalog card, offered to the page a tap opens.
+    let card: BrowseItem?
     var id: String { contentId }
 
     init(card: BrowseItem) {
+        self.card = card
         self.contentId = card.contentId
         self.title = card.title
         self.posterUrl = card.posterUrl
@@ -182,20 +188,58 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.year = card.year
         self.subtitle = nil
         self.placeholderSymbol = ArtworkPlaceholderSymbol.forMediaType(card.type)
-        self.accessibilityDescription = [card.title, card.year.map(String.init)]
+        self.accessibilityDescription = [card.title, card.year.map { LocaleFormat.integer($0) }]
             .compactMap { $0 }
             .joined(separator: ", ")
     }
 
     init(audiobook item: AudiobookRelatedItem) {
+        self.card = BrowseItem(audiobook: item)
         self.contentId = item.contentId
         self.title = item.title
         self.posterUrl = item.posterUrl
         self.posterThumbhash = nil
         self.year = item.year
-        self.subtitle = item.seriesIndex.map { "Book \($0)" }
+        self.subtitle = item.seriesIndex.map { AppLanguage.string(.detailAudiobookBookNumber($0)) }
         self.placeholderSymbol = nil
         self.accessibilityDescription = audiobookRelatedItemAccessibilityLabel(item)
+    }
+}
+
+extension BrowseItem {
+    /// A book from an audiobook page's series or related rails, lifted into
+    /// a card so the page it opens draws it until its detail loads.
+    init(audiobook item: AudiobookRelatedItem) {
+        self.init(
+            contentId: item.contentId,
+            type: "audiobook",
+            title: item.title,
+            year: item.year,
+            genres: nil,
+            contentRating: nil,
+            advisoryAge: nil,
+            advisorySource: nil,
+            status: nil,
+            ratingImdb: nil,
+            ratingTmdb: nil,
+            ratingRtCritic: nil,
+            ratingRtAudience: nil,
+            runtime: nil,
+            originalLanguage: nil,
+            studios: nil,
+            networks: nil,
+            showStatus: nil,
+            overview: nil,
+            posterUrl: item.posterUrl,
+            posterThumbhash: nil,
+            backdropUrl: nil,
+            backdropThumbhash: nil,
+            addedAt: nil,
+            releaseDate: nil,
+            lastAirDate: nil,
+            userState: nil,
+            overlaySummary: nil
+        )
     }
 }
 
@@ -206,6 +250,7 @@ private struct PhonePosterCard: View {
     let aspectRatio: CGFloat
     let placeholderSymbol: String
     private var uiCustomization: UICustomizationPreferences { .shared }
+    @Environment(\.locale) private var locale
 
     private var cardWidth: CGFloat {
         SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
@@ -217,15 +262,12 @@ private struct PhonePosterCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             poster
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                Text(item.title)
-                    .font(.siloSubheadline)
-                    .foregroundStyle(Color.siloOnSurface)
-                    .lineLimit(2, reservesSpace: true)
-                    .multilineTextAlignment(.leading)
-            }
-            if uiCustomization.cardPresentation.caption.showsMetadata,
-               let caption = item.subtitle ?? item.year.map(String.init) {
+            Text(item.title)
+                .font(.siloSubheadline)
+                .foregroundStyle(Color.siloOnSurface)
+                .lineLimit(2, reservesSpace: true)
+                .multilineTextAlignment(.leading)
+            if let caption = item.subtitle ?? item.year.map({ LocaleFormat.integer($0, locale: locale) }) {
                 Text(caption)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)

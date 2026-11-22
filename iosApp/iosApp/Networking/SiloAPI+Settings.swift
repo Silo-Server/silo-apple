@@ -145,35 +145,6 @@ extension SiloAPI {
         }
     }
 
-    /// Atomically add or remove one semantic shortcut from `nav.shortcuts`.
-    ///
-    /// Unlike a whole-value PUT, this operation is safe when multiple clients
-    /// edit different shortcuts from stale effective snapshots.
-    @discardableResult
-    func putNavigationShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        profileId: String? = nil,
-        requestIdentity: HTTPRequestIdentity? = nil
-    ) async throws -> StoredSettingValue {
-        guard item.isContractValid else {
-            throw SettingsAPIError.invalidValue(message: "Shortcut item is invalid.")
-        }
-        if case .builtin = item {
-            throw SettingsAPIError.invalidValue(message: "Built-in destinations cannot be shortcuts.")
-        }
-        do {
-            return try await apiV2Client.updateNavigationShortcut(
-                item,
-                present: present,
-                profileID: try await writeProfile(explicit: profileId ?? requestIdentity?.profileId),
-                expectedIdentity: requestIdentity
-            )
-        } catch {
-            throw SettingsAPIError.from(error, key: SettingKey.navShortcuts.rawValue, scope: .profile)
-        }
-    }
-
     /// Clear the explicit value at one scope, so the setting inherits again.
     ///
     /// Throws ``SettingsAPIError/noValueAtScope`` when nothing was stored

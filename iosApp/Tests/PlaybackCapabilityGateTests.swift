@@ -14,11 +14,11 @@ final class PlaybackCapabilityGateTests: XCTestCase {
 
     /// The vendored fixture plus the header-authenticated media feature the
     /// server always advertises (`ServerFeaturesV3`), with `installation`.
-    private func available(installation: String? = nil, dropping feature: String? = nil) throws -> String {
+    private func available(installation: String? = nil, dropping dropped: [String] = []) throws -> String {
         let data = try Support.mutatedBody(named: "playback_capability_available", bundleClass: Self.self) {
             var features = $0["features"] as? [String] ?? []
             features.append(PlaybackProtocolV3.headerAuthenticatedMediaFeature)
-            $0["features"] = features.filter { $0 != feature }
+            $0["features"] = features.filter { !dropped.contains($0) }
             if let installation { $0["installation_id"] = installation }
         }
         return String(decoding: data, as: UTF8.self)
@@ -69,7 +69,7 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         for feature in [PlaybackProtocolV3.planFeature, PlaybackProtocolV3.neutralContractFeature,
                         PlaybackProtocolV3.headerAuthenticatedMediaFeature, PlaybackSequencedContract.feature] {
             let partial = try decoder.decode(APIv2PlaybackCapabilities.self,
-                from: Data(try available(dropping: feature).utf8))
+                from: Data(try available(dropping: [feature]).utf8))
             await assertTerminal("server_upgrade_required") { _ = try partial.requireAvailable() }
         }
 
@@ -83,6 +83,41 @@ final class PlaybackCapabilityGateTests: XCTestCase {
                 $0.removeValue(forKey: "installation_id")
             })
         await assertTerminal("playback_not_configured") { _ = try anonymous.requireAvailable() }
+    }
+
+    /// The buffering-quality features are optional: the capability decodes
+    /// with or without them and says which the server advertises.
+    func testTheCapabilityCarriesTheOptionalBufferingQualityFeatures() async throws {
+        let optional = [PlaybackProtocolV3.bufferingQualityFeature, PlaybackProtocolV3.planSummaryFeature,
+                        PlaybackProtocolV3.connectionSpeedFeature]
+        let (plain, plainStub) = try await makeGate()
+        plainStub.reply(200, try available(dropping: optional))
+        let without = try await plain.requireNeutralProtocolV3()
+        XCTAssertFalse(without.bufferingQuality)
+        XCTAssertFalse(without.connectionSpeed)
+
+        // The vendored fixture advertises all three.
+        let (gate, stub) = try await makeGate()
+        stub.reply(200, try available())
+        let with = try await gate.requireNeutralProtocolV3()
+        XCTAssertTrue(with.bufferingQuality)
+        XCTAssertTrue(with.connectionSpeed)
+    }
+
+    /// With `connection_speed_v1` the document names the media-path probe
+    /// and its schedule.
+    func testTheCapabilityDecodesTheBandwidthProbeURL() throws {
+        let capabilities = try HTTPClient.makeJSONDecoder().decode(
+            APIv2PlaybackCapabilities.self,
+            from: Support.data(named: "playback_capability_available", bundleClass: Self.self)
+        )
+        XCTAssertEqual(
+            capabilities.bandwidthProbeUrl,
+            "http://api.example.test/api/v2/playback/bandwidth-probe?media_path=true"
+        )
+        XCTAssertEqual(capabilities.bandwidthProbeTargetKbps, 113_750)
+        XCTAssertEqual(capabilities.bandwidthProbeAutomatic, true)
+        XCTAssertEqual(capabilities.bandwidthProbeMaxAgeSeconds, 604_800)
     }
 
     // MARK: Caching
@@ -101,6 +136,23 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths, [path, path], "a refusal is re-probed; availability is not")
         XCTAssertEqual(stub.methods, ["GET", "GET"])
         XCTAssertEqual(stub.requests.last?.headers["x-profile-id"], "profile-one")
+    }
+
+    /// Settings reads past the cache, so a feature the server withdraws
+    /// while the app runs hides on the next visit; the fresh answer is
+    /// cached for playback too.
+    func testAFreshReadSkipsTheCache() async throws {
+        let (gate, stub) = try await makeGate()
+        stub.sequence([.json(200, try available()),
+                       .json(200, try available(dropping: [PlaybackProtocolV3.connectionSpeedFeature]))])
+
+        let cached = try await gate.requireNeutralProtocolV3()
+        XCTAssertTrue(cached.connectionSpeed)
+        let fresh = try await gate.requireNeutralProtocolV3(fresh: true)
+        XCTAssertFalse(fresh.connectionSpeed)
+        let afterwards = try await gate.requireNeutralProtocolV3()
+        XCTAssertEqual(afterwards, fresh)
+        XCTAssertEqual(stub.requestedPaths, [path, path])
     }
 
     func testGateMapsServerRefusalsToTerminalFailures() async throws {

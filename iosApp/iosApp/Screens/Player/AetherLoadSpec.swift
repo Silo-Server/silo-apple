@@ -12,6 +12,19 @@ import Foundation
 /// tracks are resolved to an exact stream id before loading; the existing
 /// post-open reconciliation remains a fallback for partial metadata.
 enum AetherInitialAudioPreference {
+    /// The languages Aether starts from for `prepared`: the selected track's,
+    /// else the version's effective audio language (a download's stored
+    /// series preference), else the profile's.
+    static func languages(for prepared: PreparedPlayback, profileLanguage: String) -> [String] {
+        let effective = prepared.selectedVersion.effectiveAudioLanguage?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return languages(
+            selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
+            tracks: prepared.selectedVersion.audioTracks ?? [],
+            fallbackLanguage: effective.isEmpty ? profileLanguage : effective
+        )
+    }
+
     static func languages(
         selectedOrdinal: Int?,
         tracks: [AudioTrack],
@@ -153,6 +166,16 @@ struct AetherLoadSpec {
     /// The selected native row uses the same picker ID space as sidecars,
     /// but resolves directly to its container stream, without an external slot.
     let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
+    /// The declared subtitle artifact is the server's extract of a track
+    /// inside the media file. That response streams until the server has
+    /// demuxed the whole file, which takes tens of seconds on a large remux.
+    let declaresEmbeddedTrackExtract: Bool
+    /// Every picker row the stream carries as a legible option, selected or
+    /// not (`ApplePlaybackV3PlanAdapter.hlsSubtitleRenditionSlots`). Such a
+    /// track has no declared external slot and no Aether id until AVPlayer
+    /// publishes the option; switching among them is AVPlayer's own media
+    /// selection, and none needs a sidecar.
+    let hlsSubtitleRenditions: [Int64: HLSSubtitleRenditionSlot]
 
     /// The bridge for codecs Aether cannot stream-copy, when a caller does not
     /// name one. Lossless rather than Aether's `.surroundCompat` default;
@@ -189,6 +212,21 @@ struct AetherLoadSpec {
     static func offlineAudioStreamIndex(manifestOrdinal: Int, probedTrackIDs: [Int]) -> Int32? {
         guard probedTrackIDs.indices.contains(manifestOrdinal) else { return nil }
         return Int32(exactly: probedTrackIDs[manifestOrdinal])
+    }
+
+    /// The stream a download opens on when its manifest lists no audio
+    /// tracks: the first probed track in the saved series language, else the
+    /// download-time ordinal's track.
+    static func offlineAudioStreamIndex(manifestOrdinal: Int, probedTracks: [(id: Int, language: String?)],
+                                        savedLanguage: String?) -> Int32? {
+        if let saved = savedLanguage?.trimmingCharacters(in: .whitespaces), !["", "und"].contains(saved.lowercased()),
+           let match = probedTracks.first(where: { track in
+               guard let language = track.language, !["", "und"].contains(language.lowercased()) else { return false }
+               return SubtitleAutoResolver.languagesMatch(language, saved)
+           }) {
+            return Int32(exactly: match.id)
+        }
+        return offlineAudioStreamIndex(manifestOrdinal: manifestOrdinal, probedTrackIDs: probedTracks.map(\.id))
     }
 
     @MainActor
@@ -241,6 +279,8 @@ struct AetherLoadSpec {
             return (SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index), URLRequest(url: url))
         })
         embeddedSubtitleAlias = nil
+        declaresEmbeddedTrackExtract = false
+        hlsSubtitleRenditions = [:]
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -324,6 +364,8 @@ struct AetherLoadSpec {
             return (SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index), request)
         })
         embeddedSubtitleAlias = nil
+        declaresEmbeddedTrackExtract = false
+        hlsSubtitleRenditions = [:]
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -405,6 +447,7 @@ struct AetherLoadSpec {
         // every later Aether external id by one.
         var externalSubtitles: [ExternalSubtitleTrack] = []
         var externalSubtitleAppTrackIDs: [Int64?] = []
+        var declaresEmbeddedTrackExtract = false
         if plan.subtitle.embedded == nil,
            let artifact = plan.subtitle.artifact,
            PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode) {
@@ -454,6 +497,7 @@ struct AetherLoadSpec {
             externalSubtitleAppTrackIDs.append(inventoryItem.map { item in
                 SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)
             })
+            declaresEmbeddedTrackExtract = inventoryItem?.source == "embedded"
         }
 
         self.planID = plan.planId
@@ -482,6 +526,7 @@ struct AetherLoadSpec {
         }
         self.audioSourceStreamIndex = audioSourceStreamIndex
         self.externalSubtitleAppTrackIDs = externalSubtitleAppTrackIDs
+        self.declaresEmbeddedTrackExtract = declaresEmbeddedTrackExtract
         if let item = plan.selectedSubtitleInventoryItem, let value = item.fontBundleUrl {
             let url = resolveURL.map { $0(value) } ?? URL(string: value)
             guard let url, ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else {
@@ -506,6 +551,7 @@ struct AetherLoadSpec {
         } else {
             embeddedSubtitleAlias = nil
         }
+        hlsSubtitleRenditions = ApplePlaybackV3PlanAdapter.hlsSubtitleRenditionSlots(plan: plan)
         let isServerHLS = [
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,
@@ -611,21 +657,32 @@ enum AetherObjectAudioPolicy {
     /// from rear heights for that renderer to fold down.
     static let layout: SpatialSpeakerLayout = .l714
 
-    /// The setting alone decides. tvOS doesn't say whether its output can carry
-    /// Atmos: `AVAudioSession.renderingMode` resolves for the content already
-    /// playing (stereo reads `monoStereo`, the lossless 7.1 bridge `surround`),
-    /// so a check before the load would turn heights off on an Atmos receiver
-    /// after any other stream. A setup without Atmos turns the setting off
-    /// instead and keeps `audioBridgeMode`'s channels.
-    static func rendering(enabled: Bool) -> ObjectAudioRendering {
-        enabled ? .apac(layout) : .off
+    /// Whether this build can render TrueHD Atmos or DTS:X heights at all. Silo's
+    /// AetherEngine fork leaves both object-audio components out, because they may
+    /// need third-party patent licenses, so the setting is hidden and never asks.
+    static var isAvailable: Bool {
+        AetherEngine.OptionalComponent.trueHDObjectAudio.isBuiltIn
+            || AetherEngine.OptionalComponent.dtsxObjectAudio.isBuiltIn
     }
 
-    /// `apac 7.1.4` or `off`, for the diagnostics line.
+    /// The setting decides when the build has the components. tvOS doesn't say
+    /// whether its output can carry Atmos: `AVAudioSession.renderingMode`
+    /// resolves for the content already playing (stereo reads `monoStereo`, the
+    /// lossless 7.1 bridge `surround`), so a check before the load would turn
+    /// heights off on an Atmos receiver after any other stream. A setup without
+    /// Atmos turns the setting off instead and keeps `audioBridgeMode`'s channels.
+    static func rendering(enabled: Bool) -> ObjectAudioRendering {
+        enabled && isAvailable ? .apac(layout) : .off
+    }
+
+    /// `apac 7.1.4` or `off`, for the diagnostics line. Silo asks only for
+    /// `.apac`; the other cases name what Aether would deliver.
     static func diagnosticName(_ rendering: ObjectAudioRendering) -> String {
         switch rendering {
         case .off: return "off"
         case .apac(let layout): return "apac \(layout.rawValue)"
+        case .lpcm(let layout): return "lpcm \(layout.rawValue)"
+        case .render(let layout): return "render \(layout.rawValue)"
         }
     }
 

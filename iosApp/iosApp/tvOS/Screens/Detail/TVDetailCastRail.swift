@@ -20,13 +20,15 @@ struct TVDetailCastRail: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: cardSpacing) {
-                ForEach(cast.prefix(maxEntries)) { member in
+                // By position: one person can hold several credits under one
+                // person ID, and duplicate IDs break the lazy stack and focus.
+                ForEach(Array(cast.prefix(maxEntries).enumerated()), id: \.offset) { index, member in
                     TVCastCard(
                         member: member,
                         photoSize: Self.photoSize,
                         onTap: onTap
                     )
-                    .focused($focusedCastId, equals: member.id)
+                    .focused($focusedCastId, equals: String(index))
                 }
             }
             .padding(.vertical, 12)
@@ -45,7 +47,7 @@ struct TVDetailCastRail: View {
     }
 
     private var defaultFocusId: String? {
-        cast.prefix(maxEntries).first?.id
+        cast.isEmpty ? nil : "0"
     }
 }
 
@@ -125,7 +127,10 @@ private struct CastCardLabel: View {
         .clipShape(Circle())
         .overlay(
             Circle()
-                .stroke(Color.white.opacity(isFocused ? 0.85 : 0.08), lineWidth: isFocused ? 2 : 1)
+                .stroke(
+                    Color.white.opacity(isFocused ? TVCardOutline.opacity : 0.08),
+                    lineWidth: isFocused ? TVCardOutline.lineWidth : 1
+                )
         )
     }
 }

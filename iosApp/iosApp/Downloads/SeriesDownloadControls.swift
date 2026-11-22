@@ -30,7 +30,7 @@ struct SeriesDownloadButton: View {
                     .foregroundColor(Color.siloOnSurface)
                     .frame(width: 42, height: 42)
                     .background(Circle().fill(Color.white.opacity(isMonitored ? 0.18 : 0.10)))
-                Text("Download")
+                Text(.audiobookDetailDownload)
                     .siloScaledFont(size: 10, weight: .medium, relativeTo: .caption2)
                     .foregroundColor(Color.siloOnSurface.opacity(isMonitored ? 0.92 : 0.6))
                     .phoneActionCaption()
@@ -39,8 +39,8 @@ struct SeriesDownloadButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Download")
-        .accessibilityValue(isMonitored ? "Monitoring" : "")
+        .accessibilityLabel(Text(.audiobookDetailDownload))
+        .accessibilityValue(isMonitored ? Text(.downloadsMonitorStatusMonitoring) : Text(verbatim: ""))
         .sheet(isPresented: $showOptions) {
             SeriesDownloadSheet(
                 seriesId: seriesId,

@@ -186,4 +186,14 @@ final class TrailerRailModelTests: XCTestCase {
             "https://www.youtube.com/watch?v=a-B_c1D2e3F"
         )
     }
+
+    /// `canOpenURL` answers false for a scheme the app has not declared,
+    /// whatever is installed. The phone rail would then read a cancelled
+    /// "open YouTube" prompt as "no app" and open the watch page anyway, and
+    /// tvOS would hide every remote card.
+    func testHostAppDeclaresTheDeepLinkSchemeItAsksAbout() throws {
+        let scheme = try XCTUnwrap(TrailerRail.youtubeDeepLinkURL(siteKey: "k1")?.scheme)
+        let declared = Bundle.main.object(forInfoDictionaryKey: "LSApplicationQueriesSchemes") as? [String]
+        XCTAssertEqual(declared?.contains(scheme), true)
+    }
 }

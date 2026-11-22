@@ -6,6 +6,7 @@ import SwiftUI
 /// singleton (local `UserDefaults`, same pattern as `PlayerSettings`).
 struct DownloadsSettingsView: View {
     @Bindable private var settings = DownloadSettings.shared
+    @Environment(\.locale) private var locale
     private var manager: DownloadManager { DownloadManager.shared }
     @State private var showDeleteAllConfirm = false
     @State private var pendingOtherRemoval: DownloadStorageReclaim.OtherStorage?
@@ -20,23 +21,20 @@ struct DownloadsSettingsView: View {
     /// batch quality downloads seasons and series in original quality.
     private var qualityFooter: String {
         let batches = manager.canChooseBatchQuality
-        let base = "Original prefers source quality and may prepare a compatibility file if this device needs one. "
-            + (batches ? "Bitrate presets" : "For single items, bitrate presets")
-            + " are prepared on the server when the original is larger"
         let showsResolution = manager.capability?.qualityOptions.contains { ($0.maxHeight ?? 0) > 0 } ?? false
         let monitors = manager.canChooseMonitorQuality
-        let scope = batches
-            ? (monitors
-                ? " This is the default for every download and monitor; the Download sheet can change it."
-                : " This is the default for every download; the Download sheet can change it. Monitored series download in original quality.")
-            : " Series and season downloads use original quality."
-        return base + (showsResolution ? ", at up to the resolution shown." : ".") + scope
-    }
-
-    private var heldProgressFooter: String {
-        let count = manager.heldProgressCount
-        let subject = count == 1 ? "1 offline watch position" : "\(count) offline watch positions"
-        return "\(subject) may not have reached the server. Silo won't send them again. Playing the download again replaces them."
+        let presets: LocalizedStringResource = switch (batches, showsResolution) {
+        case (true, true): .downloadsSettingsQualityPresetsResolution
+        case (true, false): .downloadsSettingsQualityPresets
+        case (false, true): .downloadsSettingsQualitySinglePresetsResolution
+        case (false, false): .downloadsSettingsQualitySinglePresets
+        }
+        let scope: LocalizedStringResource = batches
+            ? (monitors ? .downloadsSettingsQualityScopeMonitors : .downloadsSettingsQualityScopeDownloads)
+            : .downloadsSettingsQualityScopeOriginalOnly
+        return [LocalizedStringResource.downloadsSettingsQualityOriginal, presets, scope]
+            .map { AppLanguage.string($0, locale: locale) }
+            .joined(separator: " ")
     }
 
     /// The server on this device the group belongs to, if any.
@@ -45,51 +43,50 @@ struct DownloadsSettingsView: View {
     }
 
     private func title(for group: DownloadStorageReclaim.OtherStorage) -> String {
-        server(for: group)?.displayName ?? group.serverURL ?? "Unrecognized data"
+        server(for: group)?.displayName ?? group.serverURL
+            ?? AppLanguage.string(.downloadsSettingsUnrecognizedData, locale: locale)
     }
 
-    private func detail(for group: DownloadStorageReclaim.OtherStorage) -> String {
-        if group.isActiveServer { return "Other profiles on this server" }
-        if server(for: group) != nil { return "Another server you've added" }
-        return group.serverURL == nil ? "Not used by this version of Silo" : "A server no longer on this device"
+    private func detail(for group: DownloadStorageReclaim.OtherStorage) -> LocalizedStringResource {
+        if group.isActiveServer { return .downloadsSettingsOtherProfiles }
+        if server(for: group) != nil { return .downloadsSettingsOtherServer }
+        return group.serverURL == nil ? .downloadsSettingsOldVersion : .downloadsSettingsRemovedServer
     }
 
     /// Spells out when the data belongs to a profile or server the user can
     /// still switch to: its downloads go, and may download again later.
-    private func removalMessage(for group: DownloadStorageReclaim.OtherStorage) -> String {
-        if group.isActiveServer {
-            return "Downloads saved for other profiles on this server will be deleted from this device. "
-                + "Switching to one of those profiles may download its items again."
-        }
-        if server(for: group) != nil {
-            return "Downloads saved for this server will be deleted from this device. "
-                + "Switching to this server may download its items again."
-        }
-        return "No server on this device uses this data."
+    private func removalMessage(for group: DownloadStorageReclaim.OtherStorage) -> LocalizedStringResource {
+        if group.isActiveServer { return .downloadsSettingsRemoveOtherProfilesMessage }
+        if server(for: group) != nil { return .downloadsSettingsRemoveOtherServerMessage }
+        return .downloadsSettingsRemoveUnusedMessage
     }
 
     var body: some View {
         Form {
             Section {
-                Toggle("Download over Wi-Fi only", isOn: $settings.wifiOnly)
+                Toggle(isOn: $settings.wifiOnly) { Text(.downloadsSettingsWifiOnly) }
                     .tint(.siloSwitchOn)
-                Picker("Simultaneous Downloads", selection: $settings.simultaneousDownloads) {
+                Picker(selection: $settings.simultaneousDownloads) {
                     ForEach(DownloadSettings.simultaneousDownloadChoices, id: \.self) { count in
-                        Text("\(count)").tag(count)
+                        Text(verbatim: LocaleFormat.integer(count)).tag(count)
                     }
+                } label: {
+                    Text(.downloadsSettingsSimultaneous)
                 }
                 .onChange(of: settings.simultaneousDownloads) {
                     manager.applyTransferLimit()
                 }
                 if formats.count > 1 {
-                    Picker("Quality", selection: $settings.preferredFormat) {
+                    Picker(selection: $settings.preferredFormat) {
                         ForEach(formats, id: \.self) { format in
                             Text(manager.capability?.label(for: format) ?? format.displayName).tag(format.rawValue)
                         }
+                    } label: {
+                        Text(.downloadsSettingsQuality)
                     }
                 }
             } header: {
-                Text("Downloads")
+                Text(.downloadsSettingsTitle)
             } footer: {
                 // Quality-behavior copy only makes sense alongside the
                 // quality picker, which is hidden when the server offers a
@@ -100,37 +97,42 @@ struct DownloadsSettingsView: View {
             }
             .listRowBackground(Color.siloGroupedCell)
 
-            Section("Monitoring Defaults") {
-                Toggle("Delete after watching", isOn: $settings.defaultDeleteWatched)
+            Section {
+                Toggle(isOn: $settings.defaultDeleteWatched) { Text(.downloadsSettingsDeleteWatched) }
                     .tint(.siloSwitchOn)
                 Stepper(
-                    settings.defaultMaxStorageGB == 0
-                        ? "Storage limit: Unlimited"
-                        : "Storage limit: \(settings.defaultMaxStorageGB) GB",
                     value: $settings.defaultMaxStorageGB,
                     in: 0...1000,
                     step: 5
-                )
+                ) {
+                    if settings.defaultMaxStorageGB == 0 {
+                        Text(.downloadsSettingsStorageLimitUnlimited)
+                    } else {
+                        Text(.downloadsSettingsStorageLimitGb(LocaleFormat.integer(settings.defaultMaxStorageGB)))
+                    }
+                }
+            } header: {
+                Text(.downloadsSettingsMonitoringDefaults)
             }
             .listRowBackground(Color.siloGroupedCell)
 
             Section {
-                Toggle("Keep watched downloads", isOn: $settings.keepWatchedDownloads)
+                Toggle(isOn: $settings.keepWatchedDownloads) { Text(.downloadsSettingsKeepWatched) }
                     .tint(.siloSwitchOn)
             } header: {
-                Text("Cleanup")
+                Text(.downloadsSettingsCleanup)
             } footer: {
                 #if os(macOS)
-                Text("When off, the Downloads page suggests freeing up space by removing items you've finished watching.")
+                Text(.downloadsSettingsCleanupFooterMac)
                 #else
-                Text("When off, the Downloads tab suggests freeing up space by removing items you've finished watching.")
+                Text(.downloadsSettingsCleanupFooter)
                 #endif
             }
             .listRowBackground(Color.siloGroupedCell)
 
-            Section("Storage") {
+            Section {
                 HStack {
-                    Text("Used")
+                    Text(.downloadsSettingsUsed)
                     Spacer()
                     Text(DownloadFormatting.bytes(manager.totalBytesUsed))
                         .foregroundColor(.siloSecondaryText)
@@ -139,9 +141,11 @@ struct DownloadsSettingsView: View {
                     Button(role: .destructive) {
                         showDeleteAllConfirm = true
                     } label: {
-                        Text("Remove All Downloads")
+                        Text(.downloadsSettingsRemoveAll)
                     }
                 }
+            } header: {
+                Text(.downloadsSettingsStorage)
             }
             .listRowBackground(Color.siloGroupedCell)
 
@@ -160,34 +164,38 @@ struct DownloadsSettingsView: View {
                             Spacer()
                             Text(DownloadFormatting.bytes(group.bytes))
                                 .foregroundColor(.siloSecondaryText)
-                            Button("Remove", role: .destructive) {
+                            Button(role: .destructive) {
                                 pendingOtherRemoval = group
+                            } label: {
+                                Text(.downloadsSettingsRemove)
                             }
                             .buttonStyle(.borderless)
                         }
                     }
                 } header: {
-                    Text("Other Download Data")
+                    Text(.downloadsSettingsOtherData)
                 } footer: {
-                    Text("Saved for other servers, other profiles, or by other versions of Silo. It doesn't appear in Downloads for this profile.")
+                    Text(.downloadsSettingsOtherDataFooter)
                 }
                 .listRowBackground(Color.siloGroupedCell)
             }
 
             if manager.heldProgressCount > 0 {
                 Section {
-                    Button("Discard held change", role: .destructive) {
+                    Button(role: .destructive) {
                         manager.discardHeldProgress()
+                    } label: {
+                        Text(.downloadsSettingsDiscardHeld)
                     }
                 } header: {
-                    Text("Offline Progress")
+                    Text(.downloadsSettingsOfflineProgress)
                 } footer: {
-                    Text(heldProgressFooter)
+                    Text(.downloadsSettingsHeldProgressFooter(count: manager.heldProgressCount, LocaleFormat.integer(manager.heldProgressCount)))
                 }
                 .listRowBackground(Color.siloGroupedCell)
             }
         }
-        .navigationTitle("Downloads")
+        .navigationTitle(Text(.downloadsSettingsTitle))
         .task {
             await manager.refreshOtherDownloadStorage()
             // The quality picker is hidden when the cached capability only
@@ -203,26 +211,30 @@ struct DownloadsSettingsView: View {
         // Centered alert: a confirmation dialog anchors to the whole form
         // and appears at the top of the page.
         .alert(
-            "Remove all downloaded files?",
+            Text(.downloadsSettingsRemoveAllTitle),
             isPresented: $showDeleteAllConfirm
         ) {
-            Button("Remove All", role: .destructive) {
+            Button(role: .destructive) {
                 manager.deleteDownloads(ids: manager.records.map(\.id))
+            } label: {
+                Text(.downloadsSettingsRemoveAllConfirm)
             }
-            Button("Cancel", role: .cancel) {}
+            Button(role: .cancel) {} label: { Text(.commonCancel) }
         }
         .alert(
-            pendingOtherRemoval.map { "Remove download data for \(title(for: $0))?" } ?? "",
+            pendingOtherRemoval.map { Text(.downloadsSettingsRemoveOtherTitle(title(for: $0))) } ?? Text(verbatim: ""),
             isPresented: Binding(
                 get: { pendingOtherRemoval != nil },
                 set: { if !$0 { pendingOtherRemoval = nil } }
             ),
             presenting: pendingOtherRemoval
         ) { group in
-            Button("Remove", role: .destructive) {
+            Button(role: .destructive) {
                 Task { await manager.removeOtherDownloadStorage(group) }
+            } label: {
+                Text(.downloadsSettingsRemove)
             }
-            Button("Cancel", role: .cancel) {}
+            Button(role: .cancel) {} label: { Text(.commonCancel) }
         } message: { group in
             Text(removalMessage(for: group))
         }

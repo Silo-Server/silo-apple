@@ -308,7 +308,7 @@ final class SubtitleAIController {
             Self.logger.warning(
                 "[AI-SUB] refusing to translate track without combined index trackId=\(track.trackId, privacy: .public)"
             )
-            fail(with: "This subtitle track can't be translated.")
+            fail(with: AppLanguage.string(.playerSubtitleToolsTrackNotTranslatable))
             return
         }
         submit(
@@ -421,7 +421,7 @@ final class SubtitleAIController {
         targetLanguage: String?
     ) {
         guard let mediaFileId = mediaFileIdProvider() else {
-            fail(with: "Playback isn't ready yet.")
+            fail(with: AppLanguage.string(.playerSubtitleToolsPlaybackNotReady))
             return
         }
         let gen = beginSubmission()
@@ -632,7 +632,7 @@ final class SubtitleAIController {
             )
         case .failed:
             // Tear the live track down on a poller-observed failure too.
-            fail(with: job.errorMessage ?? "Subtitle translation failed.")
+            fail(with: job.errorMessage ?? AppLanguage.string(.playerAiTranslateFailed))
         case .cancelled:
             liveCoordinator?.cancelActivePresentation()
             refreshLivePresentationState()
@@ -717,7 +717,7 @@ final class SubtitleAIController {
             // we own, let the coordinator restore the prior selection rather than
             // stranding the synthetic live track selected; for a `ready`
             // broadcast there's nothing to do.
-            if autoSelect { fail(with: "Translation finished but the track couldn't be added.") }
+            if autoSelect { fail(with: AppLanguage.string(.playerSubtitleToolsTrackNotAdded)) }
             return
         }
 
@@ -748,13 +748,13 @@ final class SubtitleAIController {
                 Self.logger.warning(
                     "[AI-SUB] result subtitle id=\(resultId, privacy: .public) not found among \(downloaded.count, privacy: .public) downloaded subtitles"
                 )
-                softFail("Translation finished but the track couldn't be added.")
+                softFail(AppLanguage.string(.playerSubtitleToolsTrackNotAdded))
                 return
             }
 
             guard let context = self.handoffContextProvider() else {
                 Self.logger.warning("[AI-SUB] no active session/track context for completed subtitle id=\(resultId, privacy: .public)")
-                softFail("Translation finished but the track couldn't be added.")
+                softFail(AppLanguage.string(.playerSubtitleToolsTrackNotAdded))
                 return
             }
 
@@ -764,7 +764,7 @@ final class SubtitleAIController {
                 resolveURL: context.resolveURL
             ) else {
                 Self.logger.warning("[AI-SUB] could not synthesize stream URL for completed subtitle id=\(resultId, privacy: .public)")
-                softFail("Translation finished but the track couldn't be added.")
+                softFail(AppLanguage.string(.playerSubtitleToolsTrackNotAdded))
                 return
             }
 
@@ -875,7 +875,7 @@ final class SubtitleAIController {
         switch event {
         case .failed(let failed):
             // The coordinator already failed the live presentation out.
-            fail(with: failed.message ?? "Subtitle translation failed.")
+            fail(with: failed.message ?? AppLanguage.string(.playerAiTranslateFailed))
         case .completed where liveCoordinator?.isActive == true:
             fail(with: Self.lostTrackMessage)
         case .started, .cues, .completed, .ready:
@@ -996,7 +996,7 @@ final class SubtitleAIController {
             // 503 without a problem document means the feature is configured
             // but the AI service is unreachable right now. A problem's own
             // detail wins below.
-            return "AI subtitles aren't available right now. Try again later."
+            return AppLanguage.string(.playerSubtitleToolsAiUnavailable)
         case APIv2Error.problem, APIv2Error.serverUpdateRequired:
             return error.localizedDescription
         default:
@@ -1004,8 +1004,11 @@ final class SubtitleAIController {
         }
     }
 
-    private static let genericSubmitFailure = "Couldn't start subtitle translation."
+    private static var genericSubmitFailure: String {
+        AppLanguage.string(.playerSubtitleToolsTranslationStartFailed)
+    }
 
-    static let lostTrackMessage =
-        "Silo lost track of this subtitle job. If it finishes, the subtitles will appear in the subtitle list."
+    static var lostTrackMessage: String {
+        AppLanguage.string(.playerSubtitleToolsLostTrack)
+    }
 }

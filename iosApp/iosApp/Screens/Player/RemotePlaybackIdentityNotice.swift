@@ -3,11 +3,13 @@ import SwiftUI
 
 struct RemotePlaybackIdentityNotice: View {
     let identity: RemotePlaybackIdentityManager.ActiveIdentity
+    @Environment(\.locale) private var locale
 
-    private var profileLabel: String {
+    /// "Playing as <profile>", or the phone's profile when it sent no name.
+    private var playingAsLabel: String {
         let name = identity.profileName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let name, !name.isEmpty { return name }
-        return "your phone's profile"
+        if let name, !name.isEmpty { return AppLanguage.string(.remotePlayingAs(name), locale: locale) }
+        return AppLanguage.string(.remotePlayingAsPhoneProfile, locale: locale)
     }
 
     private var sourceLabel: String {
@@ -15,22 +17,22 @@ struct RemotePlaybackIdentityNotice: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let source: String
         if let device, !device.isEmpty {
-            source = device
+            source = AppLanguage.string(.castStandbyFrom(device), locale: locale)
         } else {
-            source = "your phone"
+            source = AppLanguage.string(.castStandbyFromYourPhone, locale: locale)
         }
         if identity.usesDifferentServer,
            let server = identity.serverName?.trimmingCharacters(in: .whitespacesAndNewlines),
            !server.isEmpty {
-            return "From \(source) · \(server)"
+            return "\(source) · \(server)"
         }
-        return "From \(source)"
+        return source
     }
 
     var body: some View {
         Label {
             VStack(alignment: .leading, spacing: SiloTheme.smallPadding) {
-                Text("Playing as \(profileLabel)")
+                Text(playingAsLabel)
                     .font(.siloSubheadline)
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)
@@ -58,7 +60,7 @@ struct RemotePlaybackIdentityNotice: View {
         .padding(.top, SiloTheme.safePadding)
         .allowsHitTesting(false)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Playing as \(profileLabel). \(sourceLabel).")
+        .accessibilityLabel(Text(verbatim: "\(playingAsLabel). \(sourceLabel)."))
     }
 }
 #endif

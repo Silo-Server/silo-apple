@@ -323,6 +323,7 @@ final class LocalRouteController {
         LocalRoute.publish(LocalRoute(
             serverID: server.id, savedOrigin: server.savedOrigin, localOrigin: origin, generation: generation))
         activeLocalOrigin = origin
+        BandwidthProbeScheduler.shared.localRouteChanged()
         if var record, record.lastLocalOrigin != origin {
             record.lastLocalOrigin = origin
             self.record = record
@@ -335,6 +336,7 @@ final class LocalRouteController {
         guard activeLocalOrigin != nil else { return }
         LocalRoute.publish(nil)
         activeLocalOrigin = nil
+        BandwidthProbeScheduler.shared.localRouteChanged()
     }
 
     private func reset() {

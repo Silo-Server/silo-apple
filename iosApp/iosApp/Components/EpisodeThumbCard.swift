@@ -6,7 +6,7 @@ import SwiftUI
 /// Shows the episode still / backdrop, series title, and episode metadata.
 /// Episode numbering stays in accessibility and detail metadata rather than
 /// being drawn over the artwork.
-/// On tvOS the image sits inside a `.card` button for focus lift/parallax and
+/// On tvOS the image sits inside an outlined card button for its focus lift and
 /// a FocusState binding drives the title highlight.
 struct EpisodeThumbCard: View {
     let item: SectionItem
@@ -36,11 +36,12 @@ struct EpisodeThumbCard: View {
     var baseCardWidth: CGFloat? = nil
 
     @Environment(\.browseLibraryId) private var browseLibraryId
+    @Environment(\.locale) private var locale
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var personalState = MediaCardPersonalState()
-    @State private var uiCustomization = UICustomizationPreferences.shared
+    @State private var zoomSourceID = UUID()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var continueWatchingMetadata = TVContinueWatchingPlaybackMetadataStore.shared
     #endif
     #if !os(tvOS)
@@ -77,29 +78,30 @@ struct EpisodeThumbCard: View {
         VStack(alignment: .leading, spacing: Self.captionSpacing) {
             thumbnailButton
 
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(displayTitle)
-                        .font(.siloPosterTitle)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(displayTitle)
+                    .font(.siloPosterTitle)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .tvCardTitleFocus(isFocused: isFocused)
+                    .frame(width: cardWidth, alignment: .leading)
+
+                if let subtitle = subtitleLine {
+                    Text(subtitle)
+                        .font(.siloPosterMetadata)
+                        .tvCardSubtitleFocus(isFocused: isFocused)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .tvCardTitleFocus(isFocused: isFocused)
                         .frame(width: cardWidth, alignment: .leading)
-
-                    if uiCustomization.cardPresentation.caption.showsMetadata,
-                       let subtitle = subtitleLine {
-                        Text(subtitle)
-                            .font(.siloPosterMetadata)
-                            .tvCardSubtitleFocus(isFocused: isFocused)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .frame(width: cardWidth, alignment: .leading)
-                            .clipped()
-                    }
+                        .clipped()
                 }
-                .frame(width: cardWidth, alignment: .leading)
-                .tvCardCaptionFocus(isFocused: isFocused, spacing: Self.captionSpacing)
             }
+            .frame(width: cardWidth, alignment: .leading)
+            .tvCardCaptionFocus(
+                isFocused: isFocused,
+                posterOverhang: TVCardOutlineButtonStyle.focusedOverhang(forHeight: cardHeight),
+                spacing: Self.captionSpacing
+            )
         }
         .frame(width: cardWidth)
         .focusSection()
@@ -133,19 +135,21 @@ struct EpisodeThumbCard: View {
             if usesProvidedTapAction {
                 action()
             } else {
-                router.presentItemDetail(contentId: item.contentId, libraryId: browseLibraryId)
+                DetailSeedStore.offer(.section(item), opening: item.contentId)
+                router.presentItemDetail(
+                    contentId: item.contentId,
+                    libraryId: browseLibraryId,
+                    zoomSourceID: zoomSourceID
+                )
             }
         } label: {
             VStack(alignment: .leading, spacing: 6) {
-                thumbnail
-                if uiCustomization.cardPresentation.caption.showsTitle {
-                    Text(displayTitle)
-                        .font(.siloCardTitle)
-                        .foregroundStyle(Color.siloOnSurface)
-                        .lineLimit(1)
-                }
-                if uiCustomization.cardPresentation.caption.showsMetadata,
-                   let subtitle = subtitleLine {
+                thumbnail.detailZoomSource(zoomSourceID)
+                Text(displayTitle)
+                    .font(.siloCardTitle)
+                    .foregroundStyle(Color.siloOnSurface)
+                    .lineLimit(1)
+                if let subtitle = subtitleLine {
                     Text(subtitle)
                         .font(.siloCardMetadata)
                         .foregroundColor(.siloSecondaryText)
@@ -193,20 +197,17 @@ struct EpisodeThumbCard: View {
                 CardOverlays(
                     data: resolvedOverlayData,
                     prefs: overlayStore.prefs,
-                    variant: .wide
+                    variant: .wide,
+                    images: overlayStore.images
                 )
                 .frame(width: cardWidth, height: cardHeight)
                 .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
             // Progress bar (resume)
-            if showProgress, let p = progressValue, p > 0 {
-                VStack {
-                    Spacer()
-                    ProgressBar(value: p)
-                }
-                .frame(width: cardWidth, height: cardHeight)
-                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
+            if let p = barProgress {
+                ProgressBar(value: p)
+                    .frame(width: cardWidth, height: cardHeight)
             }
 
             // Watched check
@@ -216,10 +217,10 @@ struct EpisodeThumbCard: View {
                     ZStack {
                         Circle()
                             .fill(Color.siloOnSurface)
-                            .frame(width: checkBadgeSize, height: checkBadgeSize)
+                            .frame(width: checkBadgeSize * checkScale, height: checkBadgeSize * checkScale)
                             .shadow(color: .black.opacity(0.3), radius: 4)
                         Image(systemName: "checkmark")
-                            .font(.system(size: checkIconSize, weight: .bold))
+                            .font(.system(size: checkIconSize * checkScale, weight: .bold))
                             .foregroundColor(Color.siloBackground)
                     }
                 }
@@ -228,7 +229,7 @@ struct EpisodeThumbCard: View {
             }
 
             #if !os(tvOS)
-            DownloadedBadgeOverlay(contentId: item.contentId, padding: badgeInset)
+            DownloadedBadgeOverlay(contentId: item.contentId, padding: badgeInset, clearsProgressBar: barProgress != nil)
             #endif
         }
         .frame(width: cardWidth, height: cardHeight)
@@ -273,18 +274,16 @@ struct EpisodeThumbCard: View {
         item.seriesTitle ?? item.title
     }
 
-    /// Secondary line — "S01E02 · Pilot" for episodes, otherwise year.
+    /// Secondary line — "S01E02 · Pilot" for episodes, otherwise the year,
+    /// or the years a series ran.
     private var subtitleLine: String? {
-        if let episodeLine = EpisodeCardCaption.line(for: item) {
+        if let episodeLine = EpisodeCardCaption.line(for: item, locale: locale) {
             return episodeLine
         }
         if item.seriesTitle != nil {
             return item.title
         }
-        if let year = item.year {
-            return String(year)
-        }
-        return nil
+        return CardYears.caption(for: item, locale: locale)
     }
 
     private var accessibilityDescription: String {
@@ -295,13 +294,19 @@ struct EpisodeThumbCard: View {
             components.append(subtitleLine)
         }
         if isPlayed {
-            components.append("Watched")
+            components.append(AppLanguage.string(.shellCardWatched, locale: locale))
         }
         return components.joined(separator: ", ")
     }
 
     private var episodeAccessibilityLabel: String? {
-        EpisodeCardCaption.accessibilityLabel(for: item)
+        EpisodeCardCaption.accessibilityLabel(for: item, locale: locale)
+    }
+
+    /// The progress the card draws a bar for, if any.
+    private var barProgress: Double? {
+        guard showProgress, let p = progressValue, p > 0 else { return nil }
+        return p
     }
 
     private var progressValue: Double? {
@@ -332,6 +337,14 @@ struct EpisodeThumbCard: View {
         #endif
     }
 
+    /// The watched check grows with the card's overlay badges.
+    private var checkScale: CGFloat {
+        OverlayScale.wide(
+            posterSize: UICustomizationPreferences.shared.cardPresentation.posterSize,
+            dynamicTypeSize: dynamicTypeSize
+        )
+    }
+
     private var checkIconSize: CGFloat {
         #if os(tvOS)
         return 20
@@ -346,13 +359,12 @@ struct EpisodeThumbCard: View {
         let button = Button(action: action) {
             thumbnail
         }
-        .buttonStyle(.card)
+        .buttonStyle(TVCardOutlineButtonStyle())
         .applyEpisodeFocus(
             focusedItemId,
             itemId: item.contentId,
             standaloneBinding: $standaloneFocused
         )
-        .scaleEffect(isFocused && !reduceMotion ? 1.025 : 1)
         .shadow(
             color: .black.opacity(isFocused ? 0.5 : 0.2),
             radius: isFocused ? 20 : 8,

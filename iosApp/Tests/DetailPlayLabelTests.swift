@@ -23,6 +23,24 @@ final class DetailPlayLabelTests: XCTestCase {
         XCTAssertEqual(DetailPlayLabel.item(nil), "Play")
     }
 
+    /// A position saved on another edition than the one shown reads Play:
+    /// Play starts the shown edition at 0.
+    func testAPositionFromAnotherEditionReadsPlay() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let versions = try decoder.decode([FileVersion].self, from: Data("""
+        [
+          { "file_id": 1, "edition_key": "theatrical", "edition_raw": "Theatrical", "resolution": "1080p" },
+          { "file_id": 2, "edition_key": "extended", "edition_raw": "Extended", "resolution": "1080p" }
+        ]
+        """.utf8))
+        let onTheatrical = try decoder.decode(LeafItemUserData.self, from: Data(
+            #"{ "played": false, "position_seconds": 1200, "duration_seconds": 7200, "last_file_id": 1 }"#.utf8
+        ))
+        XCTAssertEqual(DetailPlayLabel.item(onTheatrical, shown: versions[0], in: versions), "Resume")
+        XCTAssertEqual(DetailPlayLabel.item(onTheatrical, shown: versions[1], in: versions), "Play")
+    }
+
     /// Builds watch state the way the detail reads do: the server's
     /// snake_case `user_data` through the production decoder and projection.
     private func userData(position: Double?, duration: Double?) throws -> LeafItemUserData {

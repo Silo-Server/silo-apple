@@ -13,11 +13,13 @@ struct DiagnosticsReportDetailView: View {
             if let summary {
                 DiagnosticsReportSummarySections(summary: summary)
             } else {
-                ProgressView("Building report summary…")
+                ProgressView {
+                    Text(.diagnosticsSummaryBuilding)
+                }
             }
 
             Section {
-                Button("Send Report", systemImage: "paperplane.fill") {
+                Button(.diagnosticsCrashConfirm, systemImage: "paperplane.fill") {
                     Task {
                         await model.send(report)
                         dismiss()
@@ -25,7 +27,7 @@ struct DiagnosticsReportDetailView: View {
                 }
                 .disabled(!model.featureState.isUploadAvailable || model.isWorking)
 
-                Button("Delete Report", systemImage: "trash", role: .destructive) {
+                Button(.diagnosticsReportDelete, systemImage: "trash", role: .destructive) {
                     Task {
                         await model.delete(report)
                         dismiss()
@@ -35,7 +37,7 @@ struct DiagnosticsReportDetailView: View {
             }
         }
         .siloGroupedListStyle()
-        .navigationTitle("Report Details")
+        .navigationTitle(Text(.diagnosticsReportDetailsTitle))
         .task {
             summary = await model.summary(for: report)
         }

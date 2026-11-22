@@ -7,6 +7,9 @@ struct SiloControlTargetPickerView: View {
 
     @State private var browser = SiloControlBrowser()
     @State private var searchTimedOut = false
+    /// Read once: the picker lives for one search.
+    @State private var rememberedRoku = SiloControlClient.rememberedRoku
+    private let pairingKeys = SiloControlPairingKeys()
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -21,11 +24,12 @@ struct SiloControlTargetPickerView: View {
                 }
             }
             .siloSheetBackground()
-            .navigationTitle("Remote Control")
+            .statusColumnSheetWidth()
+            .navigationTitle(Text(.castPickerRemoteControl))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button(.commonDone) { dismiss() }
                 }
             }
             .task {
@@ -42,7 +46,7 @@ struct SiloControlTargetPickerView: View {
     private var searchingState: some View {
         VStack(spacing: 16) {
             ProgressView()
-            Text("Searching for Silo TVs…")
+            Text(.castPickerSearching)
                 .font(.headline)
                 .foregroundStyle(Color.siloSecondaryText)
         }
@@ -50,11 +54,19 @@ struct SiloControlTargetPickerView: View {
     }
 
     private var emptyState: some View {
-        ContentUnavailableView(
-            "No Silo TVs Found",
-            systemImage: "tv",
-            description: Text("Foreground Apple TVs on this server appear here.")
-        )
+        ContentUnavailableView {
+            Label(.castPickerNoneFound, systemImage: "tv")
+        } description: {
+            Text(missingRokuHint ?? LocalizedStringResource.remotePickerNoneFoundHint)
+        }
+    }
+
+    /// The phone can't open Silo on a Roku, so when the Roku it last
+    /// controlled hasn't turned up by the end of the search, the picker says
+    /// how to bring it back.
+    private var missingRokuHint: LocalizedStringResource? {
+        guard searchTimedOut, let roku = rememberedRoku, !browser.found.contains(where: { $0.id == roku.id }) else { return nil }
+        return .remotePickerRokuMissing(roku.name)
     }
 
     private var foundList: some View {
@@ -78,18 +90,22 @@ struct SiloControlTargetPickerView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(target.name).font(.headline)
-                        if request != nil, target.protocolVersion < 2 {
-                            Text("Update Silo on this TV to use your profile")
+                        if target.transport == .sealed, pairingKeys.key(for: target) == nil {
+                            Text(.remotePickerScanPairing)
+                                .font(.subheadline)
+                                .foregroundStyle(Color.siloSecondaryText)
+                        } else if request != nil, target.protocolVersion < 2 {
+                            Text(.castPickerUpdateTv)
                                 .font(.subheadline)
                                 .foregroundStyle(Color.siloSecondaryText)
                         } else if target.isPlaying {
-                            Text("Playing now")
+                            Text(.castPickerPlayingNow)
                                 .font(.subheadline)
                                 .foregroundStyle(Color.siloPrimary)
                         } else if let serverName = target.serverName {
-                            Text(target.targetsActiveServer
-                                 ? serverName
-                                 : "Will temporarily use your server")
+                            (target.targetsActiveServer
+                             ? Text(serverName)
+                             : Text(.castPickerTemporaryServer))
                                 .font(.subheadline)
                                 .foregroundStyle(Color.siloSecondaryText)
                         }
@@ -98,7 +114,7 @@ struct SiloControlTargetPickerView: View {
                     Spacer()
 
                     if controller.isConnecting && controller.activeTarget?.id == target.id {
-                        ProgressView().accessibilityLabel("Connecting")
+                        ProgressView().accessibilityLabel(Text(.remotePickerConnecting))
                     }
                 }
                 .contentShape(Rectangle())
@@ -106,6 +122,14 @@ struct SiloControlTargetPickerView: View {
             .buttonStyle(.plain)
             .disabled(request != nil && target.protocolVersion < 2)
             .listRowBackground(Color.siloSurface)
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let missingRokuHint {
+                Text(missingRokuHint)
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .padding(.bottom, 12)
+            }
         }
         .scrollContentBackground(.hidden)
     }

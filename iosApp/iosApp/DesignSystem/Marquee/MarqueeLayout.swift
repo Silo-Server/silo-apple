@@ -149,7 +149,8 @@ struct MarqueeStage<TopBar: View, Content: View>: View {
 // MARK: - Swipe back
 
 extension View {
-    /// Swipe right from anywhere on the page to go back, alongside the back
+    /// Swipe right (left in a right-to-left language) from anywhere on the
+    /// page to go back, alongside the back
     /// button. The page follows the finger and either slides away or springs
     /// back. A horizontal drag is needed to start, so vertical scrolling,
     /// taps and text editing are unaffected. VoiceOver's escape gesture
@@ -168,6 +169,11 @@ private struct MarqueeSwipeBack: ViewModifier {
     @State private var width: CGFloat = 1
     @State private var pastThreshold = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The pan reports physical points while `.offset(x:)` mirrors, so in
+    /// RTL the swipe is leftward and its values flip.
+    @Environment(\.layoutDirection) private var layoutDirection
+
+    private var backSign: CGFloat { layoutDirection == .rightToLeft ? -1 : 1 }
 
     func body(content: Content) -> some View {
         content
@@ -176,7 +182,12 @@ private struct MarqueeSwipeBack: ViewModifier {
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = max($0, 1) }
             // Gaps between controls count too, not only drawn content.
             .contentShape(.rect)
-            .gesture(BackSwipeRecognizer(isEnabled: action != nil, changed: changed, ended: ended))
+            .gesture(BackSwipeRecognizer(
+                isEnabled: action != nil,
+                backSign: backSign,
+                changed: { changed($0 * backSign) },
+                ended: { ended(translation: $0 * backSign, velocity: $1 * backSign, cancelled: $2) }
+            ))
             .sensoryFeedback(.impact(weight: .light), trigger: pastThreshold) { _, isPast in isPast }
             .accessibilityAction(.escape) { action?() }
     }
@@ -210,11 +221,12 @@ private struct MarqueeSwipeBack: ViewModifier {
     }
 }
 
-/// A one-finger pan that only begins when the finger moves mostly rightward.
-/// It recognizes alongside scroll views so a slightly diagonal swipe still
-/// works on pages that scroll.
+/// A one-finger pan that only begins when the finger moves mostly toward
+/// back (rightward; leftward when `backSign` is -1). It recognizes alongside
+/// scroll views so a slightly diagonal swipe still works on pages that scroll.
 private struct BackSwipeRecognizer: UIGestureRecognizerRepresentable {
     let isEnabled: Bool
+    let backSign: CGFloat
     let changed: (CGFloat) -> Void
     let ended: (_ translation: CGFloat, _ velocity: CGFloat, _ cancelled: Bool) -> Void
 
@@ -225,11 +237,13 @@ private struct BackSwipeRecognizer: UIGestureRecognizerRepresentable {
         pan.maximumNumberOfTouches = 1
         pan.delegate = context.coordinator
         pan.isEnabled = isEnabled
+        context.coordinator.backSign = backSign
         return pan
     }
 
     func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
         recognizer.isEnabled = isEnabled
+        context.coordinator.backSign = backSign
     }
 
     func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
@@ -244,10 +258,13 @@ private struct BackSwipeRecognizer: UIGestureRecognizerRepresentable {
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var backSign: CGFloat = 1
+
         func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
             guard let pan = recognizer as? UIPanGestureRecognizer else { return false }
             let velocity = pan.velocity(in: pan.view)
-            return velocity.x > 0 && velocity.x > abs(velocity.y) * 1.5
+            let back = velocity.x * backSign
+            return back > 0 && back > abs(velocity.y) * 1.5
         }
 
         func gestureRecognizer(

@@ -6,6 +6,8 @@ import Foundation
 /// page. The server omits `page` because the collection is bounded.
 struct APIv2DiscoverSectionCollection: Decodable {
     let items: [RequestDiscoverySection]
+    /// Absent from a server without Discover layouts.
+    let rowOrder: [RequestDiscoverRowRef]?
 }
 
 /// `GET /api/v2/requests/mine` page. `page` is absent only on a bounded
@@ -30,10 +32,10 @@ enum APIv2RequestsError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .unsupportedMediaType: return "This title can't be requested."
-        case .emptySearchQuery: return "Enter a title to search for."
+        case .unsupportedMediaType: return AppLanguage.string(.errorsAppleRequestsUnsupportedMediaType)
+        case .emptySearchQuery: return AppLanguage.string(.errorsAppleRequestsEmptySearchQuery)
         case .outcomeUnknownOwnerChanged:
-            return "The account or profile changed before the request was confirmed."
+            return AppLanguage.string(.errorsAppleRequestsOutcomeUnknownOwnerChanged)
         }
     }
 }

@@ -143,6 +143,31 @@ final class WatchStateV2Tests: XCTestCase {
         XCTAssertEqual(merged["new"]?.position, 42)
     }
 
+    /// A downloaded book's seeded resume point has no server time. A read
+    /// already in flight when it was written leaves it, whatever that read
+    /// holds; the next read replaces it with the server's row.
+    func testASeedSurvivesAnInFlightReadAndYieldsToTheNextOne() throws {
+        let seededAt = try date("2026-09-23T12:00:00Z")
+        let serverSaved = try date("2026-09-23T11:00:00Z")
+        let seed = LocalProgressEntry(position: 2000, duration: 7200, completed: false,
+                                      updatedAt: .distantPast, seededAt: seededAt)
+        let local = ["book": seed, "missing-book": seed]
+        let read = [APIv2ProgressEntry(mediaItemId: "book", positionSeconds: 1000, durationSeconds: 7200,
+                                       completed: false, updatedAt: serverSaved)]
+        let kept = Set(local.keys)
+
+        let inFlight = DownloadManager.mergeProgress(local, read: read, readStartedAt: seededAt.addingTimeInterval(-1),
+                                                     queuedItemIds: [], keptItemIds: kept)
+        XCTAssertEqual(inFlight["book"], seed, "a read older than the seed keeps it over its older row")
+        XCTAssertEqual(inFlight["missing-book"], seed, "and doesn't drop it for being absent")
+
+        let next = DownloadManager.mergeProgress(local, read: read, readStartedAt: seededAt.addingTimeInterval(1),
+                                                 queuedItemIds: [], keptItemIds: kept)
+        XCTAssertEqual(next["book"], LocalProgressEntry(position: 1000, duration: 7200, completed: false,
+                                                        updatedAt: serverSaved))
+        XCTAssertNil(next["missing-book"])
+    }
+
     func testOnlyEntriesOfDownloadsAndQueuedUploadsAreStored() throws {
         // A long watch history: the read returns far more than this device
         // keeps. Only the download's item and the queued item are stored, and

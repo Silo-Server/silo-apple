@@ -6,11 +6,16 @@ import Foundation
 struct TVHeroArtwork: Equatable {
     let url: String
     let thumbhash: String?
+    /// Set when the artwork is a cover or poster standing in for a missing
+    /// backdrop. The hero draws it framed at this shape instead of
+    /// stretching it across the backdrop area.
+    var coverAspect: MediaCardAspect? = nil
 
-    init?(url: String?, thumbhash: String?) {
+    init?(url: String?, thumbhash: String?, coverAspect: MediaCardAspect? = nil) {
         guard let url, !url.isEmpty else { return nil }
         self.url = url
         self.thumbhash = thumbhash
+        self.coverAspect = coverAspect
     }
 }
 
@@ -105,6 +110,10 @@ struct TVMarqueeContent: Equatable {
     let backdropThumbhash: String?
     let fallbackArtworkUrl: String?
     let fallbackArtworkThumbhash: String?
+    /// The fallback artwork's shape when the hero should frame it as a cover:
+    /// square for audiobooks, 2:3 for posters. Nil stretches it across the
+    /// backdrop area, as an episode still is.
+    var fallbackArtworkAspect: MediaCardAspect? = nil
     /// The item-level overlay bag is retained so Continue Watching can replace
     /// only file-specific values while preserving ratings and other card data.
     let baseOverlayData: OverlayData?
@@ -120,6 +129,9 @@ struct TVMarqueeContent: Equatable {
     /// root hero upgrades to the series backdrop from detail enrichment rather
     /// than blowing the still up full-width.
     let isEpisode: Bool
+    /// `backdropUrl` is the episode's series backdrop from the card itself
+    /// (`episode_parent_artwork`), so the hero needs no detail enrichment.
+    var backdropIsSeriesArtwork = false
     /// Rebuilt from the current section watch state and profile preference.
     let protectsEpisodeImages: Bool
     /// Series hierarchy to warm while this card is resting under focus. A
@@ -165,6 +177,15 @@ extension TVMarqueeContent {
         let hidesBackdrop = isEpisode && spoilers.hidesImage(for: state, isEpisodeStill: item.backdropIsEpisodeStill)
         let hidesPoster = isEpisode && spoilers.hidesImage(for: state, isEpisodeStill: item.posterIsEpisodeStill)
         let isSeries = SiloMediaType.isSeries(item.type)
+        // Series art is never a still, so spoiler protection leaves it shown.
+        let seriesBackdrop = item.episodeSeriesBackdrop
+        let backdrop: (url: String?, thumbhash: String?) = if let seriesBackdrop {
+            (seriesBackdrop.url, seriesBackdrop.thumbhash)
+        } else if hidesBackdrop {
+            (nil, nil)
+        } else {
+            (Self.nonEmpty(item.backdropUrl), item.backdropThumbhash)
+        }
 
         var meta: [String] = []
         if isEpisode {
@@ -173,7 +194,7 @@ extension TVMarqueeContent {
             }
             meta.append(item.title)
         } else {
-            if let year = item.year, year > 0 { meta.append(String(year)) }
+            if let year = item.year, year > 0 { meta.append(LocaleFormat.integer(year)) }
             if let genre = item.genres?.first(where: { !$0.isEmpty }) { meta.append(genre) }
         }
 
@@ -217,15 +238,17 @@ extension TVMarqueeContent {
             runtimeMetaIndex: runtimeMetaIndex,
             runtimeText: runtimeText,
             synopsis: hidesSynopsis ? nil : item.overview,
-            backdropUrl: hidesBackdrop ? nil : Self.nonEmpty(item.backdropUrl),
-            backdropThumbhash: hidesBackdrop ? nil : item.backdropThumbhash,
+            backdropUrl: backdrop.url,
+            backdropThumbhash: backdrop.thumbhash,
             fallbackArtworkUrl: hidesPoster ? nil : Self.nonEmpty(item.posterUrl),
             fallbackArtworkThumbhash: hidesPoster ? nil : item.posterThumbhash,
+            fallbackArtworkAspect: Self.coverAspect(for: item, hidesPoster: hidesPoster),
             baseOverlayData: OverlayData.from(item),
             contentRatingBadge: contentRatingBadge,
             progressUpdatedAt: item.progressUpdatedAt,
             prefersLastUsedPlaybackMetadata: isContinueWatching,
             isEpisode: isEpisode,
+            backdropIsSeriesArtwork: seriesBackdrop != nil,
             protectsEpisodeImages: isEpisode && spoilers.hidesImage(for: state),
             seriesContextId: isSeries
                 ? item.contentId
@@ -267,20 +290,20 @@ extension TVMarqueeContent {
         }
         if let hdr = nonEmpty(summary.hdr) {
             badges.append(hdr.localizedCaseInsensitiveContains("dv") || hdr.localizedCaseInsensitiveContains("dolby")
-                ? "DOLBY VISION"
+                ? "DOLBY VISION"  // i18n-ignore: technical badge token
                 : hdr.uppercased())
         }
         if let audio = nonEmpty(summary.audio) {
-            badges.append(audio.localizedCaseInsensitiveContains("atmos") ? "ATMOS" : audio.uppercased())
+            badges.append(audio.localizedCaseInsensitiveContains("atmos") ? "ATMOS" : audio.uppercased())  // i18n-ignore: technical badge token
         }
         return badges
     }
 
     private static func episodeToken(season: Int?, episode: Int?) -> String? {
         switch (season, episode) {
-        case let (season?, episode?): return "S\(season) E\(episode)"
-        case let (season?, nil): return "Season \(season)"
-        case let (nil, episode?): return "Episode \(episode)"
+        case let (season?, episode?): return AppLanguage.string(.homeSeasonEpisode(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
+        case let (season?, nil): return AppLanguage.string(.homeSeasonOnly(LocaleFormat.integer(season)))
+        case let (nil, episode?): return AppLanguage.string(.homeEpisodeOnly(LocaleFormat.integer(episode)))
         default: return nil
         }
     }
@@ -294,7 +317,7 @@ extension TVMarqueeContent {
             return nil
         }
         let remaining = max(Int(((duration - position) / 60).rounded(.up)), 1)
-        return MediaTextFormatting.runtime(minutes: remaining).map { "\($0) left" }
+        return MediaTextFormatting.runtime(minutes: remaining).map { AppLanguage.string(.homeTimeLeft($0)) }
     }
 
     /// Episode/movie length: the metadata runtime when present, else
@@ -303,6 +326,15 @@ extension TVMarqueeContent {
         if let text = MediaTextFormatting.runtime(minutes: runtimeMinutes) { return text }
         guard let durationSeconds, durationSeconds > 0 else { return nil }
         return MediaTextFormatting.runtime(minutes: Int((durationSeconds / 60).rounded()))
+    }
+
+    /// How the hero frames this item's poster when it has no backdrop. An
+    /// episode's poster can be a landscape still, so it keeps the stretch.
+    private static func coverAspect(for item: SectionItem, hidesPoster: Bool) -> MediaCardAspect? {
+        guard !hidesPoster else { return nil }
+        if item.isAudiobook { return .square }
+        if item.isEpisodeItem || item.posterIsEpisodeStill == true { return nil }
+        return .poster
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
@@ -478,7 +510,7 @@ final class TVContinueWatchingPlaybackMetadataStore {
         var overlayData = baseOverlayData
         overlayData.resolution = version.resolution
         overlayData.hdr = hdr
-        overlayData.audio = isAtmos ? "Atmos" : (audioCodec ?? audioLayout)
+        overlayData.audio = isAtmos ? "Atmos" : (audioCodec ?? audioLayout)  // i18n-ignore: overlay data in the server's audio format
         overlayData.audioChannels = audioLayout
         overlayData.videoCodec = DetailPlaybackFormatting.normalizedVideoCodec(version.codecVideo)
         overlayData.container = version.container
@@ -490,10 +522,10 @@ final class TVContinueWatchingPlaybackMetadataStore {
             badges.append(resolution)
         }
         if let hdr {
-            badges.append(hdr.localizedCaseInsensitiveContains("dv") ? "DOLBY VISION" : hdr.uppercased())
+            badges.append(hdr.localizedCaseInsensitiveContains("dv") ? "DOLBY VISION" : hdr.uppercased())  // i18n-ignore: technical badge token
         }
         if isAtmos {
-            badges.append("ATMOS")
+            badges.append("ATMOS")  // i18n-ignore: technical badge token
         } else {
             let audioBadge = [audioCodec, audioLayout]
                 .compactMap { $0 }
@@ -530,15 +562,15 @@ final class TVContinueWatchingPlaybackMetadataStore {
         if let layout = track.channelLayout?.trimmingCharacters(in: .whitespacesAndNewlines),
            !layout.isEmpty {
             let lowered = layout.lowercased()
-            if lowered.contains("atmos") { return "Atmos" }
+            if lowered.contains("atmos") { return "Atmos" }  // i18n-ignore: overlay data in the server's audio format
             if lowered.contains("7.1") { return "7.1" }
             if lowered.contains("5.1") { return "5.1" }
-            if lowered.contains("stereo") || lowered == "2.0" { return "Stereo" }
+            if lowered.contains("stereo") || lowered == "2.0" { return "Stereo" }  // i18n-ignore: overlay data in the server's audio format
             return layout
         }
         switch track.channels {
-        case 1: return "Mono"
-        case 2: return "Stereo"
+        case 1: return "Mono"  // i18n-ignore: overlay data in the server's audio format
+        case 2: return "Stereo"  // i18n-ignore: overlay data in the server's audio format
         case 6: return "5.1"
         case 8: return "7.1"
         case let channels?: return "\(channels)ch"
@@ -551,7 +583,7 @@ final class TVContinueWatchingPlaybackMetadataStore {
         if tracks.contains(where: {
             !($0.dolbyVision?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         }) {
-            return "DV"
+            return "DV"  // i18n-ignore: technical token
         }
         guard version.hdr == true else { return nil }
         if let range = tracks.compactMap(\.videoRange).first(where: {
@@ -559,7 +591,7 @@ final class TVContinueWatchingPlaybackMetadataStore {
         }) {
             return range
         }
-        return "HDR"
+        return "HDR"  // i18n-ignore: technical token
     }
 }
 
@@ -570,51 +602,70 @@ final class TVContinueWatchingPlaybackMetadataStore {
 /// fetch that never blocks or delays the marquee itself.
 struct TVMarqueeEnrichment: Equatable {
     /// `Aired Mar 12, 2026 · Pedro Pascal, Bella Ramsey, Anna Torv`
-    let detailLine: String?
+    /// The episode's air date as the server sent it (`yyyy-MM-dd`); formatted
+    /// into the detail line in the language the marquee shows.
+    let airDate: String?
+    let castNames: [String]
     /// Recommendation payloads may omit the age/content rating even though
     /// item detail carries it. Keep that fallback with the other marquee
     /// enrichment so For You renders the same leading rating pill as Home.
     let contentRatingBadge: String?
     /// Item-detail runtime fills section payloads that omit it (notably some
-    /// recommendation and library rows).
-    let runtimeText: String?
+    /// recommendation and library rows). Kept raw and formatted when read,
+    /// so a cached enrichment follows a language change.
+    let runtimeMinutes: Int?
+
+    var runtimeText: String? { MediaTextFormatting.runtime(minutes: runtimeMinutes) }
     /// The detail-level backdrop may be an episode still or fallback series
     /// artwork. Its provenance follows it through hero resolution.
     let backdropUrl: String?
     let backdropThumbhash: String?
 
     let backdropIsEpisodeStill: Bool?
+    /// Detail asks for the poster at its 460 pt cover size, sharper than the
+    /// row card's. The hero uses it when it frames a cover.
+    let posterUrl: String?
+    let posterThumbhash: String?
 
     init(detail: ItemDetail) {
-        backdropUrl = detail.backdropUrl
-        backdropThumbhash = detail.backdropThumbhash
-        backdropIsEpisodeStill = detail.backdropIsEpisodeStill
+        if let seriesBackdrop = detail.episodeSeriesBackdrop {
+            backdropUrl = seriesBackdrop.url
+            backdropThumbhash = seriesBackdrop.thumbhash
+            backdropIsEpisodeStill = false
+        } else {
+            backdropUrl = detail.backdropUrl
+            backdropThumbhash = detail.backdropThumbhash
+            backdropIsEpisodeStill = detail.backdropIsEpisodeStill
+        }
+        posterUrl = detail.posterIsEpisodeStill == true ? nil : detail.posterUrl
+        posterThumbhash = detail.posterIsEpisodeStill == true ? nil : detail.posterThumbhash
         let trimmedRating = detail.contentRating?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         contentRatingBadge = trimmedRating?.isEmpty == false
             ? trimmedRating?.uppercased()
             : nil
-        runtimeText = MediaTextFormatting.runtime(minutes: detail.runtime)
-        var parts: [String] = []
-        if let airDate = Self.airDateText(detail.airDate) {
-            parts.append("Aired \(airDate)")
-        }
-        let cast = (detail.cast ?? [])
+        runtimeMinutes = detail.runtime
+        airDate = detail.airDate.flatMap { $0.isEmpty ? nil : $0 }
+        castNames = (detail.cast ?? [])
             .sorted { ($0.order ?? Int.max) < ($1.order ?? Int.max) }
             .prefix(3)
             .map(\.name)
             .filter { !$0.isEmpty }
-        if !cast.isEmpty {
-            parts.append(cast.joined(separator: ", "))
-        }
-        detailLine = parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Uses the detail screens' calendar-date formatting, so the server's
-    /// `yyyy-MM-dd` air date shows the same day in every time zone.
-    private static func airDateText(_ raw: String?) -> String? {
-        guard let raw, !raw.isEmpty else { return nil }
-        return DetailDateFormatting.abbreviatedDate(raw)
+    /// "Aired <date> · <cast>", resolved when shown so a cached enrichment
+    /// follows a language change.
+    func detailLine(locale: Locale) -> String? {
+        var parts: [String] = []
+        // Uses the detail screens' calendar-date formatting, so the server's
+        // `yyyy-MM-dd` air date shows the same day in every time zone.
+        if let airDateText = DetailDateFormatting.abbreviatedDate(airDate, locale: locale) {
+            parts.append(AppLanguage.string(.homeAiredOn(airDateText), locale: locale))
+        }
+        if !castNames.isEmpty {
+            parts.append(castNames.joined(separator: ", "))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 
@@ -646,7 +697,8 @@ final class TVFocusMarqueeModel {
     private(set) var tints: HeroBackdropPalette.Tints = .flat(.siloBackground)
 
     /// Backdrop art for the root hero. Episodes need their detail-level series
-    /// backdrop, and any item missing a section backdrop gets one chance to
+    /// backdrop unless the card already carries it, and any item missing a
+    /// section backdrop gets one chance to
     /// obtain the real backdrop from detail. While that request is in flight
     /// the hero stays artwork-free instead of flashing the poster. Poster/still
     /// fallback is used only after detail confirms no backdrop exists (or for
@@ -659,11 +711,9 @@ final class TVFocusMarqueeModel {
                 url: content.backdropUrl,
                 thumbhash: content.backdropThumbhash
             ),
-            fallback: TVHeroArtwork(
-                url: content.fallbackArtworkUrl,
-                thumbhash: content.fallbackArtworkThumbhash
-            ),
-            prefersEnrichedBackdrop: content.isEpisode || content.backdropUrl?.isEmpty != false,
+            fallback: fallbackArtwork(for: content),
+            prefersEnrichedBackdrop: (content.isEpisode && !content.backdropIsSeriesArtwork)
+                || content.backdropUrl?.isEmpty != false,
             canLoadEnrichment: content.contentId != nil,
             enrichmentState: enrichmentState,
             enrichedBackdrop: TVHeroArtwork(
@@ -673,8 +723,31 @@ final class TVFocusMarqueeModel {
         )
     }
 
+    /// The poster that stands in for a missing backdrop. A framed cover
+    /// prefers detail's sharper poster; the hero only falls back once detail
+    /// has answered, so this never swaps one cover for another on screen.
+    private func fallbackArtwork(for content: TVMarqueeContent) -> TVHeroArtwork? {
+        guard let aspect = content.fallbackArtworkAspect else {
+            return TVHeroArtwork(url: content.fallbackArtworkUrl, thumbhash: content.fallbackArtworkThumbhash)
+        }
+        if let detailPoster = TVHeroArtwork(
+            url: enrichment?.posterUrl,
+            thumbhash: enrichment?.posterThumbhash,
+            coverAspect: aspect
+        ) {
+            return detailPoster
+        }
+        return TVHeroArtwork(
+            url: content.fallbackArtworkUrl,
+            thumbhash: content.fallbackArtworkThumbhash,
+            coverAspect: aspect
+        )
+    }
+
     private var displayedArtwork: TVHeroArtwork?
     var backdropURL: String? { displayedArtwork?.url }
+    /// Non-nil when the hero shows a framed cover rather than a backdrop.
+    var backdropCoverAspect: MediaCardAspect? { displayedArtwork?.coverAspect }
 
     var backdropThumbhash: String? { displayedArtwork?.thumbhash }
 
@@ -1163,6 +1236,7 @@ final class TVFocusMarqueeModel {
 /// the backdrop animates separately. VoiceOver exposes a polite, non-interrupting
 /// description of the focused item.
 struct TVFocusMarquee: View {
+    @Environment(\.locale) private var locale
     @Environment(\.browseLibraryId) private var browseLibraryId
     enum Scale {
         /// Home — full-bleed scale (title 84), anchored bottom-left above
@@ -1260,7 +1334,7 @@ struct TVFocusMarquee: View {
         parts += content.trailingMetaParts
         parts.append(content.synopsis ?? "")
         parts.append(content.translationStatus?.text ?? "")
-        parts.append(enrichment?.detailLine ?? "")
+        parts.append(enrichment?.detailLine(locale: locale) ?? "")
         parts.append(requestStatus)
         return parts
             .filter { !$0.isEmpty }
@@ -1295,6 +1369,7 @@ struct TVFocusMarquee: View {
 /// badges. The parent keys identity on the content id, so each selection
 /// owns its logo task.
 private struct TVMarqueeBlock: View {
+    @Environment(\.locale) private var locale
     let content: TVMarqueeContent
     var enrichment: TVMarqueeEnrichment? = nil
     var badgeOverride: [String]? = nil
@@ -1402,7 +1477,7 @@ private struct TVMarqueeBlock: View {
     @ViewBuilder
     private var detailLine: some View {
         if content.contentId != nil {
-            Text(verbatim: "Ag")
+            Text(verbatim: "Ag") // i18n-ignore: invisible line-height probe
                 .font(.system(size: scale.metaSize, weight: .medium))
                 .lineLimit(1)
                 .opacity(0)
@@ -1415,7 +1490,7 @@ private struct TVMarqueeBlock: View {
                             DescriptionTranslationStatusLabel(status: status, fontSize: scale.metaSize * 0.85)
                                 .fixedSize()
                         }
-                        if let line = enrichment?.detailLine, !line.isEmpty {
+                        if let line = enrichment?.detailLine(locale: locale), !line.isEmpty {
                             Text(line)
                                 .font(.system(size: scale.metaSize, weight: .medium))
                                 .foregroundStyle(Color.siloOnSurface.opacity(0.5))

@@ -82,6 +82,21 @@ final class ResponseCache {
         let key = CacheKey.itemDetail(contentId)
         remove(key)
         removeAll(withPrefix: key + ":")
+        NotificationCenter.default.post(
+            name: .responseCacheItemMetadataRemoved, object: self,
+            userInfo: [Self.contentIdKey: contentId]
+        )
+    }
+
+    /// `userInfo` key of `.responseCacheItemMetadataRemoved`.
+    nonisolated static let contentIdKey = "contentId"
+
+    /// Posts `.responseCacheItemFamilyDropped` when a clear reached the whole
+    /// `item:` family: an identity boundary, a metadata-language change or a
+    /// memory warning.
+    private func noteDropped(prefix: String) {
+        guard "item:".hasPrefix(prefix) else { return }
+        NotificationCenter.default.post(name: .responseCacheItemFamilyDropped, object: self)
     }
 
     /// Mutate a cached value in place. Used by optimistic mutations
@@ -107,6 +122,7 @@ final class ResponseCache {
         if let scope = snapshotScope {
             ResponseSnapshotStore.remove(scope: scope) { $0.hasPrefix(prefix) }
         }
+        noteDropped(prefix: prefix)
     }
 
     /// Drop every cached response whose contents carry a translatable
@@ -145,6 +161,7 @@ final class ResponseCache {
         prefixInvalidations[""] = writeToken
         entries.removeAll()
         seededScope = nil
+        noteDropped(prefix: "")
     }
 
     /// Profile boundary (restore, switch, deselect): drops what this process
@@ -158,6 +175,7 @@ final class ResponseCache {
             entries.removeValue(forKey: key)
         }
         seededScope = nil
+        noteDropped(prefix: prefix)
     }
 
     /// True while a remote-playback handoff runs under another account or
@@ -189,12 +207,14 @@ final class ResponseCache {
         ResponseSnapshotStore.store(encodable, forKey: key, scope: scope)
     }
 
-    /// The server and profile that own responses cached right now.
+    /// The server, account, and profile that own responses cached right
+    /// now. A change of any of them reseeds from that scope's snapshots.
     private var snapshotScope: ResponseSnapshotStore.Scope? {
         guard !snapshotsSuspended,
               let serverId = ServerRegistry.activeServerIDSnapshot,
+              let localAccountId = AccountScope.localAccountId(onServer: serverId),
               let profileId = AuthService.shared.profileId else { return nil }
-        return ResponseSnapshotStore.Scope(serverId: serverId, profileId: profileId)
+        return ResponseSnapshotStore.Scope(serverId: serverId, localAccountId: localAccountId, profileId: profileId)
     }
 }
 
@@ -223,6 +243,10 @@ enum CacheKey {
         "\(itemDetail(seriesId, libraryId: libraryId)):season:\(seasonNumber):episodes"
     }
     static func itemUserState(_ contentId: String) -> String { "\(itemDetail(contentId)):userState" }
+    /// The one card seed `DetailSeedStore` holds. In the `item:` family so
+    /// it goes wherever item metadata goes; `itemDetail` encodes every ":"
+    /// in an id, so no item key can equal it.
+    static let itemDetailSeed = "item::seed"
     static func itemWatchDetail(_ contentId: String, libraryId: Int? = nil) -> String { "\(itemDetail(contentId, libraryId: libraryId)):watchDetail" }
     /// Browse grid page-1 cache, keyed by the full filter/sort state
     /// (`CatalogFilterState.cacheKeyFragment`) and, for a mixed library,
@@ -269,5 +293,16 @@ enum CacheKey {
         // watch-status filters make a page profile-specific.
         "tvlibrary:",
         "catalogFilters:",
+        // Letter indexes count what the profile may see.
+        "browseletters:",
     ]
+}
+
+extension Notification.Name {
+    /// `ResponseCache` dropped the whole `item:` family. Posted on the main
+    /// actor, from the call that dropped it.
+    static let responseCacheItemFamilyDropped = Notification.Name("ResponseCache.itemFamilyDropped")
+    /// `ResponseCache.removeItemMetadata` dropped one item's entries; its
+    /// id is under `ResponseCache.contentIdKey`.
+    static let responseCacheItemMetadataRemoved = Notification.Name("ResponseCache.itemMetadataRemoved")
 }

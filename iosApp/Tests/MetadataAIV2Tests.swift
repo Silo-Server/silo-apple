@@ -233,10 +233,13 @@ final class MetadataAIV2Tests: XCTestCase {
 
     @MainActor
     private func coordinator(
+        settleSchedule: [Duration] = [.zero, .zero],
         sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in await Task.yield() }
     ) async throws -> DescriptionTranslationCoordinator {
         let (api, _) = try await client()
-        return DescriptionTranslationCoordinator(api: SiloAI(v2: api), schedule: [.zero, .zero, .zero], sleep: sleep)
+        return DescriptionTranslationCoordinator(
+            api: SiloAI(v2: api), schedule: [.zero, .zero, .zero], settleSchedule: settleSchedule, sleep: sleep
+        )
     }
 
     @MainActor
@@ -289,6 +292,27 @@ final class MetadataAIV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testCancelledRunPastItsCapMayStartAgain() async throws {
+        let coordinator = try await coordinator(
+            settleSchedule: [.seconds(60)],
+            sleep: { delay in
+                if delay == .zero { await Task.yield() } else { try await Task.sleep(for: delay) }
+            }
+        )
+        stub.reply(202, Self.job)
+        XCTAssertTrue(coordinator.translateAutomatically(Self.heatKey, fetch: { 0 }, apply: { _ in false }))
+        try await waitUntil { coordinator.hasFailed(Self.heatKey) }
+        XCTAssertTrue(coordinator.isRunning, "still re-reading after the cap")
+
+        // Leaving the page while the job may still finish lets the next visit poll again.
+        coordinator.cancel()
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertFalse(coordinator.isRunning)
+        XCTAssertTrue(coordinator.translateAutomatically(Self.heatKey, fetch: { 0 }, apply: { _ in true }))
+        coordinator.cancel()
+    }
+
+    @MainActor
     func testRefusedTranslationChecksOnceWhetherTheTextArrived() async throws {
         let coordinator = try await coordinator()
         let refused = #"{"type":"https://siloserver.org/docs/api/v2/problems/validation","title":"T","status":422,"detail":"nothing to translate","instance":"urn:x"}"#
@@ -312,7 +336,44 @@ final class MetadataAIV2Tests: XCTestCase {
         coordinator.translate(Self.heatKey, fetch: { reads += 1; return reads }, apply: { _ in false })
         try await waitUntil { !coordinator.isRunning }
         XCTAssertTrue(coordinator.hasFailed(Self.heatKey))
-        XCTAssertEqual(reads, 3, "one read per scheduled pass")
+        XCTAssertEqual(reads, 5, "one read per scheduled pass, then one per settling pass")
+    }
+
+    @MainActor
+    func testTranslationThatOutlastsTheCapStillLands() async throws {
+        let coordinator = try await coordinator()
+        stub.reply(202, Self.job)
+        var reads = 0
+        var failedBeforeLanding = false
+        coordinator.translate(Self.heatKey, fetch: { reads += 1; return reads }, apply: { read in
+            guard read == 4 else { return false }
+            failedBeforeLanding = coordinator.hasFailed(Self.heatKey)
+            return true
+        })
+        try await waitUntil { !coordinator.isRunning }
+        XCTAssertTrue(failedBeforeLanding, "the status ends at the cap")
+        XCTAssertEqual(coordinator.phase, .idle, "the text still landed after the cap")
+        XCTAssertEqual(reads, 4)
+    }
+
+    @MainActor
+    func testTranslateReplacesARunPastItsCap() async throws {
+        let coordinator = try await coordinator(
+            settleSchedule: [.seconds(60)],
+            sleep: { delay in
+                if delay == .zero { await Task.yield() } else { try await Task.sleep(for: delay) }
+            }
+        )
+        stub.reply(202, Self.job)
+        coordinator.translate(Self.heatKey, fetch: { 0 }, apply: { _ in false })
+        try await waitUntil { coordinator.hasFailed(Self.heatKey) }
+        XCTAssertTrue(coordinator.isRunning, "still re-reading after the cap")
+
+        XCTAssertTrue(coordinator.translate(Self.heatKey, fetch: { 0 }, apply: { _ in true }))
+        XCTAssertTrue(coordinator.isTranslating(Self.heatKey))
+        try await waitUntil { !coordinator.isRunning }
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertEqual(translatePosts, 2)
     }
 
     @MainActor

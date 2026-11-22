@@ -96,12 +96,16 @@ final class PersonalStateSyncTests: XCTestCase {
 
         let favorite = await set(.favorite, api: api, tokens: tokens, holds: holds)
         let watched = await set(.watched, to: false, api: api, tokens: tokens, holds: holds)
+        let notInterested = await set(.notInterested, api: api, tokens: tokens, holds: holds)
 
         XCTAssertEqual(favorite, .applied)
         XCTAssertEqual(watched, .applied)
-        XCTAssertEqual(stub.methods, ["PUT", "DELETE"])
-        XCTAssertEqual(stub.requestedPaths, ["/api/v2/favorites/movie:one", "/api/v2/watched/movie:one"])
-        XCTAssertEqual(stub.requests.map { $0.header("x-profile-id") }, ["profile-one", "profile-one"])
+        XCTAssertEqual(notInterested, .applied)
+        XCTAssertEqual(stub.methods, ["PUT", "DELETE", "PUT"])
+        XCTAssertEqual(stub.requestedPaths, [
+            "/api/v2/favorites/movie:one", "/api/v2/watched/movie:one", "/api/v2/not-interested/movie:one",
+        ])
+        XCTAssertEqual(stub.requests.map { $0.header("x-profile-id") }, ["profile-one", "profile-one", "profile-one"])
     }
 
     @MainActor
@@ -291,7 +295,15 @@ final class PersonalStateSyncTests: XCTestCase {
         let body = #"{"content_id":"movie:one","type":"movie","title":"One","status":"available","genres":[],"keywords":[],"cast":[],"crew":[],"versions":[],"subtitles":[],"user_state":{"played":true,"is_favorite":true,"in_watchlist":false}}"#
         let wire = try HTTPClient.makeJSONDecoder().decode(APIv2CatalogRead.CatalogItemDetail.self, from: Data(body.utf8))
         let detail = try ItemDetail(catalog: wire)
+        // A server that predates Not interested sends no mark, so none is offered.
         XCTAssertEqual(detail.userState, MediaItemUserState(played: true, isFavorite: true, inWatchlist: false))
+        XCTAssertNil(detail.userState?.notInterested)
+
+        let marked = try ItemDetail(catalog: HTTPClient.makeJSONDecoder().decode(
+            APIv2CatalogRead.CatalogItemDetail.self,
+            from: Data(body.replacingOccurrences(of: #""in_watchlist":false"#,
+                                                 with: #""in_watchlist":false,"not_interested":true"#).utf8)))
+        XCTAssertEqual(marked.userState?.notInterested, true)
 
         let withoutProfile = body.replacingOccurrences(
             of: #","user_state":{"played":true,"is_favorite":true,"in_watchlist":false}"#, with: "")

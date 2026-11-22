@@ -15,13 +15,17 @@ struct PhoneCastRail: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
-                ForEach(cast.prefix(maxEntries)) { member in
+                // By position: one person can hold several credits (two
+                // characters, or actor and guest star) under one person ID,
+                // and duplicate IDs make the lazy stack drop and overlap cards.
+                ForEach(Array(cast.prefix(maxEntries).enumerated()), id: \.offset) { _, member in
                     PhoneCastCard(member: member, onTap: onTap)
                 }
             }
             .scrollTargetLayout()
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
+            .mouseDragScrolling()
         }
         .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
         .mediaRailScrolling()

@@ -5,59 +5,68 @@ struct DiagnosticsPrompt: Identifiable, Equatable {
     let id = UUID()
     let reports: [PendingReport]
 
-    var title: String {
-        reports.count == 1 ? "Send a diagnostics report?" : "Send diagnostics reports?"
+    var title: LocalizedStringResource {
+        // Two strings: Xcode can't vary a plural that doesn't print its count.
+        reports.count == 1 ? .diagnosticsPromptSendTitleSingle : .diagnosticsPromptSendTitleMultiple
     }
 
-    var message: String {
+    var message: LocalizedStringResource {
         let count = reports.count
         let types = Set(reports.map(\.binding.type))
-        let recipient = reports.allSatisfy { $0.binding.binding.destinationChoice == .hosted }
-            ? "the Silo Diagnostics team"
-            : "your server administrator"
+        let hosted = reports.allSatisfy { $0.binding.binding.destinationChoice == .hosted }
         if count == 1, let type = reports.first?.binding.type {
-            return Self.singleMessage(for: type, recipient: recipient)
+            return Self.singleMessage(for: type, hosted: hosted)
         }
         if types.count == 1, let type = types.first {
             switch type {
             case .crash, .nativeCrash:
-                return "Silo crashed \(count) times. You can review the reports before sending them to \(recipient)."
+                return hosted
+                    ? .diagnosticsPromptCrashedCountHosted(count)
+                    : .diagnosticsPromptCrashedCountSelfHosted(count)
             case .hang, .anr:
-                return "Silo was not responding \(count) times. You can review the reports before sending them to \(recipient)."
+                return hosted
+                    ? .diagnosticsPromptNotRespondingCountHosted(count)
+                    : .diagnosticsPromptNotRespondingCountSelfHosted(count)
             case .abnormalExit:
-                return "Silo did not shut down cleanly \(count) times. You can review the reports before sending them to \(recipient)."
+                return hosted
+                    ? .diagnosticsPromptUncleanShutdownCountHosted(count)
+                    : .diagnosticsPromptUncleanShutdownCountSelfHosted(count)
             case .manual:
-                return "Silo has \(count) pending diagnostics reports."
+                return .diagnosticsPromptManualCount(count)
             }
         }
 
-        let descriptions = types.map(Self.shortDescription(for:)).sorted().joined(separator: ", ")
-        return "Silo has \(count) pending reports covering \(descriptions). You can review them before sending."
+        // The language on screen, so the list sorts in the order it reads.
+        let descriptions = types
+            .map { AppLanguage.string(Self.shortDescription(for: $0)) }
+            .sorted()
+            .joined(separator: ", ")
+        return .diagnosticsPromptMixedCount(count, descriptions)
     }
 
-    private static func singleMessage(for type: ReportType, recipient: String) -> String {
+    private static func singleMessage(for type: ReportType, hosted: Bool) -> LocalizedStringResource {
         switch type {
         case .crash, .nativeCrash:
-            return "Silo crashed recently. Sending a diagnostics report can help \(recipient) understand what happened."
+            return hosted ? .diagnosticsPromptCrashedHosted : .diagnosticsPromptCrashedSelfHosted
         case .hang, .anr:
-            return "Silo was not responding recently. Sending a diagnostics report can help \(recipient) understand what happened."
+            return hosted ? .diagnosticsPromptNotRespondingHosted : .diagnosticsPromptNotRespondingSelfHosted
         case .abnormalExit:
-            return "Silo did not shut down cleanly last time. Sending a diagnostics report can help \(recipient) understand what happened."
+            return hosted ? .diagnosticsPromptUncleanShutdownHosted : .diagnosticsPromptUncleanShutdownSelfHosted
         case .manual:
-            return "Silo has a pending diagnostics report."
+            return .diagnosticsPromptManualOne
         }
     }
 
-    private static func shortDescription(for type: ReportType) -> String {
+    private static func shortDescription(for type: ReportType) -> LocalizedStringResource {
         switch type {
         case .crash, .nativeCrash:
-            return "a crash"
+            return .diagnosticsPromptTypeCrash
         case .hang, .anr:
-            return "a period when Silo was not responding"
+            return .diagnosticsPromptTypeNotResponding
         case .abnormalExit:
-            return "an unclean shutdown"
+            return .diagnosticsPromptTypeUncleanShutdown
         case .manual:
-            return "a manual report"
+            return .diagnosticsPromptTypeManual
         }
     }
 }

@@ -7,20 +7,20 @@ import Foundation
 /// list; unknown kinds degrade to the generic label rather than showing a
 /// raw identifier like `behind_the_scenes` to a viewer.
 enum ExtraKindLabels {
-    private static let singular: [String: String] = [
-        "trailer": "Trailer",
-        "teaser": "Teaser",
-        "featurette": "Featurette",
-        "clip": "Clip",
-        "behind_the_scenes": "Behind the Scenes",
-        "bloopers": "Bloopers",
-        "deleted_scene": "Deleted Scene",
-        "other": "Extra",
+    private static let singular: [String: LocalizedStringResource] = [
+        "trailer": .catalogExtraTrailer,
+        "teaser": .catalogExtraTeaser,
+        "featurette": .catalogExtraFeaturette,
+        "clip": .catalogExtraClip,
+        "behind_the_scenes": .catalogExtraBehindTheScenes,
+        "bloopers": .catalogExtraBloopers,
+        "deleted_scene": .catalogExtraDeletedScene,
+        "other": .catalogExtraOtherExtra,
     ]
 
     /// Singular label for one card (`extraKindLabel` on web).
     static func label(for kind: String) -> String {
-        singular[kind] ?? "Extra"
+        AppLanguage.string(singular[kind] ?? .catalogExtraOtherExtra)
     }
 
 }

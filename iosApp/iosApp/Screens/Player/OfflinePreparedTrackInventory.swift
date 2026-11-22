@@ -76,7 +76,8 @@ private extension PlayerTrack {
             isSelected: isSelected,
             ffIndex: ffIndex,
             srcId: srcId,
-            isDownloaded: isDownloaded
+            isDownloaded: isDownloaded,
+            hasUnsupportedFormat: hasUnsupportedFormat
         )
     }
 }

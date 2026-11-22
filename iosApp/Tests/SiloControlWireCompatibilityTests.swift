@@ -187,6 +187,28 @@ final class SiloControlWireCompatibilityTests: XCTestCase {
         XCTAssertEqual(control["value"] as? String, "fill")
     }
 
+    // MARK: - Launch: the picked-version pin
+
+    /// Older phones, and Android phones, send a launch without `pinsVersion`;
+    /// it must still decode (as a default play) or the session drops.
+    func testLaunchDecodesWithAndWithoutThePickedVersionPin() throws {
+        let rows: [(extraKeys: String, pins: Bool?)] = [
+            ("", nil),
+            (#","pinsVersion":true"#, true),
+        ]
+        for row in rows {
+            let json = #"{"type":"launch","v":2,"launch":{"serverId":"s1","playback":{"#
+                + #""contentId":"c1","fileId":42,"startFromBeginning":false"#
+                + row.extraKeys + "}}}"
+            let message = try JSONDecoder().decode(SiloControlMessage.self, from: Data(json.utf8))
+            guard case .launch(let launch) = message else {
+                return XCTFail("Expected a launch message")
+            }
+            XCTAssertEqual(launch.playback.fileId, 42)
+            XCTAssertEqual(launch.playback.pinsVersion, row.pins)
+        }
+    }
+
     // MARK: - Fixtures
 
     private static func stateJSON(extraKeys: String) -> String {

@@ -42,6 +42,40 @@ final class HomeSectionsMutationTests: XCTestCase {
         XCTAssertEqual(result[0].totalCount, 0)
     }
 
+    // MARK: - Explore all
+
+    func testOnlyAContinueWatchingRowKnownToShowItsWholeListDropsExploreAll() throws {
+        func row(_ type: String, shown: Int, itemLimit: Int? = 20, totalCount: Int?) throws -> ResolvedSection {
+            let items = try (0..<shown).map { try makeItem(contentId: "item-\($0)") }
+            return makeSection(id: type, type: type, itemLimit: itemLimit, totalCount: totalCount, items: items)
+        }
+
+        XCTAssertTrue(try row("continue_watching", shown: 1, totalCount: 1).showsWholeSection)
+        XCTAssertTrue(try row("in_progress", shown: 3, itemLimit: nil, totalCount: 3).showsWholeSection)
+
+        // The list holds more than the row shows.
+        XCTAssertFalse(try row("continue_watching", shown: 3, totalCount: 5).showsWholeSection)
+        // A row filled to its limit was cut there, whatever its count says.
+        XCTAssertFalse(try row("continue_watching", shown: 20, totalCount: 20).showsWholeSection)
+        XCTAssertFalse(try row("continue_watching", shown: 1, itemLimit: 1, totalCount: 1).showsWholeSection)
+        // A filtered library row carries no count.
+        XCTAssertFalse(try row("continue_watching", shown: 1, totalCount: nil).showsWholeSection)
+        // Home counts other rows after dropping titles shown elsewhere.
+        XCTAssertFalse(try row("recommended_for_you", shown: 1, totalCount: 1).showsWholeSection)
+        // Next Up is cut at its limit before dismissed series are dropped.
+        XCTAssertFalse(try row("next_up", shown: 19, totalCount: 19).showsWholeSection)
+    }
+
+    func testRemovingACardFromAFullRowKeepsExploreAll() throws {
+        let items = try (0..<20).map { try makeItem(contentId: "item-\($0)") }
+        let section = makeSection(id: "continue", type: "continue_watching", totalCount: 20, items: items)
+
+        let result = HomeSectionsMutation.removingDismissedItem(items[0], from: [section])
+
+        XCTAssertEqual(result[0].items.count, 19)
+        XCTAssertFalse(result[0].showsWholeSection)
+    }
+
     func testUnknownContentIdLeavesSectionUnchanged() throws {
         let item = try makeItem(contentId: "other")
         let section = makeSection(id: "continue", type: "continue_watching", totalCount: 1, items: [item])
@@ -75,6 +109,67 @@ final class HomeSectionsMutationTests: XCTestCase {
         XCTAssertEqual(result[1].totalCount, 0)
         XCTAssertEqual(result[2].items.map(\.contentId), ["target"])
         XCTAssertEqual(result[2].totalCount, 1)
+    }
+
+    func testNotInterestedLeavesOnlyTheRowsThatSuggestIt() throws {
+        let target = try makeItem(contentId: "target")
+        let other = try makeItem(contentId: "other")
+        let sections = [
+            makeSection(id: "recommended", type: "recommended_for_you", totalCount: 2, items: [target, other]),
+            makeSection(id: "gems", type: "hidden_gems", totalCount: 1, items: [target]),
+            makeSection(id: "continue", type: "continue_watching", totalCount: 1, items: [target]),
+            makeSection(id: "recent", type: "recently_added", totalCount: 1, items: [target]),
+            makeSection(id: "watchlist", type: "watchlist", totalCount: 1, items: [target]),
+        ]
+
+        let result = HomeSectionsMutation.removingNotInterested(contentId: target.contentId, from: sections)
+
+        XCTAssertEqual(result.map { $0.items.map(\.contentId) }, [
+            ["other"], [], ["target"], ["target"], ["target"],
+        ])
+        XCTAssertEqual(result.map(\.totalCount), [1, 0, 1, 1, 1])
+    }
+
+    /// For You rows are all server-filtered recommendation lists, including
+    /// types Home doesn't list, so a mark clears the title from each of them.
+    @MainActor
+    func testNotInterestedLeavesEveryForYouRowAndDropsEmptiedRows() throws {
+        let target = try makeItem(contentId: "target")
+        let other = try makeItem(contentId: "other")
+        let viewModel = RecommendationsViewModel()
+        viewModel.sections = [
+            makeSection(id: "discover_0_top_picks", type: "top_picks", totalCount: 2, items: [target, other]),
+            makeSection(id: "discover_1_because", type: "because_you_watched", totalCount: 1, items: [target]),
+        ]
+
+        viewModel.removeNotInterested(contentId: target.contentId)
+
+        XCTAssertEqual(viewModel.sections.map(\.id), ["discover_0_top_picks"])
+        XCTAssertEqual(viewModel.sections.first?.items.map(\.contentId), ["other"])
+    }
+
+    /// A For You load the server answered before the mark still lists the
+    /// title; it must not bring the card back.
+    @MainActor
+    func testForYouLoadStartedBeforeAMarkLeavesTheTitleOut() async throws {
+        let target = try makeItem(contentId: "target")
+        let other = try makeItem(contentId: "other")
+        let staleResponse = SectionsResponse(sections: [
+            makeSection(id: "discover_0_top_picks", type: "top_picks", totalCount: 2, items: [target, other]),
+        ])
+        let gate = AsyncStream<Void>.makeStream()
+        let viewModel = RecommendationsViewModel(fetchRecommendations: {
+            for await _ in gate.stream { break }
+            return staleResponse
+        })
+
+        let load = Task { await viewModel.loadRecommendations() }
+        while !viewModel.isLoading && !viewModel.isRefreshing { await Task.yield() }
+        viewModel.removeNotInterested(contentId: target.contentId)
+        gate.continuation.yield(())
+        await load.value
+
+        XCTAssertEqual(viewModel.sections.flatMap(\.items).map(\.contentId), ["other"])
     }
 
     @MainActor
@@ -615,6 +710,7 @@ final class HomeSectionsMutationTests: XCTestCase {
     private func makeSection(
         id: String,
         type: String,
+        itemLimit: Int? = nil,
         totalCount: Int?,
         items: [SectionItem]
     ) -> ResolvedSection {
@@ -623,7 +719,7 @@ final class HomeSectionsMutationTests: XCTestCase {
             sectionType: type,
             title: id,
             featured: false,
-            itemLimit: nil,
+            itemLimit: itemLimit,
             totalCount: totalCount,
             isCustom: false,
             customized: false,

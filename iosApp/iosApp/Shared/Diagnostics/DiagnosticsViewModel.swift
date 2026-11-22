@@ -32,18 +32,18 @@ final class DiagnosticsViewModel {
         selectedDestination == .selfHosted
     }
 
-    var destinationServerName: String {
+    var destinationServerName: LocalizedStringResource {
         if selectedDestination == .hosted {
-            return "Silo Diagnostics"
+            return .diagnosticsDestinationHosted
         }
-        return ServerRegistry.shared.activeServer?.displayName ?? "Current Silo server"
+        return ServerRegistry.shared.activeServer.map { LocalizedStringResource.verbatim($0.displayName) }
+            ?? .diagnosticsDestinationCurrentServer
     }
 
-    var hostedPrivacyDisclosure: String {
+    var hostedPrivacyDisclosure: LocalizedStringResource {
         let retentionDays = statusSnapshot?.status.retentionDays
             ?? HostedDiagnosticsCapabilities.conservativeCaptureStatus.retentionDays
-        let dayLabel = retentionDays == 1 ? "day" : "days"
-        return "Hosted reports use a pseudonymous installation credential that is not linked to your Silo account. They omit account, profile, server address, and playback session identifiers, are retained for up to \(retentionDays) \(dayLabel), and are never sent automatically."
+        return .diagnosticsHostedDisclosure(retentionDays)
     }
 
     private let coordinator: DiagnosticsCoordinator
@@ -199,8 +199,8 @@ final class DiagnosticsViewModel {
                 ).isEmpty
                 notice = DiagnosticsNotice(
                     message: hasLocalEvidence
-                        ? "Crash Reports is off. Some local reports could not be deleted and will retry."
-                        : "Crash Reports is off. Remote deletion is queued and will retry."
+                        ? .diagnosticsNoticeOffLocalRetry
+                        : .diagnosticsNoticeOffRemoteQueued
                 )
             }
         } else {
@@ -245,7 +245,7 @@ final class DiagnosticsViewModel {
             handle(decision, report: report)
             await reloadLocalStateIfPossible()
         } catch {
-            notice = DiagnosticsNotice(message: "The report could not be created. Please try again.")
+            notice = DiagnosticsNotice(message: .diagnosticsNoticeCreateFailed)
             await reloadLocalStateIfPossible()
         }
     }
@@ -255,9 +255,9 @@ final class DiagnosticsViewModel {
         let erased = await coordinator.delete(report: report)
         isWorking = false
         if !erased {
-            let message = pendingStore.report(id: report.id) == nil
-                ? "The local report was deleted. Remote deletion is queued and will retry."
-                : "The report could not be deleted. Please try again."
+            let message: LocalizedStringResource = pendingStore.report(id: report.id) == nil
+                ? .diagnosticsNoticeLocalDeletedRemoteQueued
+                : .diagnosticsNoticeDeleteFailed
             notice = DiagnosticsNotice(message: message)
         }
         await reloadLocalStateIfPossible()
@@ -297,7 +297,7 @@ final class DiagnosticsViewModel {
             consentMode = .always
         }
 
-        var messages: [String] = []
+        var messages: [LocalizedStringResource] = []
         for report in prompt.reports {
             let decision = await coordinator.upload(report: report)
             guard startingGeneration == generation else { return }
@@ -305,12 +305,12 @@ final class DiagnosticsViewModel {
             applyConsentChange(of: decision)
             recordSuccessfulUpload(decision, binding: report.binding.binding)
         }
-        let uniqueMessages = messages.reduce(into: [String]()) { result, message in
-            if !result.contains(message) {
-                result.append(message)
-            }
-        }
-        notice = DiagnosticsNotice(message: uniqueMessages.joined(separator: " "))
+        // Two reports with the same outcome say it once. Compared in English,
+        // so the result doesn't depend on how a translation words them.
+        var seen = Set<String>()
+        let english = Locale(identifier: "en")
+        let uniqueMessages = messages.filter { seen.insert(AppLanguage.string($0, locale: english)).inserted }
+        notice = DiagnosticsNotice(messages: uniqueMessages)
         self.prompt = nil
         isWorking = false
         await reloadLocalStateIfPossible()
@@ -330,7 +330,7 @@ final class DiagnosticsViewModel {
             categories: logSummary.categories,
             lineCount: logSummary.lines,
             destinationServerName: report.binding.binding.destinationChoice == .hosted
-                ? "Silo Diagnostics"
+                ? .diagnosticsDestinationHosted
                 : destinationServerName
         )
     }
@@ -501,36 +501,38 @@ final class DiagnosticsViewModel {
         consentStore.recordSent(shortID: response.shortID, for: binding)
     }
 
-    private static func message(for decision: DiagnosticsUploadDecision) -> String {
+    /// Reference IDs, states and rejection codes are the service's own values
+    /// and stay as sent.
+    private static func message(for decision: DiagnosticsUploadDecision) -> LocalizedStringResource {
         switch decision {
         case .uploaded(let response):
             if let state = response.state {
-                return "Sent as \(response.shortID) (\(state.rawValue))."
+                return .diagnosticsNoticeSentAsWithState(response.shortID, state.rawValue)
             }
-            return "Sent as \(response.shortID)."
+            return .diagnosticsNoticeSentAs(response.shortID)
         case .keptProcessing(let shortID):
-            return "Received as \(shortID); Silo Diagnostics is validating it."
+            return .diagnosticsNoticeReceivedValidating(shortID)
         case .keptRejected(let code):
             if let code, !code.isEmpty {
-                return "Collector rejected the report (\(code)); the local copy was kept."
+                return .diagnosticsNoticeRejectedWithCode(code)
             }
-            return "Collector rejected the report; the local copy was kept."
+            return .diagnosticsNoticeRejected
         case .keptRetryable:
-            return "Report kept; Silo will retry."
+            return .diagnosticsNoticeKeptRetry
         case .keptNeedsServerUpdate:
-            return "Report kept; your server needs an update."
+            return .diagnosticsNoticeKeptServerUpdate
         case .keptTooLarge:
-            return "Report is too large to send and won't be retried."
+            return .diagnosticsNoticeTooLarge
         case .keptStaleConsent:
-            return "Consent changed; Crash Reports was reset to Ask."
+            return .diagnosticsNoticeConsentReset
         case .keptDestinationMismatch:
-            return "Report kept for the server where it was captured."
+            return .diagnosticsNoticeKeptOtherServer
         case .keptServerRejected:
-            return "Report kept; it can't be uploaded to this server."
+            return .diagnosticsNoticeKeptServerRejected
         case .keptDeliveryUncertain:
-            return "Report kept; the server may already have it, so it won't be sent again."
+            return .diagnosticsNoticeKeptUncertain
         case .discardedInvalidLocalBundle:
-            return "The invalid local report was deleted."
+            return .diagnosticsNoticeInvalidDeleted
         }
     }
 

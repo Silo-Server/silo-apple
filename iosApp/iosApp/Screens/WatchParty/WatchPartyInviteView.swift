@@ -30,11 +30,11 @@ struct WatchPartyInviteView: View {
 
     private func heading(alignment: HorizontalAlignment) -> some View {
         VStack(alignment: alignment, spacing: 8) {
-            WatchPartyEyebrow(text: "Invite friends")
-            Text("Join with this code")
+            WatchPartyEyebrow(text: .watchPartyInviteFriends)
+            Text(.watchPartyInviteTitle)
                 .font(.system(size: WatchPartyMetrics.heroTitle * 0.8, weight: .bold))
                 .foregroundStyle(Color.siloOnSurface)
-            Text("Anyone with a profile on this Silo server can enter it from Watch Party.")
+            Text(.watchPartyInviteBody)
                 .font(.system(size: WatchPartyMetrics.body))
                 .foregroundStyle(Color.siloSecondaryText)
         }
@@ -48,24 +48,24 @@ struct WatchPartyInviteView: View {
             .padding(.leading, codeSize * 0.2)
             .lineLimit(1)
             .minimumScaleFactor(0.5)
-            .accessibilityLabel("Party code \(code.map(String.init).joined(separator: ", "))")
+            .accessibilityLabel(.watchPartyPartyCode(code.map(String.init).joined(separator: ", ")))
     }
 
     private func qrCard(_ url: URL) -> some View {
         QRCodeView(content: url.absoluteString, size: qrSize)
             .padding(qrSize * 0.06)
             .background(.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .accessibilityLabel("Scan to join this party")
+            .accessibilityLabel(.watchPartyInviteQrDescription)
     }
 
     private var scanHint: some View {
-        Text("Or scan to open the invitation on a phone.")
+        Text(.watchPartyInviteScan)
             .font(.system(size: WatchPartyMetrics.caption))
             .foregroundStyle(Color.siloSecondaryText)
     }
 
     private var doneButton: some View {
-        Button { dismiss() } label: { Text("Done") }
+        Button { dismiss() } label: { Text(.commonDone) }
             .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
     }
 
@@ -100,9 +100,9 @@ struct WatchPartyInviteView: View {
                     qrCard(url)
                     scanHint
                     VStack(spacing: 10) {
-                        ShareLink(item: url, subject: Text("Join my Silo Watch Party"),
-                                  message: Text("Watch together on Silo. Party code: \(room.code)")) {
-                            Label("Share invitation", systemImage: "square.and.arrow.up")
+                        ShareLink(item: url, subject: Text(.watchPartyInviteShareSubject),
+                                  message: Text(.watchPartyInviteShareMessage(room.code))) {
+                            Label(.watchPartyInviteShareInvitation, systemImage: "square.and.arrow.up")
                         }
                         .buttonStyle(WatchPartyButtonStyle(kind: .primary))
                         HStack(spacing: 10) {
@@ -111,7 +111,7 @@ struct WatchPartyInviteView: View {
                                 copied = "link"
                                 copyCount += 1
                             } label: {
-                                Label(copied == "link" ? "Copied" : "Copy link", systemImage: copied == "link" ? "checkmark" : "link")
+                                Label(copied == "link" ? LocalizedStringResource.watchPartyInviteCopied : .watchPartyInviteCopyLink, systemImage: copied == "link" ? "checkmark" : "link")
                             }
                             .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                             Button {
@@ -119,7 +119,7 @@ struct WatchPartyInviteView: View {
                                 copied = "code"
                                 copyCount += 1
                             } label: {
-                                Label(copied == "code" ? "Copied" : "Copy code", systemImage: copied == "code" ? "checkmark" : "doc.on.doc")
+                                Label(copied == "code" ? LocalizedStringResource.watchPartyInviteCopied : .watchPartyInviteCopyCode, systemImage: copied == "code" ? "checkmark" : "doc.on.doc")
                             }
                             .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                         }

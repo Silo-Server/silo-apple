@@ -73,6 +73,8 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
             delivery: "original_http",
             container: "matroska",
             playbackRate: 1.25,
+            videoCodec: "hevc",
+            decisionReason: "direct_play_supported",
             secondarySubtitleLabel: "Spanish"
         )
         let sampledAt = Date(timeIntervalSince1970: 1_000)
@@ -86,30 +88,85 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         XCTAssertEqual(stats.sampledAt, sampledAt)
         XCTAssertEqual(stats.route, "Aether loopback HLS")
         XCTAssertEqual(stats.source, "media.example.test")
-        XCTAssertFalse(stats.allRows.map(\.1).joined().contains("do-not-display"))
-        XCTAssertFalse(stats.allRows.map(\.1).joined().contains("secret-title"))
+        XCTAssertFalse(stats.allRows.map(\.value).joined().contains("do-not-display"))
+        XCTAssertFalse(stats.allRows.map(\.value).joined().contains("secret-title"))
         XCTAssertEqual(stats.delivery, "Original HTTP")
+        XCTAssertEqual(stats.playMethod, "Direct play")
+        XCTAssertEqual(stats.decisionReason, "Direct play supported")
         XCTAssertEqual(stats.container, "MKV")
-        XCTAssertEqual(stats.video.codec, "VideoToolbox HEVC (HW)")
-        XCTAssertEqual(stats.video.detail, "3840×2160 · 23.976 fps")
+        XCTAssertEqual(stats.video.description, "HEVC · 3840×2160 · 23.976 fps")
+        XCTAssertEqual(stats.video.decoder, "VideoToolbox HEVC (HW)")
+        XCTAssertEqual(stats.video.summary, "4K · HDR10")
         XCTAssertEqual(stats.video.bitrateBps, 16_000_000)
-        XCTAssertEqual(stats.audio.codec, "eac3")
-        XCTAssertEqual(
-            stats.audio.detail,
-            "English · eng · Atmos · Stream-copy (EAC3+JOC Atmos)"
-        )
+        XCTAssertEqual(stats.audio.description, "English · EAC3 Atmos")
+        XCTAssertEqual(stats.audio.decoder, "Stream-copy (EAC3+JOC Atmos)")
         XCTAssertEqual(stats.dynamicRange, "Dolby Vision Profile 7 → HDR10")
-        XCTAssertEqual(stats.subtitles, "English SDH · eng · SUBRIP + Spanish")
+        XCTAssertEqual(stats.subtitles, "English SDH · SRT + Spanish")
         XCTAssertEqual(stats.playbackStatus, "Playing")
         XCTAssertEqual(stats.instantReadBitrateBps, 18_500_000)
         XCTAssertEqual(stats.networkThroughputBps, 95_000_000)
         XCTAssertEqual(stats.readerWindowAheadBytes, 8_000_000)
         XCTAssertEqual(stats.residentMemoryBytes, 384_000_000)
 
-        let labels = Set(stats.allRows.map(\.0))
+        let labels = Set(stats.allRows.map(\.label))
         XCTAssertFalse(labels.contains("Loopback generation"))
         XCTAssertFalse(labels.contains("Source cache watermarks"))
         XCTAssertFalse(labels.contains("Video packets"))
+
+        // A fact has one row, in one section.
+        XCTAssertEqual(Set(stats.allRows.map(\.id)).count, stats.allRows.count)
+        // The overlay sits over a picture people screenshot and share: the
+        // server's host and Aether's internals stay off it.
+        let overlay = stats.overlayRows.map(\.value).joined(separator: "\n")
+        XCTAssertFalse(overlay.contains("media.example.test"))
+        XCTAssertFalse(overlay.contains("Aether loopback HLS"))
+        XCTAssertEqual(
+            stats.playbackRows.map(\.value),
+            [
+                "Direct play · MKV",
+                "HEVC · 3840×2160 · 23.976 fps · 16.0 Mbps",
+                "Dolby Vision Profile 7 → HDR10",
+                "English · EAC3 Atmos · 768 Kbps",
+                "English SDH · SRT + Spanish",
+                "1.25×",
+                "Direct play supported",
+            ]
+        )
+    }
+
+    /// A converted file says how and why; the server's reason and each
+    /// warning get a row, under one label.
+    func testConvertedPlaybackExplainsItself() {
+        let stats = AetherPlaybackStatsProjection.make(
+            snapshot: AetherPlaybackStatsSnapshot(
+                route: .remoteBypass,
+                phase: .playing,
+                sourceVideoWidth: 1_920,
+                sourceVideoHeight: 800
+            ),
+            source: AetherPlaybackStatsSourceMetadata(
+                sourceURL: URL(string: "https://media.example.test/transcode/master.m3u8"),
+                delivery: PlaybackProtocolV3.PlanDelivery.transcodeHLS,
+                container: "mkv",
+                playbackRate: 1,
+                videoCodec: "h264",
+                decisionReason: "video_codec_unsupported",
+                warnings: ["HDR was tone-mapped to SDR.", "  "]
+            )
+        )
+
+        XCTAssertEqual(stats.playMethod, "Transcoded by the server")
+        // A scope crop of a 1080p master is still 1080p, and SDR goes unsaid.
+        XCTAssertEqual(stats.video.summary, "1080p")
+        XCTAssertEqual(stats.video.description, "H.264 · 1920×800")
+        let notes = stats.playbackRows.filter { $0.id.hasPrefix("diagnostics") }
+        XCTAssertEqual(notes.map(\.value), ["Video codec unsupported", "HDR was tone-mapped to SDR."])
+        XCTAssertEqual(notes.map(\.label), ["Diagnostics", ""])
+        XCTAssertFalse(stats.playbackRows.contains { $0.id == "playbackRate" }, "normal speed is not a stat")
+        // The overlay cannot scroll: it keeps the one-line reason and leaves
+        // the warnings, which have no limit, to the pages that do.
+        let overlayNotes = stats.overlayRows.filter { $0.id.hasPrefix("diagnostics") }
+        XCTAssertEqual(overlayNotes.map(\.value), ["Video codec unsupported"])
     }
 
     func testDolbyVisionProfileConversionRequiresEngineConfirmation() {
@@ -190,6 +247,40 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         }
     }
 
+    /// The Now playing line names the picture as displayed, whatever its
+    /// crop, shape or pixel shape.
+    func testPictureSummaryNamesTheDisplayedResolution() {
+        let cases: [(Int32, Int32, Double, String)] = [
+            (3_840, 1_600, 1, "4K"),
+            (1_920, 800, 1, "1080p"),
+            (1_440, 1_080, 1, "1080p"),
+            (1_440, 1_080, 4.0 / 3.0, "1080p"),
+            // Reaches 1080p through its displayed width alone (1920×800).
+            (1_280, 800, 3.0 / 2.0, "1080p"),
+            (1_280, 720, 1, "720p"),
+            (720, 480, 32.0 / 27.0, "480p"),
+        ]
+        for (width, height, pixelAspectRatio, expected) in cases {
+            let stats = AetherPlaybackStatsProjection.make(
+                snapshot: AetherPlaybackStatsSnapshot(
+                    route: .loopback,
+                    phase: .playing,
+                    sourceVideoWidth: width,
+                    sourceVideoHeight: height,
+                    sourceVideoPixelAspectRatio: pixelAspectRatio
+                ),
+                source: AetherPlaybackStatsSourceMetadata(
+                    sourceURL: nil,
+                    delivery: "original_http",
+                    container: "mkv",
+                    playbackRate: 1
+                )
+            )
+
+            XCTAssertEqual(stats.video.summary, expected, "\(width)×\(height) at \(pixelAspectRatio)")
+        }
+    }
+
     func testRouteAsymmetricTelemetryDoesNotInventForwardBuffer() {
         let telemetry = LiveTelemetry(
             instantBitrateMbps: nil,
@@ -230,13 +321,16 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(stats.source, "Offline file")
+        XCTAssertEqual(stats.playMethod, "Offline file")
+        XCTAssertNil(stats.source, "a local file has no host to name")
         XCTAssertEqual(stats.bufferedAheadSeconds, nil)
         XCTAssertEqual(stats.displayCushionSeconds, 0.42)
         XCTAssertEqual(stats.playbackStatus, "Rebuffering")
-        XCTAssertFalse(stats.bufferRows.contains { $0.0 == "Forward buffer" })
-        XCTAssertTrue(stats.bufferRows.contains { $0.0 == "Display cushion" })
-        XCTAssertFalse(stats.engineRows.contains { $0.0 == "Producer restarts" })
+        // With no forward buffer, the display cushion is the buffer reading.
+        XCTAssertFalse(stats.streamRows.contains { $0.label == "Forward buffer" })
+        XCTAssertTrue(stats.streamRows.contains { $0.label == "Display cushion" })
+        XCTAssertFalse(stats.engineRows.contains { $0.label == "Display cushion" })
+        XCTAssertFalse(stats.engineRows.contains { $0.label == "Producer restarts" })
     }
 
     func testServerToneMapPlanPreservesOriginalDynamicRangeInStats() {
@@ -276,6 +370,9 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         XCTAssertFalse(stats.hasRows)
         XCTAssertEqual(stats, PlaybackStats(
             sampledAt: stats.sampledAt,
+            playMethod: nil,
+            decisionReason: nil,
+            warnings: [],
             route: nil,
             source: nil,
             delivery: nil,

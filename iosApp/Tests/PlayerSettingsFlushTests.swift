@@ -1382,6 +1382,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         #if os(iOS)
         switchingBatches.append(SettingKey.playerCellularQualitySettings)
         #endif
+        switchingBatches.append(SettingKey.playerBufferingQualitySettings)
         for batch in switchingBatches {
             scope.value = "scope-a"
             transport.onEffectiveValues = { keys in
@@ -1429,6 +1430,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         #if os(iOS)
         switchingBatches.append(SettingKey.playerCellularQualitySettings)
         #endif
+        switchingBatches.append(SettingKey.playerBufferingQualitySettings)
         for batch in switchingBatches {
             scope.value = "scope-a"
             transport.onEffectiveValues = { keys in
@@ -2003,17 +2005,14 @@ final class PlayerSettingsFlushTests: XCTestCase {
         await harness.settings.refreshFromServer()
 
         // One batch for the player's keys. iPhone and iPad read the cellular
-        // pair in a second one, since a server that predates the pair would
-        // refuse the whole first batch over it.
+        // pair in a second one, and every platform reads the buffering mode
+        // in its own, since a server that predates a newer key would refuse
+        // the whole first batch over it.
         let calls = harness.transport.effectiveCalls()
-        XCTAssertEqual(
-            calls.count, PlayerSettings.offersCellularQuality ? 2 : 1,
-            "a refresh must be batched, not one call per key"
-        )
+        let cellular = PlayerSettings.offersCellularQuality ? [SettingKey.playerCellularQualitySettings] : []
+        XCTAssertEqual(calls.count, 2 + cellular.count, "a refresh must be batched, not one call per key")
         XCTAssertEqual(Set(calls[0]), Set(SettingKey.playerReadSettings))
-        if PlayerSettings.offersCellularQuality {
-            XCTAssertEqual(calls[1], SettingKey.playerCellularQualitySettings)
-        }
+        XCTAssertEqual(Array(calls.dropFirst()), cellular + [SettingKey.playerBufferingQualitySettings])
     }
 
     /// Apple has no player setting for recaps: the player follows the
@@ -2180,9 +2179,13 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         await harness.settings.resetAllDeviceSettings()
 
-        // iPhone and iPad also clear the cellular pair this device can hold.
+        // iPhone and iPad also clear the cellular pair this device can hold,
+        // and every platform the buffering mode.
         let cellular = PlayerSettings.offersCellularQuality ? SettingKey.playerCellularQualitySettings : []
-        XCTAssertEqual(Set(harness.transport.deletes()), Set(SettingKey.playerReadSettings + cellular))
+        XCTAssertEqual(
+            Set(harness.transport.deletes()),
+            Set(SettingKey.playerReadSettings + cellular + SettingKey.playerBufferingQualitySettings)
+        )
     }
 
     func testAnOldServerResetAppliesContractDefaultsAndDoesNotQueueDeletes() async throws {
@@ -2378,40 +2381,24 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(AppleQualityAxes.join(resolution: "480p", bitrateKbps: 300), "328p")
     }
 
-    func testAStoredOriginalQualityKeepsTheRememberedVersionLikeAuto() throws {
+    func testAStoredOriginalQualityRanksLikeAuto() throws {
         let sevenTwenty = Self.version(fileId: 1, resolution: "720p", bitrateKbps: 4_000)
         let fourK = Self.version(fileId: 2, resolution: "2160p", bitrateKbps: 30_000)
         let versions = [sevenTwenty, fourK]
 
-        // The bridge passes the stored quality through normalizeStoredId,
-        // which reads "original" as Auto, the nil preference.
+        // The stored quality goes through normalizeStoredId, which reads
+        // "original" as Auto, the nil preference.
         XCTAssertEqual(ApplePlaybackQuality.normalizeStoredId("original"), ApplePlaybackQuality.autoId)
-        XCTAssertEqual(
-            PlaybackSessionBridge.selectVersion(
-                from: versions,
-                lastFileId: sevenTwenty.fileId,
-                preferredQuality: nil
-            ).fileId,
-            sevenTwenty.fileId,
-            "Auto must retain the remembered-version fallback"
-        )
-        XCTAssertEqual(
-            PlaybackSessionBridge.selectVersion(
-                from: versions,
-                lastFileId: sevenTwenty.fileId,
-                preferredQuality: "original"
-            ).fileId,
-            sevenTwenty.fileId,
-            "original no longer outranks the remembered version"
-        )
-        XCTAssertEqual(
-            DetailVersionSelection.displayVersion(
-                versions: versions, selectedFileId: nil, lastFileId: nil, preferredQualityId: "original"
-            )?.fileId,
-            DetailVersionSelection.displayVersion(
-                versions: versions, selectedFileId: nil, lastFileId: nil, preferredQualityId: "auto"
-            )?.fileId
-        )
+        for lastFileId in [nil, sevenTwenty.fileId] {
+            XCTAssertEqual(
+                DetailVersionSelection.displayVersion(
+                    versions: versions, selectedFileId: nil, lastFileId: lastFileId, lastFileInProgress: false, preferredQualityId: "original"
+                )?.fileId,
+                DetailVersionSelection.displayVersion(
+                    versions: versions, selectedFileId: nil, lastFileId: lastFileId, lastFileInProgress: false, preferredQualityId: "auto"
+                )?.fileId
+            )
+        }
     }
 
     func testAnUncappedResolutionPicksThatResolutionsBestTier() throws {
@@ -2563,6 +2550,9 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     /// build's head so most tests simulate a fully current server; a test of
     /// revision-gated behavior overrides it to an older value.
     var revision: Int = SettingKey.revision
+    /// Keys this server defines whatever its revision, as a pre-release
+    /// server that carries a key at an earlier revision does.
+    var alsoDefines: Set<SettingKey> = []
     /// Artificial latency, so a test can overlap two flushes.
     var writeDelay: Duration?
     /// Models the production transport resolving the active profile after an
@@ -2658,8 +2648,13 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         let settings = effective.filter { requested.contains($0.key) }
         let error = effectiveError
         let reportedRevision = revision
+        let alsoDefines = alsoDefines
         lock.unlock()
         if let error { throw error }
+        // Like the server, refuse a batch naming a key it doesn't define.
+        if let undefined = keys.first(where: { !$0.isServed(atRevision: reportedRevision) && !alsoDefines.contains($0) }) {
+            throw SettingsAPIError.unknownSetting(key: undefined.rawValue)
+        }
         return EffectiveSettingValuesResponse(settings: settings, revision: reportedRevision)
     }
 

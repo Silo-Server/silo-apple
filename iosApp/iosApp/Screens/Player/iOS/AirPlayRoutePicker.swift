@@ -19,12 +19,14 @@ struct AirPlayRoutePicker: UIViewRepresentable {
         picker.tintColor = .white
         picker.prioritizesVideoDevices = true
         picker.accessibilityLabel = "AirPlay"
-        picker.accessibilityHint = "Choose a device for video playback"
+        picker.accessibilityHint = AppLanguage.string(.playerControlsAirPlayHint, locale: context.environment.locale)
         picker.delegate = context.coordinator
         return picker
     }
 
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {
+        // Follows a language switch while the picker is up.
+        uiView.accessibilityHint = AppLanguage.string(.playerControlsAirPlayHint, locale: context.environment.locale)
         // The closure captures the current view generation; refresh it so the
         // coordinator never calls back into a stale one.
         context.coordinator.onPresentingRoutes = onPresentingRoutes

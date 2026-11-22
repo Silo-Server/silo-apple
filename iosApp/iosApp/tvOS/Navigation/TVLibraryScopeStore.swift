@@ -13,11 +13,12 @@ import Foundation
 /// Single-library types need no entry here — their scope is trivially the
 /// only library, resolved without touching persistence.
 ///
-/// Keying: `skyline.libraryScope.<serverId>.<profileId>.<type>`. Server +
-/// profile scoping keeps two profiles (or two servers) from clobbering each
-/// other's choices when they share the same library type. Reads/writes go
-/// through `SharedDefaults` so the value survives the same way other Skyline
-/// preferences do.
+/// Keying: `skyline.libraryScope.v2.<serverId>.<accountId>.<profileId>.<type>`
+/// (`AccountScopedKeyAdoption`). Server + account + profile scoping keeps two
+/// profiles, two servers, or two accounts whose profiles share an ID from
+/// clobbering each other's choices when they share the same library type.
+/// Reads/writes go through `SharedDefaults` so the value survives the same
+/// way other Skyline preferences do.
 @MainActor
 final class TVLibraryScopeStore {
     static let shared = TVLibraryScopeStore()
@@ -70,14 +71,18 @@ final class TVLibraryScopeStore {
 
     // MARK: - Keying
 
+    nonisolated static let prefix = "skyline.libraryScope"
+
     private func key(for type: TVLibraryTabType) -> String? {
         // No profile → nothing to scope. Persisting under an anonymous key
         // would leak one user's choice into the next signed-in profile.
-        guard let profileId = AuthService.shared.profileId, !profileId.isEmpty else {
-            return nil
-        }
-        let serverId = ServerRegistry.shared.activeServerId ?? "default"
-        return "skyline.libraryScope.\(serverId).\(profileId).\(type.rawValue)"
+        guard let scope = AccountScope.current, let profileId = scope.profileId else { return nil }
+        let key = AccountScopedKeyAdoption.key(Self.prefix, serverId: scope.serverId,
+                                               localAccountId: scope.localAccountId,
+                                               profileId: profileId, suffix: type.rawValue)
+        // Read or written this session: already adopted.
+        guard cache[key] == nil else { return key }
+        return scope.adoptedKey(Self.prefix, suffix: type.rawValue, defaults: defaults)
     }
 }
 

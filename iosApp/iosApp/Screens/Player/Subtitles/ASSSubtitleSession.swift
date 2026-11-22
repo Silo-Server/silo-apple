@@ -14,7 +14,7 @@ final class ASSSubtitleSession {
     /// changes, which happens with the player item or playback path.
     private(set) var overlayLayer: CALayer?
     private(set) var isLoadingFonts = false
-    private(set) var failureMessage: String?
+    private(set) var failureMessage: LocalizedStringResource?
     /// Bumped on every selection reset, including engine track switches, so
     /// views that read `handlesCurrentTrack` re-evaluate even while paused.
     private var selectionRevision: UInt64 = 0
@@ -193,7 +193,7 @@ final class ASSSubtitleSession {
         guard !isLoadingFonts, failureMessage == nil else { return }
         guard let header = header(of: track), !header.isEmpty else {
             if !engine.isLoadingSubtitles {
-                reportFailure("Subtitle data couldn’t be loaded. Turn subtitles off and on to retry.",
+                reportFailure(.playerSubtitlesDataLoadFailed,
                               error: URLError(.cannotDecodeContentData))
             }
             return
@@ -221,7 +221,7 @@ final class ASSSubtitleSession {
             record(report, canvas: canvas, isExternal: track.isExternal)
         } catch {
             guard epoch == generation else { return }
-            reportFailure("Subtitles couldn’t be rendered.", error: error)
+            reportFailure(.playerSubtitlesRenderFailed, error: error)
         }
     }
 
@@ -408,7 +408,7 @@ final class ASSSubtitleSession {
             didRecordFrame = true
             #if os(iOS) || os(tvOS)
             DiagTrace.breadcrumb(.essential, category: .playback, tag: "ASSSubtitles",
-                message: "Local ASS frame ready: events=\(feed.cues.count) fonts=\(selectedFonts.count) source=\(isExternal ? "sidecar" : "embedded")")
+                message: "Local ASS frame ready: events=\(feed.cues.count) fonts=\(selectedFonts.count) source=\(isExternal ? "sidecar" : "embedded")") // i18n-ignore: English data: logged or sent to the server (D44)
             #endif
         }
         stats.frames += report.renderedFrames
@@ -459,16 +459,18 @@ final class ASSSubtitleSession {
             } catch {
                 guard let self, !Task.isCancelled, epoch == fontGeneration else { return }
                 isLoadingFonts = false
-                reportFailure("Subtitle fonts couldn’t be loaded. Turn subtitles off and on to retry.", error: error)
+                reportFailure(.playerSubtitlesFontsLoadFailed, error: error)
             }
         }
     }
 
-    private func reportFailure(_ message: String, error: Error) {
+    private func reportFailure(_ message: LocalizedStringResource, error: Error) {
         sink?.flush(removingImage: true)
         failureMessage = message
         #if os(iOS) || os(tvOS)
-        DiagTrace.breadcrumb(.essential, category: .playback, tag: "ASSSubtitles", message: message)
+        // Diagnostics stay English whatever language the app shows.
+        DiagTrace.breadcrumb(.essential, category: .playback, tag: "ASSSubtitles",
+                             message: AppLanguage.string(message, locale: Locale(identifier: "en")))
         #endif
         let underlying = error as NSError
         Self.logger.error("ASS subtitle failure domain=\(underlying.domain, privacy: .public) code=\(underlying.code, privacy: .public)")

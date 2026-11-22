@@ -7,7 +7,9 @@ struct AudioPlaybackTrack: Identifiable, Hashable {
     let index: Int
     let fileId: Int
     let fileName: String?
-    let version: FileVersion
+    /// The catalog version a streamed part plays; nil for a downloaded
+    /// file opened without the server.
+    let version: FileVersion?
     let durationSeconds: Double
     let startOffsetSeconds: Double
     var id: Int { index }
@@ -22,6 +24,12 @@ struct AudioPlaybackChapter: Identifiable, Hashable {
     let endSeconds: Double?
     let trackIndex: Int?
     var id: String { "\(trackIndex ?? -1)-\(index)-\(startSeconds)" }
+
+    /// The chapter's own title, or "Chapter N" in the language `locale`
+    /// shows. A view passes its `\.locale` so the label follows a switch.
+    func displayTitle(locale: Locale) -> String {
+        title ?? AppLanguage.string(.optionsChapterNumbered(LocaleFormat.integer(index + 1, locale: locale)), locale: locale)
+    }
 }
 
 /// Everything the audio player needs to drive a whole book through the
@@ -33,7 +41,7 @@ struct AudiobookPlaybackContext {
     let subtitle: String?
     let posterUrl: String?
     let totalDurationSeconds: Double
-    let resumePositionSeconds: Double
+    private(set) var resumePositionSeconds: Double
     let tracks: [AudioPlaybackTrack]
     let chapters: [AudioPlaybackChapter]
 
@@ -85,6 +93,57 @@ struct AudiobookPlaybackContext {
         )
         self.tracks = tracks
         self.chapters = chapters.sorted { $0.startSeconds < $1.startSeconds }
+    }
+
+    /// A downloaded single-file book, opened from its record and stored
+    /// manifest with no server: one track at the start of the book, whose
+    /// chapters are the file's. Nil when the manifest names neither a
+    /// duration nor chapters to measure the file by.
+    init?(download record: DownloadRecord, manifest: OfflineManifest, posterUrl: String?, resumePositionSeconds: Double) {
+        guard let fileId = Int(record.mediaFileId) else { return nil }
+        let fileChapters = manifest.chapters ?? []
+        let chapterEnd = fileChapters.compactMap { $0.endSeconds ?? $0.startSeconds }.max() ?? 0
+        let duration: Double
+        if let probed = manifest.durationSeconds, probed.isFinite, probed > 0 {
+            duration = probed
+        } else {
+            duration = chapterEnd
+        }
+        guard duration > 0 else { return nil }
+
+        contentId = record.contentId
+        title = record.title ?? manifest.title
+        subtitle = record.subtitle?.nonEmpty
+        self.posterUrl = posterUrl
+        totalDurationSeconds = duration
+        self.resumePositionSeconds = min(max(0, resumePositionSeconds), duration)
+        tracks = [AudioPlaybackTrack(
+            index: 0,
+            fileId: fileId,
+            fileName: nil,
+            version: nil,
+            durationSeconds: duration,
+            startOffsetSeconds: 0
+        )]
+        chapters = fileChapters
+            .map {
+                AudioPlaybackChapter(
+                    index: $0.index,
+                    title: $0.title,
+                    startSeconds: $0.startSeconds,
+                    endSeconds: $0.endSeconds,
+                    trackIndex: 0
+                )
+            }
+            .sorted { $0.startSeconds < $1.startSeconds }
+    }
+
+    /// Resumes from `position` instead of the server's resume point, for
+    /// listening on this device the server has not received yet.
+    func resuming(at position: Double) -> AudiobookPlaybackContext {
+        var copy = self
+        copy.resumePositionSeconds = min(max(0, position), max(0, totalDurationSeconds))
+        return copy
     }
 
     /// The playable audio parts of an audiobook detail, in book order.

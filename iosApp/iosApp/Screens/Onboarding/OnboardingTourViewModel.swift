@@ -43,9 +43,9 @@ private enum OnboardingTourError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedSetting(let key):
-            return "This version of Silo cannot save the \(key) setting yet."
+            return AppLanguage.string(.firstRunTourErrorUnsupportedSetting(key))
         case .missingProfile:
-            return "Select a profile before saving this setting."
+            return AppLanguage.string(.firstRunTourErrorMissingProfile)
         }
     }
 }
@@ -148,6 +148,7 @@ class OnboardingTourViewModel {
         if let serverId, let profileId {
             UnrenderableOnboardingTourSuppression.set(
                 serverId: serverId,
+                localAccountId: session.auth.account.localAccountId,
                 profileId: profileId,
                 tourId: tourId
             )
@@ -162,6 +163,7 @@ class OnboardingTourViewModel {
             if let serverId, let profileId {
                 UnrenderableOnboardingTourSuppression.clear(
                     serverId: serverId,
+                    localAccountId: session.auth.account.localAccountId,
                     profileId: profileId,
                     tourId: tourId
                 )

@@ -6,6 +6,7 @@ import SwiftUI
 /// sites normally only supply `onRetry`. `onGoBack` auto-hides at the root
 /// of the navigation stack. Pass an explicit closure to override either.
 struct ErrorView: View {
+    @Environment(\.locale) private var locale
     let state: ErrorState
     var onRetry: (() -> Void)? = nil
     var onGoBack: (() -> Void)? = nil
@@ -20,7 +21,7 @@ struct ErrorView: View {
                 .font(.system(size: 48))
                 .foregroundColor(.siloError)
 
-            Text(headline)
+            Text(Self.headlineResource(for: state))
                 .font(.siloHeadline)
                 .foregroundColor(.siloOnSurface)
                 .multilineTextAlignment(.center)
@@ -50,14 +51,16 @@ struct ErrorView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var headline: String { Self.headline(for: state) }
-
     nonisolated static func headline(for state: ErrorState) -> String {
-        if state.updateRequirement != nil { return "Update required" }
-        if state.isAuthFailure { return "Session expired" }
-        if state.isForbidden { return "Not allowed" }
-        if state.isNotFound { return "Not found" }
-        return "Something went wrong"
+        AppLanguage.string(headlineResource(for: state))
+    }
+
+    nonisolated static func headlineResource(for state: ErrorState) -> LocalizedStringResource {
+        if state.updateRequirement != nil { return .shellErrorViewUpdateRequired }
+        if state.isAuthFailure { return .shellErrorViewSessionExpired }
+        if state.isForbidden { return .shellErrorViewNotAllowed }
+        if state.isNotFound { return .shellErrorViewNotFound }
+        return .statusErrorGeneric
     }
 
     // MARK: - Action selection
@@ -84,7 +87,7 @@ struct ErrorView: View {
     }
 
     private struct Action {
-        let title: String
+        let title: LocalizedStringResource
         let run: () -> Void
     }
 
@@ -108,7 +111,7 @@ struct ErrorView: View {
     private var secondaryActions: [Action] {
         var actions: [Action] = []
         if let onManageServers {
-            actions.append(Action(title: "Manage Servers", run: onManageServers))
+            actions.append(Action(title: .shellErrorViewManageServers, run: onManageServers))
         }
         actions.append(contentsOf: plan.secondary.compactMap(action(for:)))
         return actions
@@ -117,11 +120,11 @@ struct ErrorView: View {
     private func action(for recovery: Recovery) -> Action? {
         switch recovery {
         case .signInAgain:
-            return Action(title: "Sign In Again", run: resolvedOnSignOut)
+            return Action(title: .settingsAccountsSignInAgain, run: resolvedOnSignOut)
         case .goBack:
-            return resolvedOnGoBack.map { Action(title: "Go Back", run: $0) }
+            return resolvedOnGoBack.map { Action(title: .playerGoBack, run: $0) }
         case .tryAgain:
-            return onRetry.map { Action(title: "Try Again", run: $0) }
+            return onRetry.map { Action(title: .shellErrorViewTryAgain, run: $0) }
         }
     }
 }

@@ -9,7 +9,8 @@ struct SettingsAccountCard: View {
     /// raw `avatar` ref when present.
     var avatarImageUrl: String? = nil
     let name: String
-    let subtitle: String
+    /// The account line under the name; `SettingsViewModel` writes it.
+    let subtitle: LocalizedStringResource
     let isAdministrator: Bool
     let action: () -> Void
 
@@ -33,7 +34,7 @@ struct SettingsAccountCard: View {
                 Spacer(minLength: 8)
 
                 if isAdministrator {
-                    Text("Admin")
+                    Text(.settingsAccountAdmin)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(Color.siloSecondaryText)
                         .padding(.horizontal, 9)
@@ -46,7 +47,7 @@ struct SettingsAccountCard: View {
             .padding(.vertical, 6)
             .contentShape(Rectangle())
         }
-        .accessibilityHint("Switches to a different profile")
+        .accessibilityHint(Text(.settingsAccountsCardHint))
     }
 }
 #endif

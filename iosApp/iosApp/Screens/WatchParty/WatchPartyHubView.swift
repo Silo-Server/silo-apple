@@ -10,6 +10,8 @@ struct WatchPartyHubView: View {
     @State private var isCheckingSupport = false
     @State private var roomSheet: WatchPartyRoomSheet?
     @State private var confirmsEnd = false
+    /// The app language, so a switch re-renders the resolved labels.
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Group {
@@ -28,10 +30,10 @@ struct WatchPartyHubView: View {
                     // without an owner Menu cannot leave a slow request.
                     ProgressView().tint(Color.siloSecondaryText)
                         .tvPageFocusOwner(focusRequest: 0, isTopMenuFocused: false,
-                                          accessibilityLabel: "Starting your party", onMoveUp: nil)
+                                          accessibilityLabel: AppLanguage.string(.watchPartyPageStarting), onMoveUp: nil)
                     #else
                     ProgressView().tint(Color.siloSecondaryText)
-                        .accessibilityLabel("Starting your party")
+                        .accessibilityLabel(.watchPartyPageStarting)
                     #endif
                 }
             } else {
@@ -41,7 +43,7 @@ struct WatchPartyHubView: View {
         }
         .modifier(WatchPartyRoomSheets(session: session, sheet: $roomSheet, confirmsEnd: $confirmsEnd))
         #if os(iOS)
-        .navigationTitle("Watch Party")
+        .navigationTitle(.watchPartyTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         #endif
@@ -89,7 +91,7 @@ struct WatchPartyRoomPanel: View {
             }
             .modifier(WatchPartyRoomSheets(session: session, sheet: $roomSheet, confirmsEnd: $confirmsEnd))
             #if os(iOS)
-            .navigationTitle("Watch Party")
+            .navigationTitle(.watchPartyTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             #endif
@@ -174,8 +176,8 @@ private struct WatchPartyRoomSheets: ViewModifier {
                 }
             }
             #if os(iOS)
-            .confirmationDialog("End this party for everyone?", isPresented: $confirmsEnd, titleVisibility: .visible) {
-                Button("End Party", role: .destructive) { Task { await session.endParty() } }
+            .confirmationDialog(.watchPartyEndConfirmTitle, isPresented: $confirmsEnd, titleVisibility: .visible) {
+                Button(.watchPartyEndConfirm, role: .destructive) { Task { await session.endParty() } }
             }
             #endif
     }
@@ -188,14 +190,14 @@ private struct WatchPartyEndConfirmation: View {
 
     var body: some View {
         VStack(spacing: 32) {
-            Text("End this party for everyone?").font(.title2)
+            Text(.watchPartyEndConfirmTitle).font(.title2)
             HStack(spacing: 24) {
-                Button { dismiss() } label: { Text("Cancel") }
+                Button { dismiss() } label: { Text(.commonCancel) }
                     .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                 Button(role: .destructive) {
                     dismiss()
                     Task { await session.endParty() }
-                } label: { Text("End Party") }
+                } label: { Text(.watchPartyEndConfirm) }
                     .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
             }
         }
@@ -231,13 +233,13 @@ private struct WatchPartyEntryView: View {
 
     private var headline: some View {
         VStack(alignment: .leading, spacing: WatchPartyMetrics.body * 0.6) {
-            WatchPartyEyebrow(text: "Watch Party")
-            Text("Watch something\ntogether")
+            WatchPartyEyebrow(text: .watchPartyTitle)
+            Text(.watchPartyPageHeadline)
                 .font(.system(size: WatchPartyMetrics.heroTitle, weight: .bold))
                 .tracking(-WatchPartyMetrics.heroTitle * 0.02)
                 .lineSpacing(-WatchPartyMetrics.heroTitle * 0.05)
                 .foregroundStyle(Color.siloOnSurface)
-            Text("Pick a title, share the code, and everyone's playback stays in step.")
+            Text(.watchPartyPageBody)
                 .font(.system(size: WatchPartyMetrics.body))
                 .foregroundStyle(Color.siloSecondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -250,9 +252,9 @@ private struct WatchPartyEntryView: View {
         if let message = session.errorMessage {
             WatchPartyBanner(message: message, tone: .warning)
         } else if !session.supportsSynchronizedParty {
-            WatchPartyBanner(message: isCheckingSupport
-                ? "Checking Watch Party support…"
-                : "Watch Party is not available for this profile on this server.")
+            WatchPartyBanner(isCheckingSupport
+                ? LocalizedStringResource.watchPartyPageChecking
+                : .watchPartyPageUnavailable)
         }
     }
 
@@ -263,8 +265,7 @@ private struct WatchPartyEntryView: View {
                 Button {
                     Task { await session.rejoinRecent() }
                 } label: {
-                    Label(session.wasReplaced ? "Continue here" : "Rejoin \(recent.selectedTitle ?? "recent party")",
-                          systemImage: "arrow.clockwise")
+                    Label(rejoinTitle(recent), systemImage: "arrow.clockwise")
                         .lineLimit(1)
                 }
                 .buttonStyle(WatchPartyButtonStyle(kind: .outlined))
@@ -273,7 +274,7 @@ private struct WatchPartyEntryView: View {
                 .focused($focused, equals: .rejoin)
                 #endif
                 if session.wasReplaced {
-                    Text("Rejoining here disconnects this profile's other device from the party.")
+                    Text(.watchPartyRejoinTakeOver)
                         .font(.system(size: WatchPartyMetrics.caption))
                         .foregroundStyle(Color.siloSecondaryText)
                 }
@@ -281,12 +282,17 @@ private struct WatchPartyEntryView: View {
         }
     }
 
+    private func rejoinTitle(_ recent: WatchPartyRecentRoom) -> LocalizedStringResource {
+        if session.wasReplaced { return .watchPartyRejoinContinueHere }
+        return recent.selectedTitle.map { LocalizedStringResource.watchPartyRejoinTitle($0) } ?? .watchPartyRejoinRecent
+    }
+
     private var createButtons: some View {
         Group {
             Button {
                 Task { await session.create(mode: .hostPick) }
             } label: {
-                Label("Start a party", systemImage: "plus")
+                Label(.watchPartyPageStart, systemImage: "plus")
             }
             .buttonStyle(WatchPartyButtonStyle(kind: .primary))
             .accessibilityIdentifier("watchParty.create")
@@ -296,7 +302,7 @@ private struct WatchPartyEntryView: View {
             Button {
                 Task { await session.create(mode: .vote) }
             } label: {
-                Text("Start a party and let everyone vote")
+                Text(.watchPartyPageStartVote)
             }
             .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
             #if os(tvOS)
@@ -308,7 +314,7 @@ private struct WatchPartyEntryView: View {
 
     private var joinField: some View {
         HStack(spacing: 10) {
-            TextField("Party code or invite link", text: $invitation)
+            TextField(text: $invitation, prompt: Text(.watchPartyHubCodeField)) { Text(.watchPartyHubCodeField) }
                 .autocorrectionDisabled()
                 #if os(iOS)
                 .textInputAutocapitalization(.characters)
@@ -338,7 +344,7 @@ private struct WatchPartyEntryView: View {
         Button {
             Task { await session.join(invitation: invitation) }
         } label: {
-            Text("Join party")
+            Text(.watchPartyCodeJoinParty)
         }
         .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
         .disabled(invitation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.locksControls || !session.supportsSynchronizedParty)
@@ -351,7 +357,7 @@ private struct WatchPartyEntryView: View {
     @ViewBuilder
     private var retryButton: some View {
         if !session.supportsSynchronizedParty {
-            Button(action: onCheckSupport) { Text("Check again") }
+            Button(action: onCheckSupport) { Text(.watchPartyPageCheckAgain) }
                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                 .disabled(isCheckingSupport)
                 #if os(tvOS)
@@ -371,13 +377,13 @@ private struct WatchPartyEntryView: View {
             Spacer(minLength: 0)
             VStack(alignment: .leading, spacing: 28) {
                 VStack(alignment: .leading, spacing: 16) {
-                    WatchPartyEyebrow(text: "Host")
+                    WatchPartyEyebrow(text: .watchPartyHubHostSection)
                     createButtons
                     recentRow
                 }
                 .focusSection()
                 VStack(alignment: .leading, spacing: 16) {
-                    WatchPartyEyebrow(text: "Join")
+                    WatchPartyEyebrow(text: .watchPartyHubJoinSection)
                     joinField
                     joinButton
                     retryButton
@@ -403,7 +409,7 @@ private struct WatchPartyEntryView: View {
                     recentRow
                 }
                 VStack(alignment: .leading, spacing: 10) {
-                    WatchPartyEyebrow(text: "Have a code?")
+                    WatchPartyEyebrow(text: .watchPartyHubHaveCode)
                     joinField
                     joinButton
                     retryButton
@@ -426,6 +432,8 @@ struct WatchPartyLobbyView: View {
     var onReturnToPlayback: (() -> Void)? = nil
     var playbackEnded = false
     @Environment(AppRouter.self) private var router
+    /// The app language, so a switch re-renders the resolved labels.
+    @Environment(\.locale) private var locale
     #if os(tvOS)
     @FocusState private var focused: LobbyFocus?
     private enum LobbyFocus: Hashable { case code, primary, secondary, more }
@@ -517,15 +525,15 @@ struct WatchPartyLobbyView: View {
 
     private func connectionDot(_ room: WatchPartyRoom) -> some View {
         let hostAway = !room.hostConnected && room.selfRole != .host
-        let (color, text): (Color, String) = {
+        let (color, text): (Color, LocalizedStringResource) = {
             switch session.connection {
-            case .connected where hostAway: return (.requestAmber, "Host away")
+            case .connected where hostAway: return (.requestAmber, .watchPartyConnectionHostAway)
             case .connected:
                 let here = room.members.filter(\.connected).count
-                return (.requestEmerald, here <= 1 ? "Open" : "\(here) here")
-            case .connecting: return (.siloSecondaryText, "Connecting")
-            case .reconnecting: return (.requestAmber, "Reconnecting")
-            case .ended, .failed, .idle: return (.requestRose, "Disconnected")
+                return (.requestEmerald, here <= 1 ? .watchPartyConnectionOpen : .watchPartyConnectionHere(here))
+            case .connecting: return (.siloSecondaryText, .watchPartyConnectionConnecting)
+            case .reconnecting: return (.requestAmber, .watchPartyConnectionReconnecting)
+            case .ended, .failed, .idle: return (.requestRose, .watchPartyConnectionDisconnected)
             }
         }()
         return HStack(spacing: 6) {
@@ -540,34 +548,37 @@ struct WatchPartyLobbyView: View {
         if let message = session.errorMessage {
             WatchPartyBanner(message: message, tone: .warning)
         } else if session.selectedItemUnavailable {
-            WatchPartyBanner(message: room.selfCanManageRoom
-                ? "This title isn't available to your profile. Choose something else so everyone can watch."
-                : "This title isn't available to your profile. \(hostName(room)) will need to pick something else.", tone: .warning)
+            WatchPartyBanner(room.selfCanManageRoom
+                ? LocalizedStringResource.watchPartyBannerUnavailableManager
+                : .watchPartyBannerUnavailableGuest(hostName(room)), tone: .warning)
         } else if !room.hostConnected && room.selfRole != .host {
-            WatchPartyBanner(message: "\(hostName(room)) lost connection. The party holds for two minutes while they come back.", tone: .warning)
+            WatchPartyBanner(.watchPartyBannerHostAway(hostName(room)), tone: .warning)
         } else if session.connection == .reconnecting {
-            WatchPartyBanner(message: "Reconnecting to the party…")
+            WatchPartyBanner(.watchPartyBannerReconnecting)
         }
     }
 
     private func hostName(_ room: WatchPartyRoom) -> String {
-        room.members.first(where: \.isHost)?.displayName ?? "The host"
+        room.members.first(where: \.isHost)?.displayName ?? AppLanguage.string(.watchPartyTheHost)
     }
 
     /// Eyebrow + title + facts. In vote mode before a winner, the question is the title.
     private func heroText(_ room: WatchPartyRoom, titleSize: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: titleSize * 0.28) {
             if room.selectionMode == .vote && room.phase == .lobby {
-                WatchPartyEyebrow(text: "Voting · \(session.votes.rows.count) \(session.votes.rows.count == 1 ? "title" : "titles")")
-                Text("What are we watching?")
+                WatchPartyEyebrow(text: .watchPartyEyebrowVoting(session.votes.rows.count))
+                Text(.watchPartyHeroVoteTitle)
                     .font(.system(size: titleSize, weight: .bold))
                     .tracking(-titleSize * 0.02)
                     .foregroundStyle(Color.siloOnSurface)
-                Text(room.selfCanManageRoom ? "Everyone votes. You start the leader." : "Tap a title to vote. \(hostName(room)) starts the winner.")
+                Text(room.selfCanManageRoom
+                     ? LocalizedStringResource.watchPartyHeroVoteCaptionManager
+                     : .watchPartyHeroVoteCaptionGuest(hostName(room)))
                     .font(.system(size: WatchPartyMetrics.body))
                     .foregroundStyle(Color.siloSecondaryText)
             } else if let item = displayedItem {
-                WatchPartyEyebrow(text: room.phase == .playing ? "Now watching · together" : "Up next · together")
+                WatchPartyEyebrow(text: room.phase == .playing
+                                  ? LocalizedStringResource.watchPartyEyebrowNowWatching : .watchPartyEyebrowUpNext)
                 Text(item.title)
                     .font(.system(size: titleSize, weight: .bold))
                     .tracking(-titleSize * 0.02)
@@ -575,26 +586,27 @@ struct WatchPartyLobbyView: View {
                     .lineLimit(3)
                     .minimumScaleFactor(0.7)
                 factsLine(item)
-                Text(room.selfRole == .host ? "You chose this" : "\(hostName(room)) chose this")
+                Text(room.selfRole == .host ? LocalizedStringResource.watchPartyHeroYouChose : .watchPartyHeroHostChose(hostName(room)))
                     .font(.system(size: WatchPartyMetrics.caption))
                     .foregroundStyle(Color.siloSecondaryText.opacity(0.7))
             } else if room.selectedContentId != nil {
-                WatchPartyEyebrow(text: room.phase == .playing ? "Now watching · together" : "Up next · together")
-                Text(session.selectedItemUnavailable ? "A title you can't see" : "Loading title…")
+                WatchPartyEyebrow(text: room.phase == .playing
+                                  ? LocalizedStringResource.watchPartyEyebrowNowWatching : .watchPartyEyebrowUpNext)
+                Text(session.selectedItemUnavailable ? LocalizedStringResource.watchPartyHeroHidden : .watchPartyHeroLoading)
                     .font(.system(size: titleSize, weight: .bold))
                     .foregroundStyle(Color.siloSecondaryText)
-                Text(room.selfRole == .host ? "You chose this" : "\(hostName(room)) chose this")
+                Text(room.selfRole == .host ? LocalizedStringResource.watchPartyHeroYouChose : .watchPartyHeroHostChose(hostName(room)))
                     .font(.system(size: WatchPartyMetrics.caption))
                     .foregroundStyle(Color.siloSecondaryText.opacity(0.7))
             } else {
-                WatchPartyEyebrow(text: "Your party is open")
-                Text(room.selfCanManageRoom ? "Pick something\nto watch" : "Waiting for\n\(hostName(room))")
+                WatchPartyEyebrow(text: .watchPartyEyebrowOpen)
+                Text(room.selfCanManageRoom ? LocalizedStringResource.watchPartyHeroPick : .watchPartyHeroWaiting(hostName(room)))
                     .font(.system(size: titleSize, weight: .bold))
                     .tracking(-titleSize * 0.02)
                     .foregroundStyle(Color.siloOnSurface)
                 Text(room.selfCanManageRoom
-                     ? "Friends can join now with the code. They'll see your pick the moment you choose."
-                     : "\(hostName(room)) is choosing what to watch. You'll see it here the moment they do.")
+                     ? LocalizedStringResource.watchPartyHeroPickCaption
+                     : .watchPartyHeroWaitingCaption(hostName(room)))
                     .font(.system(size: WatchPartyMetrics.body))
                     .foregroundStyle(Color.siloSecondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -627,7 +639,9 @@ struct WatchPartyLobbyView: View {
     private func primaryButton(_ room: WatchPartyRoom) -> some View {
         switch primaryAction {
         case .chooseTitle:
-            Button { openSheet(.select) } label: { Text(room.selectedContentId == nil ? "Choose a title" : "Change title") }
+            Button { openSheet(.select) } label: {
+                Text(room.selectedContentId == nil ? LocalizedStringResource.watchPartyButtonChooseTitle : .watchPartyButtonChangeTitle)
+            }
                 .buttonStyle(WatchPartyButtonStyle(kind: .primary))
                 .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.choose")
@@ -635,14 +649,14 @@ struct WatchPartyLobbyView: View {
             Button {
                 Task { await session.startPlayback() }
             } label: {
-                Label(title.map { "Start \($0)" } ?? "Start for everyone", systemImage: "play.fill")
+                Label(title.map { LocalizedStringResource.watchPartyButtonStartWinner($0) } ?? .watchPartyButtonStartForEveryone, systemImage: "play.fill")
                     .lineLimit(1)
             }
             .buttonStyle(WatchPartyButtonStyle(kind: .primary))
             .disabled(!session.canStartPlayback || session.locksControls || !isConnected)
             .accessibilityIdentifier("watchParty.start")
         case .waitingForVotes:
-            Button { openSheet(.suggest) } label: { Label("Suggest a title", systemImage: "plus") }
+            Button { openSheet(.suggest) } label: { Label(.watchPartyButtonSuggestTitle, systemImage: "plus") }
                 .buttonStyle(WatchPartyButtonStyle(kind: .primary))
                 .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.suggest")
@@ -652,9 +666,9 @@ struct WatchPartyLobbyView: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: isReady ? "checkmark" : "checkmark.circle")
-                    Text(isReady ? "You're ready" : "I'm ready")
+                    Text(isReady ? LocalizedStringResource.watchPartyButtonYoureReady : .watchPartyButtonImReady)
                     if isReady {
-                        Text("tap to undo").font(.system(size: WatchPartyMetrics.caption)).opacity(0.6)
+                        Text(.watchPartyButtonTapToUndo).font(.system(size: WatchPartyMetrics.caption)).opacity(0.6)
                     }
                 }
             }
@@ -666,12 +680,12 @@ struct WatchPartyLobbyView: View {
                 if let onReturnToPlayback { onReturnToPlayback() }
                 else if let context = session.playbackContext { router.presentWatchParty(context) }
             } label: {
-                Label("Return to playback", systemImage: "play.fill")
+                Label(.watchPartyButtonReturnToPlayback, systemImage: "play.fill")
             }
             .buttonStyle(WatchPartyButtonStyle(kind: .primary))
         case .returnToLobby:
             Button { Task { await session.stopPlayback() } } label: {
-                Label("Return everyone to lobby", systemImage: "arrow.uturn.backward")
+                Label(.watchPartyButtonReturnToLobby, systemImage: "arrow.uturn.backward")
             }
             .buttonStyle(WatchPartyButtonStyle(kind: .primary))
             .disabled(session.locksControls)
@@ -685,23 +699,23 @@ struct WatchPartyLobbyView: View {
     private func secondaryButton(_ room: WatchPartyRoom) -> some View {
         if room.phase == .lobby, room.selfCanManageRoom, room.selectionMode == .hostPick, room.selectedContentId != nil,
            case .start = primaryAction {
-            Button { openSheet(.select) } label: { Text("Change title") }
+            Button { openSheet(.select) } label: { Text(.watchPartyButtonChangeTitle) }
                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                 .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.choose")
         } else if room.phase == .lobby, room.selectionMode == .vote, case .start = primaryAction {
-            Button { openSheet(.suggest) } label: { Label("Suggest", systemImage: "plus") }
+            Button { openSheet(.suggest) } label: { Label(.watchPartyButtonSuggest, systemImage: "plus") }
                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                 .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.suggest")
         } else if room.phase == .lobby, room.selectionMode == .vote, !room.selfCanManageRoom {
-            Button { openSheet(.suggest) } label: { Label("Suggest a title", systemImage: "plus") }
+            Button { openSheet(.suggest) } label: { Label(.watchPartyButtonSuggestTitle, systemImage: "plus") }
                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                 .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.suggest")
         } else if room.phase == .playing, room.selfCanManageRoom, room.selectionMode == .hostPick {
             // A new selection starts for everyone at once.
-            Button { openSheet(.select) } label: { Text("Choose something else") }
+            Button { openSheet(.select) } label: { Text(.watchPartyButtonChooseSomethingElse) }
                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                 .disabled(session.locksControls)
                 .accessibilityIdentifier("watchParty.choose")
@@ -710,21 +724,26 @@ struct WatchPartyLobbyView: View {
 
     @ViewBuilder
     private func hint(_ room: WatchPartyRoom) -> some View {
-        let text: String? = {
+        let text: LocalizedStringResource? = {
             guard room.phase == .lobby else { return nil }
             if room.selfCanManageRoom {
                 let waiting = WatchPartyLobbyPolicy.waitingNames(members: room.members)
                 if room.selectionMode == .vote, session.voteWinner == nil {
-                    return session.votes.rows.isEmpty ? "Suggest a title to get the vote going." : "Nobody has voted yet."
+                    return session.votes.rows.isEmpty ? .watchPartyHintSuggestToStart : .watchPartyHintNoVotes
                 }
                 if room.selectedContentId == nil, room.selectionMode == .hostPick { return nil }
-                if waiting.isEmpty { return room.members.filter(\.connected).count > 1 ? "Everyone's ready." : nil }
-                return "\(waiting.prefix(2).joined(separator: " and "))\(waiting.count > 2 ? " and others" : "") \(waiting.count == 1 ? "hasn't" : "haven't") marked ready. You can still start."
+                switch waiting.count {
+                case 0: return room.members.filter(\.connected).count > 1 ? .watchPartyHintEveryoneReady : nil
+                case 1: return .watchPartyHintNotReadyOneName(waiting[0])
+                case 2: return .watchPartyHintNotReadyTwoNames(waiting[0], waiting[1])
+                default: return .watchPartyHintNotReadyMoreNames(waiting[0], waiting[1])
+                }
             }
             if room.selectionMode == .vote {
-                return "\(hostName(room)) starts \(session.voteWinner?.title ?? "the winner") when voting settles."
+                if let winner = session.voteWinner?.title { return .watchPartyHintHostStartsWinner(hostName(room), winner) }
+                return .watchPartyHintHostStartsTheWinner(hostName(room))
             }
-            return room.selectedContentId == nil ? nil : "\(hostName(room)) starts the movie when everyone's set."
+            return room.selectedContentId == nil ? nil : .watchPartyHintHostStarts(hostName(room))
         }()
         if let text {
             Text(text)
@@ -800,37 +819,37 @@ struct WatchPartyLobbyView: View {
                     Picker(selection: Binding(get: { room.selectionMode }, set: { mode in
                         Task { await session.setMode(mode) }
                     })) {
-                        Label("Host", systemImage: "person.fill").tag(WatchPartySelectionMode.hostPick)
-                        Label("Everyone votes", systemImage: "hand.thumbsup").tag(WatchPartySelectionMode.vote)
+                        Label(.watchPartyOptionsHost, systemImage: "person.fill").tag(WatchPartySelectionMode.hostPick)
+                        Label(.watchPartyOptionsEveryoneVotes, systemImage: "hand.thumbsup").tag(WatchPartySelectionMode.vote)
                     } label: {
-                        Label("Who chooses", systemImage: "hand.point.up.left")
-                        Text(room.selectionMode == .vote ? "Everyone votes" : "Host")
+                        Label(.watchPartyOptionsWhoChooses, systemImage: "hand.point.up.left")
+                        Text(room.selectionMode == .vote ? LocalizedStringResource.watchPartyOptionsEveryoneVotes : .watchPartyOptionsHost)
                     }
                     .pickerStyle(.menu)
                 }
                 Picker(selection: Binding(get: { room.guestControlPolicy }, set: { policy in
                     Task { await session.setPolicy(policy) }
                 })) {
-                    Label("Host only", systemImage: "person.fill").tag(WatchPartyGuestControlPolicy.hostOnly)
-                    Label("Host and guests", systemImage: "person.2.fill").tag(WatchPartyGuestControlPolicy.guestPlayPause)
+                    Label(.watchPartyOptionsHostOnly, systemImage: "person.fill").tag(WatchPartyGuestControlPolicy.hostOnly)
+                    Label(.watchPartyOptionsHostAndGuests, systemImage: "person.2.fill").tag(WatchPartyGuestControlPolicy.guestPlayPause)
                 } label: {
-                    Label("Play & pause", systemImage: "playpause")
-                    Text(room.guestControlPolicy == .guestPlayPause ? "Host and guests" : "Host only")
+                    Label(.watchPartyOptionsPlayPause, systemImage: "playpause")
+                    Text(room.guestControlPolicy == .guestPlayPause ? LocalizedStringResource.watchPartyOptionsHostAndGuests : .watchPartyOptionsHostOnly)
                 }
                 .pickerStyle(.menu)
                 if room.phase == .playing, session.capabilities?.stopPlayback == true {
                     Button { Task { await session.stopPlayback() } } label: {
-                        Label("Return everyone to lobby", systemImage: "arrow.uturn.backward")
+                        Label(.watchPartyOptionsReturnToLobby, systemImage: "arrow.uturn.backward")
                     }
                 }
                 Divider()
             }
             Button { session.leaveRoom() } label: {
-                Label("Leave party", systemImage: "rectangle.portrait.and.arrow.right")
+                Label(.watchPartyOptionsLeave, systemImage: "rectangle.portrait.and.arrow.forward")
             }
             if room.selfCanManageRoom {
                 Button(role: .destructive) { confirmsEnd = true } label: {
-                    Label("End party", systemImage: "xmark.circle")
+                    Label(.watchPartyEndButton, systemImage: "xmark.circle")
                 }
             }
         } label: {
@@ -842,7 +861,7 @@ struct WatchPartyLobbyView: View {
                 .overlay(Circle().stroke(Color.siloChromeRestingBorder, lineWidth: 1))
         }
         .disabled(session.locksControls)
-        .accessibilityLabel("Party options")
+        .accessibilityLabel(.watchPartyOptionsTitle)
         .accessibilityIdentifier("watchParty.options")
     }
     #endif
@@ -854,7 +873,7 @@ struct WatchPartyLobbyView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center) {
                 HStack(spacing: 18) {
-                    Text("Watch Party")
+                    Text(.watchPartyTitle)
                         .font(.system(size: 26, weight: .semibold))
                         .foregroundStyle(Color.siloOnSurface)
                     connectionDot(room)
@@ -866,8 +885,8 @@ struct WatchPartyLobbyView: View {
                         .focused($focused, equals: .code)
                     TVCircleActionButton(
                         icon: "ellipsis",
-                        title: "Options",
-                        accessibilityLabel: "Party options",
+                        title: AppLanguage.string(.watchPartyOptionsButton),
+                        accessibilityLabel: AppLanguage.string(.watchPartyOptionsTitle),
                         stabilizesFocusMotion: true
                     ) {
                         showsHostControls = true
@@ -961,7 +980,7 @@ struct WatchPartyLobbySuggestions: View {
     }
 
     /// Without staged selection the server starts whatever the host selects.
-    private var queueLabel: String { session.capabilities?.stagedSelection == true ? "Queue" : "Play" }
+    private var queuesSelection: Bool { session.capabilities?.stagedSelection == true }
 
     private func isQueued(_ suggestion: WatchPartySuggestion) -> Bool {
         suggestion.contentId == room.selectedContentId
@@ -974,9 +993,9 @@ struct WatchPartyLobbySuggestions: View {
     var body: some View {
         VStack(alignment: .leading, spacing: WatchPartyMetrics.caption * 0.6) {
             HStack(alignment: .firstTextBaseline) {
-                WatchPartyEyebrow(text: "Suggestions · \(session.votes.rows.count)")
+                WatchPartyEyebrow(text: .watchPartyStripTitleCount(session.votes.rows.count))
                 Spacer(minLength: 12)
-                Text(room.selfCanManageRoom ? "Queue one to put it up next." : "The host decides what plays.")
+                Text(room.selfCanManageRoom ? LocalizedStringResource.watchPartyStripManager : .watchPartyStripGuest)
                     .font(.system(size: WatchPartyMetrics.caption))
                     .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
@@ -987,7 +1006,7 @@ struct WatchPartyLobbySuggestions: View {
                     ForEach(session.votes.rows) { suggestion in
                         WatchPartySuggestionCard(session: session, suggestion: suggestion,
                                                  canQueue: canQueue && !isQueued(suggestion),
-                                                 queueLabel: queueLabel, onQueue: queue)
+                                                 queuesSelection: queuesSelection, onQueue: queue)
                     }
                 }
                 .padding(.vertical, 14)
@@ -998,7 +1017,7 @@ struct WatchPartyLobbySuggestions: View {
             VStack(spacing: 8) {
                 ForEach(session.votes.rows) { suggestion in
                     WatchPartySuggestionRow(session: session, suggestion: suggestion, canQueue: canQueue,
-                                            isQueued: isQueued(suggestion), queueLabel: queueLabel, onQueue: queue)
+                                            isQueued: isQueued(suggestion), queuesSelection: queuesSelection, onQueue: queue)
                 }
             }
             #endif
@@ -1012,8 +1031,10 @@ private struct WatchPartySuggestionRow: View {
     let suggestion: WatchPartySuggestion
     let canQueue: Bool
     let isQueued: Bool
-    let queueLabel: String
+    let queuesSelection: Bool
     let onQueue: (WatchPartySuggestion) -> Void
+    /// The app language, so a switch re-renders the resolved note line.
+    @Environment(\.locale) private var locale
 
     var body: some View {
         HStack(spacing: 12) {
@@ -1022,21 +1043,20 @@ private struct WatchPartySuggestionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(suggestion.title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(Color.siloOnSurface)
-                Text([suggestion.subtitle, suggestion.note.isEmpty ? nil : "“\(suggestion.note)”"].compactMap { $0 }
-                    .filter { !$0.isEmpty }.joined(separator: " · "))
+                Text(suggestion.detailLine)
                     .font(.system(size: 12)).foregroundStyle(Color.siloSecondaryText).lineLimit(1)
             }
             Spacer(minLength: 4)
             if isQueued {
-                Text("Up next")
+                Text(.watchPartySuggestionUpNext)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.siloSecondaryText)
                     .padding(.horizontal, 8)
             } else if canQueue {
-                Button(queueLabel) { onQueue(suggestion) }
+                Button(queuesSelection ? LocalizedStringResource.watchPartySuggestionQueue : .watchPartySuggestionPlay) { onQueue(suggestion) }
                     .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                     .fixedSize()
-                    .accessibilityLabel("\(queueLabel) \(suggestion.title)")
+                    .accessibilityLabel(suggestion.queueAccessibilityLabel(queuesSelection: queuesSelection))
             }
         }
         .padding(8)
@@ -1045,7 +1065,7 @@ private struct WatchPartySuggestionRow: View {
         .contextMenu {
             if session.canRemoveSuggestion(suggestion) {
                 Button(role: .destructive) { Task { await session.deleteSuggestion(id: suggestion.id) } } label: {
-                    Label("Remove suggestion", systemImage: "trash")
+                    Label(.watchPartyBallotRemove, systemImage: "trash")
                 }
             }
         }
@@ -1055,12 +1075,25 @@ private struct WatchPartySuggestionRow: View {
 }
 #endif
 
+extension WatchPartySuggestion {
+    /// Subtitle and the member's note in quotation marks, joined by a separator.
+    fileprivate var detailLine: String {
+        [subtitle, note.isEmpty ? nil : AppLanguage.string(.watchPartyBallotNote(note))].compactMap { $0 }
+            .filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// Without staged selection the server starts whatever the host selects.
+    fileprivate func queueAccessibilityLabel(queuesSelection: Bool) -> LocalizedStringResource {
+        queuesSelection ? .watchPartySuggestionQueueTitle(title) : .watchPartySuggestionPlayTitle(title)
+    }
+}
+
 #if os(tvOS)
 private struct WatchPartySuggestionCard: View {
     let session: WatchPartySession
     let suggestion: WatchPartySuggestion
     let canQueue: Bool
-    let queueLabel: String
+    let queuesSelection: Bool
     let onQueue: (WatchPartySuggestion) -> Void
     @FocusState private var isFocused: Bool
 
@@ -1085,10 +1118,11 @@ private struct WatchPartySuggestionCard: View {
             .buttonStyle(.siloFlat)
             .focused($isFocused)
             .disabled(!canQueue && !session.canRemoveSuggestion(suggestion))
-            .accessibilityLabel(canQueue ? "\(queueLabel) \(suggestion.title)" : suggestion.title)
+            .accessibilityLabel(canQueue ? Text(suggestion.queueAccessibilityLabel(queuesSelection: queuesSelection))
+                                : Text(suggestion.title))
             .contextMenu {
                 if session.canRemoveSuggestion(suggestion) {
-                    Button(role: .destructive) { Task { await session.deleteSuggestion(id: suggestion.id) } } label: { Text("Remove suggestion") }
+                    Button(role: .destructive) { Task { await session.deleteSuggestion(id: suggestion.id) } } label: { Text(.watchPartyBallotRemove) }
                 }
             }
             Text(suggestion.title).font(.system(size: 20, weight: .semibold)).lineLimit(1)
@@ -1131,13 +1165,13 @@ struct WatchPartyBallot: View {
                 WatchPartyCandidateRow(session: session, room: room, suggestion: suggestion, isLeader: suggestion.id == leaderID)
             }
             if session.votes.rows.isEmpty {
-                Text("Nothing suggested yet. Anyone can add a title.")
+                Text(.watchPartyBallotEmpty)
                     .font(.system(size: WatchPartyMetrics.caption))
                     .foregroundStyle(Color.siloSecondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             Button(action: onSuggest) {
-                Label("Suggest a title", systemImage: "plus")
+                Label(.watchPartyButtonSuggestTitle, systemImage: "plus")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(Color.siloSecondaryText)
                     .frame(maxWidth: .infinity, minHeight: 44)
@@ -1160,7 +1194,7 @@ private struct WatchPartyVoteBadge: View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             Text("\(count)")
                 .font(.system(size: WatchPartyMetrics.code, weight: .bold, design: .monospaced))
-            Text(count == 1 ? "VOTE" : "VOTES")
+            Text(.watchPartyBallotVotesLabel(count: count))
                 .font(.system(size: WatchPartyMetrics.eyebrow, weight: .semibold))
                 .tracking(1)
                 .opacity(0.6)
@@ -1169,7 +1203,7 @@ private struct WatchPartyVoteBadge: View {
         .padding(.horizontal, 12).padding(.vertical, 6)
         .background(Capsule().fill(isLeader ? Color.siloOnSurface : Color.black.opacity(0.7)))
         .overlay(Capsule().stroke(isLeader ? Color.clear : Color.siloChromeRestingBorder, lineWidth: 1))
-        .accessibilityLabel("\(count) \(count == 1 ? "vote" : "votes")")
+        .accessibilityLabel(.watchPartyBallotVoteCount(count))
     }
 }
 
@@ -1179,6 +1213,8 @@ private struct WatchPartyCandidateRow: View {
     let room: WatchPartyRoom
     let suggestion: WatchPartySuggestion
     let isLeader: Bool
+    /// The app language, so a switch re-renders the resolved note line.
+    @Environment(\.locale) private var locale
 
     private var personalVote: Bool? { session.votes.personal[suggestion.id] }
 
@@ -1189,8 +1225,7 @@ private struct WatchPartyCandidateRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(suggestion.title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(Color.siloOnSurface)
-                Text([suggestion.subtitle, suggestion.note.isEmpty ? nil : "“\(suggestion.note)”"].compactMap { $0 }
-                    .filter { !$0.isEmpty }.joined(separator: " · "))
+                Text(suggestion.detailLine)
                     .font(.system(size: 12)).foregroundStyle(Color.siloSecondaryText).lineLimit(1)
             }
             Spacer(minLength: 4)
@@ -1198,7 +1233,7 @@ private struct WatchPartyCandidateRow: View {
                 Text("\(suggestion.voteCount)")
                     .font(.system(size: 20, weight: .bold, design: .monospaced))
                     .foregroundStyle(Color.siloOnSurface)
-                Text(suggestion.voteCount == 1 ? "VOTE" : "VOTES")
+                Text(.watchPartyBallotVotesLabel(count: suggestion.voteCount))
                     .font(.system(size: 10, weight: .semibold)).tracking(1)
                     .foregroundStyle(Color.siloSecondaryText)
             }
@@ -1217,7 +1252,8 @@ private struct WatchPartyCandidateRow: View {
             }
             .buttonStyle(.siloFlat)
             .disabled(personalVote == nil || session.locksControls || session.connection != .connected)
-            .accessibilityLabel(personalVote == nil ? "Loading your vote" : personalVote == true ? "Remove vote for \(suggestion.title)" : "Vote for \(suggestion.title)")
+            .accessibilityLabel(personalVote == nil ? LocalizedStringResource.watchPartyBallotLoadingVote
+                                : personalVote == true ? .watchPartyBallotRemoveVote(suggestion.title) : .watchPartyBallotVote(suggestion.title))
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(isLeader ? Color.siloChromeSelectedFill : Color.siloChromeRestingFill))
@@ -1226,17 +1262,18 @@ private struct WatchPartyCandidateRow: View {
         .contextMenu {
             if room.selfCanManageRoom, room.selectionMode == .hostPick || session.capabilities?.voteHostOverride == true {
                 Button { Task { await session.promoteSuggestion(id: suggestion.id) } } label: {
-                    Label("Start this one", systemImage: "play.fill")
+                    Label(.watchPartyBallotStartThis, systemImage: "play.fill")
                 }
             }
             if session.canRemoveSuggestion(suggestion) {
                 Button(role: .destructive) { Task { await session.deleteSuggestion(id: suggestion.id) } } label: {
-                    Label("Remove suggestion", systemImage: "trash")
+                    Label(.watchPartyBallotRemove, systemImage: "trash")
                 }
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(suggestion.title), \(suggestion.voteCount) \(suggestion.voteCount == 1 ? "vote" : "votes")\(isLeader ? ", leading" : "")")
+        .accessibilityLabel(isLeader ? LocalizedStringResource.watchPartyBallotCandidateLeading(suggestion.title, suggestion.voteCount)
+                            : .watchPartyBallotCandidate(suggestion.title, suggestion.voteCount))
     }
 }
 #endif
@@ -1248,6 +1285,8 @@ private struct WatchPartyCandidateCard: View {
     let suggestion: WatchPartySuggestion
     let isLeader: Bool
     @FocusState private var isFocused: Bool
+    /// The app language, so a switch re-renders the resolved note line.
+    @Environment(\.locale) private var locale
 
     private var personalVote: Bool? { session.votes.personal[suggestion.id] }
 
@@ -1279,19 +1318,21 @@ private struct WatchPartyCandidateCard: View {
             .buttonStyle(.siloFlat)
             .focused($isFocused)
             .disabled(personalVote == nil || session.locksControls || session.connection != .connected)
-            .accessibilityLabel(personalVote == nil ? "Loading your vote" : personalVote == true ? "Remove vote for \(suggestion.title)" : "Vote for \(suggestion.title)")
+            .accessibilityLabel(personalVote == nil ? LocalizedStringResource.watchPartyBallotLoadingVote
+                                : personalVote == true ? .watchPartyBallotRemoveVote(suggestion.title) : .watchPartyBallotVote(suggestion.title))
             .contextMenu {
                 if room.selfCanManageRoom, session.capabilities?.voteHostOverride == true || room.selectionMode == .hostPick {
-                    Button { Task { await session.promoteSuggestion(id: suggestion.id) } } label: { Text("Start this one") }
+                    Button { Task { await session.promoteSuggestion(id: suggestion.id) } } label: { Text(.watchPartyBallotStartThis) }
                 }
                 if session.canRemoveSuggestion(suggestion) {
-                    Button(role: .destructive) { Task { await session.deleteSuggestion(id: suggestion.id) } } label: { Text("Remove suggestion") }
+                    Button(role: .destructive) { Task { await session.deleteSuggestion(id: suggestion.id) } } label: { Text(.watchPartyBallotRemove) }
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(suggestion.title).font(.system(size: 26, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(Color.siloOnSurface)
-                Text(suggestion.note.isEmpty ? (suggestion.subtitle.isEmpty ? " " : suggestion.subtitle) : "“\(suggestion.note)”")
+                Text(suggestion.note.isEmpty ? (suggestion.subtitle.isEmpty ? " " : suggestion.subtitle)
+                     : AppLanguage.string(.watchPartyBallotNote(suggestion.note)))
                     .font(.system(size: 20)).foregroundStyle(Color.siloSecondaryText).lineLimit(1)
             }
             .frame(width: WatchPartyMetrics.ballotPoster.width, alignment: .leading)
@@ -1312,8 +1353,8 @@ private struct WatchPartySuggestCardLabel: View {
                 .frame(width: WatchPartyMetrics.ballotPoster.width, height: WatchPartyMetrics.ballotPoster.height)
                 .scaleEffect(isFocused ? 1.05 : 1)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Suggest a title").font(.system(size: 26, weight: .semibold)).foregroundStyle(Color.siloSecondaryText)
-                Text("Anyone can add one").font(.system(size: 20)).foregroundStyle(Color.siloSecondaryText.opacity(0.7))
+                Text(.watchPartyButtonSuggestTitle).font(.system(size: 26, weight: .semibold)).foregroundStyle(Color.siloSecondaryText)
+                Text(.watchPartyBallotAddCaption).font(.system(size: 20)).foregroundStyle(Color.siloSecondaryText.opacity(0.7))
             }
         }
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
@@ -1334,23 +1375,25 @@ private struct WatchPartyHostControlsOverlay: View {
         ZStack {
             Color.black.opacity(0.62).ignoresSafeArea().onTapGesture(perform: dismiss)
             VStack(alignment: .leading, spacing: 18) {
-                Text("Party options").font(.system(size: 38, weight: .semibold)).foregroundStyle(Color.siloOnSurface)
+                Text(.watchPartyOptionsTitle).font(.system(size: 38, weight: .semibold)).foregroundStyle(Color.siloOnSurface)
                 if room.selfCanManageRoom {
                     if room.phase == .lobby, session.capabilities?.selectionModeSwitch == true {
-                        row("Who chooses", value: room.selectionMode == .vote ? "Everyone votes" : "Host chooses", id: .mode) {
+                        row(.watchPartyOptionsWhoChooses,
+                            value: room.selectionMode == .vote ? .watchPartyOptionsEveryoneVotes : .watchPartyOptionsHostChooses, id: .mode) {
                             Task { await session.setMode(room.selectionMode == .vote ? .hostPick : .vote) }
                         }
                     }
-                    row("Playback controls", value: room.guestControlPolicy == .guestPlayPause ? "Guests can play and pause" : "Host only", id: .policy) {
+                    row(.watchPartyOptionsPlaybackControls,
+                        value: room.guestControlPolicy == .guestPlayPause ? .watchPartyOptionsGuestsPlayPause : .watchPartyOptionsHostOnly, id: .policy) {
                         Task { await session.setPolicy(room.guestControlPolicy == .guestPlayPause ? .hostOnly : .guestPlayPause) }
                     }
                     if room.phase == .playing, session.capabilities?.stopPlayback == true {
-                        row("Return everyone to lobby", value: nil, id: .stop) { Task { await session.stopPlayback() }; dismiss() }
+                        row(.watchPartyOptionsReturnToLobby, value: nil, id: .stop) { Task { await session.stopPlayback() }; dismiss() }
                     }
-                    row("End party for everyone", value: nil, id: .end, destructive: true) { dismiss(); onEnd() }
+                    row(.watchPartyOptionsEnd, value: nil, id: .end, destructive: true) { dismiss(); onEnd() }
                 }
-                row("Leave party", value: nil, id: .leave, destructive: true) { dismiss(); session.leaveRoom() }
-                row("Close", value: nil, id: .close, action: dismiss)
+                row(.watchPartyOptionsLeave, value: nil, id: .leave, destructive: true) { dismiss(); session.leaveRoom() }
+                row(.watchPartyOptionsClose, value: nil, id: .close, action: dismiss)
             }
             .padding(48)
             .frame(width: 900)
@@ -1369,7 +1412,7 @@ private struct WatchPartyHostControlsOverlay: View {
         .onAppear { focused = .close }
     }
 
-    private func row(_ title: String, value: String?, id: Row, destructive: Bool = false, action: @escaping () -> Void) -> some View {
+    private func row(_ title: LocalizedStringResource, value: LocalizedStringResource?, id: Row, destructive: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack {
                 Text(title).font(.system(size: 26, weight: .medium))

@@ -42,11 +42,23 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
+    /// Episode cards from servers with `episode_parent_artwork`: the series'
+    /// and season's own art, never an episode still. Absent otherwise.
+    @ArtworkURL var seriesPosterUrl: String? = nil
+    var seriesPosterThumbhash: String? = nil
+    @ArtworkURL var seriesBackdropUrl: String? = nil
+    var seriesBackdropThumbhash: String? = nil
+    @ArtworkURL var seasonPosterUrl: String? = nil
+    var seasonPosterThumbhash: String? = nil
     let addedAt: String?
     let releaseDate: String?
     let lastAirDate: String?
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
+    /// Set on a box set search result lifted into a card
+    /// (`BrowseItem(boxSet:)`): the box set the card stands for. Absent on
+    /// every catalog card.
+    var boxSet: CatalogBoxSet? = nil
     var id: String { contentId }
 }
 
@@ -73,11 +85,37 @@ struct MediaItemUserState: Codable, Hashable {
     let played: Bool
     let isFavorite: Bool
     let inWatchlist: Bool
+    /// The profile marked the movie or series Not interested. Nil when the
+    /// server predates the mark, which then can't be offered.
+    var notInterested: Bool? = nil
+    /// Episodes the profile has watched, and available episodes it has not.
+    /// The v2 catalog sends them only for a series or season the profile has
+    /// not finished.
+    var watchedCount: Int? = nil
+    var unplayedCount: Int? = nil
 
-    init(played: Bool = false, isFavorite: Bool = false, inWatchlist: Bool = false) {
+    init(
+        played: Bool = false,
+        isFavorite: Bool = false,
+        inWatchlist: Bool = false,
+        notInterested: Bool? = nil,
+        watchedCount: Int? = nil,
+        unplayedCount: Int? = nil
+    ) {
         self.played = played
         self.isFavorite = isFavorite
         self.inWatchlist = inWatchlist
+        self.notInterested = notInterested
+        self.watchedCount = watchedCount
+        self.unplayedCount = unplayedCount
+    }
+
+    /// The episodes a started, unfinished series or season has left, or nil.
+    /// An untouched one has none to show: its count would be on every new
+    /// show. Mirrors `remainingEpisodes` in web's `CardWatchStatus.tsx`.
+    var episodesLeft: Int? {
+        guard !played, (watchedCount ?? 0) > 0, let unplayedCount, unplayedCount > 0 else { return nil }
+        return unplayedCount
     }
 }
 
@@ -144,6 +182,14 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
+    /// Episode cards from servers with `episode_parent_artwork`: the series'
+    /// and season's own art, never an episode still. Absent otherwise.
+    @ArtworkURL var seriesPosterUrl: String? = nil
+    var seriesPosterThumbhash: String? = nil
+    @ArtworkURL var seriesBackdropUrl: String? = nil
+    var seriesBackdropThumbhash: String? = nil
+    @ArtworkURL var seasonPosterUrl: String? = nil
+    var seasonPosterThumbhash: String? = nil
     @ArtworkURL var logoUrl: String? = nil
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
@@ -152,6 +198,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
     var pendingTranslationLanguage: String? = nil
     /// Localized fields ("overview", "tagline") machine-translated by AI.
     var machineTranslatedFields: [String]? = nil
+    /// A series' last air date, "2023-05-28". Absent from older servers and caches.
+    var lastAirDate: String? = nil
     var id: String { contentId }
 
     /// Lift a catalog row into a section row so client-composed shelves
@@ -190,9 +238,16 @@ struct SectionItem: Codable, Identifiable, Hashable {
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
+        seriesPosterUrl = item.seriesPosterUrl
+        seriesPosterThumbhash = item.seriesPosterThumbhash
+        seriesBackdropUrl = item.seriesBackdropUrl
+        seriesBackdropThumbhash = item.seriesBackdropThumbhash
+        seasonPosterUrl = item.seasonPosterUrl
+        seasonPosterThumbhash = item.seasonPosterThumbhash
         logoUrl = nil
         userState = item.userState
         overlaySummary = item.overlaySummary
+        lastAirDate = item.lastAirDate
     }
 }
 
@@ -297,8 +352,8 @@ extension BrowseItem {
     /// Lift a Home row into the catalog shape for Watch Party's picker, which
     /// opens a confirmation page from a `BrowseItem`. Every field the two
     /// types share is copied; artwork on a decoded section row is already
-    /// resolved. `addedAt`, `releaseDate` and `lastAirDate` are not on
-    /// section rows and stay nil.
+    /// resolved. `addedAt` and `releaseDate` are not on section rows and
+    /// stay nil.
     init(sectionItem item: SectionItem) {
         self.init(
             contentId: item.contentId,
@@ -334,9 +389,15 @@ extension BrowseItem {
             posterThumbhash: item.posterThumbhash,
             backdropUrl: item.backdropUrl,
             backdropThumbhash: item.backdropThumbhash,
+            seriesPosterUrl: item.seriesPosterUrl,
+            seriesPosterThumbhash: item.seriesPosterThumbhash,
+            seriesBackdropUrl: item.seriesBackdropUrl,
+            seriesBackdropThumbhash: item.seriesBackdropThumbhash,
+            seasonPosterUrl: item.seasonPosterUrl,
+            seasonPosterThumbhash: item.seasonPosterThumbhash,
             addedAt: nil,
             releaseDate: nil,
-            lastAirDate: nil,
+            lastAirDate: item.lastAirDate,
             userState: item.userState,
             overlaySummary: item.overlaySummary
         )
@@ -347,7 +408,212 @@ extension SectionItem {
     var isAudiobook: Bool { SiloMediaType.isAudiobook(type) }
 }
 
+/// Series and season art an episode card carries next to its own, from servers
+/// that advertise `episode_parent_artwork`. None of it is an episode still, so
+/// spoiler protection never hides it.
+protocol EpisodeParentArtwork {
+    var type: String { get }
+    var seriesPosterUrl: String? { get }
+    var seriesPosterThumbhash: String? { get }
+    var seriesBackdropUrl: String? { get }
+    var seriesBackdropThumbhash: String? { get }
+    var seasonPosterUrl: String? { get }
+    var seasonPosterThumbhash: String? { get }
+}
+
+extension EpisodeParentArtwork {
+    /// The series backdrop a hero draws for an episode in place of the
+    /// episode's own `backdrop_url`, which is usually a small still. Nil for
+    /// other types and on older servers, which keep the existing behavior.
+    var episodeSeriesBackdrop: (url: String, thumbhash: String?)? {
+        guard SiloMediaType.isEpisode(type),
+              let url = seriesBackdropUrl, !url.isEmpty else { return nil }
+        return (url, seriesBackdropThumbhash)
+    }
+
+    /// Portrait art for an episode: its season's poster, else its series'.
+    var episodeShowPoster: (url: String, thumbhash: String?)? {
+        guard SiloMediaType.isEpisode(type) else { return nil }
+        if let url = seasonPosterUrl, !url.isEmpty { return (url, seasonPosterThumbhash) }
+        if let url = seriesPosterUrl, !url.isEmpty { return (url, seriesPosterThumbhash) }
+        return nil
+    }
+}
+
+extension SectionItem: EpisodeParentArtwork {}
+extension BrowseItem: EpisodeParentArtwork {}
+extension ItemDetail: EpisodeParentArtwork {}
+extension APIv2CatalogRead.CatalogItemDetail: EpisodeParentArtwork {}
+
+/// One card of a row of collections (`section_type` `collection_posters`):
+/// a collection the viewer can see, which the card opens.
+struct SectionCollectionCard: Codable, Hashable, Identifiable {
+    /// Whose collection the card is, with what opening it needs.
+    enum Source: Hashable {
+        /// A server collection, opened in a library the viewer can open
+        /// that holds it.
+        case library(libraryId: Int)
+        /// A personal collection and the profile that made it.
+        case user(creatorProfileId: String?)
+    }
+
+    let id: String
+    let source: Source
+    let title: String
+    /// The assigned poster, else the viewer's collage of the collection's
+    /// titles. Nil when the collection has neither: the card shows the
+    /// collection placeholder.
+    @ArtworkURL var posterUrl: String?
+    let posterThumbhash: String?
+    /// A server collection's wide backdrop, at the size its page draws it,
+    /// for the hero while the card is focused. Nil when it has none, always
+    /// for a personal collection, and from a server that predates it.
+    @ArtworkURL var backdropUrl: String?
+    let backdropThumbhash: String?
+    /// The titles the viewer sees in the collection.
+    let itemCount: Int
+
+    /// Unique within a row: a server and a personal collection could share
+    /// an id.
+    var rowKey: String {
+        switch source {
+        case .library: "library:\(id)"
+        case .user: "user:\(id)"
+        }
+    }
+
+    var isPersonal: Bool {
+        if case .user = source { return true }
+        return false
+    }
+
+    /// The profile that made a personal collection.
+    var creatorProfileId: String? {
+        if case .user(let creatorProfileId) = source { return creatorProfileId }
+        return nil
+    }
+
+    init(
+        id: String,
+        source: Source,
+        title: String,
+        posterUrl: String? = nil,
+        posterThumbhash: String? = nil,
+        backdropUrl: String? = nil,
+        backdropThumbhash: String? = nil,
+        itemCount: Int
+    ) {
+        self.id = id
+        self.source = source
+        self.title = title
+        self.posterUrl = posterUrl
+        self.posterThumbhash = posterThumbhash
+        self.backdropUrl = backdropUrl
+        self.backdropThumbhash = backdropThumbhash
+        self.itemCount = itemCount
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, source, title, posterUrl, posterThumbhash, backdropUrl, backdropThumbhash
+        case itemCount, libraryId, creatorProfileId
+    }
+
+    /// Throws for an unknown source and for a server collection without a
+    /// library, which no page could open.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        posterUrl = try c.decode(ArtworkURL.self, forKey: .posterUrl).wrappedValue.flatMap { $0.isEmpty ? nil : $0 }
+        posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash).flatMap { $0.isEmpty ? nil : $0 }
+        // Optional extras: a malformed backdrop leaves the card without one
+        // rather than dropping the card.
+        backdropUrl = (try? c.decode(ArtworkURL.self, forKey: .backdropUrl))?.wrappedValue.flatMap { $0.isEmpty ? nil : $0 }
+        backdropThumbhash = ((try? c.decodeIfPresent(String.self, forKey: .backdropThumbhash)) ?? nil)
+            .flatMap { $0.isEmpty ? nil : $0 }
+        itemCount = try c.decodeIfPresent(Int.self, forKey: .itemCount) ?? 0
+        switch try c.decode(String.self, forKey: .source) {
+        case "library":
+            // The API sends the library id as a string; a cached card holds an Int.
+            var libraryId = (try? c.decodeIfPresent(Int.self, forKey: .libraryId)) ?? nil
+            if libraryId == nil {
+                libraryId = try c.decodeIfPresent(String.self, forKey: .libraryId).flatMap { Int($0) }
+            }
+            guard let libraryId else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .libraryId, in: c, debugDescription: "A server collection card needs library_id"
+                )
+            }
+            source = .library(libraryId: libraryId)
+        case "user":
+            let creator = try c.decodeIfPresent(String.self, forKey: .creatorProfileId)
+            source = .user(creatorProfileId: creator.flatMap { $0.isEmpty ? nil : $0 })
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                forKey: .source, in: c, debugDescription: "Unknown collection card source \(other)"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encodeIfPresent(posterUrl, forKey: .posterUrl)
+        try c.encodeIfPresent(posterThumbhash, forKey: .posterThumbhash)
+        try c.encodeIfPresent(backdropUrl, forKey: .backdropUrl)
+        try c.encodeIfPresent(backdropThumbhash, forKey: .backdropThumbhash)
+        try c.encode(itemCount, forKey: .itemCount)
+        switch source {
+        case .library(let libraryId):
+            try c.encode("library", forKey: .source)
+            try c.encode(libraryId, forKey: .libraryId)
+        case .user(let creatorProfileId):
+            try c.encode("user", forKey: .source)
+            try c.encodeIfPresent(creatorProfileId, forKey: .creatorProfileId)
+        }
+    }
+
+    /// The card as the collection poster cards draw it.
+    var libraryCollection: LibraryCollection {
+        LibraryCollection(
+            id: id,
+            name: title,
+            itemCount: itemCount,
+            posterUrl: posterUrl,
+            posterThumbhash: posterThumbhash,
+            kind: isPersonal ? .userCollections : .regular,
+            creatorProfileId: creatorProfileId
+        )
+    }
+
+    /// The collection's page, opened as the Collections tab opens a server
+    /// collection, keeping the library page's Movies or Shows filter, and as
+    /// the personal collections list opens one of its own.
+    func route(mediaScope: LibraryVideoScope? = nil) -> Route {
+        switch source {
+        case .library(let libraryId):
+            .libraryCollection(libraryId: libraryId, collectionId: id, title: title, kind: .regular, mediaScope: mediaScope)
+        case .user:
+            .collectionDetail(collectionId: id, title: title)
+        }
+    }
+}
+
+/// Decodes one element of a list, keeping nil for an element that fails, so
+/// one bad card leaves the rest of its row.
+private struct LossyElement<Element: Decodable>: Decodable {
+    let value: Element?
+
+    init(from decoder: Decoder) throws {
+        value = try? Element(from: decoder)
+    }
+}
+
 struct ResolvedSection: Codable, Identifiable {
+    /// A row whose cards are collections rather than titles.
+    static let collectionPostersType = "collection_posters"
+
     let id: String
     let sectionType: String
     let title: String
@@ -357,9 +623,59 @@ struct ResolvedSection: Codable, Identifiable {
     let isCustom: Bool?
     let customized: Bool?
     let items: [SectionItem]
+    /// The catalog key of the server's own title (`home.section.*`), sent
+    /// only while the title is the server's text, never an admin's rename.
+    let titleKey: String?
+    /// The values that key's placeholder takes (`{"library": "Movies"}`).
+    let titleArgs: [String: String]?
+    /// A row of collections' cards, in the row's order. Such a row has no
+    /// `items`; every other row has no collections.
+    let collections: [SectionCollectionCard]
 
-    /// Whether this section is featured (defaults to false if nil).
-    var isFeatured: Bool { featured ?? false }
+    /// Whether this row's cards are collections. Rows like this have no
+    /// titles, so they have no full page, are never the hero, and are left
+    /// out of passes over titles.
+    var holdsCollections: Bool {
+        sectionType == Self.collectionPostersType || !collections.isEmpty
+    }
+
+    /// Whether the row has anything to show. Every page leaves out a row
+    /// without cards.
+    var hasCards: Bool {
+        holdsCollections ? !collections.isEmpty : !items.isEmpty
+    }
+
+    /// Whether this section is featured (defaults to false if nil). A row of
+    /// collections has no title to feature, so it never is.
+    var isFeatured: Bool { (featured ?? false) && !holdsCollections }
+
+    /// The section with `items` in place of its own.
+    func replacingItems(_ items: [SectionItem]) -> ResolvedSection {
+        ResolvedSection(
+            id: id,
+            sectionType: sectionType,
+            title: title,
+            featured: featured,
+            itemLimit: itemLimit,
+            totalCount: totalCount,
+            isCustom: isCustom,
+            customized: customized,
+            items: items,
+            titleKey: titleKey,
+            titleArgs: titleArgs,
+            collections: collections
+        )
+    }
+
+    /// The title in the language `locale` shows: the catalog's translation of
+    /// the server's own title, else `title` as sent.
+    func displayTitle(in locale: Locale) -> String {
+        displayTitle(language: AppLanguage.language(of: locale))
+    }
+
+    func displayTitle(language: String) -> String {
+        AppLanguage.serverText(title, key: titleKey, args: titleArgs, language: language)
+    }
 
     init(
         id: String,
@@ -370,7 +686,10 @@ struct ResolvedSection: Codable, Identifiable {
         totalCount: Int?,
         isCustom: Bool?,
         customized: Bool?,
-        items: [SectionItem]
+        items: [SectionItem],
+        titleKey: String? = nil,
+        titleArgs: [String: String]? = nil,
+        collections: [SectionCollectionCard] = []
     ) {
         self.id = id
         self.sectionType = sectionType
@@ -381,6 +700,9 @@ struct ResolvedSection: Codable, Identifiable {
         self.isCustom = isCustom
         self.customized = customized
         self.items = items
+        self.titleKey = titleKey
+        self.titleArgs = titleArgs
+        self.collections = collections
     }
 
     init(from decoder: Decoder) throws {
@@ -394,6 +716,14 @@ struct ResolvedSection: Codable, Identifiable {
         isCustom = try c.decodeIfPresent(Bool.self, forKey: .isCustom)
         customized = try c.decodeIfPresent(Bool.self, forKey: .customized)
         items = try c.decodeIfPresent([SectionItem].self, forKey: .items) ?? []
+        // Optional extras: a malformed key or argument map shows `title`
+        // rather than failing the row.
+        titleKey = (try? c.decodeIfPresent(String.self, forKey: .titleKey)) ?? nil
+        titleArgs = (try? c.decodeIfPresent([String: String].self, forKey: .titleArgs)) ?? nil
+        // A card that fails to decode is left out, as the server leaves out
+        // collections the viewer can't see; the row keeps the others.
+        collections = ((try? c.decodeIfPresent([LossyElement<SectionCollectionCard>].self, forKey: .collections)) ?? nil)?
+            .compactMap(\.value) ?? []
     }
 }
 
@@ -422,17 +752,7 @@ struct SectionsResponse: Codable {
                 SiloMediaType.isSupportedSectionItem($0.type)
             }
             guard kept.count != section.items.count else { return section }
-            return ResolvedSection(
-                id: section.id,
-                sectionType: section.sectionType,
-                title: section.title,
-                featured: section.featured,
-                itemLimit: section.itemLimit,
-                totalCount: section.totalCount,
-                isCustom: section.isCustom,
-                customized: section.customized,
-                items: kept
-            )
+            return section.replacingItems(kept)
         }
     }
 }
@@ -481,6 +801,14 @@ struct ItemDetail: Codable {
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
+    /// Episode cards from servers with `episode_parent_artwork`: the series'
+    /// and season's own art, never an episode still. Absent otherwise.
+    @ArtworkURL var seriesPosterUrl: String? = nil
+    var seriesPosterThumbhash: String? = nil
+    @ArtworkURL var seriesBackdropUrl: String? = nil
+    var seriesBackdropThumbhash: String? = nil
+    @ArtworkURL var seasonPosterUrl: String? = nil
+    var seasonPosterThumbhash: String? = nil
     @ArtworkURL var logoUrl: String? = nil
     let seasonCount: Int?
     let seriesId: String?
@@ -500,7 +828,11 @@ struct ItemDetail: Codable {
     /// during playback enrichment (absent on the raw catalog payload).
     /// The signature is only present when an explicit per-series /
     /// per-movie subtitle override is stored, so it doubles as the
-    /// "user picked a track" marker for selector seeding.
+    /// "user picked a track" marker for selector seeding. The language comes
+    /// only from the watch detail, which also sets the flag.
+    var effectiveSubtitleLanguage: String? = nil
+    /// Optional so payloads cached or written without it still decode.
+    var hasWatchDetailSubtitlePolicy: Bool? = nil
     let effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
     let effectiveSubtitleTrackSignature: SubtitleTrackSignature?
@@ -533,6 +865,11 @@ struct ItemDetail: Codable {
     /// translated by AI. `var` with a default for the same memberwise-
     /// initializer reason as `videos`.
     var machineTranslatedFields: [String]? = nil
+    /// Local theme audio for this page, resolved by the server: a season
+    /// without themes carries its series' set, an episode its season's, then
+    /// its series'. `var` with a default for the same memberwise-initializer
+    /// reason as `videos`.
+    var themes: ThemeSongSet? = nil
 }
 
 extension ItemDetail {
@@ -741,14 +1078,6 @@ struct Season: Codable, Identifiable, Hashable {
     var machineTranslatedFields: [String]? = nil
     var id: String { contentId }
 
-    /// Consistent label for season pickers and episode-section headings.
-    var downloadDisplayName: String {
-        if isSpecials == true || seasonNumber == 0 {
-            return title ?? "Specials"
-        }
-        return "Season \(seasonNumber)"
-    }
-
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         contentId = try c.decode(String.self, forKey: .contentId)
@@ -890,6 +1219,10 @@ struct FileVersion: Codable, Identifiable, Hashable {
     let intro: TimeRange?
     let credits: TimeRange?
     let recap: TimeRange?
+    /// Every marker occurrence, in source-time order. When present it
+    /// replaces the singular fields above, which hold the first occurrence
+    /// of each kind for older clients.
+    let markerSegments: [PlaybackMarkerSegment]?
     let presentationKind: String?
     let presentationGroupKey: String?
     let presentationPartIndex: Int?
@@ -899,8 +1232,10 @@ struct FileVersion: Codable, Identifiable, Hashable {
     let editionRaw: String?
     let editionKey: String?
     /// Server-resolved default audio track ordinal for this version.
-    let effectiveAudioTrackIndex: Int?
-    let effectiveAudioLanguage: String?
+    /// `var` so a read can fold in an audio pick the server has not stored
+    /// yet (`TrackSelectionPersistence.Settlement`).
+    var effectiveAudioTrackIndex: Int?
+    var effectiveAudioLanguage: String?
     /// Whether the server publishes seek-bar previews for this file.
     let trickplayAvailable: Bool?
     var id: Int { fileId }
@@ -927,6 +1262,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
         intro: TimeRange? = nil,
         credits: TimeRange? = nil,
         recap: TimeRange? = nil,
+        markerSegments: [PlaybackMarkerSegment]? = nil,
         presentationKind: String? = nil,
         presentationGroupKey: String? = nil,
         presentationPartIndex: Int? = nil,
@@ -954,6 +1290,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
         self.intro = intro
         self.credits = credits
         self.recap = recap
+        self.markerSegments = markerSegments
         self.presentationKind = presentationKind
         self.presentationGroupKey = presentationGroupKey
         self.presentationPartIndex = presentationPartIndex
@@ -1011,7 +1348,13 @@ struct VideoTrack: Codable, Identifiable, Hashable {
     let colorPrimaries: String?
     let colorTransfer: String?
     let videoRange: String?
+    /// The server's finer class of the range ("HDR10", "HDR10Plus", "HLG",
+    /// "DOVIWithHDR10", …); `videoRange` only tells HDR from Dolby Vision.
+    let videoRangeType: String?
     let dolbyVision: String?
+    /// The stream carries HDR10+ dynamic metadata, on its own or beside
+    /// Dolby Vision.
+    let hdr10Plus: Bool?
     let title: String?
     let language: String?
     var id: Int { index ?? 0 }
@@ -1077,6 +1420,15 @@ struct SubtitleTrack: Codable, Identifiable, Hashable {
         return external == true ? nil : 0
     }
 
+    /// An embedded track the server stored with no codec: its probe didn't
+    /// recognize the format (a Matroska S_TEXT/WEBVTT track, for one), so the
+    /// server can neither deliver nor burn it in, and a start or switch that
+    /// asks for it is refused (`subtitle_codec_unsupported`). The same rule
+    /// marks the player's inventory rows (`ApplePlaybackV3PlanAdapter`).
+    var hasUnsupportedFormat: Bool {
+        external != true && (codec?.trimmingCharacters(in: .whitespaces) ?? "").isEmpty
+    }
+
     enum CodingKeys: String, CodingKey {
         case index
         case codec
@@ -1113,6 +1465,16 @@ struct LeafItemUserData: Codable, Hashable {
     let durationSeconds: Double?
     let lastFileId: Int?
     let lastResolution: String?
+    /// The edition of the version last played.
+    let lastEditionKey: String?
+
+    /// A position Resume would offer (`PlaybackResumePoint`). Only then does
+    /// Auto stay on a later multipart part last played; otherwise it starts
+    /// at part 1. `played` is ignored: the server zeroes the position when a
+    /// title is finished and keeps the flag through a rewatch.
+    var hasResumePoint: Bool {
+        PlaybackResumePoint.position(positionSeconds, duration: durationSeconds) != nil
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1122,6 +1484,7 @@ struct LeafItemUserData: Codable, Hashable {
         durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
         lastFileId = try c.decodeIfPresent(Int.self, forKey: .lastFileId)
         lastResolution = try c.decodeIfPresent(String.self, forKey: .lastResolution)
+        lastEditionKey = try c.decodeIfPresent(String.self, forKey: .lastEditionKey)
     }
 }
 
@@ -1229,7 +1592,7 @@ struct WatchDetail {
     let title: String
     let year: Int?
     let overview: String?
-    let versions: [FileVersion]
+    var versions: [FileVersion]
     let subtitles: [SubtitleInfoBasic]?
     let intro: TimeRange?
     let credits: TimeRange?
@@ -1243,10 +1606,16 @@ struct WatchDetail {
     /// per-series → library → profile prefs cascade. Absent when the
     /// user hasn't configured anything that applies. Consumed by the
     /// player at track-discovery time to auto-pick the right track.
-    let effectiveSubtitleLanguage: String?
-    let effectiveSubtitleMode: String?
+    /// The pick-derived fields (and `versions`) are `var` so a read can fold
+    /// in a pick the server has not stored yet
+    /// (`TrackSelectionPersistence.Settlement`).
+    var effectiveSubtitleLanguage: String?
+    var effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
-    let effectiveSubtitleTrackSignature: SubtitleTrackSignature?
+    var effectiveSubtitleTrackSignature: SubtitleTrackSignature?
+    /// The server's watch choices; their order breaks the last tie between
+    /// cuts. Nil from servers that predate it.
+    var playbackVariants: [PlaybackVariant]? = nil
 
     /// "Show forced subtitles" for this content. The server omits
     /// `effective_show_forced_subtitles` when no stored setting applies, and

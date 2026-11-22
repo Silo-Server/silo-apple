@@ -23,8 +23,8 @@ struct SeriesPlaybackReturn: Equatable {
         let nextIndex = index + 1
         guard episodes.indices.contains(nextIndex) else { return nil }
         let next = episodes[nextIndex]
-        // Specials sort after the last regular season. Finishing a regular
-        // episode never continues into them.
+        // Specials sort before season 1, so the last special continues into
+        // S1E1. Finishing a regular episode never continues into Specials.
         if next.seasonNumber == 0, episodes[index].seasonNumber != 0 { return nil }
         return next.contentId
     }

@@ -69,6 +69,9 @@ scrubbing mode:
 - left/right nudge the preview by 10 seconds
 - Select commits immediately
 - blur commits too, unless the shell set `cancelOnBlur = true`
+- playback resuming from outside the scrubber (Play/Pause, Now Playing, a
+  remote, or a watch party) cancels an open timeline scrub without seeking, so
+  the bar returns to the playhead
 
 `cancelOnBlur` is used specifically when opening the HUD so that moving focus
 away from the scrubber does not accidentally turn the current preview position

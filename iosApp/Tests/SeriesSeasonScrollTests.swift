@@ -124,4 +124,18 @@ final class SeriesSeasonScrollTests: XCTestCase {
         XCTAssertTrue(motion.isComplete(at: 10.45))
     }
 
+    func testRetargetKeepsTheVisibleFrameAndDeadline() {
+        // A clamped card move (0 to 0) learns mid-flight that its card is reachable.
+        var motion = SeriesSeasonScroll(startOffset: 0, targetOffset: 0, startedAt: 10, timing: .episode)
+        motion.retarget(to: 400, at: 10.1)
+        XCTAssertEqual(motion.offset(at: 10.1), 0, accuracy: 0.000001)
+        let samples = (10...30).map { motion.offset(at: Double($0) / 100 + 10) }
+        for (previous, next) in zip(samples, samples.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(next, previous)
+            XCTAssertLessThanOrEqual(next, 400 + 0.000001)
+        }
+        XCTAssertFalse(motion.isComplete(at: 10.29))
+        XCTAssertTrue(motion.isComplete(at: 10.30))
+        XCTAssertEqual(motion.offset(at: 10.30), 400, accuracy: 0.000001)
+    }
 }

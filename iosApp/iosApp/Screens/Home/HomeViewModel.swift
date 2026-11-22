@@ -81,7 +81,7 @@ class HomeViewModel {
         // Hydrate from the shared cache so the first render after a
         // navigation paints last-known data without any network wait.
         if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.homeSections) {
-            sections = cached.sections.filter { !$0.items.isEmpty }
+            sections = cached.sections.filter(\.hasCards)
         }
     }
 
@@ -168,7 +168,7 @@ class HomeViewModel {
             StartupContentPrefetcher.invalidateHomeSectionsInFlight()
             // Dismissing a row's last card removes the row.
             sections = HomeSectionsMutation.removingDismissedItem(item, from: sections)
-                .filter { !$0.items.isEmpty }
+                .filter(\.hasCards)
             ResponseCache.shared.update(CacheKey.homeSections, as: SectionsResponse.self) { response in
                 response = SectionsResponse(
                     sections: HomeSectionsMutation.removingDismissedItem(item, from: response.sections)
@@ -182,6 +182,15 @@ class HomeViewModel {
         // The server refills the rows it dropped cards from. Keep the local
         // removal if this reconciliation cannot be fetched.
         await loadSections()
+    }
+
+    /// Drops a title the profile just marked Not interested from the rows
+    /// that suggest it. The server already applied the mark;
+    /// `NotInterestedSync.applied` then drops the cached Home and starts the
+    /// refetch, which leaves it out too.
+    func removeNotInterested(contentId: String) {
+        sections = HomeSectionsMutation.removingNotInterested(contentId: contentId, from: sections)
+            .filter(\.hasCards)
     }
 
     /// Updates playback state through the server, then immediately removes a
@@ -207,7 +216,7 @@ class HomeViewModel {
                 sections = HomeSectionsMutation.removingCompletedItem(
                     contentId: item.contentId,
                     from: sections
-                ).filter { !$0.items.isEmpty }
+                ).filter(\.hasCards)
                 ResponseCache.shared.update(CacheKey.homeSections, as: SectionsResponse.self) { response in
                     response = SectionsResponse(
                         sections: HomeSectionsMutation.removingCompletedItem(
@@ -237,7 +246,7 @@ class HomeViewModel {
     private func fetchAndApplySections(_ generation: Int) async throws {
         let response = try await fetchHomeSections()
         guard generation == loadGeneration else { return }
-        sections = response.sections.filter { !$0.items.isEmpty }
+        sections = response.sections.filter(\.hasCards)
         error = nil
     }
 

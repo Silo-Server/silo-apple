@@ -614,8 +614,7 @@ private func titleArtCapabilities(revision: Int) -> APIv2SettingsContractCapabil
         allowed: true,
         manifestRevision: revision,
         clientFamilies: ["tv", "mobile", "tablet", "desktop", "web"],
-        supportsBatchedEffective: true,
-        supportsAtomicShortcuts: true
+        supportsBatchedEffective: true
     )
 }
 

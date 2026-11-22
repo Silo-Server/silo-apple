@@ -33,21 +33,29 @@ enum TVSignInPresentation {
     /// the state speaks through its own panel.
     static func statusLine(for status: QRLoginViewModel.Status, codeWasRenewed: Bool, serverHost: String) -> String? {
         switch status {
-        case .gettingCode: return "Getting a sign-in code…"
-        case .waiting: return codeWasRenewed ? "New code. Waiting for approval." : "Waiting for approval"
-        case .opened: return "Continue on your phone"
+        case .gettingCode: return AppLanguage.string(.tvSignInStatusGettingCode)
+        case .waiting: return AppLanguage.string(codeWasRenewed ? LocalizedStringResource.tvSignInStatusNewCode : .tvSignInStatusWaiting)
+        case .opened: return AppLanguage.string(.tvSignInStatusOpened)
         case .approved(let account):
-            if let account { return "Signed in as \(account)" }
-            return "Signed in"
-        case .couldNotFinish: return "Couldn't finish signing in on this TV."
-        case .denied: return "Sign-in was declined on your phone."
-        case .paused: return "Sign-in paused."
-        case .unreachable: return "Can't reach \(serverHost). Check this TV's connection."
-        case .rateLimited: return "Too many sign-in attempts. Trying again shortly."
+            if let account { return AppLanguage.string(.tvSignInStatusSignedInAs(account)) }
+            return AppLanguage.string(.tvSignInStatusSignedIn)
+        case .couldNotFinish: return AppLanguage.string(.tvSignInStatusCouldntFinish)
+        case .denied: return AppLanguage.string(.tvSignInStatusDenied)
+        case .paused: return AppLanguage.string(.tvSignInStatusPaused)
+        case .unreachable: return AppLanguage.string(.tvSignInStatusUnreachable(serverHost))
+        case .rateLimited: return AppLanguage.string(.tvSignInStatusTooMany)
         case .updateRequired(let message): return message
-        case .noDeviceSignIn: return "This server only supports password sign-in."
+        case .noDeviceSignIn: return AppLanguage.string(.tvSignInPasswordOnly)
         case .failed(let message): return message
         }
+    }
+
+    /// The paragraph under the headline. It points at the code on screen, so
+    /// a declined sign-in, which withdraws the code, says what to do instead.
+    static func codeLead(for status: QRLoginViewModel.Status, typedURL: String?) -> String {
+        if status == .denied { return AppLanguage.string(.tvSignInDeclinedLead) }
+        guard let typedURL else { return AppLanguage.string(.tvSignInAppleTvLeadNoPage) }
+        return AppLanguage.string(.tvSignInAppleTvLead(typedURL))
     }
 
     /// What the one action button next to a state does, when it has one.
@@ -74,10 +82,16 @@ enum TVSignInPresentation {
         }
     }
 
-    /// VoiceOver label for the QR code; the caller appends the code as one
-    /// element spelled out character by character.
+    /// VoiceOver label for the QR code, with `spokenCode` (the code's
+    /// characters, which the view spells out) where the code goes.
+    static func qrAccessibilityLabel(typedURL: String, spokenCode: String) -> String {
+        let slash = " \(AppLanguage.string(.tvSignInAppleTvSlash)) "
+        return AppLanguage.string(.tvSignInAppleTvQrLabel(typedURL.replacingOccurrences(of: "/", with: slash), spokenCode))
+    }
+
+    /// The QR code's VoiceOver label up to the code, as the English reads.
     static func qrAccessibilityPrefix(typedURL: String) -> String {
-        "Sign-in QR code. Or go to \(typedURL.replacingOccurrences(of: "/", with: " slash ")) and enter "
+        qrAccessibilityLabel(typedURL: typedURL, spokenCode: "")
     }
 
     /// Whether the code screen offers "Sign in with a password". Hidden when
@@ -105,9 +119,7 @@ enum TVSignInPresentation {
     /// sign-on.
     static func phoneHint(_ options: SignInOptions?) -> String? {
         guard let providers = options?.oauthProviders, let first = providers.first else { return nil }
-        let name = providers.count == 1 ? SignInOptions.providerName(for: first) : "single sign-on"
-        return "If you sign in with \(name), use your phone instead."
+        guard providers.count == 1 else { return AppLanguage.string(.signInPhoneHintSso) }
+        return AppLanguage.string(.tvSignInFormProviderHint(SignInOptions.providerName(for: first)))
     }
-
-    static let nearbyHint = "Have Silo on your phone? Open it on the same Wi‑Fi to sign in this TV."
 }

@@ -46,39 +46,63 @@ enum SiloTheme {
     static let macSidebarAvatarSize: CGFloat = 32
     // MARK: - Featured hero (macOS)
 
-    /// Share of the window's height Home's featured hero takes, so the next
-    /// row stays in view. Larger than web's 66% because the title list sits
-    /// inside the hero.
-    static let macHeroWindowFraction: CGFloat = 0.8
-    /// Shortest the hero may get in a small window: enough for its details
-    /// above a list of full-size posters.
-    static let macHeroMinHeight: CGFloat = 660
-    /// Tallest the hero may get in a tall window.
-    static let macHeroMaxHeight: CGFloat = 1200
+    /// Share of the window's height Home's featured hero takes, within
+    /// web's limits (`HERO_BANNER_SIZE`: 66vh, 380–760 px), so the next row
+    /// stays in view.
+    static let macHeroWindowFraction: CGFloat = 0.66
+    static let macHeroMinHeight: CGFloat = 380
+    static let macHeroMaxHeight: CGFloat = 760
     /// Largest a title's logo artwork is drawn in the hero.
     static let macHeroLogoWidth: CGFloat = 320
     static let macHeroLogoHeight: CGFloat = 110
-    /// Outline around the title currently on show in the hero's list.
+    /// Outline around the selected item in a row of chips.
     static let macHeroSelectionRingWidth: CGFloat = 2
-    /// Darkening laid over the titles in the hero's list that are not on
-    /// show. A shade rather than transparency, so the backdrop does not
-    /// show through the posters.
-    static let macHeroUnselectedShade: Double = 0.45
+    /// The hero's title when it is drawn as text.
+    static let macHeroTitleSize: CGFloat = 56
     /// Widest the hero's title, metadata and synopsis column may grow.
-    static let macHeroTextWidth: CGFloat = 560
+    static let macHeroTextWidth: CGFloat = 768
+    /// Widest the hero's synopsis may grow.
+    static let macHeroOverviewWidth: CGFloat = 672
+    static let macHeroOverviewBottomPadding: CGFloat = 28
+    /// Space under the hero's buttons.
+    static let macHeroContentBottomPadding: CGFloat = 64
+    /// Distance of the slideshow counter from the hero's trailing and
+    /// bottom edges.
+    static let macHeroIndicatorInset: CGFloat = 48
+    static let macHeroIndicatorBottomInset: CGFloat = 32
+    static let macHeroProgressRailWidth: CGFloat = 144
+    static let macHeroPauseButtonSize: CGFloat = 28
+    static let macHeroArrowSize: CGFloat = 36
     /// Seconds a featured title stays up before the hero advances.
     static let macHeroAdvanceSeconds: Double = 8
+    /// Seconds one title's backdrop takes to cross-fade into the next.
+    static let macHeroCrossFadeSeconds: Double = 1
+
+    /// The featured hero's height in a window `windowHeight` tall.
+    static func macHeroHeight(forWindowHeight windowHeight: CGFloat) -> CGFloat {
+        min(macHeroMaxHeight, max(macHeroMinHeight, windowHeight * macHeroWindowFraction))
+    }
 
     // MARK: - Detail page (macOS)
 
     /// Width of the poster beside a detail page's title and facts.
     static let macDetailPosterWidth: CGFloat = 230
-    /// Height of the backdrop behind a detail page's header.
-    static let macDetailBackdropHeight: CGFloat = 520
     /// Widest the detail page's title, facts and synopsis column may grow.
     static let macDetailTextWidth: CGFloat = 620
-    /// Space above the detail header, clearing the window's title bar.
+    /// Space above the detail header's poster, clearing the window's title bar.
     static let macDetailTopInset: CGFloat = 72
+    /// Where a detail page's details column would like to start, as a
+    /// fraction of the page's height, when the title has a backdrop. The
+    /// poster stays at `macDetailTopInset`.
+    static let macDetailColumnTopFraction: CGFloat = 0.2
+    /// The lowest the details column starts, for very tall windows.
+    static let macDetailColumnMaxTop: CGFloat = 240
+    /// Room the details column leaves below the header on the first screen:
+    /// a series' season posters, its episode heading, and the top of the
+    /// episode row.
+    static let macDetailBelowHeaderReserve: CGFloat = 370
+    /// How much slower than the page the detail backdrop scrolls away.
+    static let macDetailBackdropParallax: CGFloat = 0.3
     /// Width of a season's poster card on a series detail page.
     static let macSeasonCardWidth: CGFloat = 130
     /// Dimming of the seasons that are not selected.
@@ -139,7 +163,10 @@ enum SiloTheme {
     static let thumbnailCardWidth: CGFloat = 260
     static let thumbnailCardHeight: CGFloat = 146
     #else
-    static let posterCardWidth: CGFloat = 120
+    // A true 2:3 at Home's poster size, so rows, grids, and collections all
+    // show the whole poster at one shape. Grids shrink cards to fit three
+    // columns but keep the shape.
+    static let posterCardWidth: CGFloat = 132
     static let posterCardHeight: CGFloat = 198
     static let thumbnailCardWidth: CGFloat = 160
     static let thumbnailCardHeight: CGFloat = 90
@@ -211,7 +238,7 @@ enum SiloTheme {
         /// Focus-dwell before a library tab (or the profile avatar) opens
         /// its anchored panel. Sweeping across the bar never opens it;
         /// resting this long does. Tuned per Open-Q5/Q7 on device.
-        static let cascadeDwellMilliseconds: UInt64 = 250
+        static let cascadeDwellMilliseconds: UInt64 = 120
         /// Cascade open scale-up start (§4.2: 0.96 → 1.0).
         static let cascadeOpenScale: CGFloat = 0.96
         /// Cascade panel scale/fade duration (§4.2, 180 ms).
@@ -287,8 +314,12 @@ enum SiloTheme {
         /// thrashing large backdrops. Matches Android's
         /// `TvMarqueeFocusRestMillis`.
         static let marqueeRestDebounceMilliseconds = 150
-        /// Backdrop + tint crossfade between rested selections (§4.2).
+        /// Backdrop art crossfade between rested selections (§4.2).
         static let marqueeCrossfadeDuration: Double = 0.24
+        /// The sampled-color wash behind the backdrop blends over longer
+        /// than the art, so a change of focus drifts the page colors from
+        /// one item to the next instead of switching them.
+        static let marqueeWashCrossfadeDuration: Double = 0.7
         /// Longest a row-change scroll may hold the backdrop swap. The hold
         /// keeps the crossfade out of the row animation, but the band's
         /// scroll phase stays non-idle for over a second after a single
@@ -323,6 +354,14 @@ enum SiloTheme {
         /// top of the lower-half row band while leaving a preview of the next
         /// row below it.
         static let densePosterCardWidth: CGFloat = 176
+
+        /// Card width for a Skyline row of `layout`. Square audiobook covers
+        /// are as tall as a dense poster, so cover rows match poster rows and
+        /// fit the same band. Episode thumbs keep their own width.
+        static func denseCardWidth(for layout: MediaRowLayout) -> CGFloat {
+            guard layout == .square else { return densePosterCardWidth }
+            return densePosterCardWidth * SiloTheme.posterCardHeight / SiloTheme.posterCardWidth
+        }
 
         // MARK: Collections poster grid (§6.3)
 

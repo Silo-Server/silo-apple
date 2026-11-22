@@ -20,9 +20,9 @@ enum DetailPlaybackFormatting {
     }
 
     static func versionShortLabel(_ version: FileVersion?) -> String {
-        guard let version else { return "Auto" }
+        guard let version else { return AppLanguage.string(.detailAuto) }
         let tokens = qualityTokens(version)
-        return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
+        return tokens.isEmpty ? AppLanguage.string(.detailAuto) : tokens.joined(separator: " · ")
     }
 
     /// Resolution, video codec, HDR family and audio codec, when known.
@@ -39,12 +39,17 @@ enum DetailPlaybackFormatting {
     /// Keep the two facts viewers need at a glance (resolution + HDR family),
     /// while the focused segment expands to ``versionShortLabel(_:)``.
     static func versionCompactLabel(_ version: FileVersion?) -> String {
-        guard let version else { return "Auto" }
-        let tokens = [
+        let tokens = versionCompactTokens(version)
+        return tokens.isEmpty ? AppLanguage.string(.detailAuto) : tokens.joined(separator: " · ")
+    }
+
+    /// The facts ``versionCompactLabel(_:)`` joins; empty when it shows "Auto".
+    static func versionCompactTokens(_ version: FileVersion?) -> [String] {
+        guard let version else { return [] }
+        return [
             nonEmpty(version.resolution),
             dynamicRangeLabel(version),
         ].compactMap { $0 }
-        return tokens.isEmpty ? "Auto" : tokens.joined(separator: " · ")
     }
 
     static func versionDetailLabel(_ version: FileVersion) -> String {
@@ -64,7 +69,7 @@ enum DetailPlaybackFormatting {
         if let fileName = normalizedFileName(version.fileName) {
             return fileName
         }
-        return "Version \(version.fileId)"
+        return AppLanguage.string(.detailVersionFileId(String(version.fileId)))
     }
 
     static func versionSecondaryText(_ version: FileVersion) -> String? {
@@ -167,14 +172,14 @@ enum DetailPlaybackFormatting {
                   selectedAudioTrackIndex: selectedAudioTrackIndex
               ),
               let track = version.audioTracks?[safe: ordinal] else {
-            return "Unknown"
+            return AppLanguage.string(.detailUnknown)
         }
         let summary = audioSummary(track, ordinal: ordinal)
         // With no explicit pick, the shown track is whatever Auto resolved to
         // (preferred/default). Prefix "Auto:" so the row makes clear the
         // choice was automatic rather than user-selected.
         if annotateAuto, selectedAudioTrackIndex == nil {
-            return "Auto: \(summary)"
+            return AppLanguage.string(.detailAutoSelectorValue(summary))
         }
         return summary
     }
@@ -201,16 +206,19 @@ enum DetailPlaybackFormatting {
         TrackLabels.name(
             language: track.language,
             meaningfulTitle: usefulAudioTitle(track),
-            fallback: "Track \(ordinal + 1)"
+            fallback: AppLanguage.string(.detailTrack(LocaleFormat.integer(ordinal + 1)))
         )
     }
 
     static func audioDetail(_ track: AudioTrack, ordinal: Int, version: FileVersion?) -> String {
         var tokens: [String] = []
         let layout = compactAudioLayout(track)
-        // A title of "Atmos" says nothing a layout of "Atmos" doesn't.
+        // A title of "Atmos" says nothing a layout of "Atmos" doesn't. Server
+        // titles are English, so compare with the English layout word too.
+        let englishLayout = AppLanguage.inEnglish { compactAudioLayout(track) }
         if let title = TrackLabels.qualifier(usefulAudioTitle(track), name: audioTitle(track, ordinal: ordinal)),
-           title.caseInsensitiveCompare(layout ?? "") != .orderedSame {
+           title.caseInsensitiveCompare(layout ?? "") != .orderedSame,
+           title.caseInsensitiveCompare(englishLayout ?? "") != .orderedSame {
             tokens.append(title)
         }
         if let codec = normalizedAudioCodec(track.codec) {
@@ -220,10 +228,10 @@ enum DetailPlaybackFormatting {
             tokens.append(layout)
         }
         if track.isDefault == true {
-            tokens.append("Default")
+            tokens.append(AppLanguage.string(.detailTrackDefault))
         }
         if version?.effectiveAudioTrackIndex == ordinal {
-            tokens.append("Preferred")
+            tokens.append(AppLanguage.string(.detailTrackPreferred))
         }
         return tokens.joined(separator: " · ")
     }
@@ -260,12 +268,23 @@ enum DetailPlaybackFormatting {
         if SubtitleMode(rawValue: mode ?? "") == .off {
             return showForced ? nil : -1
         }
+        // The player's resolver never restores a track the server can't
+        // deliver, so the selector doesn't show one either.
         if let signature,
-           let tracks = version?.subtitleTracks,
+           let tracks = version?.subtitleTracks?.filter({ !$0.hasUnsupportedFormat }),
            let match = bestSignatureMatch(signature, in: tracks) {
             return match.selectionIndex
         }
         return nil
+    }
+
+    /// The subtitle selection once Auto's file has changed under the page.
+    /// Auto (nil) and Off (negative) mean the same on any file, so they stay.
+    /// A track index names a stream of the old file, so it gives way to
+    /// `reseed`, what Auto picks on the new one.
+    static func subtitleIndexAfterFileChange(_ index: Int?, reseed: () -> Int?) -> Int? {
+        guard let index, index >= 0 else { return index }
+        return reseed()
     }
 
     /// Whether a subtitle picked in the detail selector survives the page
@@ -283,6 +302,84 @@ enum DetailPlaybackFormatting {
         guard let index, index >= 0 else { return true }
         guard let pickedFileId, pickedFileId == reloadedFileId else { return false }
         return isAvailable(index)
+    }
+
+    /// The subtitle to keep when a Version or Edition pick moves the page from
+    /// one file to another. A track index belongs to one file, so the same
+    /// index on the next file can be another language. Auto and Off carry
+    /// over. A track the server preference chose is chosen again on the next
+    /// file, as a fresh page would; without `isManualPick`, an index equal to
+    /// the old file's seed counts as that. A track the viewer picked becomes the next
+    /// file's track in the same language, with the same forced and SDH flags,
+    /// preferring the same title; with none, the pick falls back to Auto.
+    /// When the file changes without a pick, see `subtitleIndexAfterFileChange`.
+    static func subtitleIndexAfterVersionPick(
+        _ index: Int?,
+        movingFrom previous: FileVersion?,
+        to next: FileVersion?,
+        isManualPick: Bool,
+        signature: SubtitleTrackSignature?,
+        mode: String?,
+        showForced: Bool,
+        usesDeviceSettings: Bool
+    ) -> Int? {
+        guard let index, index >= 0, previous?.fileId != next?.fileId else { return index }
+        func seeded(_ version: FileVersion?) -> Int? {
+            launchPreferredSubtitleIndex(
+                version: version,
+                signature: signature,
+                mode: mode,
+                showForced: showForced,
+                usesDeviceSettings: usesDeviceSettings
+            )
+        }
+        if !isManualPick, seeded(previous) == index { return seeded(next) }
+
+        // `und` names no language, so it identifies no track.
+        guard let picked = previous?.subtitleTracks?.first(where: { $0.selectionIndex == index }),
+              let language = TrackSelectionPersistence.taggedLanguage(picked.language) else { return nil }
+        let sameLanguage = (next?.subtitleTracks ?? []).filter { track in
+            guard track.selectionIndex != nil, !track.hasUnsupportedFormat,
+                  let trackLanguage = TrackSelectionPersistence.taggedLanguage(track.language) else { return false }
+            return SubtitleAutoResolver.languagesMatch(trackLanguage, language)
+                && isForced(track) == isForced(picked)
+                && isHearingImpaired(track) == isHearingImpaired(picked)
+        }
+        // The same tag (zh-Hant) before the same primary language (zh-Hans),
+        // as the player's resolver ranks them.
+        func tag(_ code: String?) -> String? {
+            code?.trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: "_", with: "-")
+        }
+        let sameTag = sameLanguage.filter { tag($0.language) == tag(language) }
+        let matches = sameTag.isEmpty ? sameLanguage : sameTag
+        func title(_ track: SubtitleTrack) -> String? {
+            nonEmpty(track.title) ?? nonEmpty(track.embeddedTitle)
+        }
+        // "Latin American" and "Spanish (Latin American)" name the same track.
+        if let wanted = title(picked),
+           let match = matches.first(where: { title($0)?.caseInsensitiveCompare(wanted) == .orderedSame })
+            ?? matches.first(where: { title($0).map {
+                $0.localizedCaseInsensitiveContains(wanted) || wanted.localizedCaseInsensitiveContains($0)
+            } == true }) {
+            return match.selectionIndex
+        }
+        return matches.first?.selectionIndex
+    }
+
+    /// The file a manual subtitle pick still belongs to once a Version or
+    /// Edition pick has moved the page from `previous` to `next`. A track
+    /// moved to another file is numbered for that file, so it no longer
+    /// belongs to the one it was picked on: nil, which
+    /// `keepsManualSubtitlePick` drops on the next reload, whichever file
+    /// that shows. Auto and Off belong to no file.
+    static func subtitlePickFileAfterVersionPick(
+        _ pickedFileId: Int?,
+        index: Int?,
+        movingFrom previous: FileVersion?,
+        to next: FileVersion?
+    ) -> Int? {
+        guard let index, index >= 0, previous?.fileId != next?.fileId else { return pickedFileId }
+        return nil
     }
 
     /// A server-remembered track is useful for reflecting the server policy
@@ -316,6 +413,11 @@ enum DetailPlaybackFormatting {
         // Every row is a candidate, external ones included, exactly as the
         // player's `SubtitleAutoResolver.bestSignatureMatch` scores them.
         for track in tracks {
+            if let sigLang = sig.language, !sigLang.isEmpty,
+               let lang = track.language, !lang.isEmpty,
+               !SubtitleAutoResolver.languagesMatch(lang, sigLang) {
+                continue
+            }
             var score = 0
             var strongSignal = false
             if let sigLang = sig.language, !sigLang.isEmpty,
@@ -353,8 +455,10 @@ enum DetailPlaybackFormatting {
     /// Preview the track the player's `SubtitleAutoResolver` would auto-select
     /// for the "Auto" (no explicit override) case, applied to the detail
     /// payload's `SubtitleTrack` list. Returns nil when Auto resolves to no
-    /// subtitles (mode off with no forced track in the audio language, no
-    /// preference, or audio already in the preferred language). Runs the
+    /// subtitles (mode off with no forced track in the audio language, or
+    /// audio already in the preferred language). When the resolver leaves the
+    /// choice to the file, this names the default or forced track playback
+    /// starts on. Runs the
     /// resolver itself, with the inputs the detail page can supply, over the
     /// candidates the start request resolves (V3 combined order, externals
     /// first), so the preview names the track playback starts on. The returned ordinal stays the catalog offset so "Track N" labels
@@ -378,8 +482,21 @@ enum DetailPlaybackFormatting {
             currentAudioLanguage: context.audioLanguage,
             sourceContainer: version?.container
         ))
-        guard case .select(let pick) = resolution,
-              let position = candidates.firstIndex(of: pick) else {
+        let pick: PlayerTrack?
+        switch resolution {
+        case .select(let track):
+            pick = track
+        case .disable:
+            pick = nil
+        case .noChange:
+            // Playback then starts the file's default track, else a forced
+            // one (`PlaybackSessionBridge.initialProtocolV3SubtitleIntent`),
+            // skipping one the server can't deliver.
+            let deliverable = candidates.filter { !$0.hasUnsupportedFormat }
+            pick = deliverable.first(where: { $0.isDefault })
+                ?? deliverable.first(where: { $0.isForced })
+        }
+        guard let pick, let position = candidates.firstIndex(of: pick) else {
             return nil
         }
         return (ordered[position].element, ordered[position].offset)
@@ -410,9 +527,10 @@ enum DetailPlaybackFormatting {
         }
         return ordered.map { ordinal, track in
             // `selectionIndex` reads an embedded nil index as stream 0, so
-            // only external sidecars without a stream index are unselectable.
+            // only external sidecars without a stream index, and tracks the
+            // server can't deliver, are unselectable.
             let index = track.selectionIndex
-            let isSelectable = index != nil
+            let isSelectable = index != nil && !track.hasUnsupportedFormat
             return SubtitleOption(
                 selectionIndex: index,
                 title: subtitleTitle(track, ordinal: ordinal),
@@ -436,6 +554,13 @@ enum DetailPlaybackFormatting {
         var showForced: Bool = false
     }
 
+    /// What Auto subtitles would play, as the track's summary, or nil when
+    /// Auto resolves to Off.
+    static func autoSubtitlePreview(version: FileVersion?, context: SubtitleAutoContext) -> String? {
+        autoResolvedSubtitle(version: version, context: context)
+            .map { subtitlePillSummary($0.track, ordinal: $0.ordinal) }
+    }
+
     static func subtitleValueLabel(
         version: FileVersion?,
         selectedSubtitleTrackIndex: Int?,
@@ -447,15 +572,15 @@ enum DetailPlaybackFormatting {
             // the row shows what will actually play rather than a bare "Auto".
             if let autoContext {
                 if let resolved = autoResolvedSubtitle(version: version, context: autoContext) {
-                    return "Auto: \(subtitlePillSummary(resolved.track, ordinal: resolved.ordinal))"
+                    return AppLanguage.string(.detailAutoSelectorValue(subtitlePillSummary(resolved.track, ordinal: resolved.ordinal)))
                 }
-                return "Auto: Off"
+                return AppLanguage.string(.detailAutoSelectorValue(AppLanguage.string(.detailOff)))
             }
             // Without a preview, never name a track: the only track on a file
             // does not play unless the preferences or the file pick it.
-            return "Auto"
+            return AppLanguage.string(.detailAuto)
         }
-        if selectedSubtitleTrackIndex == -1 { return "Off" }
+        if selectedSubtitleTrackIndex == -1 { return AppLanguage.string(.detailOff) }
         guard let selectedSubtitleTrackIndex,
               let match = (version?.subtitleTracks ?? []).enumerated().first(where: { _, track in
                   track.selectionIndex == selectedSubtitleTrackIndex
@@ -464,7 +589,7 @@ enum DetailPlaybackFormatting {
             // version's track list (e.g. the displayed version was re-scoped):
             // a subtitle IS requested, so don't mislabel it as "Auto" (no
             // selection). "On" reflects the active-but-unnamed selection.
-            return "On"
+            return AppLanguage.string(.detailSubtitlesOn)
         }
         return subtitlePillSummary(match.element, ordinal: match.offset)
     }
@@ -473,7 +598,7 @@ enum DetailPlaybackFormatting {
         TrackLabels.name(
             language: track.language,
             meaningfulTitle: meaningfulSubtitleTitle(track),
-            fallback: "Track \(ordinal + 1)"
+            fallback: AppLanguage.string(.detailTrack(LocaleFormat.integer(ordinal + 1)))
         )
     }
 
@@ -486,19 +611,21 @@ enum DetailPlaybackFormatting {
             tokens.append(codec)
         }
         if isForced(track) {
-            tokens.append("Forced")
+            tokens.append(AppLanguage.string(.detailTrackForced))
         }
         if isHearingImpaired(track) {
-            tokens.append("SDH")
+            tokens.append(AppLanguage.string(.detailTrackSdh))
         }
         if track.isDefault == true {
-            tokens.append("Default")
+            tokens.append(AppLanguage.string(.detailTrackDefault))
         }
         if track.external == true {
-            tokens.append("External")
+            tokens.append(AppLanguage.string(.detailTrackExternal))
         }
-        if !isSelectable {
-            tokens.append("Available in player")
+        if track.hasUnsupportedFormat {
+            tokens.append(AppLanguage.string(.subtitleTrackUnsupportedFormat))
+        } else if !isSelectable {
+            tokens.append(AppLanguage.string(.detailTrackAvailableInPlayer))
         }
         return tokens.joined(separator: " · ")
     }
@@ -506,10 +633,11 @@ enum DetailPlaybackFormatting {
     private static func subtitlePillSummary(_ track: SubtitleTrack, ordinal: Int) -> String {
         var name = subtitleTitle(track, ordinal: ordinal)
         if isHearingImpaired(track), !containsAccessibilityMarker(name) {
-            name += " (SDH)"
+            name = AppLanguage.string(.detailTrackWithFlag(name, AppLanguage.string(.detailTrackSdh)))
         }
+        // "forced" is matched against the track's own (server) title, so it stays English.
         if isForced(track), !name.localizedCaseInsensitiveContains("forced") {
-            name += " (Forced)"
+            name = AppLanguage.string(.detailTrackWithFlag(name, AppLanguage.string(.detailTrackForced)))
         }
         guard let codec = normalizedSubtitleCodec(track.codec) else { return name }
         return "\(name) · \(codec)"
@@ -517,17 +645,17 @@ enum DetailPlaybackFormatting {
 
     static func normalizedVideoCodec(_ codec: String?) -> String? {
         guard let codec = codec?.lowercased(), !codec.isEmpty else { return nil }
-        if codec.contains("hevc") || codec.contains("h265") { return "HEVC" }
-        if codec.contains("av1") { return "AV1" }
-        if codec.contains("avc") || codec.contains("h264") { return "H.264" }
+        if codec.contains("hevc") || codec.contains("h265") { return "HEVC" } // i18n-ignore: codec name
+        if codec.contains("av1") { return "AV1" } // i18n-ignore: codec name
+        if codec.contains("avc") || codec.contains("h264") { return "H.264" } // i18n-ignore: codec name
         return codec.uppercased()
     }
 
     private static func dynamicRangeLabel(_ version: FileVersion) -> String? {
         if (version.videoTracks ?? []).contains(where: { nonEmpty($0.dolbyVision) != nil }) {
-            return "DV"
+            return "DV" // i18n-ignore: Dolby Vision technical token
         }
-        return version.hdr == true ? "HDR" : nil
+        return version.hdr == true ? "HDR" : nil // i18n-ignore: technical token
     }
 
     static func normalizedAudioCodec(_ codec: String?) -> String? {
@@ -538,17 +666,8 @@ enum DetailPlaybackFormatting {
         TrackLabels.subtitleCodec(codec)
     }
 
-    private static let fileSizeFormatter: ByteCountFormatter = {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useMB, .useGB]
-        formatter.countStyle = .file
-        formatter.includesUnit = true
-        formatter.isAdaptive = true
-        return formatter
-    }()
-
     static func formatFileSize(_ bytes: Int64) -> String {
-        fileSizeFormatter.string(fromByteCount: bytes)
+        LocaleFormat.bytes(bytes, megabytesAndUp: true)
     }
 
     private static func compactAudioLayout(_ track: AudioTrack) -> String? {
@@ -559,13 +678,13 @@ enum DetailPlaybackFormatting {
         if let title = nonEmpty(track.title) {
             let lowered = title.lowercased()
             if lowered.contains("sdh") || lowered.contains("hearing") {
-                return "SDH"
+                return "SDH" // i18n-ignore: type tag compared below, never shown
             }
             if lowered.contains("closed caption") || lowered == "cc" {
-                return "CC"
+                return "CC" // i18n-ignore: type tag compared below, never shown
             }
             if lowered.contains("forced") {
-                return "Forced"
+                return "Forced" // i18n-ignore: type tag compared below, never shown
             }
             if let meaningful = TrackLabels.subtitleTitle(
                 title,
@@ -577,7 +696,7 @@ enum DetailPlaybackFormatting {
             }
         }
         if track.forced == true {
-            return "Forced"
+            return "Forced" // i18n-ignore: type tag compared below, never shown
         }
         if let codec = normalizedSubtitleCodec(track.codec) {
             return codec

@@ -67,9 +67,9 @@ enum OnboardingProgressError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .tourChanged:
-            return "The server replaced this tour with a newer one."
+            return AppLanguage.string(.errorsAppleOnboardingTourChanged)
         case .unexpectedReceipt:
-            return "The server's reply did not confirm your tour progress. Try again."
+            return AppLanguage.string(.errorsAppleOnboardingUnexpectedReceipt)
         }
     }
 }
@@ -117,34 +117,86 @@ enum LegacyInviteTourSuppression {
 /// Prevents an unknown future manifest from reopening an empty tour forever
 /// when the completion post is temporarily unavailable. The gate retries the
 /// same completion silently on later authenticated launches.
+///
+/// The record names the account too: profile IDs repeat across accounts on
+/// one server. A record from before accounts (no account) belongs to the
+/// account that owns the server's data from then.
 enum UnrenderableOnboardingTourSuppression {
     private struct Record: Codable, Equatable {
         let serverId: String
+        let localAccountId: String?
         let profileId: String
         let tourId: String
     }
 
     private static let key = "unrenderableOnboardingTour.v1"
 
-    static func set(serverId: String, profileId: String, tourId: String) {
-        let record = Record(serverId: serverId, profileId: profileId, tourId: tourId)
+    /// `localAccountId` defaults to the account selected on `serverId`.
+    static func set(serverId: String, localAccountId: String? = nil, profileId: String, tourId: String) {
+        let record = Record(
+            serverId: serverId,
+            localAccountId: localAccountId ?? AccountScope.localAccountId(onServer: serverId),
+            profileId: profileId,
+            tourId: tourId
+        )
         guard let data = try? JSONEncoder().encode(record) else { return }
         SharedDefaults.shared.set(data, forKey: key)
     }
 
-    static func pendingTourId(serverId: String?, profileId: String) -> String? {
+    static func pendingTourId(serverId: String?, localAccountId: String? = nil, profileId: String) -> String? {
         guard let serverId,
-              let data = SharedDefaults.shared.data(forKey: key),
-              let record = try? JSONDecoder().decode(Record.self, from: data),
+              let account = localAccountId ?? AccountScope.localAccountId(onServer: serverId),
+              let record = record(),
               record.serverId == serverId,
-              record.profileId == profileId else {
+              record.profileId == profileId,
+              record.localAccountId == account
+                || (record.localAccountId == nil
+                    && LegacyLocalDataOwner.localAccountId(forServer: serverId) == account) else {
             return nil
         }
         return record.tourId
     }
 
-    static func clear(serverId: String, profileId: String, tourId: String) {
-        guard pendingTourId(serverId: serverId, profileId: profileId) == tourId else { return }
+    static func clear(serverId: String, localAccountId: String? = nil, profileId: String, tourId: String) {
+        guard pendingTourId(serverId: serverId, localAccountId: localAccountId, profileId: profileId) == tourId else {
+            return
+        }
         SharedDefaults.shared.removeObject(forKey: key)
+    }
+
+    /// Removes the record when it belongs to `localAccountId` on `serverId`
+    /// (or, with `includingLegacy`, is the server's record from before
+    /// accounts). For sign-out (`AccountLocalData.purge`).
+    static func purge(localAccountId: String, serverId: String, includingLegacy: Bool) {
+        guard let record = record(), record.serverId == serverId,
+              record.localAccountId == localAccountId || (includingLegacy && record.localAccountId == nil) else {
+            return
+        }
+        SharedDefaults.shared.removeObject(forKey: key)
+    }
+
+    /// Moves the record of a server merged into another (`ServerMerge`) to
+    /// the survivor when its account moved or, from before accounts, when
+    /// `legacyTarget` takes that data; otherwise it goes.
+    static func move(fromServer droppedServerId: String, toServer survivorServerId: String,
+                     accounts: Set<String>, legacyTarget: String?) {
+        guard let record = record(), record.serverId == droppedServerId else { return }
+        let account: String?
+        if let recorded = record.localAccountId {
+            account = accounts.contains(recorded) ? recorded : nil
+        } else {
+            account = legacyTarget
+        }
+        guard let account,
+              let data = try? JSONEncoder().encode(Record(serverId: survivorServerId, localAccountId: account,
+                                                          profileId: record.profileId, tourId: record.tourId)) else {
+            SharedDefaults.shared.removeObject(forKey: key)
+            return
+        }
+        SharedDefaults.shared.set(data, forKey: key)
+    }
+
+    private static func record() -> Record? {
+        SharedDefaults.shared.data(forKey: key).flatMap { try? JSONDecoder().decode(Record.self, from: $0) }
     }
 }

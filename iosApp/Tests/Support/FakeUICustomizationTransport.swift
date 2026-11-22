@@ -6,15 +6,12 @@ import Foundation
 /// **Reads.** A fixed `effectiveResponse`, when set, is returned unchanged.
 /// Otherwise each requested key resolves, in request order, to its
 /// highest-precedence stored row (`profileDevice`, then `profileClient`, then
-/// `profile`). A customization key with no row gets its contract default
-/// (`nav.primary_menu` null, empty `nav.shortcuts`, standard card
-/// presentation); any other key is omitted.
+/// `profile`). `ui.card_presentation` with no row gets its contract default
+/// (standard); any other key is omitted.
 ///
 /// **Writes.** `putValue` stores the value at its scope unless the fake was
-/// built with `persistsPuts: false`. `putShortcutItem` edits the `profile`
-/// shortcut row: it removes every item with the same id, then appends the
-/// item when `present`. `deleteValue` removes the row at its scope, or throws
-/// `SettingsAPIError.noValueAtScope` when there is none.
+/// built with `persistsPuts: false`. `deleteValue` removes the row at its
+/// scope, or throws `SettingsAPIError.noValueAtScope` when there is none.
 ///
 /// **Call order.** Every transport call except `contractCapabilities`
 /// 1) records itself in `history` and wakes "started" waiters, 2) parks on a
@@ -51,21 +48,17 @@ actor FakeUICustomizationTransport: UICustomizationTransport {
         case read(keys: [SettingKey])
         case puts
         case put(SettingKey)
-        case shortcuts
-        case shortcut(id: String)
         case deletes
         case delete(SettingKey)
 
         func matches(_ call: Call) -> Bool {
             switch (self, call) {
-            case (.reads, .read), (.puts, .put), (.shortcuts, .shortcut), (.deletes, .delete):
+            case (.reads, .read), (.puts, .put), (.deletes, .delete):
                 return true
             case (.read(let keys), .read(let callKeys, _)):
                 return keys == callKeys
             case (.put(let key), .put(let callKey, _, _, _)):
                 return key == callKey
-            case (.shortcut(let id), .shortcut(let item, _, _)):
-                return id == item.id
             case (.delete(let key), .delete(let callKey, _, _)):
                 return key == callKey
             default:
@@ -93,34 +86,29 @@ actor FakeUICustomizationTransport: UICustomizationTransport {
     enum Kind: Hashable, Sendable {
         case read
         case put
-        case shortcut
         case delete
-        /// Puts, shortcut operations and deletes together.
+        /// Puts and deletes together.
         case write
     }
 
     enum Call: Equatable, Sendable {
         case read(keys: [SettingKey], identity: HTTPRequestIdentity)
         case put(key: SettingKey, scope: SettingScopeIdentity, value: SettingJSONValue, identity: HTTPRequestIdentity)
-        case shortcut(item: PrimaryMenuItem, present: Bool, identity: HTTPRequestIdentity)
         case delete(key: SettingKey, scope: SettingScopeIdentity, identity: HTTPRequestIdentity)
 
         var kind: Kind {
             switch self {
             case .read: return .read
             case .put: return .put
-            case .shortcut: return .shortcut
             case .delete: return .delete
             }
         }
 
-        /// The setting a write changes: `nav.shortcuts` for a shortcut
-        /// operation, nil for a read.
+        /// The setting a write changes, nil for a read.
         var key: SettingKey? {
             switch self {
             case .read: return nil
             case .put(let key, _, _, _), .delete(let key, _, _): return key
-            case .shortcut: return .navShortcuts
             }
         }
 
@@ -133,7 +121,7 @@ actor FakeUICustomizationTransport: UICustomizationTransport {
         var scope: SettingScopeIdentity? {
             switch self {
             case .put(_, let scope, _, _), .delete(_, let scope, _): return scope
-            case .read, .shortcut: return nil
+            case .read: return nil
             }
         }
 
@@ -142,21 +130,10 @@ actor FakeUICustomizationTransport: UICustomizationTransport {
             return value
         }
 
-        var item: PrimaryMenuItem? {
-            guard case .shortcut(let item, _, _) = self else { return nil }
-            return item
-        }
-
-        var present: Bool? {
-            guard case .shortcut(_, let present, _) = self else { return nil }
-            return present
-        }
-
         var identity: HTTPRequestIdentity {
             switch self {
             case .read(_, let identity),
                  .put(_, _, _, let identity),
-                 .shortcut(_, _, let identity),
                  .delete(_, _, let identity):
                 return identity
             }
@@ -171,7 +148,6 @@ actor FakeUICustomizationTransport: UICustomizationTransport {
     enum Step: Equatable, Sendable {
         case read(Completion)
         case put(SettingKey, Completion)
-        case shortcut(id: String, present: Bool, Completion)
         case delete(SettingKey, SettingScope, Completion)
     }
 
@@ -182,7 +158,6 @@ actor FakeUICustomizationTransport: UICustomizationTransport {
 
     static func capabilities(
         batchedEffective: Bool = true,
-        atomicShortcuts: Bool = true,
         clientFamilies: [String] = ["tv", "mobile", "tablet", "desktop", "web"]
     ) -> APIv2SettingsContractCapabilities {
         APIv2SettingsContractCapabilities(
@@ -191,8 +166,7 @@ actor FakeUICustomizationTransport: UICustomizationTransport {
             allowed: true,
             manifestRevision: SettingKey.revision,
             clientFamilies: clientFamilies,
-            supportsBatchedEffective: batchedEffective,
-            supportsAtomicShortcuts: atomicShortcuts
+            supportsBatchedEffective: batchedEffective
         )
     }
 
@@ -360,23 +334,6 @@ actor FakeUICustomizationTransport: UICustomizationTransport {
         return try finish(call) { resolve(keys, identity: requestIdentity) }
     }
 
-    func putShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        let call = Call.shortcut(item: item, present: present, identity: requestIdentity)
-        if let gateID = start(call) { await park(gateID) }
-        try finish(call) {
-            let slot = Slot(key: .navShortcuts, scope: .profile)
-            var shortcuts = try rows[slot]?.decoded(as: NavigationShortcutsPreference.self)
-                ?? NavigationShortcutsPreference.empty
-            shortcuts.items.removeAll { $0.id == item.id }
-            if present { shortcuts.items.append(item) }
-            rows[slot] = try SettingJSONValue.encoding(shortcuts)
-        }
-    }
-
     func putValue(
         key: SettingKey,
         scope: SettingScopeIdentity,
@@ -473,8 +430,6 @@ actor FakeUICustomizationTransport: UICustomizationTransport {
             completedSteps.append(.read(completion))
         case .put(let key, _, _, _):
             completedSteps.append(.put(key, completion))
-        case .shortcut(let item, let present, _):
-            completedSteps.append(.shortcut(id: item.id, present: present, completion))
         case .delete(let key, let scope, _):
             completedSteps.append(.delete(key, scope.scope, completion))
         }
@@ -515,16 +470,8 @@ actor FakeUICustomizationTransport: UICustomizationTransport {
     }
 
     private static func contractDefault(for key: SettingKey) -> SettingJSONValue? {
-        switch key {
-        case .navPrimaryMenu:
-            return .null
-        case .navShortcuts:
-            return try? SettingJSONValue.encoding(NavigationShortcutsPreference.empty)
-        case .uiCardPresentation:
-            return try? SettingJSONValue.encoding(CardPresentationPreference.standard)
-        default:
-            return nil
-        }
+        guard key == .uiCardPresentation else { return nil }
+        return try? SettingJSONValue.encoding(CardPresentationPreference.standard)
     }
 
     // MARK: Waiter bookkeeping
@@ -536,7 +483,7 @@ actor FakeUICustomizationTransport: UICustomizationTransport {
     private func count(_ phase: Phase, _ kind: Kind) -> Int {
         let counts = phase == .started ? startedCounts : completedCounts
         guard kind == .write else { return counts[kind, default: 0] }
-        return counts[.put, default: 0] + counts[.shortcut, default: 0] + counts[.delete, default: 0]
+        return counts[.put, default: 0] + counts[.delete, default: 0]
     }
 
     private func wait(for phase: Phase, _ kind: Kind, count target: Int) async {

@@ -108,6 +108,10 @@ struct RequestsFeatureStatus: Decodable {
     /// viewer can ask to hear when someone else's request lands. Absent on
     /// older servers, which reads as unsupported.
     var followSupported: Bool? = nil
+    /// The server offers `DELETE /api/v2/requests/{id}`, so a viewer can
+    /// remove their own failed request. Absent on older servers, which
+    /// reads as unsupported.
+    var removeFailedSupported: Bool? = nil
 
     /// The feature is on and this profile may use it. A blocked account sees
     /// `requests_enabled: true` with `allowed: false`.
@@ -166,8 +170,9 @@ struct RequestMediaPage: Codable {
     let results: [RequestMediaResult]
 }
 
-/// One curated TMDB carousel from `GET /api/v2/requests/discover`. Keys are
-/// server-fixed (`trending_movies`, `popular_series`, …).
+/// One row of titles from `GET /api/v2/requests/discover`. The six built-in
+/// rows keep their keys (`trending_movies`, `popular_series`, …); a row an
+/// admin added has an opaque key.
 struct RequestDiscoverySection: Codable, Identifiable {
     let key: String
     let title: String
@@ -175,11 +180,31 @@ struct RequestDiscoverySection: Codable, Identifiable {
     let totalPages: Int
     let totalResults: Int
     let results: [RequestMediaResult]
-    /// The provider page to ask for next when rating backfill consumed more
-    /// than one; absent when `page + 1` applies.
+    /// The provider page to ask for next when the server read more than one
+    /// to fill this one (a rating limit, or a row that leaves out titles the
+    /// library has); past `totalPages` when that read reached the end.
+    /// Absent when `page + 1` applies.
     let nextPage: Int?
 
     var id: String { key }
+}
+
+/// One row of the server's Discover layout, in page order.
+struct RequestDiscoverRowRef: Codable, Hashable {
+    let key: String
+    /// `tmdb_chart`, `tmdb_discover`, `tmdb_list` or `mdblist` for a row of
+    /// titles; `studios`, `networks` or `genres` for a brand row the apps do
+    /// not draw. The server may add more.
+    let type: String
+    let title: String
+}
+
+/// The Discover page: the title rows with their first page, and, from a
+/// server with an admin-defined layout, every row in order.
+struct RequestDiscoverLayout {
+    let sections: [RequestDiscoverySection]
+    /// Empty from a server without layouts.
+    let rowOrder: [RequestDiscoverRowRef]
 }
 
 // MARK: - Detail
@@ -254,6 +279,13 @@ struct MediaRequest: Codable, Identifiable, Hashable {
     /// always names the signed-in user.
     var requestedByUserId: String? = nil
     var requestedByProfileId: String? = nil
+
+    /// Mirrors the server's rule for removing a failed request: it failed
+    /// and delivered nothing. One that delivered a quality before failing
+    /// stays as the record of that copy.
+    var isRemovable: Bool {
+        outcome == .failed && !(targets ?? []).contains { $0.status == .completed }
+    }
 }
 
 // MARK: - Mutations

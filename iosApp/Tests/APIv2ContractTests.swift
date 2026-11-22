@@ -27,7 +27,7 @@ final class APIv2ContractTests: XCTestCase {
     /// client reads that operation with.
     func testEveryVendoredFixtureRoutesByStatusAndMediaType() throws {
         let entries = try Support.index(bundleClass: Self.self)
-        XCTAssertEqual(entries.count, 62, "vendored index must list exactly the selected fixtures")
+        XCTAssertEqual(entries.count, 67, "vendored index must list exactly the selected fixtures")
         for entry in entries {
             let data = try fixture(entry.name)
             XCTAssertEqual(entry.responseHeaders["Content-Type"], entry.responseMediaType, entry.name)

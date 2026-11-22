@@ -20,3 +20,46 @@ error_response.json is not vendored: it is the retired v1 426
 client_upgrade_required envelope. v2 errors are problem documents.
 
 Refresh these files together from the server, then regenerate Silo.xcodeproj with cd iosApp && xcodegen generate.
+
+Buffering quality
+Source: silo-server docs/design/schemas/playback-v3/v3/fixtures
+Server commit: 064e8b334017c2664b8f600880248a51156025a0
+Vendored: 2026-10-21
+
+Eight files, copied byte for byte with their names unchanged. The four valid
+ones are server-generated since 064e8b334; the four invalid ones are unchanged
+since 893d809f2. The spec is docs/design/2026-10-17-buffering-quality.md at the
+same commit.
+
+From fixtures/valid:
+  buffering-start_request.json
+  buffering-replan_request.json
+  learned-limit-decision_response.json
+  plan-summary-route_event.json
+
+From fixtures/invalid (the server refuses these; the client encoder must not
+produce their shapes):
+  buffering-source-without-estimate-start_request.json
+  buffering-source-without-estimate-replan_request.json
+  buffering-without-feature-start_request.json
+  buffering-without-feature-replan_request.json
+
+learned-limit-decision_response.json is the protocol domain's decision, with
+integer file ids; BufferingQualityContractTests also decodes it on the v2
+surface with the ids as opaque strings. Re-vendor each file with
+
+  git -C <silo-server> show <commit>:docs/design/schemas/playback-v3/v3/fixtures/<valid|invalid>/<name> \
+    > iosApp/Tests/Fixtures/PlaybackV3/<name>
+
+update the commit above, and run cd iosApp && xcodegen generate.
+
+Subtitle renditions for every embedded text track (hls_subtitle_renditions_all_v1)
+Source: silo-server docs/design/schemas/playback-v3/v3/fixtures/valid
+Server commit: 915e47c7da3d954acfc72a1e8dedf4d494714964 (branch feat/subtitle-renditions-all, not yet on main)
+Vendored: 2026-10-29
+
+  hls-subtitle-renditions-all-decision_response.json
+
+The protocol domain's decision, with integer file ids. Re-vendor it from main
+once the branch lands, with the same git show command as above, and update the
+commit here.

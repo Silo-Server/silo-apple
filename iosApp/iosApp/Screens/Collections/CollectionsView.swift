@@ -1,13 +1,18 @@
 import SwiftUI
 
-func libraryCollectionAccessibilityLabel(_ collection: LibraryCollection, showItemCount: Bool = true) -> String {
-    let type = collection.kind == .userCollections
-        ? "User collection"
-        : collection.collectionType?.capitalized ?? "Collection"
+func libraryCollectionAccessibilityLabel(
+    _ collection: LibraryCollection,
+    showItemCount: Bool = true,
+    byline: String? = nil,
+    locale: Locale
+) -> String {
+    let type = byline ?? (collection.kind == .userCollections
+        ? AppLanguage.string(.collectionsUserCollection, locale: locale)
+        : collection.collectionType?.capitalized ?? AppLanguage.string(.collectionsCollection, locale: locale))
     let count = if let itemCount = collection.itemCount {
-        "\(itemCount) item\(itemCount == 1 ? "" : "s")"
+        AppLanguage.string(.collectionsItemCount(count: itemCount, LocaleFormat.groupedCount(itemCount, locale: locale)), locale: locale)
     } else {
-        "Smart"
+        AppLanguage.string(.collectionsTypeSmart, locale: locale)
     }
     return (showItemCount ? [collection.name, type, count] : [collection.name, type]).joined(separator: ", ")
 }
@@ -17,6 +22,7 @@ func libraryCollectionAccessibilityLabel(_ collection: LibraryCollection, showIt
 struct CollectionsView: View {
     @State private var viewModel = CollectionsViewModel()
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Group {
@@ -29,8 +35,8 @@ struct CollectionsView: View {
             } else {
                 EmptyStateView(
                     icon: "square.stack",
-                    title: "No collections",
-                    subtitle: "Create a collection to organize your media"
+                    title: AppLanguage.string(.collectionsNone, locale: locale),
+                    subtitle: AppLanguage.string(.collectionsNoneBody, locale: locale)
                 )
             }
         }
@@ -40,7 +46,7 @@ struct CollectionsView: View {
             }
         }
         .siloPageBackground()
-        .navigationTitle("Collections")
+        .navigationTitle(Text(.collectionsTitle))
         .siloNavigationTitleDisplayMode(.large)
         .toolbar {
             #if os(macOS)
@@ -117,13 +123,13 @@ struct CollectionsView: View {
                                     Button(role: .destructive) {
                                         viewModel.pendingGroupAction = .deleteCollection(collection)
                                     } label: {
-                                        Label("Delete", systemImage: "trash")
+                                        Label(.collectionsDelete, systemImage: "trash")
                                     }
                                     if viewModel.canManageGroups {
                                         Button {
                                             viewModel.pendingGroupAction = .move(collection)
                                         } label: {
-                                            Label("Move", systemImage: "folder")
+                                            Label(.collectionsMove, systemImage: "folder")
                                         }
                                         .tint(.siloPrimary)
                                     }
@@ -145,18 +151,24 @@ struct CollectionsView: View {
     }
 
     /// tvOS has no Move action, so it only notes the group is empty.
-    private var emptyGroupHint: String {
+    private var emptyGroupHint: LocalizedStringResource {
         #if os(tvOS)
-        "No collections in this group yet."
+        .collectionsGroupEmpty
         #else
-        "Use Move on a collection to add it to this group."
+        .collectionsGroupEmptyHint
         #endif
     }
 
     @ViewBuilder
     private func sectionHeader(_ section: UserCollectionSection) -> some View {
         HStack {
-            Text(section.name)
+            Group {
+                if let name = section.name {
+                    Text(name)
+                } else {
+                    Text(.collectionsUngrouped)
+                }
+            }
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
             Spacer()
@@ -166,12 +178,12 @@ struct CollectionsView: View {
                     Button {
                         viewModel.pendingGroupAction = .rename(group)
                     } label: {
-                        Label("Rename", systemImage: "pencil")
+                        Label(.collectionsGroupRename, systemImage: "pencil")
                     }
                     Button(role: .destructive) {
                         viewModel.pendingGroupAction = .delete(group)
                     } label: {
-                        Label("Delete group", systemImage: "trash")
+                        Label(.collectionsGroupDelete, systemImage: "trash")
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -189,7 +201,7 @@ struct CollectionsView: View {
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
             Spacer()
-            Button("Retry") {
+            Button(.commonRetry) {
                 Task { await viewModel.retryGroupSupport() }
             }
             .foregroundColor(.siloPrimary)
@@ -216,7 +228,7 @@ struct CollectionsView: View {
 
                 Spacer()
 
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.forward")
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
             }
@@ -224,10 +236,13 @@ struct CollectionsView: View {
         }
     }
 
+    /// The kind is the server's collection type; a collection without one
+    /// reads as Custom.
     private func rowSubtitle(for collection: UserCollection) -> String {
-        let kind = (collection.collectionType ?? "custom").capitalized
+        let kind = collection.collectionType?.capitalized
+            ?? AppLanguage.string(.collectionsTypeCustom, locale: locale)
         if let count = collection.itemCount, count > 0 {
-            return "\(kind) · \(count) item\(count == 1 ? "" : "s")"
+            return AppLanguage.string(.collectionsRowKindCount(count: count, LocaleFormat.groupedCount(count, locale: locale), kind), locale: locale)
         }
         return kind
     }
@@ -237,7 +252,7 @@ struct CollectionsView: View {
     private var createSheet: some View {
         NavigationStack {
             VStack(spacing: SiloTheme.largePadding) {
-                TextField("Collection name", text: $viewModel.newCollectionName)
+                TextField(text: $viewModel.newCollectionName) { Text(.collectionsCreateNameLabel) }
                     .textFieldStyle(SiloTextFieldStyle())
 
                 if let message = viewModel.createError {
@@ -247,7 +262,7 @@ struct CollectionsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                Button("Create Collection") {
+                Button(.collectionsCreateAction) {
                     Task { await viewModel.createCollection() }
                 }
                 .siloPrimaryButton()
@@ -258,11 +273,11 @@ struct CollectionsView: View {
             }
             .padding(SiloTheme.padding)
             .siloSheetBackground()
-            .navigationTitle("New Collection")
+            .navigationTitle(Text(.collectionsCreateTitle))
             .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button(.commonCancel) {
                         viewModel.showCreateSheet = false
                     }
                     .foregroundColor(.siloSecondaryText)
@@ -285,6 +300,7 @@ private struct GroupActionSheet: View {
     @State private var name: String = ""
     @State private var pendingMoveTarget: String? = nil
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
 
     var body: some View {
         NavigationStack {
@@ -293,7 +309,7 @@ private struct GroupActionSheet: View {
                 .siloNavigationTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { dismiss() }
+                        Button(.commonCancel) { dismiss() }
                             .foregroundColor(.siloSecondaryText)
                     }
                     ToolbarItem(placement: .confirmationAction) {
@@ -321,15 +337,15 @@ private struct GroupActionSheet: View {
     private var content: some View {
         switch action {
         case .create:
-            nameForm(title: "New group", prompt: "Group name")
+            nameForm(title: .collectionsGroupNewTitle, prompt: .collectionsGroupNamePrompt)
         case .rename(let group):
-            nameForm(title: "Rename “\(group.name)”", prompt: "Group name")
+            nameForm(title: .collectionsGroupRenameTitle(group.name), prompt: .collectionsGroupNamePrompt)
         case .delete(let group):
             VStack(spacing: SiloTheme.padding) {
-                Text("Delete “\(group.name)”?")
+                Text(.collectionsDeleteNamed(group.name))
                     .font(.siloTitle)
                     .foregroundStyle(Color.siloOnSurface)
-                Text("Collections in this group will move to Ungrouped. This cannot be undone.")
+                Text(.collectionsGroupDeleteBody)
                     .font(.siloBody)
                     .foregroundStyle(Color.siloSecondaryText)
                     .multilineTextAlignment(.center)
@@ -337,13 +353,13 @@ private struct GroupActionSheet: View {
                 Spacer()
             }
             .padding(SiloTheme.padding)
-            .navigationTitle("Delete group")
+            .navigationTitle(Text(.collectionsGroupDelete))
         case .deleteCollection(let collection):
             VStack(spacing: SiloTheme.padding) {
-                Text("Delete “\(collection.name)”?")
+                Text(.collectionsDeleteNamed(collection.name))
                     .font(.siloTitle)
                     .foregroundStyle(Color.siloOnSurface)
-                Text("This cannot be undone.")
+                Text(.collectionsDeleteBody)
                     .font(.siloBody)
                     .foregroundStyle(Color.siloSecondaryText)
                     .multilineTextAlignment(.center)
@@ -351,15 +367,18 @@ private struct GroupActionSheet: View {
                 Spacer()
             }
             .padding(SiloTheme.padding)
-            .navigationTitle("Delete collection")
+            .navigationTitle(Text(.collectionsDeleteTitle))
         case .move(let collection):
             VStack(spacing: 0) {
                 List {
-                    Section("Move “\(collection.name)” to") {
+                    Section {
                         Button {
                             pendingMoveTarget = nil
                         } label: {
-                            moveOptionRow(label: "Ungrouped", selected: pendingMoveTarget == nil)
+                            moveOptionRow(
+                                label: AppLanguage.string(.collectionsUngrouped, locale: locale),
+                                selected: pendingMoveTarget == nil
+                            )
                         }
                         .listRowBackground(Color.siloSurface)
                         ForEach(viewModel.groups) { group in
@@ -370,6 +389,8 @@ private struct GroupActionSheet: View {
                             }
                             .listRowBackground(Color.siloSurface)
                         }
+                    } header: {
+                        Text(.collectionsMoveTo(collection.name))
                     }
                 }
                 #if os(tvOS) || os(macOS)
@@ -382,19 +403,19 @@ private struct GroupActionSheet: View {
                     .padding(.horizontal, SiloTheme.padding)
                     .padding(.bottom, SiloTheme.padding)
             }
-            .navigationTitle("Move collection")
+            .navigationTitle(Text(.collectionsMoveTitle))
         }
     }
 
-    private func nameForm(title: String, prompt: String) -> some View {
+    private func nameForm(title: LocalizedStringResource, prompt: LocalizedStringResource) -> some View {
         VStack(spacing: SiloTheme.largePadding) {
-            TextField(prompt, text: $name)
+            TextField(text: $name) { Text(prompt) }
                 .textFieldStyle(SiloTextFieldStyle())
             errorBanner
             Spacer()
         }
         .padding(SiloTheme.padding)
-        .navigationTitle(title)
+        .navigationTitle(Text(title))
     }
 
     @ViewBuilder
@@ -406,7 +427,7 @@ private struct GroupActionSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         if viewModel.editorNeedsReload {
-            Button("Reload") {
+            Button(.collectionsReload) {
                 Task { await viewModel.loadEditor() }
             }
             .foregroundColor(.siloPrimary)
@@ -428,12 +449,12 @@ private struct GroupActionSheet: View {
         }
     }
 
-    private var confirmLabel: String {
+    private var confirmLabel: LocalizedStringResource {
         switch action {
-        case .create: return "Create"
-        case .rename: return "Save"
-        case .delete, .deleteCollection: return "Delete"
-        case .move: return "Move"
+        case .create: return .collectionsGroupCreate
+        case .rename: return .commonSave
+        case .delete, .deleteCollection: return .collectionsDelete
+        case .move: return .collectionsMove
         }
     }
 
@@ -514,11 +535,14 @@ struct LibraryCollectionsView: View {
     let libraryId: Int
     var mediaScope: LibraryVideoScope? = nil
 
+    @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
     @State private var viewModel = LibraryCollectionsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
+    @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.verticalSizeClass) private var vSize
+    @Environment(\.locale) private var locale
 
     private var columns: [GridItem] {
         if let fit = widePhonePosterFit {
@@ -526,7 +550,7 @@ struct LibraryCollectionsView: View {
         }
         if usesThreeColumnPhoneLayout {
             return Array(
-                repeating: GridItem(.flexible(), spacing: 12),
+                repeating: GridItem(.flexible(), spacing: 8),
                 count: 3
             )
         }
@@ -549,6 +573,7 @@ struct LibraryCollectionsView: View {
                     .padding(.bottom, SiloTheme.largePadding)
                 }
                 .reportsPageChromeScroll()
+                .scrollsToTopOnLibraryDockRequest()
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadCollections(libraryId: libraryId) } })
             } else if viewModel.isLoading {
@@ -556,8 +581,8 @@ struct LibraryCollectionsView: View {
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up.fill",
-                    title: "No collections yet",
-                    subtitle: "Create library collections in the web app to feature curated shelves here."
+                    title: AppLanguage.string(.collectionsEmpty, locale: locale),
+                    subtitle: AppLanguage.string(.collectionsEmptyLibraryHint, locale: locale)
                 )
             }
         }
@@ -567,6 +592,7 @@ struct LibraryCollectionsView: View {
         }
         .refreshable {
             await viewModel.loadCollections(libraryId: libraryId)
+            pageDidRefresh?()
         }
     }
 
@@ -580,15 +606,19 @@ struct LibraryCollectionsView: View {
             }
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(section.collections) { collection in
-                    NavigationLink(
-                        value: Route.libraryCollection(
+                    // Through the router, not NavigationLink(value:), so the
+                    // router's record of pushed routes stays in step with the
+                    // stack: the Mac sidebar highlights from it, and closing
+                    // Requests screens reads it.
+                    Button {
+                        router.navigate(to: .libraryCollection(
                             libraryId: libraryId,
                             collectionId: collection.id,
                             title: collection.name,
                             kind: collection.kind,
                             mediaScope: mediaScope
-                        )
-                    ) {
+                        ))
+                    } label: {
                         LibraryCollectionCard(
                             collection: collection,
                             cardWidthOverride: libraryCollectionCardWidthOverride,
@@ -598,7 +628,9 @@ struct LibraryCollectionsView: View {
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity)
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(libraryCollectionAccessibilityLabel(collection, showItemCount: mediaScope == nil))
+                    .accessibilityLabel(libraryCollectionAccessibilityLabel(
+                        collection, showItemCount: mediaScope == nil, locale: locale
+                    ))
                 }
             }
             #if os(iOS)
@@ -637,23 +669,32 @@ struct LibraryCollectionsView: View {
         return AdaptiveColumns.fittedPosterWidth(
             containerWidth: gridWidth,
             columnCount: 3,
-            spacing: 12
+            spacing: 8
         )
     }
 }
 
-private struct LibraryCollectionCard: View {
+struct LibraryCollectionCard: View {
     let collection: LibraryCollection
     let cardWidthOverride: CGFloat?
     var showItemCount = true
+    /// Replaces the type line under the name, as "by Name" does for another
+    /// profile's collection in a Home or library row.
+    var byline: String? = nil
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @Environment(\.locale) private var locale
 
     private var cardWidth: CGFloat {
         cardWidthOverride
             ?? (SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale)
     }
     private var cardHeight: CGFloat {
-        cardWidth * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth)
+        Self.artworkSize(width: cardWidth).height
+    }
+
+    /// The poster's size at `width`, as the card draws and decodes it.
+    static func artworkSize(width: CGFloat) -> CGSize {
+        CGSize(width: width, height: width * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth))
     }
 
     var body: some View {
@@ -675,19 +716,20 @@ private struct LibraryCollectionCard: View {
             .frame(width: cardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius))
 
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                Text(collection.name)
-                    .font(.siloCaption)
-                    .foregroundStyle(Color.siloOnSurface)
-                    .lineLimit(2, reservesSpace: true)
-            }
+            Text(collection.name)
+                .font(.siloCaption)
+                .foregroundStyle(Color.siloOnSurface)
+                #if os(iOS)
+                // One line, like the 2:3 cards in the other iOS grids.
+                .lineLimit(1)
+                #else
+                .lineLimit(2, reservesSpace: true)
+                #endif
 
-            if uiCustomization.cardPresentation.caption.showsMetadata {
-                Text(typeLabel)
-                    .font(.siloSmall)
-                    .foregroundStyle(Color.siloSecondaryText)
-                    .lineLimit(1)
-            }
+            Text(typeLabel)
+                .font(.siloSmall)
+                .foregroundStyle(Color.siloSecondaryText)
+                .lineLimit(1)
         }
         .frame(width: cardWidth, alignment: .leading)
     }
@@ -715,16 +757,17 @@ private struct LibraryCollectionCard: View {
 
     private var countLabel: String {
         if let itemCount = collection.itemCount {
-            return "\(itemCount)"
+            return LocaleFormat.groupedCount(itemCount, locale: locale)
         }
-        return "Smart"
+        return AppLanguage.string(.collectionsTypeSmart, locale: locale)
     }
 
     private var typeLabel: String {
+        if let byline { return byline }
         if collection.kind == .userCollections {
-            return "User collection"
+            return AppLanguage.string(.collectionsUserCollection, locale: locale)
         }
-        return collection.collectionType?.capitalized ?? "Collection"
+        return collection.collectionType?.capitalized ?? AppLanguage.string(.collectionsCollection, locale: locale)
     }
 }
 
@@ -738,6 +781,7 @@ struct LibraryCollectionDetailView: View {
     @State private var viewModel = LibraryCollectionDetailViewModel()
     @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     private var shuffleKind: ShuffleScopeKind {
         (kind ?? .regular).shuffleScopeKind
@@ -760,8 +804,8 @@ struct LibraryCollectionDetailView: View {
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up.fill",
-                    title: "Collection is empty",
-                    subtitle: "This collection does not have any items yet."
+                    title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
+                    subtitle: AppLanguage.string(.collectionsEmptyItemsBody, locale: locale)
                 )
             }
         }
@@ -770,7 +814,7 @@ struct LibraryCollectionDetailView: View {
         // item read 404s for those. Keep cards and play actions unscoped, like
         // the web client.
         .environment(\.browseLibraryId, nil)
-        .navigationTitle(title ?? "Collection")
+        .navigationTitle(title.map { Text($0) } ?? Text(.collectionsCollection))
         .siloNavigationTitleDisplayMode(.large)
         .task(id: "\(libraryId)-\(collectionId)-\(mediaScope?.rawValue ?? "all")-\(kind?.rawValue ?? "regular")") {
             await loadItems(reset: true)
@@ -818,12 +862,12 @@ struct LibraryCollectionDetailView: View {
         }
     }
 
-    private var countLabel: String {
-        if let totalItems = viewModel.totalItems, !viewModel.hasMore {
-            return "\(totalItems) item\(totalItems == 1 ? "" : "s")"
+    private var countLabel: LocalizedStringResource {
+        if viewModel.hasMore {
+            return .collectionsItemCountMore(count: viewModel.items.count, LocaleFormat.integer(viewModel.items.count))
         }
-        let suffix = viewModel.hasMore ? "+" : ""
-        return "\(viewModel.items.count)\(suffix) item\(viewModel.items.count == 1 && !viewModel.hasMore ? "" : "s")"
+        let count = viewModel.totalItems ?? viewModel.items.count
+        return .collectionsItemCount(count: count, LocaleFormat.integer(count))
     }
 
     private func loadMoreIfNeeded() async {

@@ -169,12 +169,11 @@ enum SeekIntervalLabel {
     }
 
     static func accessibilityLabel(_ direction: SeekDirection, seconds: Int) -> String {
-        let verb = direction == .backward ? "Back" : "Forward"
-        return seconds == 1 ? "\(verb) 1 second" : "\(verb) \(seconds) seconds"
+        AppLanguage.string(direction == .backward ? .playerSkipBack(seconds) : .playerSkipForward(seconds))
     }
 
     static func choiceLabel(_ seconds: Int) -> String {
-        "\(seconds) seconds"
+        AppLanguage.string(.playerSeekIntervalChoice(seconds))
     }
 }
 

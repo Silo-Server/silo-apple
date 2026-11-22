@@ -54,7 +54,7 @@ struct PhoneLabeledAction: View {
         // icon and raises the page's notice alert instead.
         .sensoryFeedback(.impact(weight: .light), trigger: toggleCount)
         .accessibilityLabel(accessibilityLabelOverride ?? label)
-        .accessibilityValue(isToggle ? (isActive ? "On" : "Off") : "")
+        .accessibilityValue(isToggle ? Text(isActive ? .detailActionOn : .detailActionOff) : Text(verbatim: ""))
         .accessibilityAddTraits(isActive ? [.isSelected] : [])
     }
 }

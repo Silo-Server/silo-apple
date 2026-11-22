@@ -17,7 +17,9 @@ struct TVDiagnosticsReportSummaryCard: View {
                     crashSummarySize: 21
                 )
             } else {
-                ProgressView("Building report summary…")
+                ProgressView {
+                    Text(.diagnosticsSummaryBuilding)
+                }
             }
         }
         .font(.system(size: 20))
@@ -39,19 +41,29 @@ struct TVDiagnosticsSummaryLines: View {
     let titleSize: CGFloat
     /// Nil inherits the surrounding font.
     var crashSummarySize: CGFloat? = nil
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) {
             Text(summary.typeTitle)
                 .font(.system(size: titleSize, weight: .semibold))
             if let crashSummary = summary.crashSummary {
-                Text(crashSummary)
+                // The report's own crash text, sent as written.
+                Text(verbatim: crashSummary)
                     .font(crashSummarySize.map { Font.system(size: $0) })
             }
-            Text("Device: \(summary.deviceIdentity)")
-            Text("Logs: \(summary.lineCount) lines · \(summary.categoriesDescription)")
-            Text("Destination: \(summary.destinationServerName)")
-            Text("Expires \(summary.expiresAt, format: .relative(presentation: .named))")
+            Text(.diagnosticsSummaryDeviceLine(summary.deviceIdentity))
+            // Digits as before: a catalog number would group them ("1,234").
+            Text(.diagnosticsSummaryLogsLine(
+                "\(summary.lineCount)",
+                AppLanguage.string(summary.categoriesDescription, locale: locale)
+            ))
+            Text(.diagnosticsSummaryDestinationLine(
+                AppLanguage.string(summary.destinationServerName, locale: locale)
+            ))
+            Text(.diagnosticsReportExpiresRelative(
+                summary.expiresAt.formatted(.relative(presentation: .named).locale(locale))
+            ))
         }
     }
 }

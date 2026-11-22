@@ -3,8 +3,8 @@ import Foundation
 // MARK: - Media requests
 
 /// User-facing endpoints of the server's media-request system
-/// (`/api/v2/requests`, TMDB movies + series): search, create, track, and
-/// cancel. Request administration (approve, decline, retry, limits) is
+/// (`/api/v2/requests`, TMDB movies + series): search, create, track,
+/// cancel, and remove a failed request. Request administration (approve, decline, retry, limits) is
 /// web-admin only and has no client here.
 extension SiloAPI {
     /// Profile-scoped capability probe. Entry points gate on
@@ -19,40 +19,85 @@ extension SiloAPI {
         mediaType: RequestMediaType = .all,
         page: Int = 1
     ) async throws -> RequestMediaPage {
-        try await apiV2Client.searchRequestMedia(query: query, mediaType: mediaType, page: page)
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.searchRequestMedia(query: query, mediaType: mediaType, page: page)
+        }
     }
 
     /// Curated TMDB carousels (trending/popular/upcoming/on-air).
-    func requestsDiscover() async throws -> [RequestDiscoverySection] {
-        try await apiV2Client.requestDiscoverSections()
+    func requestsDiscover() async throws -> RequestDiscoverLayout {
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.requestDiscoverLayout()
+        }
+    }
+
+    func requestsDiscoverRow(key: String, page: Int) async throws -> RequestDiscoverySection {
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.requestDiscoverRow(key: key, page: page)
+        }
     }
 
     func requestsDetail(mediaType: RequestMediaType, tmdbId: Int) async throws -> RequestMediaDetail {
-        try await apiV2Client.requestMediaDetail(mediaType: mediaType, tmdbId: tmdbId)
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.requestMediaDetail(mediaType: mediaType, tmdbId: tmdbId)
+        }
     }
 
     func createRequest(_ input: CreateRequestInput) async throws -> MediaRequest {
-        try await apiV2Client.createRequest(input)
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.createRequest(input)
+        }
     }
 
     /// Every request the profile can see, newest first, loaded completely or
     /// not at all.
     func myRequests() async throws -> [MediaRequest] {
-        try await apiV2Client.myRequests()
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.myRequests()
+        }
     }
 
     /// Owner-cancel; the server only allows this while the request hasn't
     /// been submitted to an integration yet.
     func cancelRequest(id: String, reason: String? = nil) async throws -> MediaRequest {
-        try await apiV2Client.cancelRequest(id: id, reason: reason)
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.cancelRequest(id: id, reason: reason)
+        }
+    }
+
+    /// Owner-remove of a failed request that delivered nothing. Detect it
+    /// with `RequestsFeatureStore.removeFailedSupported`.
+    func removeFailedRequest(id: String) async throws {
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.removeFailedRequest(id: id)
+        }
+    }
+
+    /// A requests call refused because the capability is off or the account
+    /// is blocked means the cached flag may be stale: re-probe so entry
+    /// points hide and an open Requests screen closes (see
+    /// `RequestsFeatureStore.shouldReprobe(after:)` and `isKnownUnavailable`).
+    private func reprobingWhenRequestsAreOff<T>(_ call: () async throws -> T) async throws -> T {
+        do {
+            return try await call()
+        } catch {
+            if RequestsFeatureStore.shouldReprobe(after: error) {
+                Task { @MainActor in await RequestsFeatureStore.shared.refresh() }
+            }
+            throw error
+        }
     }
 
     /// Notify the viewer when a title someone else requested lands.
     func followRequestMedia(mediaType: RequestMediaType, tmdbId: Int) async throws -> RequestState {
-        try await apiV2Client.followRequestMedia(mediaType: mediaType, tmdbId: tmdbId)
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.followRequestMedia(mediaType: mediaType, tmdbId: tmdbId)
+        }
     }
 
     func unfollowRequestMedia(mediaType: RequestMediaType, tmdbId: Int) async throws {
-        try await apiV2Client.unfollowRequestMedia(mediaType: mediaType, tmdbId: tmdbId)
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.unfollowRequestMedia(mediaType: mediaType, tmdbId: tmdbId)
+        }
     }
 }

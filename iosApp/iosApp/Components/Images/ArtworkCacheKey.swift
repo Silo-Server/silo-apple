@@ -32,14 +32,23 @@ enum ArtworkCacheKey {
     /// The URL without its authorization for revisioned Silo artwork, with
     /// any other query items sorted. Nil for every other URL.
     static func stableImageID(for url: URL) -> String? {
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              ["http", "https"].contains(components.scheme?.lowercased() ?? "") else {
-            return nil
-        }
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
         let isRevisionedArtwork = components.percentEncodedPath.hasPrefix(artworkRoute)
             ? isRevisioned(key: String(components.path.dropFirst(artworkRoute.count)))
             : isRevisionedLadderVariant(path: components.path)
         guard isRevisionedArtwork else { return nil }
+        return unsignedIdentity(for: url)
+    }
+
+    /// The URL without the query items that authorize it, with any other
+    /// query items sorted, so two signatures for the same object compare
+    /// equal. Says nothing about whether the bytes behind it are immutable.
+    /// Nil for a URL that is not http(s).
+    static func unsignedIdentity(for url: URL) -> String? {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              ["http", "https"].contains(components.scheme?.lowercased() ?? "") else {
+            return nil
+        }
         let kept = (components.percentEncodedQueryItems ?? [])
             .filter { !isAuthorization($0.name) }
             .sorted { ($0.name, $0.value ?? "") < ($1.name, $1.value ?? "") }

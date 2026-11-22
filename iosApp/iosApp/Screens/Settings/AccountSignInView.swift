@@ -7,6 +7,7 @@ struct AccountSignInView: View {
     let model: AccountSignInModel
     @State private var connecting: AccountSignInModel.Connectable?
     @State private var disconnecting: APIv2AccountIdentity?
+    @Environment(\.locale) private var locale
 
     var body: some View {
         List {
@@ -16,7 +17,7 @@ struct AccountSignInView: View {
                         identityRow(identity)
                     }
                 } header: {
-                    Text("Connected")
+                    Text(.settingsSignInConnectedHeader)
                 } footer: {
                     if model.canUnlink == false {
                         Text(AccountSignInModel.onlySignInMethodMessage)
@@ -31,13 +32,13 @@ struct AccountSignInView: View {
                         connectRow(item)
                     }
                 } header: {
-                    Text("Sign-in providers")
+                    Text(.settingsSignInProvidersHeader)
                 }
             }
 
             if model.hasLoaded, model.identities.isEmpty, model.connectable.isEmpty, model.errorMessage == nil {
                 Section {
-                    Text("This server has no sign-in provider to connect.")
+                    Text(.settingsSignInNoProviders)
                         .foregroundStyle(Color.siloSecondaryText)
                 }
             }
@@ -57,7 +58,7 @@ struct AccountSignInView: View {
             }
         }
         .siloGroupedListStyle()
-        .navigationTitle("Sign-in")
+        .navigationTitle(Text(.settingsSignInTitle))
         .siloNavigationTitleDisplayMode(.inline)
         .overlay {
             if model.isLoading && !model.hasLoaded { ProgressView() }
@@ -73,10 +74,10 @@ struct AccountSignInView: View {
             titleVisibility: .visible,
             presenting: disconnecting
         ) { identity in
-            Button("Disconnect", role: .destructive) {
+            Button(.settingsSignInDisconnect, role: .destructive) {
                 Task { await model.disconnect(identity) }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(.commonCancel, role: .cancel) {}
         } message: { _ in
             Text(model.canUnlink == true ? Self.disconnectMessageWhenAllowed : Self.disconnectMessage)
         }
@@ -86,27 +87,29 @@ struct AccountSignInView: View {
     /// in: linking turns the local password off unless the account is
     /// break-glass. For servers that do not say which accounts can
     /// disconnect (`can_unlink` absent).
-    static let disconnectMessage = "You'll no longer be able to sign in with this provider account. Your Silo account and its profiles stay. If this is your only way to sign in, it stays connected until an administrator sets a password for your account."
+    static let disconnectMessage: LocalizedStringResource = .settingsSignInDisconnectMessage
 
     /// The same, once the server says this account can disconnect.
-    static let disconnectMessageWhenAllowed = "You'll no longer be able to sign in with this provider account. Your Silo account and its profiles stay."
+    static let disconnectMessageWhenAllowed: LocalizedStringResource = .settingsSignInDisconnectMessageAllowed
 
-    private var disconnectTitle: String {
-        guard let identity = disconnecting, !identity.providerName.isEmpty else { return "Disconnect sign-in provider?" }
-        return "Disconnect \(identity.providerName)?"
+    private var disconnectTitle: Text {
+        guard let identity = disconnecting, !identity.providerName.isEmpty else {
+            return Text(.settingsSignInDisconnectTitleUnnamed)
+        }
+        return Text(.settingsSignInDisconnectConfirmTitle(identity.providerName))
     }
 
     private func identityRow(_ identity: APIv2AccountIdentity) -> some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(identity.providerName.isEmpty ? "Sign-in provider (turned off)" : identity.providerName)
+                Text(identity.providerName.isEmpty ? LocalizedStringResource.settingsSignInProviderTurnedOff : .verbatim(identity.providerName))
                     .foregroundStyle(Color.siloOnSurface)
                 if !identity.accountLabel.isEmpty {
                     Text(identity.accountLabel)
                         .font(.subheadline)
                         .foregroundStyle(Color.siloSecondaryText)
                 }
-                Text("Connected \(identity.linkedAt.formatted(date: .abbreviated, time: .omitted))")
+                Text(.settingsSignInIdentityConnected(identity.linkedAt.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted).locale(locale))))
                     .font(.caption)
                     .foregroundStyle(Color.siloSecondaryText)
             }
@@ -114,7 +117,7 @@ struct AccountSignInView: View {
             if model.busyID == identity.id {
                 ProgressView()
             } else if model.canUnlink != false {
-                Button("Disconnect", role: .destructive) { disconnecting = identity }
+                Button(.settingsSignInDisconnect, role: .destructive) { disconnecting = identity }
                     .disabled(model.isBusy)
                     .accessibilityIdentifier("accountSignIn.disconnect.\(identity.id)")
             }
@@ -130,7 +133,7 @@ struct AccountSignInView: View {
         } label: {
             HStack(spacing: 12) {
                 ProviderIconView(url: SignInOptions.iconURL(for: item.provider, serverURL: AuthService.shared.serverUrl))
-                Text("Connect \(item.name)")
+                Text(.settingsSignInConnect(item.name))
                     .foregroundStyle(Color.siloOnSurface)
                 Spacer(minLength: 8)
                 if model.busyID == item.id { ProgressView() }
@@ -171,7 +174,7 @@ private struct ConnectProviderSheet: View {
             Form {
                 if isDirectory {
                     Section {
-                        TextField("Username", text: $directoryUsername)
+                        TextField(text: $directoryUsername) { Text(.settingsSignInUsernameField) }
                             .textContentType(.username)
                             .autocorrectionDisabled()
                             #if os(iOS)
@@ -180,43 +183,43 @@ private struct ConnectProviderSheet: View {
                             .focused($focused, equals: .directoryUsername)
                             .onSubmit { focused = .directoryPassword }
                             .accessibilityIdentifier("accountSignIn.directoryUsername")
-                        SecureField("Password", text: $directoryPassword)
+                        SecureField(text: $directoryPassword) { Text(.settingsSignInDirectoryPasswordField) }
                             .textContentType(.password)
                             .focused($focused, equals: .directoryPassword)
                             .onSubmit { focused = .password }
                             .accessibilityIdentifier("accountSignIn.directoryPassword")
                     } header: {
-                        Text("\(item.name) account")
+                        Text(.settingsSignInDirectoryAccountHeader(item.name))
                     }
                 }
                 Section {
-                    SecureField("Silo password", text: $password)
+                    SecureField(text: $password) { Text(.settingsSignInSiloPassword) }
                         .textContentType(.password)
                         .focused($focused, equals: .password)
                         .onSubmit(connect)
                         .accessibilityIdentifier("accountSignIn.password")
                 } header: {
-                    if isDirectory { Text("Confirm it's you") }
+                    if isDirectory { Text(.settingsSignInConfirmHeader) }
                 } footer: {
                     Text(footer)
                 }
                 if let message = model.errorMessage {
                     Section {
-                        Text(message).foregroundStyle(Color.red)
+                        Text(verbatim: message).foregroundStyle(Color.red)
                     }
                 }
             }
-            .navigationTitle("Connect \(item.name)")
+            .navigationTitle(Text(.settingsSignInConnect(item.name)))
             .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: dismiss).disabled(model.isBusy)
+                    Button(.commonCancel, action: dismiss).disabled(model.isBusy)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if model.isBusy {
                         ProgressView()
                     } else {
-                        Button(linksWithoutBrowser ? "Connect" : "Continue", action: connect)
+                        Button(linksWithoutBrowser ? LocalizedStringResource.settingsSignInConnectButton : .settingsSignInContinue, action: connect)
                             .disabled(!canSubmit)
                             .accessibilityIdentifier("accountSignIn.continue")
                     }
@@ -229,7 +232,7 @@ private struct ConnectProviderSheet: View {
         #endif
     }
 
-    private var footer: String {
+    private var footer: LocalizedStringResource {
         AccountSignInModel.connectFooter(for: item, networkLinkKeepsPassword: model.networkLinkKeepsPassword)
     }
 

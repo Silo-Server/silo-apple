@@ -44,22 +44,52 @@ struct NowPlayingShelf: View {
 /// Hosts `NowPlayingShelf` on a `TabView` so it rests above the tab bar.
 /// iOS 26 uses the native Liquid Glass accessory; iOS 18 uses the card-styled
 /// shelf in a safe-area inset. Nothing is attached while playback is idle.
+///
+/// On iOS 26.1 and later the same slot shows the dock of the iPhone tab on
+/// screen (Libraries, For You) while nothing is playing, so the dock
+/// shrinks with the tab bar. Now playing always keeps priority; the dock then stays
+/// in its page.
 struct NowPlayingShelfAttachment: ViewModifier {
+    /// Shows the shelf as a card above the page instead of the tab bar
+    /// accessory, for layouts that hide the system tab bar.
+    var showsCard = false
+
     @Environment(SiloControlClient.self) private var siloControl
     @Environment(AudioPlaybackStore.self) private var audioStore
+    @Environment(PageDockHost.self) private var dockHost: PageDockHost?
 
     private var isActive: Bool {
         NowPlayingShelf.hasActiveAccessory(control: siloControl, audio: audioStore)
     }
 
+    /// The page dock to show in the slot, when the slot is free for it.
+    private var slotDock: (any PageDockModel)? {
+        guard !isActive, !showsCard else { return nil }
+        return dockHost?.dock
+    }
+
     func body(content: Content) -> some View {
         if #available(iOS 26.1, *) {
             // Toggling `isEnabled` keeps the TabView's structural identity, so
-            // tabs keep their state when playback starts or stops.
-            content.tabViewBottomAccessory(isEnabled: isActive) {
-                NowPlayingShelf(style: .accessory)
+            // tabs keep their state when playback starts or stops, when a
+            // tab with a dock comes and goes, or when the layout switches
+            // between the accessory and the card.
+            content
+                .tabViewBottomAccessory(isEnabled: (isActive && !showsCard) || slotDock != nil) {
+                    Group {
+                        if isActive {
+                            NowPlayingShelf(style: .accessory)
+                        } else if let slotDock {
+                            slotDock.accessory()
+                        }
+                    }
                     .modifier(NowPlayingAccessoryPlacementReader())
-            }
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if isActive && showsCard {
+                        NowPlayingShelf(style: .card)
+                    }
+                }
         } else if #available(iOS 26.0, *) {
             if isActive {
                 content.tabViewBottomAccessory {

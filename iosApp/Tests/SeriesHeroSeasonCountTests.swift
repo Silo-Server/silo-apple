@@ -29,6 +29,15 @@ final class SeriesHeroSeasonCountTests: XCTestCase {
         XCTAssertEqual(PhoneHeroMetadata.seriesFactsLine(from: detail, seasons: []), [.text("2008")])
     }
 
+    /// The year uses the format locale's digits, like the count beside it (D77).
+    func testPhoneFactsLineWritesTheYearInTheLocalesDigits() throws {
+        let detail = try seriesDetail(seasonCount: 5)
+        XCTAssertEqual(
+            PhoneHeroMetadata.seriesFactsLine(from: detail, seasons: [], locale: Locale(identifier: "ar_EG")),
+            [.text("٢٠٠٨")]
+        )
+    }
+
 #else
     func testTVFactsLineUsesLibrarySeasonsOverProviderTotal() throws {
         let detail = try seriesDetail(seasonCount: 5)
@@ -36,6 +45,15 @@ final class SeriesHeroSeasonCountTests: XCTestCase {
         XCTAssertEqual(
             TVHeroMetadata.seriesFactsLine(from: detail, seasons: seasons),
             [.text("2008"), .text("2 Seasons")]
+        )
+    }
+
+    /// The year uses the format locale's digits, like the count beside it (D77).
+    func testTVFactsLineWritesTheYearInTheLocalesDigits() throws {
+        let detail = try seriesDetail(seasonCount: 5)
+        XCTAssertEqual(
+            TVHeroMetadata.seriesFactsLine(from: detail, seasons: [], locale: Locale(identifier: "ar_EG")),
+            [.text("٢٠٠٨")]
         )
     }
 

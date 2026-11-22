@@ -246,10 +246,10 @@ enum ExternalSignInError: LocalizedError, Equatable {
     var message: String {
         switch self {
         case .canceled: return ""
-        case .browserUnavailable: return "Couldn't open the sign-in page. Try again."
-        case .invalidStartURL: return "This server's sign-in page can't be opened from the app."
+        case .browserUnavailable: return AppLanguage.string(.signInProviderBrowserUnavailable)
+        case .invalidStartURL: return AppLanguage.string(.signInProviderInvalidStartUrl)
         case .serverIdentityUnavailable:
-            return "Couldn't confirm which server this is. Check the connection and try again."
+            return AppLanguage.string(.signInProviderServerIdentityUnavailable)
         case .stateMismatch: return Self.reasonText("state_invalid")
         case .serverMismatch, .issuerMismatch: return Self.differentServerText
         case .incompleteCallback: return Self.reasonText("login_failed")
@@ -257,36 +257,26 @@ enum ExternalSignInError: LocalizedError, Equatable {
         }
     }
 
-    static let differentServerText = "This sign-in came back from a different server. Nothing was signed in."
+    static var differentServerText: String { AppLanguage.string(.signInProviderDifferentServer) }
 
     /// Copy for the server's failure reasons, the same codes the web login
     /// page maps. Unknown codes fall back to a generic line; the code itself
     /// is never shown.
     static func reasonText(_ reason: String) -> String {
-        switch reason {
-        case "not_permitted":
-            return "Your account at the sign-in provider isn't allowed to use this server."
-        case "email_in_use":
-            return "An account with this email already exists. Ask an admin to connect it to the sign-in provider."
-        case "identity_linked_elsewhere":
-            return "That provider account is already connected to another account."
-        case "account_disabled":
-            return "This account is disabled."
-        case "provider_unavailable":
-            return "The sign-in provider can't be reached right now. Try again later."
-        case "state_invalid":
-            return "Sign-in didn't finish. Start again."
-        case "session_expired":
-            return "Sign-in took too long. Start again."
-        case "already_linked":
-            return "This account is already connected to the sign-in provider."
-        case "password_expired":
-            return "Your directory password has expired. Change it with your organization, then try again."
-        case "account_required":
-            return "You don't have an account on this server yet. Ask an admin to add you."
-        default:
-            return "Sign-in with the provider failed. Try again."
+        let text: LocalizedStringResource = switch reason {
+        case "not_permitted": .signInProviderReasonNotPermitted
+        case "email_in_use": .signInErrorEmailInUse
+        case "identity_linked_elsewhere": .signInProviderReasonLinkedElsewhere
+        case "account_disabled": .signInProviderAccountDisabled
+        case "provider_unavailable": .signInProviderReasonUnavailable
+        case "state_invalid": .signInProviderReasonStateInvalid
+        case "session_expired": .signInProviderReasonSessionExpired
+        case "already_linked": .signInProviderReasonAlreadyLinked
+        case "password_expired": .signInProviderReasonPasswordExpired
+        case "account_required": .tvSignInErrorAccountRequired
+        default: .signInProviderReasonFailed
         }
+        return AppLanguage.string(text)
     }
 
     /// Maps a v2 problem from completing the handshake or linking to the same
