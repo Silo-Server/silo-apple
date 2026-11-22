@@ -343,17 +343,6 @@ struct TVItemDetailView: View {
                 nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
                 trailerEntries: trailerEntries(for: detail),
                 onSelectTrailer: playTrailer,
-                supportsTrailerFetch: viewModel.supportsTrailerFetch && allowRemoteTrailers,
-                onFindTrailers: {
-                    // Without the YouTube app the rail hides remote cards, so
-                    // new remote videos must not be reported as a find.
-                    viewModel.startTrailerFetch(
-                        remoteVideosDisplayable: allowRemoteTrailers
-                    )
-                },
-                trailerFetchStatus: viewModel.trailerFetch.statusMessage,
-                isFetchingTrailers: viewModel.trailerFetch.isFetching,
-                onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 onSelectSeason: { season in
                     activeSeriesEpisodeContentId = nil
                     await viewModel.selectSeason(season)
@@ -502,17 +491,6 @@ struct TVItemDetailView: View {
                 subtitleOverrideCleared: didClearSubtitleOverride,
                 trailerEntries: trailerEntries(for: detail),
                 onSelectTrailer: playTrailer,
-                supportsTrailerFetch: viewModel.supportsTrailerFetch && allowRemoteTrailers,
-                onFindTrailers: {
-                    // Without the YouTube app the rail hides remote cards, so
-                    // new remote videos must not be reported as a find.
-                    viewModel.startTrailerFetch(
-                        remoteVideosDisplayable: allowRemoteTrailers
-                    )
-                },
-                trailerFetchStatus: viewModel.trailerFetch.statusMessage,
-                isFetchingTrailers: viewModel.trailerFetch.isFetching,
-                onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 onPlay: { startFromBeginning in
                     // Version and track picks are read at the press, not
                     // after the watch-state read.
