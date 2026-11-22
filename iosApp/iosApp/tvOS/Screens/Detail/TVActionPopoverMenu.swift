@@ -45,6 +45,10 @@ struct TVActionPopoverMenu: View {
     @FocusState private var highlightedId: String?
     @Namespace private var optionFocusScope
     @State private var submenuStack: [SubmenuLevel] = []
+    /// Target row for the next focus resolution (e.g. returning to the submenu
+    /// trigger when popping a submenu) so tvOS lands on it on the first frame
+    /// instead of flashing on the top row first.
+    @State private var preferredFocusId: String?
     @State private var measuredListHeight: CGFloat = 0
 
     static let width: CGFloat = 560
@@ -108,7 +112,11 @@ struct TVActionPopoverMenu: View {
     }
 
     private var initialOptionId: String? {
-        firstOptionId(in: currentItems)
+        if let preferredFocusId,
+           currentItems.contains(where: { $0.id == preferredFocusId && $0.isEnabled }) {
+            return preferredFocusId
+        }
+        return firstOptionId(in: currentItems)
     }
 
     private func firstOptionId(in list: [TVActionPopoverItem]) -> String? {
@@ -126,25 +134,33 @@ struct TVActionPopoverMenu: View {
 
     private func enterSubmenu(_ item: TVActionPopoverItem) {
         guard let children = item.children, !children.isEmpty else { return }
+        let targetId = firstOptionId(in: children)
+        preferredFocusId = targetId
         submenuStack.append(
             SubmenuLevel(
                 items: children,
                 returnFocusId: item.id
             )
         )
-        let targetId = firstOptionId(in: children)
+        highlightedId = targetId
         Task { @MainActor in
             await Task.yield()
-            highlightedId = targetId
+            if highlightedId == nil {
+                highlightedId = targetId
+            }
         }
     }
 
     private func handleExit() {
         if let popped = submenuStack.popLast() {
             let returnId = popped.returnFocusId
+            preferredFocusId = returnId
+            highlightedId = returnId
             Task { @MainActor in
                 await Task.yield()
-                highlightedId = returnId
+                if highlightedId == nil {
+                    highlightedId = returnId
+                }
             }
         } else {
             onClose()
@@ -170,6 +186,7 @@ struct TVActionPopoverMenu: View {
                 }
                 .buttonStyle(TVActionPopoverButtonStyle())
                 .focused($highlightedId, equals: item.id)
+                .prefersDefaultFocus(item.id == initialOptionId, in: optionFocusScope)
                 .disabled(!item.isEnabled)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel([item.title, item.detail].compactMap { $0 }.joined(separator: ", "))
