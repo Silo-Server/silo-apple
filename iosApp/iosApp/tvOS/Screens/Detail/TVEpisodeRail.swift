@@ -609,63 +609,104 @@ struct TVEpisodeCard: View {
 
     @ViewBuilder
     private var contextActions: some View {
-        WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode") // i18n-ignore: watch-party payload (D44)
-        if let onPlay {
-            Button {
-                onPlay(episode.contentId)
-            } label: {
-                // String arguments so year-numbered seasons don't render as "S2,021".
-                Label {
-                    Text(.detailPlayEpisode(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber)))
-                } icon: {
-                    Image(systemName: "play.fill")
+        // Section 1: Play and watch state (consistent with the detail More menu).
+        if onPlay != nil || onSetWatched != nil {
+            Section {
+                if let onPlay {
+                    Button {
+                        onPlay(episode.contentId)
+                    } label: {
+                        // String arguments so year-numbered seasons don't render as "S2,021".
+                        Label {
+                            Text(.detailPlayEpisode(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber)))
+                        } icon: {
+                            Image(systemName: "play.fill")
+                        }
+                    }
+                }
+                if let onSetWatched {
+                    Button {
+                        let value = !isPlayed
+                        let previous = playedOverride
+                        actionFeedback.perform {
+                            playedOverride = value
+                            let outcome = await onSetWatched(episode.contentId, value)
+                            if outcome != .applied { playedOverride = previous }
+                            return outcome
+                        }
+                    } label: {
+                        Label(
+                            AppLanguage.string(
+                                isPlayed ? .detailMoreMarkEpisodeUnwatched : .detailMoreMarkEpisodeWatched,
+                                locale: locale
+                            ),
+                            systemImage: isPlayed ? "checkmark.circle.fill" : "checkmark.circle"
+                        )
+                    }
+                    .disabled(actionFeedback.isUpdating)
                 }
             }
         }
 
-        MediaStateMenuItems(
-            isWatched: isPlayed,
-            isFavorite: isFavorite,
-            inWatchlist: inWatchlist,
-            watchedSubject: "Episode", // i18n-ignore: fragment for MediaStateMenuItems (shared component, not in this group)
-            isUpdating: actionFeedback.isUpdating,
-            onToggleWatched: onSetWatched.map { update in
-                {
-                    let value = !isPlayed
-                    let previous = playedOverride
-                    actionFeedback.perform {
-                        playedOverride = value
-                        let outcome = await update(episode.contentId, value)
-                        if outcome != .applied { playedOverride = previous }
-                        return outcome
+        // Section 2: Playback modes.
+        if WatchPartyEntry.isAvailable {
+            Section {
+                WatchPartyMenuButton(
+                    contentId: episode.contentId,
+                    title: episode.title ?? "Episode", // i18n-ignore: watch-party payload (D44)
+                    type: "episode", // i18n-ignore: watch-party payload (D44)
+                    episode: episode
+                )
+            }
+        }
+
+        // Section 3: Personal lists.
+        if onSetFavorite != nil || onSetWatchlist != nil {
+            Section {
+                if let onSetFavorite {
+                    Button {
+                        let value = !isFavorite
+                        let previous = favoriteOverride
+                        actionFeedback.perform {
+                            favoriteOverride = value
+                            let outcome = await onSetFavorite(episode.contentId, value)
+                            if outcome != .applied { favoriteOverride = previous }
+                            return outcome
+                        }
+                    } label: {
+                        Label(
+                            AppLanguage.string(
+                                isFavorite ? .detailMoreRemoveFavorite : .detailMoreAddFavorite,
+                                locale: locale
+                            ),
+                            systemImage: isFavorite ? "heart.fill" : "heart"
+                        )
                     }
+                    .disabled(actionFeedback.isUpdating)
                 }
-            },
-            onToggleFavorite: onSetFavorite.map { update in
-                {
-                    let value = !isFavorite
-                    let previous = favoriteOverride
-                    actionFeedback.perform {
-                        favoriteOverride = value
-                        let outcome = await update(episode.contentId, value)
-                        if outcome != .applied { favoriteOverride = previous }
-                        return outcome
+                if let onSetWatchlist {
+                    Button {
+                        let value = !inWatchlist
+                        let previous = watchlistOverride
+                        actionFeedback.perform {
+                            watchlistOverride = value
+                            let outcome = await onSetWatchlist(episode.contentId, value)
+                            if outcome != .applied { watchlistOverride = previous }
+                            return outcome
+                        }
+                    } label: {
+                        Label(
+                            AppLanguage.string(
+                                inWatchlist ? .detailWatchlistRemove : .detailWatchlistAdd,
+                                locale: locale
+                            ),
+                            systemImage: inWatchlist ? "bookmark.fill" : "bookmark"
+                        )
                     }
-                }
-            },
-            onToggleWatchlist: onSetWatchlist.map { update in
-                {
-                    let value = !inWatchlist
-                    let previous = watchlistOverride
-                    actionFeedback.perform {
-                        watchlistOverride = value
-                        let outcome = await update(episode.contentId, value)
-                        if outcome != .applied { watchlistOverride = previous }
-                        return outcome
-                    }
+                    .disabled(actionFeedback.isUpdating)
                 }
             }
-        )
+        }
     }
 }
 
