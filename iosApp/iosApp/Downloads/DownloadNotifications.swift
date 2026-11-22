@@ -45,16 +45,21 @@ enum DownloadNotifier {
         post(id: "downloads-monitoring-\(UUID().uuidString)", body: body)
     }
 
-    /// "Exodus (S2E8)" for episodes, plain title for movies. The series
+    /// "Exodus (S2E8)" for episodes, plain title for movies; "Nov 20, 2026 ·
+    /// Lakers vs Kings" for a date-labeled game. The series
     /// title is preferred for episodes because the S/E marker already
     /// disambiguates which entry finished.
-    private static func displayName(for record: DownloadRecord) -> String {
+    static func displayName(for record: DownloadRecord) -> String {
         let base = record.seriesTitle ?? record.shownTitle() ?? AppLanguage.string(.downloadsNotificationDefaultTitle)
         if let season = record.seasonNumber, let episode = record.episodeNumber {
-            // A date-labeled series (sports) names the game by its date.
+            // A date-labeled series (sports) names the game by its date and
+            // matchup, so two games of one league on one day stay apart:
+            // "Nov 20, 2026 · Lakers vs Kings", the code-and-title shape of
+            // episode cards. An untitled game (stored as "Episode N") falls
+            // back to the series name.
             if let date = EpisodeLabel.airDate(labels: record.episodeLabels, airDate: record.airDate) {
-                // "Nov 20, 2026 · NBA", the code-and-title shape of episode cards.
-                return EpisodeCardCaption.titled(code: date, title: base)
+                let game = record.title.flatMap { $0.isEmpty || $0 == DownloadRecord.storedEpisodeName(episode) ? nil : $0 }
+                return EpisodeCardCaption.titled(code: date, title: game ?? base)
             }
             return AppLanguage.string(.downloadsNotificationEpisodeName(base, LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
         }
