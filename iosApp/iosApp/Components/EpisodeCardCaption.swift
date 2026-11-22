@@ -119,14 +119,13 @@ extension EpisodeCardCaption {
         episodeLabels: String? = nil,
         locale: Locale = AppLanguage.formattingLocale
     ) -> String {
-        let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if EpisodeLabel.labelsByAirDate(episodeLabels) {
-            if let title, !title.isEmpty { return title }
-            return EpisodeLabel.text(
-                season: episode.seasonNumber, episode: episode.episodeNumber,
-                labels: episodeLabels, airDate: episode.airDate, locale: locale
-            )
+        if let name = EpisodeLabel.datedSeriesName(
+            title: episode.title, season: episode.seasonNumber, episode: episode.episodeNumber,
+            labels: episodeLabels, airDate: episode.airDate, locale: locale
+        ) {
+            return name
         }
+        let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let code = Self.code(season: episode.seasonNumber, episode: episode.episodeNumber, locale: locale)
         guard let title, !title.isEmpty else { return code }
         return titled(code: code, title: title, locale: locale)

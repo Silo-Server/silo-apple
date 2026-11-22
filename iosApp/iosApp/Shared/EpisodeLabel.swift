@@ -52,6 +52,31 @@ enum EpisodeLabel {
         return DetailDateFormatting.abbreviatedDate(airDate, locale: locale)
     }
 
+    /// Whether the episode is named by its air date: a date-labeled series
+    /// and a dated episode. A page that shows the air date elsewhere (a
+    /// hero's facts line) then drops its season and episode line.
+    static func isNamedByDate(labels: String?, airDate: String?) -> Bool {
+        labelsByAirDate(labels) && DetailDateFormatting.abbreviatedDate(airDate) != nil
+    }
+
+    /// How a list names an episode of a date-labeled series, whose air date
+    /// sits on another line: its title (the matchup), or its date when
+    /// untitled, or its code in `style` when undated too. Nil for a numbered
+    /// series, which keeps its own "S01E02 · Title" form.
+    static func datedSeriesName(
+        title: String?,
+        season: Int,
+        episode: Int,
+        style: Style = .paddedTag,
+        labels: String?,
+        airDate: String?,
+        locale: Locale = AppLanguage.formattingLocale
+    ) -> String? {
+        guard labelsByAirDate(labels) else { return nil }
+        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
+        return text(season: season, episode: episode, style: style, labels: labels, airDate: airDate, locale: locale)
+    }
+
     /// The episode's label: its air date when the series is labeled by date
     /// and the episode is dated, else its code in `style`.
     static func text(

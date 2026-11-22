@@ -27,4 +27,16 @@ final class EpisodeLabelTests: XCTestCase {
             "S2026E296"
         )
     }
+
+    /// Lists of a date-labeled series lead with the matchup, else the date;
+    /// a numbered series keeps its own "S01E02 · Title" form (nil).
+    func testDatedSeriesNameLeadsWithTheTitleThenTheDate() {
+        func name(_ title: String?, labels: String?) -> String? {
+            EpisodeLabel.datedSeriesName(title: title, season: 2026, episode: 296,
+                                         labels: labels, airDate: "2026-11-20", locale: locale)
+        }
+        XCTAssertEqual(name("Lakers vs Celtics", labels: "air_date"), "Lakers vs Celtics")
+        XCTAssertEqual(name("  ", labels: "air_date"), "Nov 20, 2026")
+        XCTAssertNil(name("Lakers vs Celtics", labels: nil))
+    }
 }

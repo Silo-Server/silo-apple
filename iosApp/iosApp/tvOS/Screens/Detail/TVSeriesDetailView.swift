@@ -477,7 +477,7 @@ struct TVSeriesDetailView: View {
         }
         // A date-labeled series (sports): the facts line below already shows
         // the air date, which replaces the synthetic season and episode.
-        if EpisodeLabel.airDate(labels: detail.episodeLabels, airDate: episode.airDate, locale: locale) != nil {
+        if EpisodeLabel.isNamedByDate(labels: detail.episodeLabels, airDate: episode.airDate) {
             return []
         }
         let season = AppLanguage.string(

@@ -20,7 +20,8 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         targetBitrateKbps: Int? = nil,
         fileSize: Int64? = 1_000_000_000,
         durationSeconds: Double? = 1358.176,
-        markerSegmentsJSON: String? = nil
+        markerSegmentsJSON: String? = nil,
+        extraFields: [String] = []
     ) throws -> OfflineManifest {
         var fields = [
             "\"download_id\": \"d1\"",
@@ -46,6 +47,7 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         if let targetBitrateKbps {
             fields.append("\"target_bitrate_kbps\": \(targetBitrateKbps)")
         }
+        fields += extraFields
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(
@@ -157,6 +159,27 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         // Ordinal into `version.audioTracks` — the same space the server's
         // `audio_track_index` uses.
         XCTAssertEqual(session.audioTrackIndex, 0)
+    }
+
+    // MARK: - Air-date labels
+
+    /// The manifest has no air date or labels; the download record stored
+    /// them from the request, so a downloaded game plays under its date.
+    func testDownloadedGameOfDateLabeledSeriesPlaysUnderItsDate() throws {
+        let manifest = try manifest(extraFields: [
+            "\"series_title\": \"NBA\"", "\"season_number\": 2026", "\"episode_number\": 296"
+        ])
+        func playback(labels: String?) -> PreparedPlayback {
+            OfflinePlaybackBuilder.makePreparedPlayback(
+                leafContentId: "leaf", manifest: manifest,
+                mediaURL: URL(fileURLWithPath: "/tmp/media.mkv"), subtitleURLs: [],
+                resumePosition: nil, episodeLabels: labels, airDate: "2026-11-20"
+            )
+        }
+        let date = try XCTUnwrap(DetailDateFormatting.abbreviatedDate("2026-11-20"))
+        XCTAssertEqual(playback(labels: "air_date").playerMetadata().episodeTag, date)
+        XCTAssertEqual(playback(labels: "air_date").displayTitle, "NBA • \(date) • Test Episode")
+        XCTAssertNotEqual(playback(labels: nil).playerMetadata().episodeTag, date, "a numbered series keeps its code")
     }
 
     // MARK: - Series track preference

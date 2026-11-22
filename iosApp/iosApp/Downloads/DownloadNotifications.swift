@@ -51,6 +51,11 @@ enum DownloadNotifier {
     private static func displayName(for record: DownloadRecord) -> String {
         let base = record.seriesTitle ?? record.shownTitle() ?? AppLanguage.string(.downloadsNotificationDefaultTitle)
         if let season = record.seasonNumber, let episode = record.episodeNumber {
+            // A date-labeled series (sports) names the game by its date.
+            if let date = EpisodeLabel.airDate(labels: record.episodeLabels, airDate: record.airDate) {
+                // "Nov 20, 2026 · NBA", the code-and-title shape of episode cards.
+                return AppLanguage.string(.detailEpisodeCardTitle(date, base))
+            }
             return AppLanguage.string(.downloadsNotificationEpisodeName(base, LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
         }
         return base

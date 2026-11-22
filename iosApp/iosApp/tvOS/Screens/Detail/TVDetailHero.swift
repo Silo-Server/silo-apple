@@ -662,7 +662,7 @@ enum TVHeroMetadata {
     private static func episodeNumberLabel(from detail: ItemDetail, locale: Locale) -> String? {
         // A date-labeled series (sports): the facts line shows the air date,
         // which replaces the synthetic season and episode numbers.
-        if EpisodeLabel.airDate(labels: detail.episodeLabels, airDate: detail.airDate, locale: locale) != nil {
+        if EpisodeLabel.isNamedByDate(labels: detail.episodeLabels, airDate: detail.airDate) {
             return nil
         }
         if let season = detail.seasonNumber, let episode = detail.episodeNumber, episode > 0 {

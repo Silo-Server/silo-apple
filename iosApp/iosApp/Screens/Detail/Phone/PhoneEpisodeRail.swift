@@ -198,9 +198,7 @@ private struct PhoneEpisodeCard: View {
                         .background(Circle().fill(Color.white.opacity(0.94)))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(
-                    Text(.detailPlaySeasonEpisode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))
-                )
+                .accessibilityLabel(playButtonAccessibilityLabel)
             }
         }
         #if os(iOS)
@@ -296,6 +294,18 @@ private struct PhoneEpisodeCard: View {
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background(Capsule().fill(Color.white))
+    }
+
+    /// "Play season 1, episode 2", or "Play Lakers vs Celtics" for a
+    /// date-labeled series (its date when untitled).
+    private var playButtonAccessibilityLabel: Text {
+        if let name = EpisodeLabel.datedSeriesName(
+            title: episode.title, season: episode.seasonNumber, episode: episode.episodeNumber, style: .spoken,
+            labels: episodeLabels, airDate: episode.airDate, locale: locale
+        ) {
+            return Text(.detailPlayEpisodeCode(name))
+        }
+        return Text(.detailPlaySeasonEpisode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))
     }
 
     private var accessibilityDescription: String {

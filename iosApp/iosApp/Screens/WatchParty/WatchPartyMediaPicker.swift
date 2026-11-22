@@ -124,7 +124,8 @@ private struct WatchPartyMediaChoice: Hashable {
                                     posterUrl: posterIsStill ? nil : item.posterUrl,
                                     posterThumbhash: posterIsStill ? nil : item.posterThumbhash,
                                     backdropUrl: backdropIsStill ? nil : item.backdropUrl,
-                                    backdropThumbhash: backdropIsStill ? nil : item.backdropThumbhash)
+                                    backdropThumbhash: backdropIsStill ? nil : item.backdropThumbhash,
+                                    episodeLabels: item.episodeLabels)
         }
         if let seriesTitle = item.seriesTitle, let season = item.seasonNumber, let episode = item.episodeNumber {
             lobbySubtitle = Self.lobbyLine(series: seriesTitle, season: season, episode: episode,
@@ -181,13 +182,15 @@ private struct WatchPartyMediaChoice: Hashable {
 
 private extension BrowseItem {
     /// A series row built from what an episode card already carries, enough
-    /// for the episode picker, which loads the seasons itself.
+    /// for the episode picker, which loads the seasons itself. The card's
+    /// `episodeLabels` keep a date-labeled league's episodes named by date.
     init(seriesId: String, title: String, posterUrl: String?, posterThumbhash: String?,
-         backdropUrl: String?, backdropThumbhash: String?) {
+         backdropUrl: String?, backdropThumbhash: String?, episodeLabels: String?) {
         self.init(
             contentId: seriesId, type: "series", title: title,
             seriesId: nil, seriesTitle: nil, seasonNumber: nil, episodeNumber: nil,
             itemSource: nil, positionSeconds: nil, durationSeconds: nil, progressUpdatedAt: nil,
+            episodeLabels: episodeLabels,
             year: nil, genres: nil, contentRating: nil,
             advisoryAge: nil, advisorySource: nil, status: nil,
             ratingImdb: nil, ratingTmdb: nil, ratingRtCritic: nil, ratingRtAudience: nil,
@@ -1082,10 +1085,11 @@ private struct WatchPartyEpisodePicker: View {
     /// "2. Pilot"; a date-labeled series (sports) leads with the title alone,
     /// or the air date when untitled, since its numbers are synthetic.
     private func phoneRowTitle(_ episode: EpisodeListItem) -> String {
-        if EpisodeLabel.labelsByAirDate(series.episodeLabels) {
-            if let title = episode.title, !title.isEmpty { return title }
-            return EpisodeLabel.text(season: episode.seasonNumber, episode: episode.episodeNumber,
-                                     labels: series.episodeLabels, airDate: episode.airDate)
+        if let name = EpisodeLabel.datedSeriesName(
+            title: episode.title, season: episode.seasonNumber, episode: episode.episodeNumber,
+            labels: series.episodeLabels, airDate: episode.airDate
+        ) {
+            return name
         }
         return AppLanguage.string(.watchPartyEpisodesNumbered(
             LocaleFormat.integer(episode.episodeNumber),
