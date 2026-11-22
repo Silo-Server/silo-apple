@@ -12246,9 +12246,9 @@ extension PlayerViewModel {
                   bandwidthEstimateKbps: request.bandwidthEstimateKbps,
                   bandwidthEstimateSource: request.bandwidthEstimateSource,
                   learnedLimit: request.learnedLimit,
-                  // A lowering reports what the playing plan received so far,
-                  // or what its missed start deadline measured.
-                  observedThroughputKbps: request.observedThroughputKbps ?? upstreamMeter.linkThroughputKbps,
+                  // The controller's figure alone: it attaches one only to a
+                  // lowering it reports as a slow link.
+                  observedThroughputKbps: request.observedThroughputKbps,
                   issuedByBufferingQuality: true
               ) else {
             // Restore quality is the viewer's answer: it goes out once the

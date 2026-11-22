@@ -412,11 +412,15 @@ final class BufferingQualityControllerTests: XCTestCase {
         // bitrate (bedroom Apple TV, 5 Mbps link): that is evidence. A picked
         // quality asks at the long stall, and Auto lowers without sending the
         // reader's share; it sends what the link delivered to both readers
-        // when the device counted it. A bound at the bitrate is no evidence.
+        // when the device counted it. When the device counted the plan's
+        // bitrate or more, the other reader took the share on a fast link:
+        // Auto still lowers, but reports no slow link. A bound at the
+        // bitrate is no evidence.
         let sharedLink: [(String, Int, Int?, [Harness.Recorded])] = [
             ("original", 4_500, nil, [.init(16_000, .pillShown(.prompt))]),
             ("auto", 4_500, nil, [.init(16_000, .replan(Self.autoLowering(44_100)))]),
             ("auto", 2_500, 4_900, [.init(16_000, .replan(Self.autoLowering(44_100, observed: 4_900)))]),
+            ("auto", 4_500, 70_000, [.init(16_000, .replan(Self.unsourcedLowering(44_100)))]),
             ("original", 63_000, nil, []),
         ]
         for (quality, bound, link, expected) in sharedLink {
