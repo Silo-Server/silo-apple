@@ -107,7 +107,7 @@ struct ServerListView: View {
                 .buttonStyle(TVSettingsPaneRowStyle())
                 .focused($focusedRow, equals: .add)
 
-                TVSettingsFooter("Select the pencil to rename a saved server, or the trash icon to remove it.")
+                TVSettingsFooter(.serversManageRenameRemoveHint)
             }
             .frame(maxWidth: 1080, alignment: .leading)
             .padding(.bottom, 64)
@@ -136,7 +136,9 @@ struct ServerListView: View {
             .buttonStyle(TVSettingsPaneRowStyle())
             .focused($focusedRow, equals: .server(entry.id))
             .accessibilityHint(
-                entry.id == registry.activeServerId ? "Current server" : "Switch to this server"
+                Text(entry.id == registry.activeServerId
+                    ? LocalizedStringResource.serversRowCurrentHint
+                    : .serversRowSwitchHint)
             )
 
             Button {
@@ -149,7 +151,7 @@ struct ServerListView: View {
             .buttonStyle(TVSettingsPaneRowStyle())
             .frame(width: 92)
             .focused($focusedRow, equals: .rename(entry.id))
-            .accessibilityLabel("Rename \(entry.displayName)")
+            .accessibilityLabel(Text(.serversRenameAudio(entry.displayName)))
 
             Button {
                 removeTarget = entry
@@ -266,7 +268,7 @@ struct ServerListView: View {
             Button {
                 renameTarget = entry
             } label: {
-                Label("Rename", systemImage: "pencil")
+                Label(.serversRenameAction, systemImage: "pencil")
             }
             .tint(.siloFieldTint)
         }
@@ -274,7 +276,7 @@ struct ServerListView: View {
             Button {
                 renameTarget = entry
             } label: {
-                Label("Rename", systemImage: "pencil")
+                Label(.serversRenameAction, systemImage: "pencil")
             }
             Button(role: .destructive) {
                 Task { await router.confirmRemoveServer(entry.id) }

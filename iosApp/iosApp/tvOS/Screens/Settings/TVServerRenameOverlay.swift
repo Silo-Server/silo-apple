@@ -9,6 +9,7 @@ struct TVServerRenameOverlay: View {
     let dismiss: () -> Void
 
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
     @State private var draft: String
     @FocusState private var focusedControl: Control?
 
@@ -38,7 +39,7 @@ struct TVServerRenameOverlay: View {
                 }
                 .frame(width: rowWidth)
 
-                TextField(ServerRename.placeholder(for: entry), text: $draft)
+                TextField(ServerRename.placeholder(for: entry, locale: locale), text: $draft)
                     .font(.system(size: 26))
                     .submitLabel(.done)
                     .frame(width: rowWidth)
@@ -47,11 +48,11 @@ struct TVServerRenameOverlay: View {
                     .onSubmit { focusedControl = .save }
 
                 HStack(spacing: Self.buttonSpacing) {
-                    actionButton("Cancel", control: .cancel, action: dismiss)
+                    actionButton(.commonCancel, control: .cancel, action: dismiss)
                     if entry.nickname != nil {
-                        actionButton("Use Server Name", control: .useServerName) { save(nil) }
+                        actionButton(.serversRenameUseServerName, control: .useServerName) { save(nil) }
                     }
-                    actionButton("Save", control: .save) { save(draft) }
+                    actionButton(.commonSave, control: .save) { save(draft) }
                 }
             }
             .padding(.horizontal, 48)
@@ -71,7 +72,7 @@ struct TVServerRenameOverlay: View {
         .onAppear { focusedControl = .name }
     }
 
-    private func actionButton(_ title: String, control: Control, action: @escaping () -> Void) -> some View {
+    private func actionButton(_ title: LocalizedStringResource, control: Control, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 24, weight: .semibold))

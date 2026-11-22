@@ -532,14 +532,14 @@ struct TVSettingsView: View {
             TVSettingsSectionHeader(.settingsActiveServerHeaderTv)
 
             if let server = ServerRegistry.shared.activeServer {
-                TVSettingsPickerRow(title: "Name", value: .verbatim(server.displayName)) {
+                TVSettingsPickerRow(title: .settingsActiveServerName, value: .verbatim(server.displayName)) {
                     presentRename(server)
                 }
                 .focused($detailFocus, equals: .top)
-                .accessibilityHint("Rename this server")
+                .accessibilityHint(Text(.settingsActiveServerRenameHint))
 
                 if server.nickname != nil, let serverName = server.serverName {
-                    TVSettingsInfoRow(title: "Server Name", value: .verbatim(serverName))
+                    TVSettingsInfoRow(title: .settingsActiveServerServerName, value: .verbatim(serverName))
                 }
             } else {
                 TVSettingsInfoRow(title: .settingsActiveServerServer, value: .settingsActiveServerNotConfigured)
