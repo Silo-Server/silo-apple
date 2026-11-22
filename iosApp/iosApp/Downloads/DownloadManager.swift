@@ -311,6 +311,10 @@ final class DownloadManager {
     /// An older reply that lands after a newer one is dropped.
     @ObservationIgnored private var capabilityReadsStarted: UInt64 = 0
     @ObservationIgnored private var newestCapabilityReadStored: UInt64 = 0
+    /// An app-active pass stopped before its reconcile and sync because
+    /// downloads weren't usable. The title page whose read makes them usable
+    /// runs that work, once.
+    @ObservationIgnored private var syncSkippedForCapability = false
     var canDownloadSeason: Bool { downloadsEnabled && capability?.seasonDownload == true }
     var canMonitorSeries: Bool { downloadsEnabled && capability?.seriesMonitoring == true }
 
@@ -829,7 +833,17 @@ final class DownloadManager {
         if scopeLoadToken == loadToken {
             // Exactly one waiter installs this snapshot. Later waiters observe
             // the already-hydrated `file` instead of assigning it a second time.
+            // A reload of the installed scope (it has no records and no
+            // capability yet, so activation loads it again) keeps a
+            // capability read while it loaded.
+            let installed = fileServerId == serverId && fileAccountId == accountId && fileProfileId == profileId
+                ? file : nil
             file = loaded.file
+            if let installed, let readAt = installed.capabilityFetchedAt,
+               readAt > (file.capabilityFetchedAt ?? .distantPast) {
+                file.capability = installed.capability
+                file.capabilityFetchedAt = readAt
+            }
             fileServerId = serverId
             fileAccountId = accountId
             fileProfileId = profileId
@@ -1214,13 +1228,18 @@ final class DownloadManager {
     func onAppActive(onCapabilityRefreshed: (() -> Void)? = nil) async {
         guard await activateScopeIfNeeded() else {
             Self.logger.notice("Downloads app-active pass stopped: no downloads scope")
+            syncSkippedForCapability = true
             return
         }
         sessionDelegate.refreshProgressDelivery()
         await refreshCapability()
         Self.logger.notice("Downloads app-active pass: capability \(self.downloadsEnabled ? "usable" : "unusable", privacy: .public)")
         onCapabilityRefreshed?()
-        guard downloadsEnabled else { return }
+        guard downloadsEnabled else {
+            syncSkippedForCapability = true
+            return
+        }
+        syncSkippedForCapability = false
         await syncAfterUsableCapability()
     }
 
@@ -1351,14 +1370,14 @@ final class DownloadManager {
         guard await activateScopeIfNeeded(),
               Self.capabilityReadIsDue(hasAnswer: file.capability != nil,
                                        fetchedAt: file.capabilityFetchedAt, now: Date()) else { return }
-        let wasUsable = downloadsEnabled
         await refreshCapability()
-        // The app-active pass that could not read the capability stopped
-        // before its reconcile and sync. They run outside the page's task, so
-        // leaving the page doesn't cut them short. Each step captures the
-        // current scope's owner itself, and they already run alongside the
-        // passes that push and background wakes start.
-        guard !wasUsable, downloadsEnabled else { return }
+        // An app-active pass that found downloads unusable stopped before its
+        // reconcile and sync. Run them once, now that they're usable; a pass
+        // still waiting on its own read runs them itself. They run outside
+        // the page's task, so leaving the page doesn't cut them short, and
+        // each step captures the current scope's owner itself.
+        guard downloadsEnabled, syncSkippedForCapability else { return }
+        syncSkippedForCapability = false
         Task { await self.syncAfterUsableCapability() }
     }
 
