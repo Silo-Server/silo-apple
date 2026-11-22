@@ -764,6 +764,9 @@ final class BufferingQualityController {
     /// unless the device's own receive count over the same time shows the
     /// link carried the delivered bitrate: then a reader that got less shared
     /// a fast link with another reader of the source, and no limit helps.
+    /// That count includes the device's other traffic, so it can also veto a
+    /// measured rate below the bitrate; that errs toward learning nothing,
+    /// which a real slow link corrects at its next stall.
     private func reportsSlowLink(_ plan: Plan) -> Bool {
         guard arrivesSlowly(plan) else { return false }
         guard let delivered = plan.deliveredKbps, let link = linkThroughputKbps() else { return true }

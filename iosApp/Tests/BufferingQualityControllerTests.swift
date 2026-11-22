@@ -489,7 +489,8 @@ final class BufferingQualityControllerTests: XCTestCase {
     /// too quickly to be timed (nothing measured) or above the bitrate; either
     /// way the step-down estimate goes out without a source, which the server
     /// plans under and never records. Picking Lower on the prompt follows the
-    /// same rule.
+    /// same rule. It holds with no device count (server HLS) and with one,
+    /// which on direct play with no shared reader equals the reader's rate.
     func testAfterPlaybackAStallClaimsTheLinkOnlyOnSlowTransfer() {
         let cases: [(measured: Int?, expected: Controller.ReplanRequest)] = [
             (nil, Self.unsourcedLowering(44_100)),
@@ -497,22 +498,28 @@ final class BufferingQualityControllerTests: XCTestCase {
             (20_000, Self.autoLowering(44_100, observed: 20_000)),
         ]
         for (measured, expected) in cases {
-            let automatic = Harness(mode: .always)
-            automatic.startPlaying(Self.plan("p1"))
-            automatic.measuredKbps = measured
-            automatic.at(125_000) { $0.waiting() }
-            automatic.clock.advance(to: 131_000)
-            XCTAssertEqual(automatic.shown, [.init(131_000, .replan(expected))], "always \(measured as Any)")
+            for link in [nil, measured] {
+                let automatic = Harness(mode: .always)
+                automatic.startPlaying(Self.plan("p1"))
+                automatic.measuredKbps = measured
+                automatic.linkKbps = link
+                automatic.at(125_000) { $0.waiting() }
+                automatic.clock.advance(to: 131_000)
+                XCTAssertEqual(
+                    automatic.shown, [.init(131_000, .replan(expected))], "always \(measured as Any) \(link as Any)"
+                )
 
-            let asked = Harness(mode: .ask)
-            asked.startPlaying(Self.plan("p1"))
-            asked.measuredKbps = measured
-            asked.at(125_000) { $0.waiting() }
-            asked.at(133_000) { $0.selectLower() }
-            XCTAssertEqual(asked.shown, [
-                .init(131_000, .pillShown(.prompt)),
-                .init(133_000, .replan(expected)),
-            ], "ask \(measured as Any)")
+                let asked = Harness(mode: .ask)
+                asked.startPlaying(Self.plan("p1"))
+                asked.measuredKbps = measured
+                asked.linkKbps = link
+                asked.at(125_000) { $0.waiting() }
+                asked.at(133_000) { $0.selectLower() }
+                XCTAssertEqual(asked.shown, [
+                    .init(131_000, .pillShown(.prompt)),
+                    .init(133_000, .replan(expected)),
+                ], "ask \(measured as Any) \(link as Any)")
+            }
         }
     }
 
