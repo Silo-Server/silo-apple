@@ -289501,6 +289501,486 @@
         }
       }
     },
+    "error.direct_device_limit" : {
+      "comment" : "Error message shown when the server answers with the v2 problem type `direct_device_limit` (server title: \"Direct device limit\"). Clients show it instead of the server's English detail in a translated interface, so it must make sense on its own, without the request's specifics.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "بلغ هذا الحساب الحد الأقصى لعدد الأجهزة المسموح بها للاتصالات المباشرة."
+          }
+        },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Този акаунт достигна ограничението си за устройства с директни връзки."
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aquest compte ha arribat al límit de dispositius per a connexions directes."
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tento účet dosáhl limitu zařízení pro přímá připojení."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne konto har nået sin grænse for antal enheder med direkte forbindelser."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieses Konto hat die maximale Anzahl an Geräten für direkte Verbindungen erreicht."
+          }
+        },
+        "el" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Αυτός ο λογαριασμός έχει φτάσει το όριο συσκευών για απευθείας συνδέσεις."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This account has reached its limit of devices for direct connections."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esta cuenta alcanzó su límite de dispositivos para conexiones directas."
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Selle konto otseühendusega seadmete arv on jõudnud piirini."
+          }
+        },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tämä tili on saavuttanut suorien yhteyksien laitteiden enimmäismäärän."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce compte a atteint sa limite d’appareils pour les connexions directes."
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "החשבון הזה הגיע למגבלת המכשירים לחיבורים ישירים."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "यह खाता डायरेक्ट कनेक्शन के लिए डिवाइसों की सीमा तक पहुँच गया है।"
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovaj je račun dosegnuo ograničenje broja uređaja za izravne veze."
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ez a fiók elérte a közvetlen kapcsolatokhoz engedélyezett eszközök számának korlátját."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Akun ini telah mencapai batas perangkat untuk koneksi langsung."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo account ha raggiunto il limite di dispositivi per le connessioni dirette."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このアカウントはダイレクト接続できるデバイス数の上限に達しました。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 계정은 직접 연결에 사용할 수 있는 기기 수 한도에 도달했어요."
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ši paskyra pasiekė tiesioginėms jungtims leidžiamą įrenginių ribą."
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Šis konts ir sasniedzis tiešajiem savienojumiem atļauto ierīču skaita ierobežojumu."
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Akaun ini telah mencapai had peranti untuk sambungan terus."
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne kontoen har nådd grensen for antall enheter med direkte tilkobling."
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dit account heeft het maximumaantal apparaten voor directe verbindingen bereikt."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "To konto osiągnęło limit urządzeń dla połączeń bezpośrednich."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esta conta atingiu o limite de dispositivos para conexões diretas."
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esta conta atingiu o limite de dispositivos para ligações diretas."
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Acest cont a atins limita de dispozitive pentru conexiuni directe."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Для этого аккаунта достигнут лимит устройств с прямым подключением."
+          }
+        },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tento účet dosiahol limit zariadení pre priame pripojenia."
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta račun je dosegel omejitev števila naprav za neposredne povezave."
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Det här kontot har nått sin gräns för antal enheter med direktanslutning."
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "บัญชีนี้มีอุปกรณ์สำหรับการเชื่อมต่อโดยตรงครบจำนวนที่กำหนดแล้ว"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu hesap, doğrudan bağlantılar için cihaz sınırına ulaştı."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Цей обліковий запис досяг ліміту пристроїв для прямих з’єднань."
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tài khoản này đã đạt giới hạn số thiết bị dùng kết nối trực tiếp."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此账户的直连设备数量已达上限。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此帳號用於直接連線的裝置數量已達上限。"
+          }
+        }
+      }
+    },
+    "error.direct_node_key_conflict" : {
+      "comment" : "Error message shown when the server answers with the v2 problem type `direct_node_key_conflict` (server title: \"Direct node key conflict\"). Clients show it instead of the server's English detail in a translated interface, so it must make sense on its own, without the request's specifics.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "يستخدم جهاز آخر مفتاح الاتصال هذا بالفعل. حاول مرة أخرى."
+          }
+        },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Друго устройство вече използва този ключ за връзка. Опитайте отново."
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un altre dispositiu ja utilitza aquesta clau de connexió. Torna-ho a provar."
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tento klíč připojení už používá jiné zařízení. Zkuste to znovu."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En anden enhed bruger allerede denne forbindelsesnøgle. Prøv igen."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ein anderes Gerät verwendet diesen Verbindungsschlüssel bereits. Versuche es erneut."
+          }
+        },
+        "el" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Μια άλλη συσκευή χρησιμοποιεί ήδη αυτό το κλειδί σύνδεσης. Δοκιμάστε ξανά."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Another device already uses this connection key. Try again."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otro dispositivo ya usa esta clave de conexión. Vuelve a intentarlo."
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Seda ühendusvõtit kasutab juba teine seade. Proovige uuesti."
+          }
+        },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toinen laite käyttää jo tätä yhteysavainta. Yritä uudelleen."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un autre appareil utilise déjà cette clé de connexion. Réessayez."
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "מכשיר אחר כבר משתמש במפתח החיבור הזה. אפשר לנסות שוב."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "कोई दूसरा डिवाइस पहले से यह कनेक्शन कुंजी इस्तेमाल कर रहा है। फिर से कोशिश करें।"
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drugi uređaj već koristi ovaj ključ veze. Pokušajte ponovno."
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Egy másik eszköz már használja ezt a kapcsolatkulcsot. Próbálja újra."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Perangkat lain sudah menggunakan kunci koneksi ini. Coba lagi."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un altro dispositivo usa già questa chiave di connessione. Riprova."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この接続キーはすでに別のデバイスで使用されています。もう一度お試しください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "다른 기기에서 이미 이 연결 키를 사용하고 있어요. 다시 시도해 주세요."
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kitas įrenginys jau naudoja šį jungties raktą. Bandykite dar kartą."
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Šo savienojuma atslēgu jau izmanto cita ierīce. Mēģiniet vēlreiz."
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Peranti lain sudah menggunakan kunci sambungan ini. Cuba lagi."
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En annen enhet bruker allerede denne tilkoblingsnøkkelen. Prøv igjen."
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Een ander apparaat gebruikt deze verbindingssleutel al. Probeer het opnieuw."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inne urządzenie używa już tego klucza połączenia. Spróbuj ponownie."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Outro dispositivo já usa esta chave de conexão. Tente novamente."
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Outro dispositivo já usa esta chave de ligação. Tente novamente."
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alt dispozitiv folosește deja această cheie de conexiune. Încercați din nou."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот ключ подключения уже использует другое устройство. Повторите попытку."
+          }
+        },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tento kľúč pripojenia už používa iné zariadenie. Skúste to znova."
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta ključ povezave že uporablja druga naprava. Poskusite znova."
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En annan enhet använder redan den här anslutningsnyckeln. Försök igen."
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "มีอุปกรณ์อื่นใช้คีย์การเชื่อมต่อนี้อยู่แล้ว โปรดลองอีกครั้ง"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu bağlantı anahtarını zaten başka bir cihaz kullanıyor. Tekrar deneyin."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Інший пристрій уже використовує цей ключ з’єднання. Спробуйте ще раз."
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Một thiết bị khác đã dùng khóa kết nối này. Vui lòng thử lại."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另一台设备已在使用此连接密钥。请重试。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "另一部裝置已在使用此連線金鑰。請再試一次。"
+          }
+        }
+      }
+    },
     "error.email_in_use" : {
       "comment" : "Error message shown when the server answers with the v2 problem type `email_in_use` (server title: \"Email in use\"). Clients show it instead of the server's English detail in a translated interface, so it must make sense on its own, without the request's specifics.",
       "extractionState" : "manual",
@@ -291897,6 +292377,246 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此項目由環境設定。請在該處變更，然後重新啟動受影響的服務。"
+          }
+        }
+      }
+    },
+    "error.field.missing" : {
+      "comment" : "Error shown next to or about one request field when the server reports the field-error code `missing`. Clients show it instead of the server's English detail in a translated interface.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "هذه القيمة مفقودة."
+          }
+        },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Тази стойност липсва."
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Falta aquest valor."
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tato hodnota chybí."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne værdi mangler."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Wert fehlt."
+          }
+        },
+        "el" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Αυτή η τιμή λείπει."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This value is missing."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Falta este valor."
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "See väärtus puudub."
+          }
+        },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tämä arvo puuttuu."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cette valeur est manquante."
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "הערך הזה חסר."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "यह वैल्यू मौजूद नहीं है।"
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ova vrijednost nedostaje."
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ez az érték hiányzik."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nilai ini tidak ada."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo valore è mancante."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この値がありません。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "값이 누락됐어요."
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trūksta šios reikšmės."
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Šīs vērtības trūkst."
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nilai ini tiada."
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne verdien mangler."
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deze waarde ontbreekt."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak tej wartości."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este valor está faltando."
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Este valor está em falta."
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Această valoare lipsește."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Значение отсутствует."
+          }
+        },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Táto hodnota chýba."
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta vrednost manjka."
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Värdet saknas."
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ไม่มีค่านี้"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu değer eksik."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Це значення відсутнє."
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Thiếu giá trị này."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "缺少此值。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "缺少此值。"
           }
         }
       }
@@ -298377,6 +299097,246 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此播放工作階段已結束。請重新開始播放。"
+          }
+        }
+      }
+    },
+    "error.playback_transport_superseded" : {
+      "comment" : "Error message shown when the server answers with the v2 problem type `playback_transport_superseded` (server title: \"Playback transport superseded\"): a media request came from a playlist that a playback change (such as a new subtitle or quality) replaced, while the playback session goes on. Clients show it instead of the server's English detail in a translated interface, so it must make sense on its own, without the request's specifics.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "تم استبدال هذا البث. يستمر التشغيل على البث الحالي."
+          }
+        },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Този поток беше заменен. Възпроизвеждането продължава с текущия поток."
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aquesta transmissió s’ha substituït. La reproducció continua a la transmissió actual."
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tento stream byl nahrazen. Přehrávání pokračuje v aktuálním streamu."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne stream er blevet erstattet. Afspilningen fortsætter på den aktuelle."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Stream wurde ersetzt. Die Wiedergabe läuft mit dem aktuellen Stream weiter."
+          }
+        },
+        "el" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Αυτή η ροή αντικαταστάθηκε. Η αναπαραγωγή συνεχίζεται στην τρέχουσα ροή."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This stream was replaced. Playback continues on the current one."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se reemplazó esta transmisión. La reproducción continúa en la actual."
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "See voog asendati. Esitus jätkub praeguses voos."
+          }
+        },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tämä suoratoisto on korvattu. Toisto jatkuu nykyisessä suoratoistossa."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ce flux a été remplacé. La lecture se poursuit sur le flux actuel."
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ההזרמה הזו הוחלפה. ההפעלה ממשיכה בהזרמה הנוכחית."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "इस स्ट्रीम की जगह एक नई स्ट्रीम ने ले ली है। प्लेबैक मौजूदा स्ट्रीम पर जारी है।"
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ovaj je stream zamijenjen. Reprodukcija se nastavlja na trenutačnom."
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ezt a streamet egy újabb váltotta fel. A lejátszás az aktuális streamen folytatódik."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stream ini telah diganti. Pemutaran berlanjut di stream saat ini."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo stream è stato sostituito. La riproduzione continua su quello attuale."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "このストリームは置き換えられました。現在のストリームで再生を続行しています。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "이 스트림이 다른 스트림으로 교체됐어요. 현재 스트림에서 계속 재생돼요."
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Šis srautas pakeistas kitu. Atkūrimas tęsiamas dabartiniu srautu."
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Šī straume tika aizstāta. Atskaņošana turpinās pašreizējā straumē."
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Strim ini telah diganti. Main balik diteruskan pada strim semasa."
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne strømmen er erstattet. Avspillingen fortsetter på den gjeldende strømmen."
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deze stream is vervangen. Het afspelen gaat verder op de huidige stream."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ten strumień został zastąpiony. Odtwarzanie trwa w bieżącym strumieniu."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esta transmissão foi substituída. A reprodução continua na atual."
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esta transmissão foi substituída. A reprodução continua na transmissão atual."
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Acest stream a fost înlocuit. Redarea continuă pe streamul curent."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот поток был заменён. Воспроизведение продолжается в текущем потоке."
+          }
+        },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tento stream bol nahradený. Prehrávanie pokračuje v aktuálnom streame."
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta pretok je bil zamenjan. Predvajanje se nadaljuje s trenutnim pretokom."
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Den här streamen har ersatts. Uppspelningen fortsätter på den aktuella."
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "มีการแทนที่สตรีมนี้แล้ว การเล่นยังคงดำเนินต่อในสตรีมปัจจุบัน"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bu akışın yerini yenisi aldı. Oynatma geçerli akışta devam ediyor."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Цей потік замінено. Відтворення триває в поточному потоці."
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Luồng này đã được thay thế. Nội dung vẫn tiếp tục phát trên luồng hiện tại."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此串流已被替换。播放将在当前串流上继续。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此串流已被取代。播放會在目前的串流上繼續。"
           }
         }
       }
@@ -691052,235 +692012,235 @@
         "ar" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "تُستخدم على بيانات الهاتف المحمول والشبكات محدودة البيانات، مثل نقطة اتصال الهاتف."
+            "value" : "تُستخدم على بيانات الهاتف المحمول والشبكات محدودة البيانات، مثل نقطة اتصال الهاتف. تقتصر على 2 Mbps عند تفعيل «وضع البيانات المنخفضة» أو «موفّر البيانات»."
           }
         },
         "bg" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Използва се при мобилни данни и в мрежи с ограничен трафик, например точка за достъп от телефон."
+            "value" : "Използва се при мобилни данни и в мрежи с ограничен трафик, например точка за достъп от телефон. Ограничава се до 2 Mbps, когато „Режим с малко данни“ или „Икономия на данни“ е включен."
           }
         },
         "ca" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "S’utilitza amb dades mòbils i en xarxes amb límit de dades, com ara un punt d’accés del telèfon."
+            "value" : "S’utilitza amb dades mòbils i en xarxes amb límit de dades, com ara un punt d’accés del telèfon. Es limita a 2 Mbps quan el Mode de dades reduïdes o l’Economitzador de dades està activat."
           }
         },
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Používá se při mobilních datech a v sítích s měřeným připojením, například při sdílení připojení z telefonu."
+            "value" : "Používá se při mobilních datech a v sítích s měřeným připojením, například při sdílení připojení z telefonu. Když je zapnutý režim úspory dat nebo spořič dat, je omezena na 2 Mbps."
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Bruges på mobildata og netværk med datagrænse, f.eks. et hotspot på en telefon."
+            "value" : "Bruges på mobildata og forbrugsafregnede netværk, f.eks. et hotspot på en telefon. Begrænses til 2 Mbps, når Lav datatilstand eller Datasparefunktion er slået til."
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wird bei mobilen Daten und getakteten Netzwerken verwendet, etwa einem Smartphone-Hotspot."
+            "value" : "Wird bei mobilen Daten und getakteten Netzwerken verwendet, etwa einem Smartphone-Hotspot. Auf 2 Mbps begrenzt, wenn der Modus „Geringer Datenverbrauch“ oder der Datensparmodus eingeschaltet ist."
           }
         },
         "el" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Χρησιμοποιείται σε δεδομένα κινητής τηλεφωνίας και σε δίκτυα με περιορισμένα δεδομένα, όπως ένα σημείο πρόσβασης κινητού τηλεφώνου."
+            "value" : "Χρησιμοποιείται σε δεδομένα κινητής τηλεφωνίας και σε δίκτυα με περιορισμένα δεδομένα, όπως ένα σημείο πρόσβασης κινητού τηλεφώνου. Περιορίζεται στα 2 Mbps όταν είναι ενεργή η «Λειτουργία χαμηλών δεδομένων» ή η «Εξοικονόμηση δεδομένων»."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Used on mobile data and metered networks, such as a phone hotspot."
+            "value" : "Used on mobile data and metered networks, such as a phone hotspot. Capped at 2 Mbps when Low Data Mode or Data Saver is on."
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Se usa con datos móviles y en redes de uso medido, como un punto de acceso del teléfono."
+            "value" : "Se usa con datos móviles y en redes de uso medido, como un punto de acceso del teléfono. Se limita a 2 Mbps cuando el Modo de datos reducidos o el Ahorro de datos están activados."
           }
         },
         "et" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Kasutatakse mobiilse andmeside ja mahupiiranguga võrkude puhul, näiteks telefoni kuumkoha kaudu."
+            "value" : "Kasutatakse mobiilse andmeside ja mahupiiranguga võrkude puhul, näiteks telefoni kuumkoha kaudu. Kui režiim „Low Data Mode“ või „Data Saver“ on sees, on piiriks 2 Mbps."
           }
         },
         "fi" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Käytetään mobiilidatalla ja käytön mukaan laskutettavissa verkoissa, kuten puhelimen yhteyspisteessä."
+            "value" : "Käytetään mobiilidatalla ja käytön mukaan laskutettavissa verkoissa, kuten puhelimen yhteyspisteessä. Rajoitettu 2 Mbps:iin, kun Vähäisen datan tila tai Datan säästö on päällä."
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Utilisée sur les données mobiles et les réseaux limités, comme un partage de connexion depuis un téléphone."
+            "value" : "Utilisée sur les données mobiles et les réseaux à données limitées, comme un partage de connexion depuis un téléphone. Limitée à 2 Mbit/s lorsque le Mode données réduites ou l’Économiseur de données est activé."
           }
         },
         "he" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "משמשת בחבילת גלישה ניידת וברשתות עם חיוב לפי שימוש, כמו נקודה חמה בטלפון."
+            "value" : "משמשת בחבילת גלישה ניידת וברשתות עם חיוב לפי שימוש, כמו נקודה חמה בטלפון. מוגבלת ל-2 Mbps כשהאפשרות ”מצב נתונים מופחתים” או ”חוסך נתונים” מופעלת."
           }
         },
         "hi" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "मोबाइल डेटा और मीटर्ड नेटवर्क, जैसे फ़ोन हॉटस्पॉट, पर इस्तेमाल होती है।"
+            "value" : "मोबाइल डेटा और मीटर्ड नेटवर्क, जैसे फ़ोन हॉटस्पॉट, पर इस्तेमाल होती है। Low Data Mode या Data Saver चालू होने पर यह 2 Mbps तक सीमित रहती है।"
           }
         },
         "hr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Koristi se na mobilnim podacima i mrežama s ograničenim prometom, poput žarišne točke telefona."
+            "value" : "Koristi se na mobilnim podacima i mrežama s ograničenim prometom, poput žarišne točke telefona. Ograničeno na 2 Mbps kada je uključen način rada s malo podataka ili štednja podatkovnog prometa."
           }
         },
         "hu" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mobiladat-kapcsolaton és forgalomkorlátos hálózatokon, például telefonos hotspoton használatos."
+            "value" : "Mobiladat-kapcsolaton és forgalomkorlátos hálózatokon, például telefonos hotspoton használatos. Legfeljebb 2 Mbps, ha az Alacsony adatforgalmú mód vagy az Adatforgalom-csökkentő be van kapcsolva."
           }
         },
         "id" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Digunakan pada data seluler dan jaringan terukur, seperti hotspot ponsel."
+            "value" : "Digunakan pada data seluler dan jaringan berkuota, seperti hotspot ponsel. Dibatasi hingga 2 Mbps saat Mode Data Rendah atau Penghemat Data aktif."
           }
         },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usata con i dati mobili e sulle reti a consumo, come l’hotspot di un telefono."
+            "value" : "Usata con i dati mobili e sulle reti a consumo, come l’hotspot di un telefono. Limitata a 2 Mbps quando è attiva la modalità Dati ridotti o Risparmio dati."
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "モバイルデータ通信や、スマートフォンのテザリングなどの従量制ネットワークで使用されます。"
+            "value" : "モバイルデータ通信や、スマートフォンのテザリングなどの従量制ネットワークで使用されます。省データモードまたはデータセーバーがオンの場合は2Mbpsに制限されます。"
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "모바일 데이터와 휴대폰 핫스팟 같은 데이터 요금제 네트워크에서 사용돼요."
+            "value" : "모바일 데이터와 휴대폰 핫스팟 같은 데이터 요금제 네트워크에서 사용돼요. 저데이터 모드나 데이터 절약 모드가 켜져 있으면 최대 2 Mbps로 제한돼요."
           }
         },
         "lt" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Naudojama mobiliajame duomenų ryšyje ir matuojamuose tinkluose, pavyzdžiui, telefono prieigos taške."
+            "value" : "Naudojama mobiliajame duomenų ryšyje ir matuojamuose tinkluose, pavyzdžiui, telefono prieigos taške. Ribojama iki 2 Mbps, kai įjungtas mažo duomenų kiekio arba duomenų taupymo režimas."
           }
         },
         "lv" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tiek izmantota mobilo datu savienojumā un tīklos ar datu limitu, piemēram, tālruņa tīklājā."
+            "value" : "Tiek izmantota mobilo datu savienojumā un tīklos ar ierobežotu datu apjomu, piemēram, tālruņa tīklājā. Ja ir ieslēgts režīms „Low Data Mode” vai „Data Saver”, ierobežota līdz 2 Mbps."
           }
         },
         "ms" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Digunakan pada data mudah alih dan rangkaian bermeter, seperti tempat liputan telefon."
+            "value" : "Digunakan pada data mudah alih dan rangkaian bermeter, seperti tempat liputan telefon. Dihadkan kepada 2 Mbps apabila Mod Data Rendah atau Penjimat Data dihidupkan."
           }
         },
         "nb" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brukes på mobildata og nettverk med databegrensning, for eksempel når en telefon deler internett."
+            "value" : "Brukes på mobildata og forbruksmålte nettverk, for eksempel når en telefon deler internett. Begrenses til 2 Mbps når Modus for lite data eller Datasparing er på."
           }
         },
         "nl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Gebruikt bij mobiele data en netwerken met een datalimiet, zoals een hotspot van je telefoon."
+            "value" : "Gebruikt bij mobiele data en netwerken met een datalimiet, zoals een hotspot van je telefoon. Beperkt tot 2 Mbps als Low Data Mode of Data Saver aan staat."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Używana przy danych komórkowych i w sieciach z limitem danych, np. w hotspocie telefonu."
+            "value" : "Używana przy danych komórkowych i w sieciach z limitem danych, np. w hotspocie telefonu. Maksymalnie 2 Mbps, gdy włączony jest tryb niskiego zużycia danych lub oszczędzanie danych."
           }
         },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Usada em dados móveis e redes limitadas, como o ponto de acesso de um celular."
+            "value" : "Usada em dados móveis e redes limitadas, como o ponto de acesso de um celular. Limitada a 2 Mbps quando o Modo Dados Reduzidos ou a Economia de dados está ativado."
           }
         },
         "pt-PT" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Utilizada com dados móveis e em redes com limite de dados, como a partilha de ligação de um telemóvel."
+            "value" : "Utilizada com dados móveis e em redes com tráfego limitado, como a partilha de ligação de um telemóvel. Limitada a 2 Mbps quando o Modo de poucos dados ou a Poupança de dados estão ativos."
           }
         },
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Se folosește pe date mobile și pe rețele contorizate, cum ar fi un hotspot de pe telefon."
+            "value" : "Se folosește pe date mobile și pe rețele contorizate, cum ar fi un hotspot de pe telefon. Este limitată la 2 Mbps când este activată opțiunea „Mod date reduse” sau „Economizor de date”."
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Используется в мобильной сети и в сетях с лимитным трафиком, например при раздаче интернета с телефона."
+            "value" : "Используется в мобильной сети и в сетях с лимитным трафиком, например при раздаче интернета с телефона. Если включён «Режим экономии данных» или «Экономия трафика», качество ограничено 2 Мбит/с."
           }
         },
         "sk" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Používa sa pri mobilných dátach a sieťach s meraným objemom dát, napríklad pri hotspote telefónu."
+            "value" : "Používa sa pri mobilných dátach a sieťach s meraným objemom dát, napríklad pri hotspote telefónu. Keď je zapnutý Režim nízkej spotreby dát alebo Šetrič dát, je obmedzené na 2 Mbps."
           }
         },
         "sl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Uporablja se pri mobilnih podatkih in omrežjih z omejenim prenosom podatkov, na primer pri dostopni točki telefona."
+            "value" : "Uporablja se pri mobilnih podatkih in omrežjih z omejenim prenosom podatkov, na primer pri dostopni točki telefona. Kakovost je omejena na 2 Mbps, ko je vklopljena možnost Način nizke porabe podatkov ali Varčevanje s podatki."
           }
         },
         "sv" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Används med mobildata och nätverk med datapriser, till exempel en surfzon från en telefon."
+            "value" : "Används med mobildata och nätverk med datapriser, till exempel en surfzon från en telefon. Begränsas till 2 Mbps när Snål dataanvändning eller Databesparing är på."
           }
         },
         "th" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "ใช้กับข้อมูลมือถือและเครือข่ายที่คิดค่าบริการตามปริมาณ เช่น ฮอตสปอตของโทรศัพท์"
+            "value" : "ใช้กับข้อมูลมือถือและเครือข่ายแบบจำกัดปริมาณข้อมูล เช่น ฮอตสปอตของโทรศัพท์ จำกัดไว้ที่ 2 Mbps เมื่อเปิด “โหมดข้อมูลต่ำ” หรือ “โปรแกรมประหยัดอินเทอร์เน็ต”"
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mobil veride ve telefon erişim noktası gibi ölçülü ağlarda kullanılır."
+            "value" : "Mobil veride ve telefon erişim noktası gibi sınırlı veri kullanan ağlarda kullanılır. Az Veri Modu veya Veri Tasarrufu açıkken 2 Mbps ile sınırlanır."
           }
         },
         "uk" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Використовується в мобільній мережі та мережах з обмеженим трафіком, як-от точка доступу на телефоні."
+            "value" : "Використовується в мобільній мережі та мережах із тарифікацією трафіку, як-от точка доступу на телефоні. Обмежується до 2 Мбіт/с, коли ввімкнено «Режим економії даних» або «Заощадження трафіку»."
           }
         },
         "vi" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Dùng khi sử dụng dữ liệu di động và mạng tính phí theo dung lượng, chẳng hạn như điểm phát sóng từ điện thoại."
+            "value" : "Dùng khi sử dụng dữ liệu di động và mạng có giới hạn dữ liệu, chẳng hạn như điểm phát sóng từ điện thoại. Giới hạn ở 2 Mbps khi bật Chế độ dữ liệu thấp hoặc Trình tiết kiệm dữ liệu."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "用于移动数据和按流量计费的网络，例如手机热点。"
+            "value" : "用于移动数据和按流量计费的网络，例如手机热点。开启“低数据模式”或“流量节省程序”时，上限为2 Mbps。"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在行動數據和計量付費網路（例如手機熱點）上使用。"
+            "value" : "在行動數據和計量付費網路（例如手機熱點）上使用。開啟「低數據模式」或「數據節省模式」時，上限為 2 Mbps。"
           }
         }
       }
