@@ -6,17 +6,18 @@ import XCTest
 @MainActor
 final class PlaybackNetworkQualityTests: XCTestCase {
     private let mainPair = AppleQualityAxes(resolution: "2160p", bitrateKbps: nil)
-    private let cellularPair = AppleQualityAxes(resolution: "720p", bitrateKbps: 2_000)
+    private let cellularPair = AppleQualityAxes(resolution: "auto", bitrateKbps: 10_000)
+    private let lowDataPair = AppleQualityAxes(resolution: "auto", bitrateKbps: 2_000)
 
     /// The connection and the player the controller drives.
     private final class FakePlayer {
-        var metered = false
-        var pairs: [Bool: AppleQualityAxes]
+        var tier: PlaybackNetworkTier = .unmetered
+        var pairs: [PlaybackNetworkTier: AppleQualityAxes]
         var outcomes: [PlaybackNetworkQualityController.ReplanOutcome] = []
         private(set) var replans: [AppleQualityAxes] = []
 
-        init(main: AppleQualityAxes, cellular: AppleQualityAxes) {
-            pairs = [false: main, true: cellular]
+        init(main: AppleQualityAxes, cellular: AppleQualityAxes, lowData: AppleQualityAxes) {
+            pairs = [.unmetered: main, .metered: cellular, .lowData: lowData]
         }
 
         func replan(_ axes: AppleQualityAxes) -> PlaybackNetworkQualityController.ReplanOutcome {
@@ -28,10 +29,10 @@ final class PlaybackNetworkQualityTests: XCTestCase {
     private func makeController(
         debounce: Duration = .milliseconds(20)
     ) -> (PlaybackNetworkQualityController, FakePlayer) {
-        let player = FakePlayer(main: mainPair, cellular: cellularPair)
+        let player = FakePlayer(main: mainPair, cellular: cellularPair, lowData: lowDataPair)
         let controller = PlaybackNetworkQualityController(
             debounce: debounce,
-            isMetered: { player.metered },
+            tier: { player.tier },
             pair: { player.pairs[$0]! },
             replan: { player.replan($0) }
         )
@@ -40,31 +41,37 @@ final class PlaybackNetworkQualityTests: XCTestCase {
 
     // MARK: - Which pair
 
-    func testMobileDataHotspotsAndLowDataModeUseTheCellularPair() async throws {
+    func testMobileDataHotspotsAndLowDataModeUseTheRightTierAndCeiling() async throws {
         let harness = try PlayerSettingsHarness()
         // A refresh tells the flusher the server's revision, which the
         // cellular keys' writes wait for; the values apply locally at once.
         await harness.settings.refreshFromServer()
         harness.settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "2160p")))
-        harness.settings.setCellularQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "720p")))
+        harness.settings.setCellularQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "auto-10mbps")))
 
-        let paths: [(name: String, cellular: Bool, expensive: Bool, constrained: Bool, metered: Bool)] = [
-            ("Wi-Fi", false, false, false, false),
-            ("mobile data", true, false, false, true),
-            ("phone hotspot", false, true, false, true),
-            ("Low Data Mode", false, false, true, true),
+        let paths: [(name: String, cellular: Bool, expensive: Bool, constrained: Bool, tier: PlaybackNetworkTier, expected: AppleQualityAxes)] = [
+            ("Wi-Fi", false, false, false, .unmetered, mainPair),
+            ("mobile data", true, false, false, .metered, cellularPair),
+            ("phone hotspot", false, true, false, .metered, cellularPair),
+            ("Low Data Mode on Wi-Fi", false, false, true, .lowData, lowDataPair),
+            ("Low Data Mode on cellular", true, true, true, .lowData, lowDataPair),
         ]
         for path in paths {
-            let metered = PlaybackNetworkPath.isMetered(
+            let tier = PlaybackNetworkPath.tier(
                 usesCellular: path.cellular,
                 isExpensive: path.expensive,
                 isConstrained: path.constrained
             )
-            XCTAssertEqual(metered, path.metered, path.name)
+            XCTAssertEqual(tier, path.tier, path.name)
+            XCTAssertEqual(
+                PlaybackNetworkPath.isMetered(usesCellular: path.cellular, isExpensive: path.expensive, isConstrained: path.constrained),
+                path.tier.isMetered,
+                path.name
+            )
 
-            let axes = harness.settings.playbackQualityAxes(onMeteredNetwork: metered)
+            let axes = harness.settings.playbackQualityAxes(for: tier)
             #if os(iOS)
-            XCTAssertEqual(axes, metered ? cellularPair : mainPair, path.name)
+            XCTAssertEqual(axes, path.expected, path.name)
             #else
             // Apple TV and Mac are never on mobile data.
             XCTAssertEqual(axes, mainPair, path.name)
@@ -77,6 +84,17 @@ final class PlaybackNetworkQualityTests: XCTestCase {
             XCTAssertEqual(selection.bandwidthCapKbps, axes.bitrateKbps, path.name)
             XCTAssertFalse(selection.isServerOwned, path.name)
         }
+
+        #if os(iOS)
+        // Low Data Mode caps an uncapped cellular override to 2 Mbps without changing resolution.
+        harness.settings.setCellularQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "auto")))
+        XCTAssertEqual(harness.settings.playbackQualityAxes(for: .metered), .auto)
+        XCTAssertEqual(harness.settings.playbackQualityAxes(for: .lowData), AppleQualityAxes(resolution: "auto", bitrateKbps: 2_000))
+
+        // A stricter cellular override (480p / 1.5 Mbps) is never raised by Low Data Mode.
+        harness.settings.setCellularQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "480p")))
+        XCTAssertEqual(harness.settings.playbackQualityAxes(for: .lowData), AppleQualityAxes(resolution: "480p", bitrateKbps: 1_500))
+        #endif
     }
 
     func testASettingsPairIsSentExactly() {
@@ -102,25 +120,26 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         let harness = try PlayerSettingsHarness()
         await harness.settings.refreshFromServer()
         harness.settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "1080p-high")))
-        harness.settings.setCellularQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "720p")))
+        harness.settings.setCellularQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "auto-10mbps")))
 
-        func autoPick(metered: Bool) -> ApplePlaybackV3QualitySelection {
+        func autoPick(tier: PlaybackNetworkTier) -> ApplePlaybackV3QualitySelection {
             ApplePlaybackQuality.protocolV3Selection(
                 requestedQualityId: ApplePlaybackQuality.autoId,
                 availableQualities: [],
-                autoBandwidthCapKbps: harness.settings.playbackQualityAxes(onMeteredNetwork: metered).bitrateKbps
+                autoBandwidthCapKbps: harness.settings.playbackQualityAxes(for: tier).bitrateKbps
             )
         }
 
-        let wifi = autoPick(metered: false)
+        let wifi = autoPick(tier: .unmetered)
         XCTAssertEqual(wifi.serverPreference, "auto")
         XCTAssertEqual(wifi.bandwidthCapKbps, 10_000, "the main pair's cap on Wi-Fi")
         #if os(iOS)
-        XCTAssertEqual(autoPick(metered: true).bandwidthCapKbps, 2_000, "the cellular pair's cap on mobile data")
+        XCTAssertEqual(autoPick(tier: .metered).bandwidthCapKbps, 10_000, "the cellular pair's cap on mobile data")
+        XCTAssertEqual(autoPick(tier: .lowData).bandwidthCapKbps, 2_000, "Low Data Mode ceiling")
         #endif
 
         harness.settings.setMaxBitrateKbps(nil)
-        XCTAssertNil(autoPick(metered: false).bandwidthCapKbps, "\"No limit\" sends no cap")
+        XCTAssertNil(autoPick(tier: .unmetered).bandwidthCapKbps, "\"No limit\" sends no cap")
     }
 
     /// A fixed in-player pick applies to its title, reloads included, and
@@ -130,7 +149,7 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         let model = PlayerViewModel()
         defer { model.cleanup() }
 
-        model.recordViewerQualityPick("720p", forContentId: "episode-1", onMeteredNetwork: false)
+        model.recordViewerQualityPick("720p", forContentId: "episode-1", networkTier: .unmetered)
         XCTAssertTrue(model.viewerQualityPickApplies(toContentId: "episode-1"), "a reload keeps it")
         XCTAssertFalse(model.viewerQualityPickApplies(toContentId: "episode-2"), "the next episode does not")
 
@@ -144,7 +163,7 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         XCTAssertNil(start.bandwidthCapKbps)
         start = PlaybackSessionBridge.startQuality(
             preferredQualityOverride: nil,
-            settingsQuality: cellularPair
+            settingsQuality: AppleQualityAxes(resolution: "720p", bitrateKbps: 2_000)
         )
         XCTAssertEqual(start.preferredQuality, "720p")
         XCTAssertEqual(start.bandwidthCapKbps, 2_000)
@@ -157,7 +176,7 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         XCTAssertEqual(start.preferredQuality, "720p")
         XCTAssertEqual(start.bandwidthCapKbps, 2_000)
 
-        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: "episode-1", onMeteredNetwork: false)
+        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: "episode-1", networkTier: .unmetered)
         XCTAssertFalse(model.viewerQualityPickApplies(toContentId: "episode-1"), "Auto follows the saved settings")
         // A reload after an Auto pick keeps Auto with the saved cap.
         start = PlaybackSessionBridge.startQuality(
@@ -188,7 +207,7 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         model.activeQualityId = "720p"
         XCTAssertNil(model.highlightedQualityOptionId, "a saved 720p does not light the plan's 720p row")
 
-        model.recordViewerQualityPick("720p", forContentId: "episode-1", onMeteredNetwork: false)
+        model.recordViewerQualityPick("720p", forContentId: "episode-1", networkTier: .unmetered)
         XCTAssertEqual(model.highlightedQualityOptionId, "720p", "the rung the viewer picked lights")
     }
 
@@ -310,8 +329,8 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         // On mobile data the resume asks for the cellular pair.
         resumed = start(resuming: true, settings: cellularPair)
         XCTAssertEqual(resumed.version.fileId, 2)
-        XCTAssertEqual(resumed.qualityPreference, "720p")
-        XCTAssertEqual(resumed.bandwidthCapKbps, 2_000)
+        XCTAssertNil(resumed.qualityPreference, "Auto")
+        XCTAssertEqual(resumed.bandwidthCapKbps, 10_000)
     }
 
     /// A version picked by hand plays that file; the saved quality still
@@ -324,8 +343,8 @@ final class PlaybackNetworkQualityTests: XCTestCase {
 
         picked = start(requestedFileId: 1, resuming: false, settings: cellularPair)
         XCTAssertEqual(picked.version.fileId, 1)
-        XCTAssertEqual(picked.qualityPreference, "720p")
-        XCTAssertEqual(picked.bandwidthCapKbps, 2_000)
+        XCTAssertNil(picked.qualityPreference)
+        XCTAssertEqual(picked.bandwidthCapKbps, 10_000)
 
         picked = start(requestedFileId: 1, resuming: true, override: "1080p", settings: .auto)
         XCTAssertEqual(picked.version.fileId, 1, "the requested file wins over the last-played one")
@@ -368,66 +387,80 @@ final class PlaybackNetworkQualityTests: XCTestCase {
 
     // MARK: - Replanning on a connection change
 
-    func testMovingOntoAndOffMobileDataReplansWithThatSidesPair() {
+    func testMovingOntoAndOffMobileDataAndLowDataModeReplansWithThatTiersPair() {
         let (controller, player) = makeController()
-        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+        controller.sessionStarted(tier: .unmetered, keepsViewerPick: false)
 
-        player.metered = true
+        player.tier = .metered
         controller.checkConnection()
         XCTAssertEqual(player.replans, [cellularPair])
-        XCTAssertEqual(controller.sessionUsesMeteredPair, true)
+        XCTAssertEqual(controller.sessionTier, .metered)
 
         // The same connection again changes nothing.
         controller.checkConnection()
         XCTAssertEqual(player.replans, [cellularPair])
 
-        player.metered = false
+        // Enabling Low Data Mode tightens to 2 Mbps.
+        player.tier = .lowData
         controller.checkConnection()
-        XCTAssertEqual(player.replans, [cellularPair, mainPair])
-        XCTAssertEqual(controller.sessionUsesMeteredPair, false)
+        XCTAssertEqual(player.replans, [cellularPair, lowDataPair])
+        XCTAssertEqual(controller.sessionTier, .lowData)
+
+        // Turning Low Data Mode off returns to 10 Mbps cellular.
+        player.tier = .metered
+        controller.checkConnection()
+        XCTAssertEqual(player.replans, [cellularPair, lowDataPair, cellularPair])
+        XCTAssertEqual(controller.sessionTier, .metered)
+
+        player.tier = .unmetered
+        controller.checkConnection()
+        XCTAssertEqual(player.replans, [cellularPair, lowDataPair, cellularPair, mainPair])
+        XCTAssertEqual(controller.sessionTier, .unmetered)
     }
 
     func testAFixedRungTheViewerPickedHoldsForItsTitle() {
         let (controller, player) = makeController()
-        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+        controller.sessionStarted(tier: .unmetered, keepsViewerPick: false)
         controller.viewerDidPickQuality()
 
-        player.metered = true
+        player.tier = .metered
         controller.connectionDidChange()
         XCTAssertFalse(controller.hasPendingCheck, "nothing waits to override the viewer's choice")
         controller.checkConnection()
         XCTAssertTrue(player.replans.isEmpty)
 
         // A reload of the same title keeps the pick.
-        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: true)
+        controller.sessionStarted(tier: .unmetered, keepsViewerPick: true)
         controller.checkConnection()
         XCTAssertTrue(player.replans.isEmpty)
 
         // The next title starts on the saved settings and follows the
         // connection again.
-        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+        controller.sessionStarted(tier: .unmetered, keepsViewerPick: false)
         controller.checkConnection()
         XCTAssertEqual(player.replans, [cellularPair])
     }
 
-    /// An Auto pick records the side of the connection its request was built
+    /// An Auto pick records the tier of the connection its request was built
     /// for, not the live one, so a change while the request was out is still
     /// corrected by the next check.
     func testAnAutoPickRecordsTheConnectionItsRequestWasBuiltFor() throws {
         let model = PlayerViewModel()
         defer { model.cleanup() }
         let modelController = try XCTUnwrap(model.networkQuality)
-        modelController.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
-        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: "movie", onMeteredNetwork: true)
-        XCTAssertEqual(modelController.sessionUsesMeteredPair, true)
-        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: "movie", onMeteredNetwork: false)
-        XCTAssertEqual(modelController.sessionUsesMeteredPair, false)
+        modelController.sessionStarted(tier: .unmetered, keepsViewerPick: false)
+        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: "movie", networkTier: .metered)
+        XCTAssertEqual(modelController.sessionTier, .metered)
+        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: "movie", networkTier: .lowData)
+        XCTAssertEqual(modelController.sessionTier, .lowData)
+        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: "movie", networkTier: .unmetered)
+        XCTAssertEqual(modelController.sessionTier, .unmetered)
 
         // Wi-Fi when the request was built, mobile data when it committed.
         let (controller, player) = makeController()
-        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
-        player.metered = true
-        controller.viewerDidPickAuto(onMeteredNetwork: false)
+        controller.sessionStarted(tier: .unmetered, keepsViewerPick: false)
+        player.tier = .metered
+        controller.viewerDidPickAuto(tier: .unmetered)
         controller.checkConnection()
         XCTAssertEqual(player.replans, [cellularPair])
     }
@@ -445,40 +478,40 @@ final class PlaybackNetworkQualityTests: XCTestCase {
 
     func testPickingAutoKeepsFollowingTheConnection() {
         let (controller, player) = makeController()
-        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+        controller.sessionStarted(tier: .unmetered, keepsViewerPick: false)
         controller.viewerDidPickQuality()
-        controller.viewerDidPickAuto(onMeteredNetwork: false)
+        controller.viewerDidPickAuto(tier: .unmetered)
         XCTAssertFalse(controller.viewerPickedQuality)
 
-        player.metered = true
+        player.tier = .metered
         controller.checkConnection()
         XCTAssertEqual(player.replans, [cellularPair])
 
-        // Auto picked after moving onto mobile data already uses that side's
+        // Auto picked after moving onto mobile data already uses that tier's
         // cap, so the pending change has nothing left to reload.
         let (other, otherPlayer) = makeController()
-        other.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
-        otherPlayer.metered = true
-        other.viewerDidPickAuto(onMeteredNetwork: true)
+        other.sessionStarted(tier: .unmetered, keepsViewerPick: false)
+        otherPlayer.tier = .metered
+        other.viewerDidPickAuto(tier: .metered)
         other.checkConnection()
         XCTAssertTrue(otherPlayer.replans.isEmpty)
-        XCTAssertEqual(other.sessionUsesMeteredPair, true)
+        XCTAssertEqual(other.sessionTier, .metered)
     }
 
     func testAChangeIsFollowedOnlyOnceItHolds() async throws {
         let (controller, player) = makeController()
-        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+        controller.sessionStarted(tier: .unmetered, keepsViewerPick: false)
 
         // A flap that comes back inside the wait reloads nothing.
-        player.metered = true
+        player.tier = .metered
         controller.connectionDidChange()
-        player.metered = false
+        player.tier = .unmetered
         controller.connectionDidChange()
         try await waitUntil("the flap's check runs") { !controller.hasPendingCheck }
         XCTAssertTrue(player.replans.isEmpty)
 
         // Two reports of one change reload once.
-        player.metered = true
+        player.tier = .metered
         controller.connectionDidChange()
         controller.connectionDidChange()
         try await waitUntil("the change's check runs") { !controller.hasPendingCheck }
@@ -489,62 +522,62 @@ final class PlaybackNetworkQualityTests: XCTestCase {
     /// on cellular for several seconds while Wi-Fi stays connected. Each
     /// follow is a full reload, so a blip of that length must reload nothing.
     func testABlipOfSeveralSecondsReloadsNothing() async throws {
-        let player = FakePlayer(main: mainPair, cellular: cellularPair)
+        let player = FakePlayer(main: mainPair, cellular: cellularPair, lowData: lowDataPair)
         let controller = PlaybackNetworkQualityController(
-            isMetered: { player.metered },
+            tier: { player.tier },
             pair: { player.pairs[$0]! },
             replan: { player.replan($0) }
         )
         defer { controller.stop() }
-        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+        controller.sessionStarted(tier: .unmetered, keepsViewerPick: false)
 
-        player.metered = true
+        player.tier = .metered
         controller.connectionDidChange()
         try await Task.sleep(for: .seconds(5))
         XCTAssertTrue(player.replans.isEmpty, "a five-second blip did not hold long enough to follow")
         XCTAssertTrue(controller.hasPendingCheck)
 
-        player.metered = false
+        player.tier = .unmetered
         controller.connectionDidChange()
         XCTAssertTrue(player.replans.isEmpty)
     }
 
     func testPairsThatMatchNeedNoReplan() {
         let (controller, player) = makeController()
-        player.pairs[true] = mainPair
-        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+        player.pairs[.metered] = mainPair
+        controller.sessionStarted(tier: .unmetered, keepsViewerPick: false)
 
-        player.metered = true
+        player.tier = .metered
         controller.checkConnection()
 
         XCTAssertTrue(player.replans.isEmpty)
-        XCTAssertEqual(controller.sessionUsesMeteredPair, true)
+        XCTAssertEqual(controller.sessionTier, .metered)
     }
 
     func testABusyPlayerIsAskedAgainAfterTheWait() async throws {
         let (controller, player) = makeController()
-        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+        controller.sessionStarted(tier: .unmetered, keepsViewerPick: false)
         player.outcomes = [.busy]
 
-        player.metered = true
+        player.tier = .metered
         controller.checkConnection()
-        XCTAssertEqual(controller.sessionUsesMeteredPair, false, "nothing was replanned yet")
+        XCTAssertEqual(controller.sessionTier, .unmetered, "nothing was replanned yet")
 
         try await waitUntil("the retry replans") { player.replans.count == 2 }
         XCTAssertEqual(player.replans, [cellularPair, cellularPair])
-        XCTAssertEqual(controller.sessionUsesMeteredPair, true)
+        XCTAssertEqual(controller.sessionTier, .metered)
     }
 
     func testWithNoSessionNothingIsReplanned() {
         let (controller, player) = makeController()
-        player.metered = true
+        player.tier = .metered
         controller.connectionDidChange()
         controller.checkConnection()
         XCTAssertFalse(controller.hasPendingCheck)
         XCTAssertTrue(player.replans.isEmpty)
 
         // A Watch Party stops the controller for its session.
-        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+        controller.sessionStarted(tier: .unmetered, keepsViewerPick: false)
         controller.stop()
         controller.checkConnection()
         XCTAssertTrue(player.replans.isEmpty)
