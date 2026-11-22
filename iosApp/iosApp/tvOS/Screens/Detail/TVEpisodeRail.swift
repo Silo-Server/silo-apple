@@ -561,12 +561,16 @@ struct TVEpisodeCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
 
+        let hasContextMenu = onSetWatched != nil || WatchPartyEntry.isAvailable || onSetFavorite != nil || onSetWatchlist != nil
         Group {
-            if onPlay != nil || onSetWatched != nil || onSetFavorite != nil || onSetWatchlist != nil {
+            if hasContextMenu {
                 button.contextMenu { contextActions }
             } else {
                 button
             }
+        }
+        .onPlayPauseCommand {
+            onPlay?(episode.contentId)
         }
         .mediaActionFeedback(actionFeedback)
         .onChange(of: episode.userData?.played) { _, refreshedValue in
@@ -609,42 +613,28 @@ struct TVEpisodeCard: View {
 
     @ViewBuilder
     private var contextActions: some View {
-        // Section 1: Play and watch state (consistent with the detail More menu).
-        if onPlay != nil || onSetWatched != nil {
+        // Section 1: Watch state (consistent with the detail More menu).
+        if let onSetWatched {
             Section {
-                if let onPlay {
-                    Button {
-                        onPlay(episode.contentId)
-                    } label: {
-                        // String arguments so year-numbered seasons don't render as "S2,021".
-                        Label {
-                            Text(.detailPlayEpisode(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber)))
-                        } icon: {
-                            Image(systemName: "play.fill")
-                        }
+                Button {
+                    let value = !isPlayed
+                    let previous = playedOverride
+                    actionFeedback.perform {
+                        playedOverride = value
+                        let outcome = await onSetWatched(episode.contentId, value)
+                        if outcome != .applied { playedOverride = previous }
+                        return outcome
                     }
+                } label: {
+                    Label(
+                        AppLanguage.string(
+                            isPlayed ? .detailMoreMarkEpisodeUnwatched : .detailMoreMarkEpisodeWatched,
+                            locale: locale
+                        ),
+                        systemImage: isPlayed ? "checkmark.circle.fill" : "checkmark.circle"
+                    )
                 }
-                if let onSetWatched {
-                    Button {
-                        let value = !isPlayed
-                        let previous = playedOverride
-                        actionFeedback.perform {
-                            playedOverride = value
-                            let outcome = await onSetWatched(episode.contentId, value)
-                            if outcome != .applied { playedOverride = previous }
-                            return outcome
-                        }
-                    } label: {
-                        Label(
-                            AppLanguage.string(
-                                isPlayed ? .detailMoreMarkEpisodeUnwatched : .detailMoreMarkEpisodeWatched,
-                                locale: locale
-                            ),
-                            systemImage: isPlayed ? "checkmark.circle.fill" : "checkmark.circle"
-                        )
-                    }
-                    .disabled(actionFeedback.isUpdating)
-                }
+                .disabled(actionFeedback.isUpdating)
             }
         }
 
