@@ -56,7 +56,7 @@ enum EpisodeLabel {
     /// and a dated episode. A page that shows the air date elsewhere (a
     /// hero's facts line) then drops its season and episode line.
     static func isNamedByDate(labels: String?, airDate: String?) -> Bool {
-        labelsByAirDate(labels) && DetailDateFormatting.abbreviatedDate(airDate) != nil
+        Self.airDate(labels: labels, airDate: airDate) != nil
     }
 
     /// How a list names an episode of a date-labeled series, whose air date

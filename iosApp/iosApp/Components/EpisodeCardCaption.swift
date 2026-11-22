@@ -23,17 +23,6 @@ extension BrowseItem: EpisodeCaptionSource {}
 /// rendered single-line and tail-truncated so card heights stay uniform
 /// across a row.
 enum EpisodeCardCaption {
-    /// "S01E02" — zero-padded so codes line up across a row.
-    static func code(season: Int, episode: Int, locale: Locale = AppLanguage.formattingLocale) -> String {
-        EpisodeLabel.code(season: season, episode: episode, style: .paddedTag, locale: locale)
-    }
-
-    /// Spoken season and episode: "Season 1, Episode 2", or "Specials,
-    /// Episode 2" for season 0.
-    static func spokenCode(season: Int, episode: Int, locale: Locale = AppLanguage.formattingLocale) -> String {
-        EpisodeLabel.code(season: season, episode: episode, style: .spoken, locale: locale)
-    }
-
     /// "S01E02 · Pilot" from an episode code and title.
     static func titled(code: String, title: String, locale: Locale = AppLanguage.formattingLocale) -> String {
         AppLanguage.string(.detailEpisodeCardTitle(code, title), locale: locale)
@@ -91,10 +80,10 @@ enum EpisodeCardCaption {
         guard isEpisode(item) else { return nil }
         var parts: [String] = []
         if let season = item.seasonNumber, let episode = item.episodeNumber {
-            parts.append(
-                EpisodeLabel.airDate(labels: item.episodeLabels, airDate: item.airDate, locale: locale)
-                    ?? spokenCode(season: season, episode: episode, locale: locale)
-            )
+            parts.append(EpisodeLabel.text(
+                season: season, episode: episode, style: .spoken,
+                labels: item.episodeLabels, airDate: item.airDate, locale: locale
+            ))
         }
         if let title = episodeTitle(for: item) {
             parts.append(title)
@@ -126,7 +115,7 @@ extension EpisodeCardCaption {
             return name
         }
         let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let code = Self.code(season: episode.seasonNumber, episode: episode.episodeNumber, locale: locale)
+        let code = EpisodeLabel.code(season: episode.seasonNumber, episode: episode.episodeNumber, locale: locale)
         guard let title, !title.isEmpty else { return code }
         return titled(code: code, title: title, locale: locale)
     }

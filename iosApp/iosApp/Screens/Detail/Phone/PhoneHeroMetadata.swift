@@ -160,9 +160,6 @@ enum PhoneHeroMetadata {
         if EpisodeLabel.isNamedByDate(labels: detail.episodeLabels, airDate: detail.airDate) {
             return nil
         }
-        if let season = detail.seasonNumber, let episode = detail.episodeNumber, episode > 0 {
-            return EpisodeLabel.code(season: season, episode: episode, style: .eyebrow, locale: locale)
-        }
         let seasonPart: String?
         if let season = detail.seasonNumber {
             seasonPart = AppLanguage.string(
@@ -175,7 +172,8 @@ enum PhoneHeroMetadata {
         let episode = detail.episodeNumber.flatMap { n in n > 0 ? n : nil }
 
         switch (seasonPart, episode) {
-        case let (.some(s), _):        return s
+        case let (.some(s), .some(e)): return AppLanguage.string(.detailEpisodeEyebrow(s, LocaleFormat.integer(e, locale: locale)), locale: locale)
+        case let (.some(s), .none):    return s
         case let (.none, .some(e)):    return AppLanguage.string(.detailEpisode(LocaleFormat.integer(e, locale: locale)), locale: locale)
         case (.none, .none):           return nil
         }

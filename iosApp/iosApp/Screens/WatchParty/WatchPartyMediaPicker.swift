@@ -1100,8 +1100,7 @@ private struct WatchPartyEpisodePicker: View {
     /// The runtime, after the air date for a date-labeled series.
     private func phoneRowMetadata(_ episode: EpisodeListItem) -> String? {
         var parts: [String] = []
-        if EpisodeLabel.labelsByAirDate(series.episodeLabels),
-           let date = DetailDateFormatting.abbreviatedDate(episode.airDate) {
+        if let date = EpisodeLabel.airDate(labels: series.episodeLabels, airDate: episode.airDate) {
             parts.append(date)
         }
         if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { parts.append(runtime) }

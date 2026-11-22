@@ -54,7 +54,7 @@ func episodeRailAccessibilityLabel(
         // A date-labeled series (sports): the code means nothing.
         components.append(name)
     } else {
-        components.append(EpisodeCardCaption.spokenCode(season: seasonNumber, episode: episodeNumber, locale: locale))
+        components.append(EpisodeLabel.code(season: seasonNumber, episode: episodeNumber, style: .spoken, locale: locale))
         if let title, !title.isEmpty {
             components.append(title)
         }

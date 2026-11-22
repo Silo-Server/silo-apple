@@ -36,12 +36,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         type = item.type
         title = item.title
         if let season = item.seasonNumber, let episode = item.episodeNumber {
-            let season = Int(season), episode = Int(episode)
-            // "S1:E2", or the air date for a date-labeled series (sports).
-            func code() -> String {
-                EpisodeLabel.text(season: season, episode: episode, style: .watchParty,
-                                  labels: item.episodeLabels, airDate: item.airDate)
-            }
+            let code = { Self.episodeCode(season: Int(season), episode: Int(episode), labels: item.episodeLabels, airDate: item.airDate) }
             subtitle = [item.seriesTitle.map { AppLanguage.isolated($0) }, code()].compactMap { $0 }.joined(separator: " · ")
             // Sent to the party in English (D44).
             suggestionSubtitle = [item.seriesTitle, AppLanguage.inEnglish(code)].compactMap { $0 }.joined(separator: " · ")
@@ -138,6 +133,11 @@ struct WatchPartySelectedItem: Equatable, Sendable {
 }
 
 extension WatchPartySelectedItem {
+    /// "S1:E2", or the air date for a date-labeled series (sports).
+    fileprivate static func episodeCode(season: Int, episode: Int, labels: String?, airDate: String?) -> String {
+        EpisodeLabel.text(season: season, episode: episode, style: .watchParty, labels: labels, airDate: airDate)
+    }
+
     init(previewing detail: ItemDetail) {
         self.init(previewContentId: detail.contentId, type: detail.type, title: detail.title,
                   posterUrl: detail.posterUrl, posterThumbhash: detail.posterThumbhash,
@@ -153,10 +153,9 @@ extension WatchPartySelectedItem {
     init(previewing episode: EpisodeListItem, series: ItemDetail, seasons: [Season]) {
         let season = seasons.first { $0.seasonNumber == episode.seasonNumber }
         let seasonPoster = season?.posterUrl?.nilIfEmpty
-        // "S1:E2", or the air date for a date-labeled series (sports).
-        func code() -> String {
-            EpisodeLabel.text(season: episode.seasonNumber, episode: episode.episodeNumber, style: .watchParty,
-                              labels: series.episodeLabels, airDate: episode.airDate)
+        let code = {
+            Self.episodeCode(season: episode.seasonNumber, episode: episode.episodeNumber,
+                             labels: series.episodeLabels, airDate: episode.airDate)
         }
         self.init(previewContentId: episode.contentId, type: "episode",
                   title: episode.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber))),
