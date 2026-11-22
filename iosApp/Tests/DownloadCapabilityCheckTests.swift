@@ -59,6 +59,18 @@ final class DownloadCapabilityCheckTests: XCTestCase {
         XCTAssertEqual(choice.localAccountId, "a")
     }
 
+    /// A profile picked while the session was being captured: the selection,
+    /// read after it, names the profile requests now use.
+    func testSelectionProfileWinsForTheSameAccount() {
+        let picked = scope(signedIn: Identity(serverId: "s1", localAccountId: "a", profileId: "p1"),
+                           selection: AccountScope(serverId: "s1", localAccountId: "a", profileId: "p2"))
+        XCTAssertEqual(picked, .init(serverId: "s1", localAccountId: "a", profileId: "p2", selectionDisagreed: false))
+        // Back to Who's Watching during the capture: nothing loads.
+        let cleared = scope(signedIn: Identity(serverId: "s1", localAccountId: "a", profileId: "p1"),
+                            selection: AccountScope(serverId: "s1", localAccountId: "a", profileId: nil))
+        XCTAssertEqual(cleared.profileId, "")
+    }
+
     /// Who's Watching: signed in, no profile yet. Nothing loads.
     func testNoProfileMeansNoScope() {
         let choice = scope(signedIn: Identity(serverId: "s1", localAccountId: "a", profileId: nil),
@@ -68,25 +80,20 @@ final class DownloadCapabilityCheckTests: XCTestCase {
 
     // MARK: When to read
 
-    func testUnusableOrMissingCapabilityIsAlwaysRead() {
+    func testMissingCapabilityIsAlwaysRead() {
         let now = Date()
-        XCTAssertTrue(DownloadManager.capabilityReadIsDue(usable: false, fetchedAt: now, now: now))
-        XCTAssertTrue(DownloadManager.capabilityReadIsDue(usable: true, fetchedAt: nil, now: now))
+        XCTAssertTrue(DownloadManager.capabilityReadIsDue(hasAnswer: false, fetchedAt: now, now: now))
+        XCTAssertTrue(DownloadManager.capabilityReadIsDue(hasAnswer: true, fetchedAt: nil, now: now))
     }
 
-    func testFreshUsableCapabilityIsNotReadAgain() {
+    /// Any answer, a "no" included, is trusted for a few minutes, so browsing
+    /// titles on a server without downloads doesn't ask on every page.
+    func testFreshAnswerIsNotReadAgain() {
         let now = Date()
-        XCTAssertFalse(DownloadManager.capabilityReadIsDue(usable: true, fetchedAt: now.addingTimeInterval(-60), now: now))
+        XCTAssertFalse(DownloadManager.capabilityReadIsDue(hasAnswer: true, fetchedAt: now.addingTimeInterval(-60), now: now))
         XCTAssertTrue(DownloadManager.capabilityReadIsDue(
-            usable: true, fetchedAt: now.addingTimeInterval(-DownloadManager.capabilityMaxAge), now: now))
+            hasAnswer: true, fetchedAt: now.addingTimeInterval(-DownloadManager.capabilityMaxAge), now: now))
         // A clock that moved backwards doesn't freeze an old answer.
-        XCTAssertTrue(DownloadManager.capabilityReadIsDue(usable: true, fetchedAt: now.addingTimeInterval(600), now: now))
-    }
-
-    func testRetriesBackOffAndStop() {
-        XCTAssertNil(DownloadManager.capabilityRetryDelay(afterFailures: 0))
-        XCTAssertEqual(DownloadManager.capabilityRetryDelay(afterFailures: 1), .seconds(2))
-        XCTAssertEqual(DownloadManager.capabilityRetryDelay(afterFailures: 5), .seconds(60))
-        XCTAssertNil(DownloadManager.capabilityRetryDelay(afterFailures: 6))
+        XCTAssertTrue(DownloadManager.capabilityReadIsDue(hasAnswer: true, fetchedAt: now.addingTimeInterval(600), now: now))
     }
 }

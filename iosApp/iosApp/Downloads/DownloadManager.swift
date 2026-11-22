@@ -302,20 +302,10 @@ final class DownloadManager {
     /// or replaced. Network responses captured under an older generation are
     /// discarded before they can mutate the newly active scope.
     private var registrationScopeGeneration: UInt64 = 0
-    /// The capability read in flight, the scope it reads for, and how many
-    /// callers still wait on it.
-    @ObservationIgnored private var capabilityRead: (scope: ScopeKey?, task: Task<Void, Never>, waiters: Int)?
-    /// The next read after a failed one, while Download is hidden.
-    @ObservationIgnored private var capabilityRetry: Task<Void, Never>?
-    /// Failed reads in a row since the last success, app-active pass, or
-    /// detail page.
-    @ObservationIgnored private var capabilityFailures = 0
-    /// App-active passes in flight. Each runs the reconcile and sync itself
-    /// once its capability read returns.
-    @ObservationIgnored private var appActivePasses = 0
-    /// The reconcile and sync started by a read outside an app-active pass
-    /// that first made the capability usable.
-    @ObservationIgnored private var capabilityFollowUp: Task<Void, Never>?
+    /// The last activation outcome recorded as a breadcrumb. Activation runs
+    /// on every title page, so a state that persists (Who's Watching, signed
+    /// out) is recorded once rather than crowding the journal.
+    @ObservationIgnored private var lastActivationBreadcrumb: String?
     var canDownloadSeason: Bool { downloadsEnabled && capability?.seasonDownload == true }
     var canMonitorSeries: Bool { downloadsEnabled && capability?.seriesMonitoring == true }
 
@@ -742,8 +732,10 @@ final class DownloadManager {
         // after accounts arrived, or a cold background wake), from the
         // keychain alone.
         let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
-        // Read after the await, in one turn, so a server switch that landed
-        // during it can't pair the old server with the new selection.
+        // Read after the await, in one turn, so a server, account, or profile
+        // switch that landed during it can't pair the old identity with the
+        // new selection. `downloadScope` takes the profile from this fresh
+        // selection when it names the session's account.
         let activeServerId = ServerRegistry.shared.activeServerId ?? ""
         let selected = AccountScope.current
         let choice = Self.downloadScope(
@@ -759,7 +751,7 @@ final class DownloadManager {
             // capability under the session's identity; worth knowing when
             // the two drift apart.
             Self.logger.notice("Download scope follows the signed-in account; the account selection mirror named another")
-            Self.recordCapabilityCheck(phase: "activate", outcome: "continued", reason: "selection named another account")
+            recordActivation(outcome: "continued", reason: "selection named another account")
         }
         let serverId = choice.serverId
         let accountId = choice.localAccountId
@@ -768,12 +760,6 @@ final class DownloadManager {
         // sign-out finishes; `deleteAllDownloads` resets a load in flight.
         guard !serverId.isEmpty, !accountId.isEmpty, !profileId.isEmpty,
               !removedAccounts.contains(Self.accountKey(serverId, accountId)) else {
-            Self.logger.notice("""
-                Downloads scope not activated: server \(serverId.isEmpty ? "missing" : "set", privacy: .public), \
-                account \(accountId.isEmpty ? "missing" : "set", privacy: .public), \
-                profile \(profileId.isEmpty ? "missing" : "set", privacy: .public), \
-                removed \(self.removedAccounts.contains(Self.accountKey(serverId, accountId)), privacy: .public)
-                """)
             let reason: String
             if serverId.isEmpty {
                 reason = "no server"
@@ -784,11 +770,13 @@ final class DownloadManager {
             } else {
                 reason = "account downloads were deleted in this run"
             }
-            Self.recordCapabilityCheck(phase: "activate", outcome: "stopped", reason: reason)
+            Self.logger.notice("Downloads scope not activated: \(reason, privacy: .public)")
+            recordActivation(outcome: "stopped", reason: reason)
             deactivate()
             releaseHeldSessionEvents()
             return false
         }
+        if !choice.selectionDisagreed { lastActivationBreadcrumb = nil }
         if serverId == scopeServerId, accountId == scopeAccountId, profileId == scopeProfileId,
            fileServerId == serverId, fileAccountId == accountId, fileProfileId == profileId,
            !file.records.isEmpty || file.capability != nil {
@@ -890,22 +878,30 @@ final class DownloadManager {
         return result
     }
 
+    /// Records an activation outcome unless the previous activation recorded
+    /// the same one.
+    private func recordActivation(outcome: String, reason: String) {
+        let key = outcome + ": " + reason
+        guard key != lastActivationBreadcrumb else { return }
+        lastActivationBreadcrumb = key
+        Self.recordCapabilityCheck(phase: "activate", outcome: outcome, reason: reason)
+    }
+
     /// OSLog never reaches a diagnostics report, so the outcomes that explain
-    /// a hidden Download also go to the breadcrumb journal, which survives
-    /// the relaunch that usually precedes a report. No identifiers.
+    /// a hidden Download also go to the diagnostics log ring, which a manual
+    /// report freezes, and to the breadcrumb journal, which survives a
+    /// relaunch. No identifiers.
     private static func recordCapabilityCheck(phase: String, outcome: String, reason: String) {
         #if os(iOS)
-        DiagTrace.breadcrumb(
-            .essential,
-            category: .lifecycle,
-            tag: "Downloads",
-            message: "download capability check",
-            attrs: [
-                "phase": .string(phase),
-                "outcome": .string(outcome),
-                "reason": .string(reason),
-            ]
-        )
+        let attrs: [String: DiagLogAttributeValue] = [
+            "phase": .string(phase),
+            "outcome": .string(outcome),
+            "reason": .string(reason),
+        ]
+        DiagTrace.log(.essential, category: .lifecycle, tag: "Downloads",
+                      message: "download capability check", attrs: attrs)
+        DiagTrace.breadcrumb(.essential, category: .lifecycle, tag: "Downloads",
+                             message: "download capability check", attrs: attrs)
         #endif
     }
 
@@ -1198,13 +1194,8 @@ final class DownloadManager {
     /// server reconciliation and sync work. Callers that only need to know
     /// whether the Downloads tab exists should not wait for the rest.
     func onAppActive(onCapabilityRefreshed: (() -> Void)? = nil) async {
-        // Each pass gets a fresh set of retries.
-        capabilityFailures = 0
-        appActivePasses += 1
-        defer { appActivePasses -= 1 }
         guard await activateScopeIfNeeded() else {
             Self.logger.notice("Downloads app-active pass stopped: no downloads scope")
-            scheduleCapabilityRetry()
             return
         }
         sessionDelegate.refreshProgressDelivery()
@@ -1285,11 +1276,6 @@ final class DownloadManager {
     private func deactivate() {
         pollTask?.cancel()
         pollTask = nil
-        // A read waiting to retry belongs to the scope that is going away.
-        // The failure count stays: a pass that finds no scope deactivates
-        // too, and its retries must still run out.
-        capabilityRetry?.cancel()
-        capabilityRetry = nil
         displayFillRetryTask?.cancel()
         displayFillRetryTask = nil
         abandonAllRestarts()
@@ -1337,81 +1323,36 @@ final class DownloadManager {
 
     // MARK: - Capability
 
-    /// Reads the capability unless a usable one is fresh. Detail pages call
-    /// this as they open, as Android's do, so a launch pass that could not
-    /// read it shows Download on the next title instead of after a relaunch.
+    /// Reads the capability when this scope has no answer or its answer is
+    /// more than a few minutes old. Detail pages call this as they open, as
+    /// Android's do, so a launch pass that could not read it shows Download
+    /// on the next title instead of after a relaunch.
     func refreshCapabilityIfStale() async {
-        // A page the user opened starts a new set of retries, unless one is
-        // already waiting.
-        if capabilityRetry == nil { capabilityFailures = 0 }
-        await readCapabilityIfDue()
-    }
-
-    private func readCapabilityIfDue() async {
         // Activated first: until then `file` can still hold the previous
         // scope's capability, and its age says nothing about this one.
-        guard await activateScopeIfNeeded() else {
-            scheduleCapabilityRetry()
-            return
-        }
-        guard Self.capabilityReadIsDue(usable: downloadsEnabled, fetchedAt: file.capabilityFetchedAt, now: Date()) else {
-            return
-        }
+        guard await activateScopeIfNeeded(),
+              Self.capabilityReadIsDue(hasAnswer: file.capability != nil,
+                                       fetchedAt: file.capabilityFetchedAt, now: Date()) else { return }
         let wasUsable = downloadsEnabled
         await refreshCapability()
         // The app-active pass that could not read the capability stopped
-        // before its reconcile and sync. Run them now that it is usable,
-        // unless a pass in flight is about to.
-        guard !wasUsable, downloadsEnabled, appActivePasses == 0, capabilityFollowUp == nil else { return }
-        capabilityFollowUp = Task { [weak self] in
-            await self?.syncAfterUsableCapability()
-            self?.capabilityFollowUp = nil
-        }
+        // before its reconcile and sync. Each step captures the current
+        // scope's owner itself, and they already run alongside the passes
+        // that push and background wakes start.
+        guard !wasUsable, downloadsEnabled, !Task.isCancelled else { return }
+        await syncAfterUsableCapability()
     }
 
-    /// Reads the capability for the loaded scope. Callers that ask while a
-    /// read for the same scope runs share it. On failure the cached
+    /// Reads the capability for the loaded scope. On failure the cached
     /// capability stays, so an unreachable or update-required server keeps
-    /// completed downloads visible and playable; with none usable, the read
-    /// is retried with back-off.
-    ///
-    /// Cancelling the last caller still waiting cancels the request, as it
-    /// did when each caller made its own: an expired background refresh and
-    /// the push sync's deadline both count on the read ending promptly.
+    /// completed downloads visible and playable. Each caller makes its own
+    /// read, so cancelling it (an expired background refresh, the push
+    /// sync's deadline) ends its request.
     func refreshCapability() async {
-        let scope = loadedScope
-        let task: Task<Void, Never>
-        if let running = capabilityRead, running.scope == scope {
-            task = running.task
-            capabilityRead?.waiters += 1
-        } else {
-            task = Task { await self.readCapability() }
-            capabilityRead = (scope, task, 1)
-        }
-        await withTaskCancellationHandler {
-            await task.value
-        } onCancel: {
-            Task { @MainActor [weak self] in self?.capabilityWaiterCancelled(task) }
-        }
-        if capabilityRead?.task == task { capabilityRead = nil }
-    }
-
-    private func capabilityWaiterCancelled(_ task: Task<Void, Never>) {
-        guard capabilityRead?.task == task else {
-            // Finished, or replaced by a read for a newer scope.
-            task.cancel()
-            return
-        }
-        capabilityRead?.waiters -= 1
-        if capabilityRead?.waiters ?? 0 <= 0 { task.cancel() }
-    }
-
-    private func readCapability() async {
         guard let owner = await captureScopeOwner() else {
             let reason = await scopeOwnerMismatch()
             Self.logger.notice("Download capability not read: \(reason, privacy: .public)")
             Self.recordCapabilityCheck(phase: "read", outcome: "skipped", reason: reason)
-            scheduleCapabilityRetry()
             return
         }
         do {
@@ -1424,33 +1365,12 @@ final class DownloadManager {
             file.capability = capability
             file.capabilityFetchedAt = Date()
             persist()
-            capabilityFailures = 0
-            capabilityRetry?.cancel()
-            capabilityRetry = nil
         } catch {
+            // A caller that stopped waiting is not a failed read.
+            guard !Task.isCancelled else { return }
             Self.logger.warning("Download capability read failed: \(String(describing: error), privacy: .public)")
             // The error's type only: its description can carry a server address.
             Self.recordCapabilityCheck(phase: "read", outcome: "failed", reason: String(describing: type(of: error)))
-            scheduleCapabilityRetry()
-        }
-    }
-
-    /// While Download is hidden, a failed read tries again after a growing
-    /// wait. A usable cached capability is left alone (offline, server
-    /// down): it already shows Download.
-    private func scheduleCapabilityRetry() {
-        guard !downloadsEnabled, capabilityRetry == nil else { return }
-        capabilityFailures += 1
-        guard let delay = Self.capabilityRetryDelay(afterFailures: capabilityFailures) else {
-            Self.logger.warning("Download capability retries spent; the next foreground or detail page reads it again")
-            Self.recordCapabilityCheck(phase: "read", outcome: "retries spent", reason: "\(capabilityFailures - 1) failed in a row")
-            return
-        }
-        capabilityRetry = Task { [weak self] in
-            try? await Task.sleep(for: delay)
-            guard let self, !Task.isCancelled else { return }
-            self.capabilityRetry = nil
-            await self.readCapabilityIfDue()
         }
     }
 
