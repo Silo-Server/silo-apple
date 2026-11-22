@@ -11,6 +11,8 @@ struct TVDetailFactsSection: View {
     /// Series shows the episode synopsis in the hero, so the series overview
     /// lives permanently at the top of the Details block instead.
     var showsOverview = false
+    /// Optional translation status for the series overview shown here.
+    var overviewStatus: DescriptionTranslationStatus? = nil
 
     private let columnGap: CGFloat = 64
 
@@ -40,13 +42,20 @@ struct TVDetailFactsSection: View {
         if overview != nil || !facts.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
                 if let overview {
-                    Text(overview)
-                        .font(.system(size: 24, weight: .regular))
-                        .lineSpacing(6)
-                        .foregroundColor(.siloOnSurface.opacity(0.88))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.top, 8)
-                        .padding(.bottom, facts.isEmpty ? 8 : 26)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(overview)
+                            .font(.system(size: 24, weight: .regular))
+                            .lineSpacing(6)
+                            .foregroundColor(.siloOnSurface.opacity(0.88))
+                            .opacity(overviewStatus == .translating ? 0.5 : 1)
+                        if let overviewStatus {
+                            DescriptionTranslationStatusLabel(status: overviewStatus, fontSize: 20)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 8)
+                    .padding(.bottom, facts.isEmpty ? 8 : 26)
+                    .animation(.easeInOut(duration: 0.2), value: overviewStatus)
                     if !facts.isEmpty {
                         Rectangle()
                             .fill(Color.white.opacity(0.08))

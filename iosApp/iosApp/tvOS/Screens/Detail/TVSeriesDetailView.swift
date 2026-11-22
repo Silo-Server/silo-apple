@@ -226,7 +226,6 @@ struct TVSeriesDetailView: View {
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleSeriesWatched: () -> Void
-    let onToggleSeasonWatched: () -> Void
     /// Nil hides Not interested: the server predates it.
     var isNotInterested: Bool? = nil
     var onToggleNotInterested: (() -> Void)? = nil
@@ -1040,6 +1039,7 @@ struct TVSeriesDetailView: View {
                         title: watchedTitle,
                         detail: scopeSummary(season: selectedSeason),
                         systemImage: isSeriesWatched ? "checkmark.circle.fill" : "checkmark.circle",
+                        isEnabled: !isUpdatingWatched,
                         children: [seasonWatchedItem, seriesWatchedItem]
                     ))
                 } else {
@@ -1113,7 +1113,7 @@ struct TVSeriesDetailView: View {
                 case .episodeWatched:
                     toggleDisplayedEpisodeWatched()
                 case .watched:
-                    onToggleSeasonWatched()
+                    if let selectedSeason { setSeasonWatched(selectedSeason) }
                 case .seriesWatched:
                     onToggleSeriesWatched()
                 case .watchParty:
@@ -1294,7 +1294,7 @@ struct TVSeriesDetailView: View {
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
             TVSectionHeader(title: AppLanguage.string(.detailDetails, locale: locale))
-            TVDetailFactsSection(detail: detail, showsOverview: true)
+            TVDetailFactsSection(detail: detail, showsOverview: true, overviewStatus: synopsisStatus)
         }
     }
 }

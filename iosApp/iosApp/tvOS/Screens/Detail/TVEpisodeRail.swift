@@ -561,7 +561,7 @@ struct TVEpisodeCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
 
-        let hasContextMenu = onSetWatched != nil || WatchPartyEntry.isAvailable || onSetFavorite != nil || onSetWatchlist != nil
+        let hasContextMenu = onSetWatched != nil || onSetFavorite != nil || onSetWatchlist != nil
         Group {
             if hasContextMenu {
                 button.contextMenu { contextActions }
@@ -638,19 +638,7 @@ struct TVEpisodeCard: View {
             }
         }
 
-        // Section 2: Playback modes.
-        if WatchPartyEntry.isAvailable {
-            Section {
-                WatchPartyMenuButton(
-                    contentId: episode.contentId,
-                    title: episode.title ?? "Episode", // i18n-ignore: watch-party payload (D44)
-                    type: "episode", // i18n-ignore: watch-party payload (D44)
-                    episode: episode
-                )
-            }
-        }
-
-        // Section 3: Personal lists.
+        // Section 2: Personal lists.
         if onSetFavorite != nil || onSetWatchlist != nil {
             Section {
                 if let onSetFavorite {

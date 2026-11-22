@@ -31,11 +31,6 @@ struct TVActionPopoverItem: Identifiable, Equatable {
 /// use the same focus graph. Selection and dismissal return directly to the
 /// trigger without presenting a system context menu.
 struct TVActionPopoverMenu: View {
-    private struct SubmenuLevel: Equatable {
-        let items: [TVActionPopoverItem]
-        let returnFocusId: String
-    }
-
     let title: String
     let items: [TVActionPopoverItem]
     var maxHeight: CGFloat? = nil
@@ -44,11 +39,14 @@ struct TVActionPopoverMenu: View {
 
     @FocusState private var highlightedId: String?
     @Namespace private var optionFocusScope
-    @State private var submenuStack: [SubmenuLevel] = []
+    /// Stack of entered parent item IDs. Submenu rows are resolved live from
+    /// `items` so dynamic state updates (e.g. `isEnabled`) stay fresh while open.
+    @State private var submenuPath: [String] = []
     /// Target row for the next focus resolution (e.g. returning to the submenu
     /// trigger when popping a submenu) so tvOS lands on it on the first frame
     /// instead of flashing on the top row first.
     @State private var preferredFocusId: String?
+    @State private var focusTask: Task<Void, Never>?
     @State private var measuredListHeight: CGFloat = 0
 
     static let width: CGFloat = 560
@@ -59,11 +57,19 @@ struct TVActionPopoverMenu: View {
     )
 
     private var currentItems: [TVActionPopoverItem] {
-        submenuStack.last?.items ?? items
+        var list = items
+        for parentId in submenuPath {
+            guard let parent = list.first(where: { $0.id == parentId }),
+                  let children = parent.children, !children.isEmpty else {
+                break
+            }
+            list = children
+        }
+        return list
     }
 
     private var isInSubmenu: Bool {
-        !submenuStack.isEmpty
+        !submenuPath.isEmpty
     }
 
     var body: some View {
@@ -108,6 +114,10 @@ struct TVActionPopoverMenu: View {
         .onChange(of: currentItems) { _, _ in
             measuredListHeight = 0
         }
+        .onDisappear {
+            focusTask?.cancel()
+            focusTask = nil
+        }
         .accessibilityAction(.escape, handleExit)
     }
 
@@ -133,34 +143,29 @@ struct TVActionPopoverMenu: View {
     }
 
     private func enterSubmenu(_ item: TVActionPopoverItem) {
-        guard let children = item.children, !children.isEmpty else { return }
-        let targetId = firstOptionId(in: children)
+        guard let children = item.children,
+              let targetId = firstOptionId(in: children) else { return }
+        focusTask?.cancel()
         preferredFocusId = targetId
-        submenuStack.append(
-            SubmenuLevel(
-                items: children,
-                returnFocusId: item.id
-            )
-        )
+        submenuPath.append(item.id)
         highlightedId = targetId
-        Task { @MainActor in
+        focusTask = Task { @MainActor in
             await Task.yield()
-            if highlightedId == nil {
-                highlightedId = targetId
-            }
+            guard !Task.isCancelled, highlightedId == nil else { return }
+            highlightedId = targetId
         }
     }
 
     private func handleExit() {
-        if let popped = submenuStack.popLast() {
-            let returnId = popped.returnFocusId
+        focusTask?.cancel()
+        focusTask = nil
+        if let returnId = submenuPath.popLast() {
             preferredFocusId = returnId
             highlightedId = returnId
-            Task { @MainActor in
+            focusTask = Task { @MainActor in
                 await Task.yield()
-                if highlightedId == nil {
-                    highlightedId = returnId
-                }
+                guard !Task.isCancelled, highlightedId == nil else { return }
+                highlightedId = returnId
             }
         } else {
             onClose()
