@@ -71,6 +71,10 @@ struct ShuffleItem: Decodable, Equatable, Sendable {
     let overview: String?
     let runtime: Int?
     let releaseDate: String?
+    /// The series' episode labels ("air_date") and the episode's air date;
+    /// absent from older servers.
+    var episodeLabels: String? = nil
+    var airDate: String? = nil
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil

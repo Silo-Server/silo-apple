@@ -8,6 +8,10 @@ protocol EpisodeCaptionSource {
     var seriesTitle: String? { get }
     var seasonNumber: Int? { get }
     var episodeNumber: Int? { get }
+    /// The series' episode labels ("air_date") and the episode's air date;
+    /// see `EpisodeLabel`.
+    var episodeLabels: String? { get }
+    var airDate: String? { get }
 }
 
 extension SectionItem: EpisodeCaptionSource {}
@@ -21,24 +25,13 @@ extension BrowseItem: EpisodeCaptionSource {}
 enum EpisodeCardCaption {
     /// "S01E02" — zero-padded so codes line up across a row.
     static func code(season: Int, episode: Int, locale: Locale = AppLanguage.formattingLocale) -> String {
-        AppLanguage.string(.catalogEpisodeTag(padded(season), padded(episode)), locale: locale)
-    }
-
-    /// Two digits at least, in ASCII digits like every code (D78): "01",
-    /// "12", "2021".
-    private static func padded(_ number: Int) -> String {
-        String(format: "%02d", number)
+        EpisodeLabel.code(season: season, episode: episode, style: .paddedTag, locale: locale)
     }
 
     /// Spoken season and episode: "Season 1, Episode 2", or "Specials,
     /// Episode 2" for season 0.
     static func spokenCode(season: Int, episode: Int, locale: Locale = AppLanguage.formattingLocale) -> String {
-        let seasonLabel: LocalizedStringResource = season == 0
-            ? .detailSpecials
-            : .detailSeason(LocaleFormat.integer(season, locale: locale))
-        return [seasonLabel, .detailEpisode(LocaleFormat.integer(episode, locale: locale))]
-            .map { AppLanguage.string($0, locale: locale) }
-            .joined(separator: ", ")
+        EpisodeLabel.code(season: season, episode: episode, style: .spoken, locale: locale)
     }
 
     /// "S01E02 · Pilot" from an episode code and title.
@@ -50,11 +43,15 @@ enum EpisodeCardCaption {
         item.type.lowercased() == "episode"
     }
 
+    /// "S01E02", or the air date ("Nov 20, 2026") for an episode of a
+    /// date-labeled series.
     static func code(for item: some EpisodeCaptionSource, locale: Locale = AppLanguage.formattingLocale) -> String? {
         guard isEpisode(item),
               let season = item.seasonNumber,
               let episode = item.episodeNumber else { return nil }
-        return code(season: season, episode: episode, locale: locale)
+        return EpisodeLabel.text(
+            season: season, episode: episode, labels: item.episodeLabels, airDate: item.airDate, locale: locale
+        )
     }
 
     /// The episode's own title, or `nil` when it is empty or merely repeats
@@ -88,12 +85,16 @@ enum EpisodeCardCaption {
         return code ?? title
     }
 
-    /// Spoken form for accessibility: "Season 1, Episode 2, Pilot".
+    /// Spoken form for accessibility: "Season 1, Episode 2, Pilot", or
+    /// "Nov 20, 2026, Lakers vs Celtics" for a date-labeled series.
     static func accessibilityLabel(for item: some EpisodeCaptionSource, locale: Locale = AppLanguage.formattingLocale) -> String? {
         guard isEpisode(item) else { return nil }
         var parts: [String] = []
         if let season = item.seasonNumber, let episode = item.episodeNumber {
-            parts.append(spokenCode(season: season, episode: episode, locale: locale))
+            parts.append(
+                EpisodeLabel.airDate(labels: item.episodeLabels, airDate: item.airDate, locale: locale)
+                    ?? spokenCode(season: season, episode: episode, locale: locale)
+            )
         }
         if let title = episodeTitle(for: item) {
             parts.append(title)
@@ -110,10 +111,24 @@ enum EpisodeCardCaption {
 extension EpisodeCardCaption {
     /// "S01E02 · Pilot", so a special (S00) and each episode's place in the
     /// season read at a glance. Just the code when the episode has no title.
-    static func railTitle(for episode: EpisodeListItem, locale: Locale = AppLanguage.formattingLocale) -> String {
+    /// A date-labeled series (`episodeLabels` "air_date") leads with the
+    /// title alone, since the air date is on the metadata line below; an
+    /// untitled episode shows its date, or its code when undated.
+    static func railTitle(
+        for episode: EpisodeListItem,
+        episodeLabels: String? = nil,
+        locale: Locale = AppLanguage.formattingLocale
+    ) -> String {
+        let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if EpisodeLabel.labelsByAirDate(episodeLabels) {
+            if let title, !title.isEmpty { return title }
+            return EpisodeLabel.text(
+                season: episode.seasonNumber, episode: episode.episodeNumber,
+                labels: episodeLabels, airDate: episode.airDate, locale: locale
+            )
+        }
         let code = Self.code(season: episode.seasonNumber, episode: episode.episodeNumber, locale: locale)
-        guard let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !title.isEmpty else { return code }
+        guard let title, !title.isEmpty else { return code }
         return titled(code: code, title: title, locale: locale)
     }
 

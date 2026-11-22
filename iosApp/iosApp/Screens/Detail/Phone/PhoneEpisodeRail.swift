@@ -8,6 +8,8 @@ struct PhoneEpisodeRail: View {
     let onSelect: (String) -> Void
     var onPlay: ((String) -> Void)? = nil
     var currentContentId: String? = nil
+    /// The series' episode labels; "air_date" names episodes by date.
+    var episodeLabels: String? = nil
     var selectsCenteredEpisode = false
     var onSetWatched: ((EpisodeListItem, Bool) -> Void)? = nil
     var isUpdatingWatched = false
@@ -35,6 +37,7 @@ struct PhoneEpisodeRail: View {
                     PhoneEpisodeCard(
                         episode: episode,
                         isCurrent: currentContentId == episode.contentId,
+                        episodeLabels: episodeLabels,
                         cardWidth: cardWidth,
                         stillHeight: stillHeight,
                         stillCornerRadius: stillCornerRadius,
@@ -146,6 +149,7 @@ private struct PhoneEpisodeCard: View {
     @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     let isCurrent: Bool
+    let episodeLabels: String?
     let cardWidth: CGFloat
     let stillHeight: CGFloat
     let stillCornerRadius: CGFloat
@@ -232,7 +236,7 @@ private struct PhoneEpisodeCard: View {
                 nowViewingTag
             }
 
-            Text(EpisodeCardCaption.railTitle(for: episode, locale: locale))
+            Text(EpisodeCardCaption.railTitle(for: episode, episodeLabels: episodeLabels, locale: locale))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(titleColor)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
@@ -295,7 +299,9 @@ private struct PhoneEpisodeCard: View {
     }
 
     private var accessibilityDescription: String {
-        PhoneEpisodeFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent, locale: locale)
+        PhoneEpisodeFormatting.accessibilityDescription(
+            for: episode, isCurrent: isCurrent, episodeLabels: episodeLabels, locale: locale
+        )
     }
 
     private var spoilers: EpisodeSpoilerSettings {

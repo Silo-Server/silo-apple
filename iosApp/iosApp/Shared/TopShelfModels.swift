@@ -55,6 +55,10 @@ struct TopShelfItem: Decodable {
     let seriesTitle: String?
     let seasonNumber: Int?
     let episodeNumber: Int?
+    /// The series' episode labels ("air_date") and the episode's air date;
+    /// see `EpisodeLabel`. Absent from older servers.
+    let episodeLabels: String?
+    let airDate: String?
     let positionSeconds: Double?
     let durationSeconds: Double?
     let progressUpdatedAt: String?

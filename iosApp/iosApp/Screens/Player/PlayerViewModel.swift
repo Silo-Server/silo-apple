@@ -106,6 +106,10 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
     var isFromOnDeck = false
     /// `title` is the app's "Episode N" for an episode the server left untitled.
     private(set) var titleIsFallback = false
+    /// The series' episode labels: "air_date" names the episode by its air
+    /// date in `episodeLabel`. From the playing episode's `/watch` for the
+    /// next episode of its series, else from the card it came from.
+    var episodeLabels: String? = nil
 
     var id: String { contentId }
     /// `title` as the Remote Control state sends it: English (D44).
@@ -113,7 +117,10 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         titleIsFallback ? AppLanguage.inEnglish { AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber))) } : title
     }
     var episodeLabel: String? {
-        isEpisode ? AppLanguage.string(.playerEyebrowEpisode(LocaleFormat.codeNumber(seasonNumber), LocaleFormat.codeNumber(episodeNumber))) : nil
+        guard isEpisode else { return nil }
+        return EpisodeLabel.text(
+            season: seasonNumber, episode: episodeNumber, style: .colon, labels: episodeLabels, airDate: airDate
+        )
     }
 
     init(episode: EpisodeListItem, seriesId: String?, seriesTitle: String?) {
@@ -154,7 +161,8 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         // portrait, so it shows its backdrop instead.
         stillUrl = (item.isEpisode ? item.posterUrl : nil) ?? item.backdropUrl
         stillThumbhash = (item.isEpisode ? item.posterThumbhash : nil) ?? item.backdropThumbhash
-        airDate = item.releaseDate
+        airDate = item.isEpisode ? (item.airDate ?? item.releaseDate) : item.releaseDate
+        episodeLabels = item.episodeLabels
         // Shuffle picks carry no watch state, so an episode reads as untouched.
         watchState = EpisodeWatchState(played: false)
     }
@@ -175,7 +183,10 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         runtime = section.runtime
         stillUrl = item.artworkUrl
         stillThumbhash = item.artworkThumbhash
-        airDate = nil
+        // A Home card carries its series' episode labels and, for a
+        // date-labeled series (sports), the air date that names it.
+        airDate = section.airDate
+        episodeLabels = section.episodeLabels
         watchState = EpisodeWatchState(sectionItem: section)
     }
 }
@@ -3715,7 +3726,8 @@ class PlayerViewModel {
                     seriesId: seriesId,
                     seriesTitle: detail.seriesTitle,
                     seasonNumber: seasonNumber,
-                    episodeNumber: episodeNumber
+                    episodeNumber: episodeNumber,
+                    episodeLabels: detail.episodeLabels
                 )
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 self.nextUpEpisode = episode
@@ -3942,6 +3954,7 @@ class PlayerViewModel {
         seriesTitle: String?,
         seasonNumber: Int,
         episodeNumber: Int,
+        episodeLabels: String? = nil,
         api: SiloAPI = .shared
     ) async throws -> PlayerNextUpEpisode? {
         let libraryId = self.libraryId
@@ -3987,11 +4000,15 @@ class PlayerViewModel {
             return nil
         }
 
-        return PlayerNextUpEpisode(
+        var next = PlayerNextUpEpisode(
             episode: orderedEpisodes[orderedEpisodes.index(after: currentIndex)],
             seriesId: seriesId,
             seriesTitle: seriesTitle
         )
+        // The series' labels from the playing episode's `/watch`; the next
+        // episode's own air date comes from the season's episode list.
+        next.episodeLabels = episodeLabels
+        return next
     }
 
     private func updateNextUpPresentation(for movieTime: Double) {

@@ -475,6 +475,11 @@ struct TVSeriesDetailView: View {
         guard !isShowingSeriesOverview, let episode = displayedEpisode else {
             return TVHeroMetadata.seriesSourceTokens(from: detail)
         }
+        // A date-labeled series (sports): the facts line below already shows
+        // the air date, which replaces the synthetic season and episode.
+        if EpisodeLabel.airDate(labels: detail.episodeLabels, airDate: episode.airDate, locale: locale) != nil {
+            return []
+        }
         let season = AppLanguage.string(
             episode.seasonNumber == 0 ? .detailSpecials : .detailSeason(LocaleFormat.integer(episode.seasonNumber)),
             locale: locale
@@ -577,6 +582,13 @@ struct TVSeriesDetailView: View {
             && DetailVersionSelection.savedPositionIsInEdition(
                 of: shown, in: nextUpVersions, userData: episode.userData
             )
+        // A date-labeled series (sports): "Play 20 Nov 2026".
+        if let date = EpisodeLabel.airDate(labels: detail.episodeLabels, airDate: episode.airDate, locale: locale) {
+            return AppLanguage.string(
+                resumes ? .detailResumeEpisodeCode(date) : .detailPlayEpisodeCode(date),
+                locale: locale
+            )
+        }
         return AppLanguage.string(
             resumes
                 ? .detailResumeEpisode(season, number)
@@ -857,6 +869,7 @@ struct TVSeriesDetailView: View {
                 onSetFavorite: onSetEpisodeFavorite,
                 onSetWatchlist: onSetEpisodeWatchlist,
                 currentContentId: displayedEpisode?.contentId,
+                episodeLabels: detail.episodeLabels,
                 favoriteStates: episodeFavoriteStates,
                 watchlistStates: episodeWatchlistStates,
                 baseCardWidth: SiloTheme.thumbnailCardWidth,

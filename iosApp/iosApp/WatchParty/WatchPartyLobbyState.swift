@@ -36,9 +36,15 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         type = item.type
         title = item.title
         if let season = item.seasonNumber, let episode = item.episodeNumber {
-            let code = AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
-            subtitle = [item.seriesTitle.map { AppLanguage.isolated($0) }, code].compactMap { $0 }.joined(separator: " · ")
-            suggestionSubtitle = [item.seriesTitle, "S\(season):E\(episode)"].compactMap { $0 }.joined(separator: " · ")
+            let season = Int(season), episode = Int(episode)
+            // "S1:E2", or the air date for a date-labeled series (sports).
+            func code() -> String {
+                EpisodeLabel.text(season: season, episode: episode, style: .watchParty,
+                                  labels: item.episodeLabels, airDate: item.airDate)
+            }
+            subtitle = [item.seriesTitle.map { AppLanguage.isolated($0) }, code()].compactMap { $0 }.joined(separator: " · ")
+            // Sent to the party in English (D44).
+            suggestionSubtitle = [item.seriesTitle, AppLanguage.inEnglish(code)].compactMap { $0 }.joined(separator: " · ")
         } else {
             subtitle = item.seriesTitle
             suggestionSubtitle = item.seriesTitle
@@ -147,11 +153,16 @@ extension WatchPartySelectedItem {
     init(previewing episode: EpisodeListItem, series: ItemDetail, seasons: [Season]) {
         let season = seasons.first { $0.seasonNumber == episode.seasonNumber }
         let seasonPoster = season?.posterUrl?.nilIfEmpty
+        // "S1:E2", or the air date for a date-labeled series (sports).
+        func code() -> String {
+            EpisodeLabel.text(season: episode.seasonNumber, episode: episode.episodeNumber, style: .watchParty,
+                              labels: series.episodeLabels, airDate: episode.airDate)
+        }
         self.init(previewContentId: episode.contentId, type: "episode",
                   title: episode.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber))),
-                  subtitle: "\(AppLanguage.isolated(series.title)) · "
-                      + AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber))),
-                  suggestionSubtitle: "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)",
+                  subtitle: "\(AppLanguage.isolated(series.title)) · " + code(),
+                  // Sent to the party in English (D44).
+                  suggestionSubtitle: "\(series.title) · " + AppLanguage.inEnglish(code),
                   posterUrl: seasonPoster ?? series.posterUrl,
                   posterThumbhash: seasonPoster != nil ? season?.posterThumbhash : series.posterThumbhash,
                   backdropUrl: series.backdropUrl, backdropThumbhash: series.backdropThumbhash,

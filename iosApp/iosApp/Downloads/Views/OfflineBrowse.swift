@@ -200,8 +200,9 @@ struct OfflineSeriesBrowseView: View {
 
     private func episodeTag(_ record: DownloadRecord) -> String? {
         guard let episode = record.episodeNumber.map({ LocaleFormat.codeNumber($0) }) else { return nil }
-        if let season = record.seasonNumber, season > 0 {
-            return AppLanguage.string(.detailEpisodeCode(LocaleFormat.codeNumber(season), episode), locale: locale)
+        if let season = record.seasonNumber, season > 0, let number = record.episodeNumber {
+            return EpisodeLabel.text(season: season, episode: number, style: .dotted,
+                                     labels: record.episodeLabels, airDate: record.airDate, locale: locale)
         }
         return AppLanguage.string(.calendarEpisodeShort(episode), locale: locale)
     }

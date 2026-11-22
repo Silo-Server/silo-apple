@@ -536,7 +536,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// "Resume S2·E5" when the tap offers to resume, else "Play S2·E5". The
     /// confirmation dialog still lets the user restart instead.
     private func playButtonLabel(for episode: EpisodeListItem) -> String {
-        DetailPlayLabel.episode(episode, shown: shownVersion(for: episode), in: nextUpVersions)
+        DetailPlayLabel.episode(
+            episode, episodeLabels: detail.episodeLabels, shown: shownVersion(for: episode), in: nextUpVersions
+        )
     }
 
     /// The file the page shows for `episode`, once its files have loaded.
@@ -612,7 +614,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     .padding(.horizontal, SiloTheme.safePadding)
             }
             similarSection
-            PhoneMediaInfoSection(version: mediaInfoVersion, episode: nextUpEpisode, isExpanded: $showsMediaInfo)
+            PhoneMediaInfoSection(
+                version: mediaInfoVersion, episode: nextUpEpisode, episodeLabels: detail.episodeLabels,
+                isExpanded: $showsMediaInfo
+            )
         }
     }
 
@@ -720,6 +725,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                                 handlePlayTap(for: episode)
                             },
                             currentContentId: nextUpEpisode?.contentId,
+                            episodeLabels: detail.episodeLabels,
                             selectsCenteredEpisode: true,
                             onSetWatched: setEpisodeWatched,
                             isUpdatingWatched: isUpdatingWatched,

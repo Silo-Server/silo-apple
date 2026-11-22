@@ -1694,7 +1694,10 @@ struct PlayerNextUpScreen: View {
 
     private func episodeMetadataLine(for episode: PlayerNextUpEpisode) -> String {
         var parts: [String] = []
-        if let airDate = episode.airDate, !airDate.isEmpty {
+        // A date-labeled series (sports) already names the episode by its
+        // air date in the label above.
+        if !EpisodeLabel.labelsByAirDate(episode.episodeLabels),
+           let airDate = episode.airDate, !airDate.isEmpty {
             parts.append(formatAirDate(airDate))
         }
         if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
@@ -1703,9 +1706,9 @@ struct PlayerNextUpScreen: View {
         return parts.joined(separator: " · ")
     }
 
+    /// A calendar date, the same day in every time zone.
     private func formatAirDate(_ airDate: String) -> String {
-        guard let date = try? Date(airDate, strategy: .iso8601) else { return airDate }
-        return date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, locale: AppLanguage.formattingLocale))
+        DetailDateFormatting.abbreviatedDate(airDate) ?? airDate
     }
 
     /// One centered column shared by the hero and On Deck, as wide as four

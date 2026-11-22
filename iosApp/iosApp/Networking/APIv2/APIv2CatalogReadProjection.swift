@@ -60,6 +60,7 @@ extension ItemDetail {
         self.episodeNumber = try value.episodeNumber.map { try catalogLegacyInt($0) }
         self.episodeCount = try value.episodeCount.map { try catalogLegacyInt($0) }
         self.airDate = value.airDate
+        self.episodeLabels = value.episodeLabels
         self.isSpecials = value.isSpecials
         self.userData = try value.userData.map { try LeafItemUserData(catalog: $0) }
         self.versions = try value.versions.map { try FileVersion(catalog: $0) }
@@ -300,6 +301,8 @@ extension WatchDetail {
         seriesTitle = value.seriesTitle
         seasonNumber = value.seasonNumber
         episodeNumber = value.episodeNumber
+        episodeLabels = value.episodeLabels
+        airDate = value.airDate
         effectiveSubtitleLanguage = value.effectiveSubtitleLanguage
         effectiveSubtitleMode = value.effectiveSubtitleMode
         effectiveShowForcedSubtitles = value.effectiveShowForcedSubtitles

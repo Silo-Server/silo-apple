@@ -302,7 +302,9 @@ final class ContentProvider: TVTopShelfContentProvider {
               let episode = item.episodeNumber else {
             return item.title
         }
-        let code = AppLanguage.string(.catalogEpisodeTag(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
+        let code = EpisodeLabel.text(
+            season: season, episode: episode, style: .tag, labels: item.episodeLabels, airDate: item.airDate
+        )
         return "\(AppLanguage.isolated(seriesTitle)) · \(code)"
     }
 }

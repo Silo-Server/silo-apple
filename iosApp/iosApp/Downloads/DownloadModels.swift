@@ -742,6 +742,11 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// them until the manifest's `seasonNumber` and `episodeNumber` arrive.
     var requestSeasonNumber: Int? = nil
     var requestEpisodeNumber: Int? = nil
+    /// The series' episode labels ("air_date") and the episode's air date,
+    /// stored from a single-episode request; the offline manifest carries
+    /// neither. A date-labeled episode's rows show its date for its code.
+    var episodeLabels: String? = nil
+    var airDate: String? = nil
     var posterThumbhash: String?
     /// ThumbHash of the parent series poster, for an episode download.
     var seriesPosterThumbhash: String? = nil
@@ -818,6 +823,10 @@ extension DownloadRecord {
         locale: Locale = AppLanguage.formattingLocale,
         both: (String, String) -> LocalizedStringResource = { .catalogEpisodeCaption($0, $1) }
     ) -> String? {
+        if shownNumbers.season != nil, shownNumbers.episode != nil,
+           let date = EpisodeLabel.airDate(labels: episodeLabels, airDate: airDate, locale: locale) {
+            return date
+        }
         let season = shownNumbers.season.map { LocaleFormat.codeNumber($0) }
         let episode = shownNumbers.episode.map { LocaleFormat.codeNumber($0) }
         let resource: LocalizedStringResource
