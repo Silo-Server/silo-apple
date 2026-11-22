@@ -47,7 +47,8 @@ struct TVMovieDetailView: View {
     var onTranslateDescription: (() -> Void)? = nil
 
     @Namespace private var detailFocusNamespace
-    @FocusState private var playFocused: Bool
+    @FocusState private var focusedAction: TVDetailAction?
+    @State private var preferredAction: TVDetailAction = .play
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
@@ -122,7 +123,7 @@ struct TVMovieDetailView: View {
                 }
                 .ignoresSafeArea()
                 .focusScope(detailFocusNamespace)
-                .defaultFocus($playFocused, true, priority: .userInitiated)
+                .defaultFocus($focusedAction, preferredAction, priority: .userInitiated)
                 .detailFocusScroll(
                     proxy: scrollProxy,
                     actionRowFocused: actionRowFocused,
@@ -158,7 +159,8 @@ struct TVMovieDetailView: View {
             focusResetKey: detail.contentId,
             initialFocusScope: .page,
             focusNamespace: detailFocusNamespace,
-            playFocused: $playFocused,
+            focusedAction: $focusedAction,
+            preferredAction: $preferredAction,
             rowFocused: $actionRowFocused,
             stabilizesFocusMotion: true,
             primaryButtonWidth: 340,

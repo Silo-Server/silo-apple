@@ -466,7 +466,11 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     let focusResetKey: String
     let initialFocusScope: InitialFocusScope
     let focusNamespace: Namespace.ID
-    let playFocused: FocusState<Bool>.Binding
+    let focusedAction: FocusState<TVDetailAction?>.Binding
+    /// Mirrors `entryAction` up to the page's outer `focusScope` so re-enabling
+    /// the page after a popover closes lands directly on the button that opened
+    /// it instead of flashing Play for a frame.
+    @Binding var preferredAction: TVDetailAction
     let rowFocused: FocusState<Bool>.Binding
     /// Opt-in treatment used by the redesigned Movie and Series pages. Play
     /// stays a labeled pill and no control scales on focus; secondary circles
@@ -490,7 +494,6 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     @State private var initialPlayFocusTask: Task<Void, Never>?
     @State private var lastFocusedAction: TVDetailAction = .play
     @State private var disabledActions: Set<TVDetailAction> = []
-    @FocusState private var focusedAction: TVDetailAction?
 
     var body: some View {
         HStack(spacing: stabilizesFocusMotion ? 18 : 36) {
@@ -504,11 +507,10 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                     subtitle: playSubtitle,
                     stabilizesFocusMotion: stabilizesFocusMotion,
                     fixedWidth: primaryButtonWidth,
-                    action: onPlay,
-                    focused: playFocused
+                    action: onPlay
                 )
                 .disabled(playTitle == nil)
-                .focused($focusedAction, equals: .play)
+                .focused(focusedAction, equals: .play)
                 .onGeometryChange(for: Bool.self) { proxy in
                     proxy.size.width > 0 && proxy.size.height > 0
                 } action: { isLaidOut in
@@ -527,10 +529,10 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                         stabilizesFocusMotion: stabilizesFocusMotion,
                         action: onStartOver
                     )
-                    .focused($focusedAction, equals: .startOver)
+                    .focused(focusedAction, equals: .startOver)
                 }
 
-                playbackSelectors($focusedAction)
+                playbackSelectors(focusedAction)
             }
 
             TVCircleActionButton(
@@ -548,10 +550,10 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                 stabilizesFocusMotion: stabilizesFocusMotion,
                 action: onToggleWatchlist
             )
-            .focused($focusedAction, equals: .watchlist)
+            .focused(focusedAction, equals: .watchlist)
 
             moreMenu()
-                .focused($focusedAction, equals: .more)
+                .focused(focusedAction, equals: .more)
         }
         .focused(rowFocused)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -559,9 +561,12 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         // Entering the row from below lands on the last focused action,
         // else Play, instead of whichever control sits above the season
         // pill or card the focus came from.
-        .defaultFocus($focusedAction, entryAction, priority: .userInitiated)
-        .onChange(of: focusedAction) { _, action in
+        .defaultFocus(focusedAction, entryAction, priority: .userInitiated)
+        .onChange(of: focusedAction.wrappedValue) { _, action in
             if let action { lastFocusedAction = action }
+        }
+        .onChange(of: entryAction, initial: true) { _, action in
+            if preferredAction != action { preferredAction = action }
         }
         .onPreferenceChange(TVDisabledDetailActionsKey.self) { actions in
             disabledActions = actions
@@ -631,11 +636,11 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         }
         didResetInitialPlayFocus = true
 
-        let actionFocus = $focusedAction
+        let actionFocus = focusedAction
         initialPlayFocusTask = Task { @MainActor in
             for attempt in 0..<3 {
                 if Task.isCancelled { return }
-                if playFocused.wrappedValue { return }
+                if actionFocus.wrappedValue == .play { return }
 
                 if attempt > 0 {
                     if !tracksInitialFocusNavigation, let focusedNow = actionFocus.wrappedValue,
@@ -644,7 +649,7 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                     }
                     try? await Task.sleep(for: .milliseconds(50))
                     if Task.isCancelled { return }
-                    if playFocused.wrappedValue { return }
+                    if actionFocus.wrappedValue == .play { return }
                     if !tracksInitialFocusNavigation, let focusedNow = actionFocus.wrappedValue,
                        focusedNow != .play {
                         return
@@ -658,7 +663,6 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                     return
                 }
                 actionFocus.wrappedValue = .play
-                playFocused.wrappedValue = true
             }
         }
     }

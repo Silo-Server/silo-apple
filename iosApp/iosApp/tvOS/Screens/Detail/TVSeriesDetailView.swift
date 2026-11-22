@@ -244,7 +244,8 @@ struct TVSeriesDetailView: View {
 
     @Namespace private var detailFocusNamespace
     @Namespace private var modeFocusNamespace
-    @FocusState private var playFocused: Bool
+    @FocusState private var focusedAction: TVDetailAction?
+    @State private var preferredAction: TVDetailAction = .play
     @FocusState private var showActionRowFocused: Bool
     @FocusState private var focusedModeId: String?
     @State private var userNavigated = false
@@ -300,7 +301,7 @@ struct TVSeriesDetailView: View {
                 }
                 .ignoresSafeArea()
                 .focusScope(detailFocusNamespace)
-                .defaultFocus($playFocused, true, priority: .userInitiated)
+                .defaultFocus($focusedAction, preferredAction, priority: .userInitiated)
                 .detailFocusScroll(
                     proxy: scrollProxy,
                     actionRowFocused: showActionRowFocused,
@@ -521,7 +522,8 @@ struct TVSeriesDetailView: View {
             focusResetKey: detail.contentId,
             initialFocusScope: .page,
             focusNamespace: detailFocusNamespace,
-            playFocused: $playFocused,
+            focusedAction: $focusedAction,
+            preferredAction: $preferredAction,
             rowFocused: $showActionRowFocused,
             stabilizesFocusMotion: true,
             primaryButtonWidth: 340,
