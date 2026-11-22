@@ -160,7 +160,7 @@ struct TVPlaybackActionSelectors: View {
                         id: "track-\(option.ordinal)",
                         title: option.title,
                         detail: option.detail,
-                        isSelected: option.isSelected
+                        isSelected: selectedAudioTrackIndex != nil && option.isSelected
                     )
                 }
             },
