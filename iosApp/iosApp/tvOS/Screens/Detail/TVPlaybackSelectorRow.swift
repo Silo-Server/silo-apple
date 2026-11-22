@@ -113,26 +113,23 @@ struct TVPlaybackActionSelectors: View {
             stabilizesFocusMotion: true,
             menuTitle: AppLanguage.string(.detailVersion, locale: locale),
             items: {
-                let versionItems = scopedVersions.map { version in
-                    TVActionPopoverItem(
-                        id: "file-\(version.fileId)",
-                        title: DetailPlaybackFormatting.versionShortLabel(version),
-                        detail: DetailPlaybackFormatting.versionDetailLabel(version),
-                        isSelected: scopedVersions.count == 1 || selectedVersionFileId == version.fileId
-                    )
-                }
-                guard scopedVersions.count > 1 else { return versionItems }
-                return [
+                [
                     TVActionPopoverItem(
                         id: "auto",
                         title: AppLanguage.string(.detailAuto, locale: locale),
                         detail: AppLanguage.string(.detailAutoVersion, locale: locale),
                         isSelected: selectedVersionFileId == nil
                     )
-                ] + versionItems
+                ] + scopedVersions.map { version in
+                    TVActionPopoverItem(
+                        id: "file-\(version.fileId)",
+                        title: DetailPlaybackFormatting.versionShortLabel(version),
+                        detail: DetailPlaybackFormatting.versionDetailLabel(version),
+                        isSelected: selectedVersionFileId == version.fileId
+                    )
+                }
             },
             onSelect: { item in
-                guard scopedVersions.count > 1 else { return }
                 if item.id == "auto" {
                     onSelectVersion(nil)
                 } else if let fileId = Int(item.id.dropFirst("file-".count)) {

@@ -119,7 +119,9 @@ struct TVActionPopoverMenu: View {
         .onMoveCommand { direction in
             switch direction {
             case .left:
-                handleExit()
+                if isInSubmenu {
+                    handleExit()
+                }
             case .right:
                 if let current = currentItems.first(where: { $0.id == highlightedId }),
                    current.hasSubmenu, current.isEnabled {
