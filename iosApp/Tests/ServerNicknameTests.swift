@@ -204,6 +204,22 @@ final class ServerNicknameTests: XCTestCase {
         XCTAssertEqual(tv.registry.entry(with: Self.id(Self.lanURL))?.displayName, "Home")
     }
 
+    /// A device that saved the address before learning its deployment
+    /// identity renames it: the synced record keeps the identity it already
+    /// had, so the server's other addresses still find the new name.
+    func testARenameFromADeviceWithoutTheIdentityKeepsTheSyncedIdentity() throws {
+        let cloud = CloudStorage()
+        let phone = try Device(saved: [Self.entry(Self.publicURL, name: "Silo", deployment: Self.deployment)], cloud: cloud)
+        phone.registry.rename(serverId: Self.id(Self.publicURL), to: "Home")
+        let pad = try Device(saved: [Self.entry(Self.publicURL, name: "Silo")], cloud: cloud)
+
+        pad.registry.rename(serverId: Self.id(Self.publicURL), to: "Lounge")
+        let tv = try Device(saved: [Self.entry(Self.lanURL, name: "Silo", deployment: Self.deployment)], cloud: cloud)
+
+        XCTAssertEqual(cloud.records.map(\.verifiedServerId), [Self.deployment])
+        XCTAssertEqual(tv.registry.entry(with: Self.id(Self.lanURL))?.displayName, "Lounge")
+    }
+
     /// An address's own name, given while its sync was lost, survives a newer
     /// name for another address of the server and is written back.
     func testAnAddressesOwnNameSurvivesANewerNameForAnotherAddress() throws {

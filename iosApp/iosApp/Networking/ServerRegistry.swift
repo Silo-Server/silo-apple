@@ -544,7 +544,9 @@ final class ServerRegistry {
                 && theirs?.updatedAt == mine.updatedAt
                 && theirs?.name == mine.name
             guard isNewer || addsIdentity else { continue }
-            mine.verifiedServerId = identity
+            // A device that hasn't learned the identity keeps the synced one,
+            // or the server's other addresses would stop finding this name.
+            mine.verifiedServerId = identity ?? ServerIdentity.usable(theirs?.verifiedServerId)
             published = ServerNicknameSync.publishing(mine, into: published)
         }
         if published != synced {
