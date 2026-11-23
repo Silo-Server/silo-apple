@@ -751,11 +751,13 @@ struct MediaRow: View {
 
     // MARK: - Metrics
 
+    /// Title to the top of the cards. Off tvOS it matches Home's rows, so a
+    /// row's cards start at the same height on every page.
     private var rowVerticalSpacing: CGFloat {
         #if os(tvOS)
         return 20
         #else
-        return SiloTheme.smallPadding
+        return HomeFeedMetrics.headerGap
         #endif
     }
 

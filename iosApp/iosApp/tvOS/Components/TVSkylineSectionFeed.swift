@@ -511,7 +511,8 @@ struct TVSkylineBackdrop: View {
             artworkThumbhash: model.backdropThumbhash,
             artworkCoverAspect: model.backdropCoverAspect,
             isVisible: model.backdropURL != nil,
-            crossfadeDuration: SiloTheme.Skyline.marqueeCrossfadeDuration
+            crossfadeDuration: SiloTheme.Skyline.marqueeCrossfadeDuration,
+            washCrossfadeDuration: SiloTheme.Skyline.marqueeWashCrossfadeDuration
         )
     }
 }

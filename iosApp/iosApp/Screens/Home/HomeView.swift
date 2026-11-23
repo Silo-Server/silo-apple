@@ -19,6 +19,12 @@ struct HomeView: View {
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = HomeViewModel()
+    @State private var watchStateRefresh: Task<Void, Never>?
+    @State private var watchStateRefreshPending = false
+    @State private var hasObservedWatchState = false
+    #if os(macOS)
+    @State private var watchStateWindowVisible = false
+    #endif
     #if !os(tvOS)
     /// Feeds the glass strip behind the floating header as rows scroll under it.
     @State private var chromeScrollState = PageChromeScrollState()
@@ -32,15 +38,34 @@ struct HomeView: View {
         SiloTheme.smallPadding + (statusColumn == nil ? 0 : 6)
     }
     @Environment(\.statusColumn) private var statusColumn
-    /// The LazyVStack already contributes its normal section spacing after the
-    /// header runway. Adding a second large header gap pushed the first row
-    /// far down the screen.
-    private let headerToContentGap: CGFloat = 0
     #endif
     #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.locale) private var locale
+
+    private var observesWatchState: Bool {
+        guard scenePhase == .active, router.path.isEmpty, router.presentedPlayer == nil else { return false }
+        #if os(iOS)
+        return router.presentedItemDetail == nil
+        #elseif os(macOS)
+        return watchStateWindowVisible
+        #else
+        return true
+        #endif
+    }
+
+    private struct WatchStateScope: Equatable {
+        let serverID: String?
+        let owner: SessionOwner?
+        let credential: CredentialOwnerSnapshot
+    }
+
+    private var watchStateScope: WatchStateScope? {
+        guard observesWatchState else { return nil }
+        return WatchStateScope(serverID: ServerRegistry.shared.activeServerId, owner: SessionOwner.current(),
+                               credential: TokenStore.shared.ownerSnapshot)
+    }
 
     var body: some View {
         @Bindable var viewModel = viewModel
@@ -200,7 +225,7 @@ struct HomeView: View {
         #endif
         }
         .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
-            Task { await viewModel.loadSections() }
+            scheduleWatchStateRefresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: .titleMarkedNotInterested)) { note in
             guard let contentId = note.userInfo?[NotInterestedSync.contentIdKey] as? String else { return }
@@ -215,6 +240,18 @@ struct HomeView: View {
                 Task { await viewModel.reloadIfInterrupted() }
             }
         }
+        #if os(macOS)
+        .background(MacWindowVisibilityReader { watchStateWindowVisible = $0 })
+        #endif
+        .task(id: watchStateScope) {
+            cancelWatchStateRefresh()
+            guard observesWatchState else { return }
+            // Return to the server even if the socket is unavailable.
+            if hasObservedWatchState { scheduleWatchStateRefresh() }
+            hasObservedWatchState = true
+            await HomeWatchStateRealtime.observe { scheduleWatchStateRefresh() }
+        }
+        .onDisappear { cancelWatchStateRefresh() }
         .alert(
             Text(.homeUpdateFailedTitle),
             isPresented: $viewModel.isShowingActionError
@@ -228,6 +265,29 @@ struct HomeView: View {
             }
         }
         .personalStateNoticeAlert($viewModel.personalStateNotice)
+    }
+
+    private func scheduleWatchStateRefresh() {
+        guard observesWatchState else { return }
+        watchStateRefreshPending = true
+        guard watchStateRefresh == nil else { return }
+        let scope = watchStateScope
+        watchStateRefresh = Task {
+            while watchStateRefreshPending && !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+                guard watchStateScope == scope else { break }
+                watchStateRefreshPending = false
+                StartupContentPrefetcher.invalidateHomeSectionsInFlight()
+                await viewModel.loadSections()
+            }
+            if !Task.isCancelled { watchStateRefresh = nil }
+        }
+    }
+
+    private func cancelWatchStateRefresh() {
+        watchStateRefresh?.cancel()
+        watchStateRefresh = nil
+        watchStateRefreshPending = false
     }
 
     // MARK: - Content
@@ -250,16 +310,20 @@ struct HomeView: View {
         let sections = feedSections
         return ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
-                // Clear runway under the pinned header so the first row
-                // starts below the wordmark and utilities.
-                Color.clear
-                    .frame(height: topRunwaySpacing(topSafeAreaInset: topSafeAreaInset))
+                #if os(macOS)
+                // The stack's section spacing after this marker is the Mac's
+                // only top gap; the featured hero takes it back.
+                Color.clear.frame(height: 0)
+                #endif
 
                 ForEach(sections) { section in
                     feedSection(section, leadsPage: section.id == sections.first?.id)
                         .onAppear { warmRows(after: section) }
                 }
             }
+            // Clear runway under the pinned header. The first row starts right
+            // below it, at the same height as on the Libraries and For You tabs.
+            .padding(.top, topRunwaySpacing(topSafeAreaInset: topSafeAreaInset))
             .padding(.bottom, HomeFeedMetrics.bottomRunway)
         }
         .reportsPageChromeScroll(to: chromeScrollState)
@@ -351,9 +415,9 @@ struct HomeView: View {
 
     #if !os(tvOS)
     private func topRunwaySpacing(topSafeAreaInset: CGFloat) -> CGFloat {
-        // Mirror the floating header's vertical footprint (icon-frame height +
-        // bottom padding) so the first row clears it. LazyVStack supplies the
-        // remaining row gap; don't double-count it here.
+        // Mirror the floating header's vertical footprint (top inset +
+        // icon-frame height + bottom padding) so the first row starts right
+        // below it, as it does under the Libraries and For You headers.
         #if os(macOS)
         // The Mac sidebar carries the logo and utilities, so Home has no
         // floating header to clear, and the feed already starts below the
@@ -362,7 +426,7 @@ struct HomeView: View {
         #else
         var runway = topSafeAreaInset + SiloTheme.topBarIconHitSize + SiloTheme.smallPadding
         #if os(iOS)
-        runway += headerTopInset + headerToContentGap
+        runway += headerTopInset
         #else
         runway += SiloTheme.largePadding + SiloTheme.smallPadding
         #endif

@@ -266,6 +266,49 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertNil(counter.advance([:]))
     }
 
+    /// Server HLS: the plan's share of the engine relay's running totals of
+    /// media bytes and the time they spent arriving, each segment timed from
+    /// its first byte to its last. Segments the server answered in bursts
+    /// after waiting for its encoder add nothing to either. Each load has its
+    /// own relay, counting from 0: a replacement's relay is the adopted
+    /// plan's from its first byte, however the ticks fall around adoption,
+    /// and never the playing plan's.
+    func testTheRelayMeterTakesThePlansShareOfTheRelaysTotals() {
+        typealias Totals = RelayPlanThroughput.Totals
+        var meter = RelayPlanThroughput()
+        meter.planAdopted(networkKey: "wifi")
+        meter.note(Totals(load: 1, bytes: 0, receivingMs: 0), networkKey: "wifi")
+        XCTAssertNil(meter.throughputKbps, "nothing timed")
+        meter.note(Totals(load: 1, bytes: 2_500_000, receivingMs: 1_000), networkKey: "wifi")
+        XCTAssertEqual(meter.throughputKbps, 20_000)
+        meter.note(Totals(load: 1, bytes: 5_000_000, receivingMs: 2_000), networkKey: "wifi")
+        XCTAssertEqual(meter.throughputKbps, 20_000)
+
+        // A replacement loads on its own relay, which has already timed more
+        // than the playing plan's had when its loading began.
+        meter.note(Totals(load: 2, bytes: 6_000_000, receivingMs: 1_000), networkKey: "wifi", counts: false)
+        XCTAssertEqual(meter.throughputKbps, 20_000, "a replacement's loading is not the playing plan's")
+        meter.note(Totals(load: 2, bytes: 7_000_000, receivingMs: 2_000), networkKey: "wifi", counts: false)
+        meter.planAdopted(networkKey: "wifi")
+        XCTAssertNil(meter.throughputKbps, "a new plan's books")
+        meter.note(Totals(load: 2, bytes: 9_000_000, receivingMs: 3_000), networkKey: "wifi")
+        XCTAssertEqual(meter.throughputKbps, 24_000, "all of its relay's 9 MB over 3 s, none of the old relay's")
+
+        meter.planAdopted(networkKey: "wifi")
+        meter.note(Totals(load: 2, bytes: 10_000_000, receivingMs: 4_000), networkKey: "wifi")
+        XCTAssertEqual(meter.throughputKbps, 8_000, "a plan on the same relay: 1 MB over the second since its last tick")
+        // The engine rebuilds the relay within a load (a reload after the app
+        // was in the background, an AirPlay route change), with a tick
+        // without one between: the new relay counts from 0, here already past
+        // the old one's totals.
+        meter.note(nil, networkKey: "wifi")
+        XCTAssertEqual(meter.throughputKbps, 8_000, "no relay adds nothing")
+        meter.note(Totals(load: 2, bytes: 11_000_000, receivingMs: 5_000), networkKey: "wifi")
+        XCTAssertEqual(meter.throughputKbps, 16_000, "all of the rebuilt relay's 11 MB over 5 s: 12 MB over 6 s")
+        meter.note(Totals(load: 2, bytes: 12_000_000, receivingMs: 6_000), networkKey: "cellular")
+        XCTAssertNil(meter.throughputKbps, "the network changed under the plan")
+    }
+
     /// Opening a plan's source: the same 45 s, held by an outage, cancelling
     /// the step in flight and any step begun once it has run out.
     @MainActor

@@ -133,7 +133,19 @@ enum StartupContentPrefetcher {
 
     static func fetchHomeSections() async throws -> SectionsResponse {
         let profileGeneration = profileScopedGeneration
-        let homeGeneration = homeSectionsGeneration
+        while true {
+            try Task.checkCancellation()
+            let homeGeneration = homeSectionsGeneration
+            do {
+                return try await fetchHomeSections(profileGeneration: profileGeneration, homeGeneration: homeGeneration)
+            } catch where profileScopedGeneration == profileGeneration && homeSectionsGeneration != homeGeneration {
+                // Another Home window superseded the shared read. Join its
+                // current generation so this window also receives fresh rows.
+            }
+        }
+    }
+
+    private static func fetchHomeSections(profileGeneration: Int, homeGeneration: Int) async throws -> SectionsResponse {
         let requestProfileID = AuthService.shared.profileId
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("home_sections", isOriginator: !homeSections.isInFlight)
@@ -163,6 +175,8 @@ enum StartupContentPrefetcher {
             #if os(iOS) || os(tvOS)
             probe.finish(error: error)
             #endif
+            try validateProfileScopedGeneration(profileGeneration)
+            try validateHomeSectionsGeneration(homeGeneration)
             if let requestProfileID,
                Self.indicatesInvalidProfile(error) {
                 await AuthService.shared.recoverFromInvalidProfile(

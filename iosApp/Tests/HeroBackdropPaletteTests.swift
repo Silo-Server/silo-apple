@@ -38,6 +38,42 @@ final class HeroBackdropPaletteTests: XCTestCase {
         XCTAssertGreaterThan(tints.shadow.luminance, 0)
     }
 
+    func testEachCornerTakesItsColorFromTheSameQuarterOfTheArt() throws {
+        // 4 × 4 art: red top-left, blue top-right, orange bottom-left,
+        // purple bottom-right, each quarter with a little gray mixed in.
+        let red = RGB(r: 0.8, g: 0.1, b: 0.1)
+        let blue = RGB(r: 0.1, g: 0.2, b: 0.8)
+        let orange = RGB(r: 0.9, g: 0.5, b: 0.1)
+        let purple = RGB(r: 0.5, g: 0.1, b: 0.7)
+        let gray = RGB(r: 0.4, g: 0.4, b: 0.4)
+        let pixels = [
+            red, gray, blue, blue,
+            red, red, gray, blue,
+            orange, orange, purple, gray,
+            gray, orange, purple, purple,
+        ]
+
+        let corners = try XCTUnwrap(HeroBackdropPalette.sampleCorners(pixels: pixels, width: 4, height: 4))
+
+        XCTAssertEqual(corners.topLeading.hsv.hue, red.hsv.hue, accuracy: 0.02)
+        XCTAssertEqual(corners.topTrailing.hsv.hue, blue.hsv.hue, accuracy: 0.02)
+        XCTAssertEqual(corners.bottomLeading.hsv.hue, orange.hsv.hue, accuracy: 0.02)
+        XCTAssertEqual(corners.bottomTrailing.hsv.hue, purple.hsv.hue, accuracy: 0.02)
+    }
+
+    func testGrayArtGivesGrayCorners() throws {
+        let pixels = (0..<16).map { index in
+            let value = 0.2 + Double(index) / 30
+            return RGB(r: value, g: value, b: value)
+        }
+
+        let corners = try XCTUnwrap(HeroBackdropPalette.sampleCorners(pixels: pixels, width: 4, height: 4))
+
+        for corner in [corners.topLeading, corners.topTrailing, corners.bottomTrailing, corners.bottomLeading] {
+            XCTAssertEqual(corner.hsv.saturation, 0, accuracy: 0.001)
+        }
+    }
+
     func testBrightArtIsDimmedForTheDarkTheme() throws {
         let pixels = Array(repeating: RGB(r: 0.9, g: 0.9, b: 0.85), count: 16)
 
