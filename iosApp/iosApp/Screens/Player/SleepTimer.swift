@@ -45,3 +45,24 @@ final class SleepTimer {
         remainingSeconds = 0
     }
 }
+
+extension SleepTimer {
+    /// The durations the player offers, in minutes. 0 is Off.
+    static let durationOptions = [0, 5, 15, 30, 45, 60, 120]
+
+    static func durationLabel(minutes: Int) -> LocalizedStringResource {
+        switch minutes {
+        case ...0: .playerSleepTimerOff
+        case ..<60: .playerSleepTimerMinutesOption(minutes)
+        default: .playerSleepTimerHours(minutes / 60)
+        }
+    }
+
+    /// The option a picker shows as chosen: Off when idle, otherwise the
+    /// shortest duration that still covers the time left.
+    var selectedDurationOption: Int {
+        guard isActive else { return 0 }
+        let minutes = (remainingSeconds + 59) / 60
+        return Self.durationOptions.first { $0 >= minutes } ?? Self.durationOptions.last ?? 0
+    }
+}

@@ -392,11 +392,12 @@ struct TVPlayerControls: View {
             if viewModel.sleepTimer.isActive {
                 Label(PlayerTimeFormatter.formatCountdown(viewModel.sleepTimer.remainingSeconds),
                       systemImage: "moon.zzz.fill")
-                    .font(.siloSmall.weight(.medium))
+                    // The time row's size, so the chip reads with the "Ends" time.
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.85))
                     .monospacedDigit()
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 9)
                     .siloPlayerGlass(in: Capsule())
             }
         }
@@ -656,9 +657,11 @@ struct TVPlayerControls: View {
         cancelPendingScrub = true
         isScrubberFocused = false
         focusedTransportButton = nil
+        // Info becomes the remembered tab, so the options button reopens
+        // it until the viewer picks another.
         switch entryPoint {
-        case .settings:
-            activeHUDTab = .video
+        case .info:
+            activeHUDTab = .info
         }
         focusedHUDTab = activeHUDTab
     }

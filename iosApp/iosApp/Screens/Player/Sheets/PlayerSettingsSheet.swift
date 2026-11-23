@@ -449,7 +449,7 @@ struct PlayerSettingsSheet: View {
 
     private var sleepTimerPicker: some View {
         Picker(selection: Binding<Int>(
-            get: { sleepTimer.isActive ? sleepTimerMinutesOption(remaining: sleepTimer.remainingSeconds) : 0 },
+            get: { sleepTimer.selectedDurationOption },
             set: { newValue in
                 if newValue == 0 {
                     sleepTimer.cancel()
@@ -458,13 +458,9 @@ struct PlayerSettingsSheet: View {
                 }
             }
         )) {
-            Text(.playerSleepTimerOff).tag(0)
-            Text(.playerSleepTimerMinutesOption(5)).tag(5)
-            Text(.playerSleepTimerMinutesOption(15)).tag(15)
-            Text(.playerSleepTimerMinutesOption(30)).tag(30)
-            Text(.playerSleepTimerMinutesOption(45)).tag(45)
-            Text(.playerSleepTimerHours(1)).tag(60)
-            Text(.playerSleepTimerHours(2)).tag(120)
+            ForEach(SleepTimer.durationOptions, id: \.self) { minutes in
+                Text(SleepTimer.durationLabel(minutes: minutes)).tag(minutes)
+            }
         } label: {
             Text(.playerSleepTimerPickerTitle)
         }
@@ -527,17 +523,6 @@ struct PlayerSettingsSheet: View {
         if ms == 0 { return LocaleFormat.integer(0) + " ms" }
         let sign = ms > 0 ? "+" : ""
         return "\(sign)\(LocaleFormat.integer(ms)) ms"
-    }
-
-    /// Map the timer's remaining seconds back to the nearest whole-minute
-    /// option tag for the picker. Picker values are the initial minute count,
-    /// so this snaps the selection back to whichever preset the user picked.
-    private func sleepTimerMinutesOption(remaining seconds: Int) -> Int {
-        let minutes = (seconds + 59) / 60
-        for candidate in [5, 15, 30, 45, 60, 120] {
-            if minutes <= candidate { return candidate }
-        }
-        return 120
     }
 }
 #endif

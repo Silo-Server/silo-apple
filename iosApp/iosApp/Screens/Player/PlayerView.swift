@@ -200,7 +200,7 @@ struct PlayerView: View {
                                         switch direction {
                                         case .left:  viewModel.skipBackward()
                                         case .right: viewModel.skipForward()
-                                        case .down:  viewModel.openSettingsHUD()
+                                        case .down:  viewModel.openInfoHUD()
                                         case .up:    viewModel.revealControls()
                                         }
                                     }
