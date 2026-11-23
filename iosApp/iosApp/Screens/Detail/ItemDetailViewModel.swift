@@ -2000,6 +2000,7 @@ extension ItemDetail {
             episodeNumber: episodeNumber,
             episodeCount: episodeCount,
             airDate: airDate,
+            episodeLabels: episodeLabels,
             isSpecials: isSpecials,
             userData: userData,
             versions: watchDetail.versions,

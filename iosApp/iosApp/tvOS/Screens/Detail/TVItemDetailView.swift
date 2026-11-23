@@ -1245,6 +1245,7 @@ struct TVItemDetailView: View {
             episodeNumber: item.episodeNumber,
             episodeCount: item.episodeCount,
             airDate: item.airDate,
+            episodeLabels: item.episodeLabels,
             isSpecials: item.isSpecials,
             userData: item.userData,
             versions: watchDetail.versions,
