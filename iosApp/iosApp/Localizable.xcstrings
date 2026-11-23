@@ -305581,6 +305581,246 @@
         }
       }
     },
+    "error.playback_session_paused_timeout" : {
+      "comment" : "Error message shown when the server answers with the v2 problem type `playback_session_paused_timeout` (server title: \"Playback session paused too long\"): the server ended a playback session that stayed paused longer than the administrator allows. Clients show it instead of the server's English detail in a translated interface, so it must make sense on its own, without the request's specifics.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "توقف التشغيل لأنه بقي متوقفًا مؤقتًا مدة طويلة جدًا. ابدأ التشغيل من جديد."
+          }
+        },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Възпроизвеждането спря, защото беше на пауза твърде дълго. Започнете възпроизвеждането отново."
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La reproducció s’ha aturat perquè ha estat en pausa massa estona. Torna a començar la reproducció."
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přehrávání bylo zastaveno, protože bylo příliš dlouho pozastavené. Spusťte přehrávání znovu."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afspilningen stoppede, fordi den var sat på pause for længe. Start afspilningen igen."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Wiedergabe wurde beendet, weil sie zu lange pausiert war. Starte die Wiedergabe erneut."
+          }
+        },
+        "el" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Η αναπαραγωγή διακόπηκε επειδή ήταν σε παύση για πολύ ώρα. Ξεκινήστε ξανά την αναπαραγωγή."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Playback stopped because it was paused for too long. Start playing again."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La reproducción se detuvo porque estuvo en pausa demasiado tiempo. Vuelve a reproducir."
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esitus lõpetati, sest see oli liiga kaua peatatud. Alustage esitamist uuesti."
+          }
+        },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toisto pysäytettiin, koska se oli tauolla liian kauan. Aloita toisto uudelleen."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La lecture s’est arrêtée, car elle est restée en pause trop longtemps. Relancez la lecture."
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ההפעלה הופסקה כי היא הושהתה זמן רב מדי. יש להתחיל את ההפעלה מחדש."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "प्लेबैक बहुत देर तक रुका रहा, इसलिए उसे बंद कर दिया गया। फिर से चलाना शुरू करें।"
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reprodukcija je zaustavljena jer je predugo bila pauzirana. Ponovno pokrenite reprodukciju."
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A lejátszás leállt, mert túl sokáig volt szüneteltetve. Indítsa újra a lejátszást."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pemutaran dihentikan karena dijeda terlalu lama. Mulai putar lagi."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La riproduzione si è interrotta perché è rimasta in pausa troppo a lungo. Avvia di nuovo la riproduzione."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一時停止の時間が長すぎたため、再生を停止しました。もう一度再生してください。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "너무 오래 일시정지되어 재생이 중지됐어요. 다시 재생하세요."
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Atkūrimas sustabdytas, nes per ilgai buvo pristabdytas. Pradėkite leisti iš naujo."
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Atskaņošana tika apturēta, jo tā bija pauzēta pārāk ilgi. Sāciet atskaņošanu no jauna."
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Main balik dihentikan kerana dijeda terlalu lama. Mulakan main semula."
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avspillingen stoppet fordi den var satt på pause for lenge. Start avspillingen på nytt."
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Het afspelen is gestopt omdat het te lang gepauzeerd was. Start het afspelen opnieuw."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odtwarzanie zatrzymano, ponieważ było wstrzymane zbyt długo. Rozpocznij odtwarzanie ponownie."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A reprodução foi interrompida porque ficou pausada por tempo demais. Inicie a reprodução novamente."
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A reprodução parou porque esteve em pausa durante demasiado tempo. Inicie a reprodução novamente."
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Redarea s-a oprit deoarece a rămas în pauză prea mult timp. Porniți din nou redarea."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Воспроизведение остановлено, потому что пауза длилась слишком долго. Запустите воспроизведение снова."
+          }
+        },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prehrávanie sa zastavilo, pretože bolo príliš dlho pozastavené. Spustite prehrávanie znova."
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Predvajanje se je ustavilo, ker je bilo predolgo začasno ustavljeno. Znova začnite predvajanje."
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uppspelningen stoppades eftersom den var pausad för länge. Starta uppspelningen igen."
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "การเล่นหยุดลงเนื่องจากหยุดชั่วคราวนานเกินไป โปรดเริ่มเล่นอีกครั้ง"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Çok uzun süre duraklatıldığı için oynatma durduruldu. Oynatmayı yeniden başlatın."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Відтворення зупинено через задовгу паузу. Почніть відтворення знову."
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Đã dừng phát do tạm dừng quá lâu. Bắt đầu phát lại."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂停时间过长，播放已停止。请重新开始播放。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "播放因暫停過久而停止。請重新開始播放。"
+          }
+        }
+      }
+    },
     "error.playback_transport_superseded" : {
       "comment" : "Error message shown when the server answers with the v2 problem type `playback_transport_superseded` (server title: \"Playback transport superseded\"): a media request came from a playlist that a playback change (such as a new subtitle or quality) replaced, while the playback session goes on. Clients show it instead of the server's English detail in a translated interface, so it must make sense on its own, without the request's specifics.",
       "extractionState" : "manual",
@@ -339536,7 +339776,7 @@
       }
     },
     "forYou.empty" : {
-      "comment" : "Roku For You screen: empty-state title when no recommendations exist.",
+      "comment" : "Roku For You screen: empty-state title when no recommendations exist. iPhone and Android phone: also the title on the For You tab's Recommendations page when no recommendation is of the type picked in the tab's All / Movies / TV Shows menu.",
       "extractionState" : "manual",
       "localizations" : {
         "ar" : {
@@ -339578,7 +339818,7 @@
         "el" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Δεν υπάρχουν προτάσεις ακόμα"
+            "value" : "Δεν υπάρχουν ακόμα προτάσεις"
           }
         },
         "en" : {
@@ -339596,7 +339836,7 @@
         "et" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Soovitusi veel pole"
+            "value" : "Soovitusi pole veel"
           }
         },
         "fi" : {
@@ -339620,7 +339860,7 @@
         "hi" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "अभी कोई सिफ़ारिश नहीं है"
+            "value" : "अभी तक कोई सिफ़ारिश नहीं"
           }
         },
         "hr" : {
@@ -339692,7 +339932,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brak rekomendacji"
+            "value" : "Nie ma jeszcze rekomendacji"
           }
         },
         "pt-BR" : {
@@ -339710,7 +339950,7 @@
         "ro" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Nu există încă recomandări"
+            "value" : "Încă nu există recomandări"
           }
         },
         "ru" : {
@@ -339764,13 +340004,13 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "暂无推荐"
+            "value" : "还没有推荐"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "尚無推薦內容"
+            "value" : "還沒有推薦內容"
           }
         }
       }
@@ -450698,7 +450938,7 @@
       }
     },
     "personal.mediaType" : {
-      "comment" : "Apple iOS: label of the Movies / TV Shows picker on Favorites and Watchlist.",
+      "comment" : "Apple iOS: label of the Movies / TV Shows picker on Favorites and Watchlist. Android phone: screen reader name of the For You tab's dock button that opens the All / Movies / TV Shows menu.",
       "extractionState" : "manual",
       "localizations" : {
         "ar" : {
@@ -450710,7 +450950,7 @@
         "bg" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Тип медия"
+            "value" : "Тип съдържание"
           }
         },
         "ca" : {
@@ -489585,6 +489825,486 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在準備字幕"
+          }
+        }
+      }
+    },
+    "player.notice.pausedTimeout" : {
+      "comment" : "Video player notice before the player closes because the server ended a playback session that stayed paused longer than the administrator allows. The viewer's position is kept, so playing again continues from there.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "توقف التشغيل لأنه بقي متوقفًا مؤقتًا مدة طويلة جدًا."
+          }
+        },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Възпроизвеждането спря, защото беше на пауза твърде дълго."
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La reproducció s’ha aturat perquè ha estat en pausa massa estona."
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přehrávání bylo zastaveno, protože bylo příliš dlouho pozastavené."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afspilningen stoppede, fordi den var sat på pause for længe."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Wiedergabe wurde beendet, weil sie zu lange pausiert war."
+          }
+        },
+        "el" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Η αναπαραγωγή διακόπηκε επειδή ήταν σε παύση για πολύ ώρα."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Playback stopped because it was paused for too long."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La reproducción se detuvo porque estuvo en pausa demasiado tiempo."
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esitus lõpetati, sest see oli liiga kaua peatatud."
+          }
+        },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toisto pysäytettiin, koska se oli tauolla liian kauan."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La lecture s’est arrêtée, car elle est restée en pause trop longtemps."
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ההפעלה הופסקה כי היא הושהתה זמן רב מדי."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "प्लेबैक बहुत देर तक रुका रहा, इसलिए उसे बंद कर दिया गया।"
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reprodukcija je zaustavljena jer je predugo bila pauzirana."
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A lejátszás leállt, mert túl sokáig volt szüneteltetve."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pemutaran dihentikan karena dijeda terlalu lama."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La riproduzione si è interrotta perché è rimasta in pausa troppo a lungo."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一時停止の時間が長すぎたため、再生を停止しました。"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "너무 오래 일시정지되어 재생이 중지됐어요."
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Atkūrimas sustabdytas, nes per ilgai buvo pristabdytas."
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Atskaņošana tika apturēta, jo tā bija pauzēta pārāk ilgi."
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Main balik dihentikan kerana dijeda terlalu lama."
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avspillingen stoppet fordi den var satt på pause for lenge."
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Het afspelen is gestopt omdat het te lang gepauzeerd was."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odtwarzanie zatrzymano, ponieważ było wstrzymane zbyt długo."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A reprodução foi interrompida porque ficou pausada por tempo demais."
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A reprodução parou porque esteve em pausa durante demasiado tempo."
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Redarea s-a oprit deoarece a rămas în pauză prea mult timp."
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Воспроизведение остановлено, потому что пауза длилась слишком долго."
+          }
+        },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prehrávanie sa zastavilo, pretože bolo príliš dlho pozastavené."
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Predvajanje se je ustavilo, ker je bilo predolgo začasno ustavljeno."
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uppspelningen stoppades eftersom den var pausad för länge."
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "การเล่นหยุดลงเนื่องจากหยุดชั่วคราวนานเกินไป"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Çok uzun süre duraklatıldığı için oynatma durduruldu."
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Відтворення зупинено через задовгу паузу."
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Đã dừng phát do tạm dừng quá lâu."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂停时间过长，播放已停止。"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "播放因暫停過久而停止。"
+          }
+        }
+      }
+    },
+    "player.notice.pausedTimeoutTitle" : {
+      "comment" : "Apple iOS/tvOS/macOS: title of the brief video player notice before the player closes because the server ended a playback session that stayed paused longer than the administrator allows.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "طال الإيقاف المؤقت"
+          }
+        },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Твърде дълга пауза"
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pausa massa llarga"
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Příliš dlouhá pauza"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "På pause for længe"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zu lange pausiert"
+          }
+        },
+        "el" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Πολύ μεγάλη παύση"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Paused too long"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En pausa demasiado tiempo"
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Liiga kaua peatatud"
+          }
+        },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tauko kesti liian kauan"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pause trop longue"
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "השהיה ארוכה מדי"
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "बहुत देर तक रुका रहा"
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Predugo pauzirano"
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Túl hosszú szünet"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dijeda terlalu lama"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In pausa troppo a lungo"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "長時間の一時停止"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "일시정지 시간 초과"
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Per ilgai pristabdyta"
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pārāk ilga pauze"
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dijeda terlalu lama"
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "For lenge på pause"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Te lang gepauzeerd"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zbyt długa pauza"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pausado por muito tempo"
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pausa demasiado longa"
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pauză prea lungă"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Слишком долгая пауза"
+          }
+        },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Príliš dlho pozastavené"
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Predolgo začasno ustavljeno"
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pausad för länge"
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "หยุดชั่วคราวนานเกินไป"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Çok uzun duraklatıldı"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Задовга пауза"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tạm dừng quá lâu"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂停时间过长"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暫停過久"
           }
         }
       }
