@@ -302,9 +302,14 @@ final class ContentProvider: TVTopShelfContentProvider {
               let episode = item.episodeNumber else {
             return item.title
         }
-        let code = EpisodeLabel.text(
-            season: season, episode: episode, style: .tag, labels: item.episodeLabels, airDate: item.airDate
-        )
+        // A date-labeled series (sports): "Nov 20, 2026 · Lakers vs Kings",
+        // since two games of one league can share a date; the league when
+        // the game is untitled.
+        if let date = EpisodeLabel.airDate(labels: item.episodeLabels, airDate: item.airDate) {
+            let game = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return AppLanguage.string(.detailEpisodeCardTitle(date, AppLanguage.isolated(game.isEmpty ? seriesTitle : game)))
+        }
+        let code = EpisodeLabel.code(season: season, episode: episode, style: .tag)
         return "\(AppLanguage.isolated(seriesTitle)) · \(code)"
     }
 }
