@@ -91,6 +91,7 @@ struct TVMovieDetailView: View {
                             synopsisStatus: synopsisStatus,
                             factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
                             ratings: detail.displayRatings,
+                            personalRating: TVHeroPersonalRating(score: userRating, isSeries: false),
                             starringText: TVHeroMetadata.starringText(from: detail, locale: locale),
                             playbackSummary: TVPlaybackSelectionSummary.make(
                                 currentVersion: currentVersion,

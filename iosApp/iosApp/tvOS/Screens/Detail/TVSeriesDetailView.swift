@@ -380,6 +380,8 @@ struct TVSeriesDetailView: View {
             synopsisStatus: heroSynopsisStatus,
             factsLine: heroFactsLine,
             ratings: heroRatings,
+            // The series' rating, also while an episode's facts are shown.
+            personalRating: TVHeroPersonalRating(score: userRating, isSeries: true),
             // Series cast is intentionally painted once across Show, Season,
             // and episode focus. Episode credits are almost always identical;
             // retaining this value avoids a blank/load/change flash in the
