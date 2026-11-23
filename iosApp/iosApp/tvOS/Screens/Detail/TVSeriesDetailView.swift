@@ -573,7 +573,7 @@ struct TVSeriesDetailView: View {
             && DetailVersionSelection.savedPositionIsInEdition(
                 of: shown, in: nextUpVersions, userData: episode.userData
             )
-        // A date-labeled series (sports): "Play 20 Nov 2026".
+        // A date-labeled series (sports): "Play Nov 20, 2026".
         if let date = EpisodeLabel.airDate(labels: detail.episodeLabels, airDate: episode.airDate, locale: locale) {
             return AppLanguage.string(
                 resumes ? .detailResumeEpisodeCode(date) : .detailPlayEpisodeCode(date),
