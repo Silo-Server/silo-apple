@@ -1081,6 +1081,12 @@ class PlayerViewModel {
     private var seekIntervalRefreshTask: Task<Void, Never>?
     private var freshLoadTask: Task<Void, Never>?
     private var freshLoadGeneration: UInt64 = 0
+    /// `freshLoadGeneration` when the control socket was bound to its session.
+    /// A fresh load leaves that session at once, while
+    /// `activePlaybackSessionId` keeps naming it until the replacement is
+    /// prepared, so a paused-timeout refusal the socket reports after that
+    /// belongs to the viewing the player already left.
+    private var realtimeBindingGeneration: UInt64?
     /// True while `freshLoadTask` is the sole owner of a load failure's
     /// outcome. Aether publishes its typed failure before the load throws, so
     /// without this the direct-play and offline paths surface the same
@@ -1695,8 +1701,10 @@ class PlayerViewModel {
             },
             pausedTimeoutHandler: { [weak self] sessionId in
                 // A refusal about a session this player already moved on
-                // from must not end the playback that replaced it.
-                guard let self, sessionId == self.activePlaybackSessionId else { return }
+                // from, or is replacing in a fresh load, must not end the
+                // playback that replaces it.
+                guard let self, sessionId == self.activePlaybackSessionId,
+                      self.realtimeBindingGeneration == self.freshLoadGeneration else { return }
                 self.leaveServerEndedSession(reason: .pausedTimeout)
             }
         )
@@ -10000,7 +10008,9 @@ class PlayerViewModel {
     /// Binds the control socket to a committed session under the owner and
     /// installation that started it.
     private func bindRealtimeControl(sessionId: String) async {
+        let generation = freshLoadGeneration
         guard let authority = await sessionBridge.committedProtocolV3Authority(sessionId: sessionId) else { return }
+        realtimeBindingGeneration = generation
         await realtimeClient.bind(sessionId: sessionId, authority: authority)
     }
 
