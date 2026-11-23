@@ -1,9 +1,10 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// A short-lived bar at the bottom of a page that confirms something just
-/// went away ("Rating removed") and offers to put it back. Show one with
-/// `undoToast(_:)`.
+/// A short-lived floating glass capsule near the bottom of a page that
+/// confirms something just went away ("Rating removed") and offers to put it
+/// back. It hugs its text, like the system's own transient pills, instead of
+/// spanning the screen. Show one with `undoToast(_:)`.
 struct UndoToast: View {
     let message: String
     let actionTitle: String
@@ -11,30 +12,34 @@ struct UndoToast: View {
     let action: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 0) {
             Text(message)
-                .siloScaledFont(size: 15, weight: .regular, relativeTo: .subheadline)
-                .foregroundStyle(Color.white)
+                .siloScaledFont(size: 15, weight: .medium, relativeTo: .subheadline)
+                .foregroundStyle(Color.white.opacity(0.86))
                 .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 20)
+                .padding(.trailing, 14)
+            Rectangle()
+                .fill(Color.white.opacity(0.18))
+                .frame(width: 1, height: 20)
             Button(action: action) {
-                Text(actionTitle)
-                    .siloScaledFont(size: 15, weight: .semibold, relativeTo: .subheadline)
-                    .foregroundStyle(actionColor)
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(actionTitle)
+                        .siloScaledFont(size: 15, weight: .semibold, relativeTo: .subheadline)
+                }
+                .foregroundStyle(actionColor)
+                .padding(.leading, 14)
+                .padding(.trailing, 20)
+                .frame(minHeight: 48)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
-        .padding(.leading, 16)
-        .padding(.trailing, 6)
-        .frame(minHeight: 52)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(hex: "#23262E"))
-                .shadow(color: .black.opacity(0.5), radius: 15, y: 10)
-        )
+        .frame(minHeight: 48)
+        .siloGlass(in: Capsule(), interactive: true)
+        .shadow(color: .black.opacity(0.28), radius: 16, y: 8)
         .accessibilityElement(children: .contain)
     }
 }
@@ -50,7 +55,7 @@ struct UndoToastContent: Equatable {
 
 extension View {
     /// Shows `content` as an `UndoToast` above the bottom safe area (and so
-    /// above a mini player) until `onTimeout` after five seconds, or ten
+    /// above a mini player) until a swipe down, `onTimeout` after five seconds, or ten
     /// with VoiceOver on, which also hears it announced. `onAction` runs for
     /// the button; the caller then clears `content`.
     func undoToast(
@@ -69,7 +74,6 @@ private struct UndoToastHost: ViewModifier {
 
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     func body(content page: Content) -> some View {
         page.overlay(alignment: .bottom) {
@@ -81,13 +85,20 @@ private struct UndoToastHost: ViewModifier {
                         actionColor: content.actionColor,
                         action: onAction
                     )
-                    .frame(maxWidth: horizontalSizeClass == .regular ? 440 : .infinity)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
+                    .frame(maxWidth: 440)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 16)
+                    .gesture(
+                        DragGesture(minimumDistance: 12).onEnded { drag in
+                            if drag.translation.height > 16 { onTimeout(content.id) }
+                        }
+                    )
                     .transition(
                         reduceMotion
                             ? .opacity
-                            : .move(edge: .bottom).combined(with: .opacity)
+                            : .scale(scale: 0.86, anchor: .bottom)
+                                .combined(with: .offset(y: 24))
+                                .combined(with: .opacity)
                     )
                     .task(id: content.id) {
                         AccessibilityNotification.Announcement(content.message).post()

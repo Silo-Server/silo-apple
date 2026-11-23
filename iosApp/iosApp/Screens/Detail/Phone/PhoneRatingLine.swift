@@ -57,8 +57,7 @@ private struct PhoneRatingPageHost: ViewModifier {
         return UndoToastContent(
             id: removal.id,
             message: AppLanguage.string(.detailRatingRemoved, locale: locale),
-            actionTitle: AppLanguage.string(.detailRatingUndo, locale: locale),
-            actionColor: .siloRatingStar
+            actionTitle: AppLanguage.string(.detailRatingUndo, locale: locale)
         )
     }
 }
