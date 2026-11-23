@@ -36,8 +36,6 @@ struct TVRatingEditor: Equatable {
 
     /// The line under the action row.
     enum Hint: Equatable {
-        case rate(isSeries: Bool)
-        case rated(RatingScore, isSeries: Bool, mentionsHold: Bool)
         case editing(isSeries: Bool)
         /// Editing with the draft at no stars.
         case editingNone
@@ -123,25 +121,17 @@ struct TVRatingEditor: Equatable {
         }
     }
 
-    /// The hint for the current state. Nil leaves the line empty.
-    func hint(
-        isFocused: Bool,
-        current: RatingScore,
-        isSeries: Bool,
-        supportsHold: Bool
-    ) -> Hint? {
+    /// The hint for the current state. Nil leaves the line empty: the idle
+    /// button explains itself, so only editing and its outcome show one.
+    func hint(isSeries: Bool) -> Hint? {
         if let draft {
             return draft.isRated ? .editing(isSeries: isSeries) : .editingNone
         }
         switch message {
         case .saved: return .saved(isSeries: isSeries)
         case .removed: return .removed
-        case nil: break
+        case nil: return nil
         }
-        guard isFocused else { return nil }
-        return current.isRated
-            ? .rated(current, isSeries: isSeries, mentionsHold: supportsHold)
-            : .rate(isSeries: isSeries)
     }
 
     private mutating func show(_ message: Message) {

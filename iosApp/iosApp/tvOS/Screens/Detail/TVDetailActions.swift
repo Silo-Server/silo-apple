@@ -589,13 +589,8 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         // hero and everything under it stay where they are.
         .overlay(alignment: .bottomLeading) {
             if let rating {
-                TVRatingHintLine(hint: ratingEditor.hint(
-                    isFocused: focusedAction.wrappedValue == .rating,
-                    current: RatingScore(server: rating.score),
-                    isSeries: rating.isSeries,
-                    supportsHold: TVRatingActionButton.supportsHold
-                ))
-                .alignmentGuide(.bottom) { $0[.top] - Self.ratingHintSpacing }
+                TVRatingHintLine(hint: ratingEditor.hint(isSeries: rating.isSeries))
+                    .offset(y: TVRatingHintLine.slotHeight + Self.ratingHintSpacing)
             }
         }
         .focusSection()

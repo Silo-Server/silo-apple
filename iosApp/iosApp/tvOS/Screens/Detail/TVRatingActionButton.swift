@@ -139,7 +139,9 @@ struct TVRatingActionButton: View {
 
 /// What the star button draws: a 76pt circle with a star, widening to show
 /// its title while focused like the row's other circles, and the editing
-/// pill (chevrons, five stars, the value) at the same height.
+/// pill (chevrons, five stars, the value) at the same height. The pill keeps
+/// the row's focused look, a white capsule with dark content, so it reads as
+/// the focused button grown wider, not as a separate dialog.
 private struct TVRatingPillSurface: View {
     let score: RatingScore
     let draft: RatingScore?
@@ -152,11 +154,11 @@ private struct TVRatingPillSurface: View {
     @State private var isExpanded = false
 
     private static let height: CGFloat = 76
-    private static let pillFill = Color(hex: "#0B0D12")
-    private static let dimChevron = Color(hex: "#4A4F5A")
-    private static let captionColor = Color(hex: "#C9CCD3")
+    private static let ink = Color(hex: "#0B0D12")
 
     private var isEditing: Bool { draft != nil }
+    /// Focused or editing: the white surface with dark content.
+    private var isLit: Bool { isFocused || isEditing }
     private var showsNudge: Bool { isWatched && !score.isRated && !isFocused && !isEditing }
 
     var body: some View {
@@ -182,15 +184,10 @@ private struct TVRatingPillSurface: View {
         }
         .padding(.leading, leadingPadding)
         .padding(.trailing, trailingPadding)
-        .foregroundColor(isFocused && !isEditing ? .black : .white)
+        .foregroundColor(isLit ? .black : .white)
         .frame(minWidth: Self.height)
         .frame(height: Self.height)
         .background(Capsule().fill(background))
-        .overlay {
-            if isEditing {
-                Capsule().strokeBorder(Color.white, lineWidth: 2)
-            }
-        }
         .clipShape(Capsule())
         // The nudge ring sits just outside the circle, as a 2pt halo.
         .overlay {
@@ -201,9 +198,9 @@ private struct TVRatingPillSurface: View {
         }
         .scaleEffect(isPressed && !isEditing ? 0.95 : 1)
         .shadow(
-            color: .black.opacity(isEditing ? 0.5 : (isFocused ? 0.34 : 0)),
-            radius: isEditing ? 24 : (isFocused ? 16 : 0),
-            y: isEditing ? 12 : (isFocused ? 6 : 0)
+            color: .black.opacity(isLit ? 0.34 : 0),
+            radius: isLit ? 16 : 0,
+            y: isLit ? 6 : 0
         )
         .animation(TVCircleFocusMotion.resize, value: isFocused)
         .animation(TVCircleFocusMotion.resize, value: isEditing)
@@ -221,8 +218,7 @@ private struct TVRatingPillSurface: View {
     }
 
     private var background: Color {
-        if isEditing { return Self.pillFill }
-        return isFocused ? .white : Color.white.opacity(0.10)
+        isLit ? .white : Color.white.opacity(0.10)
     }
 
     private var leadingPadding: CGFloat {
@@ -244,8 +240,8 @@ private struct TVRatingPillSurface: View {
         let stroke: Color
         let fill: Color
         if isFocused {
-            stroke = Self.pillFill
-            fill = score.isRated ? Self.pillFill : .clear
+            stroke = Self.ink
+            fill = score.isRated ? Self.ink : .clear
         } else {
             stroke = score.isRated || isWatched ? .siloRatingStar : .white
             fill = score.isRated ? .siloRatingStar : .clear
@@ -268,14 +264,23 @@ private struct TVRatingPillSurface: View {
                 Text(.detailRatingSeriesCaption)
                     .font(.system(size: 18, weight: .bold))
                     .tracking(1.8)
-                    .foregroundColor(Self.captionColor)
+                    .foregroundColor(Color.black.opacity(0.55))
                     .lineLimit(1)
                     .fixedSize()
                     .padding(.leading, 6)
                     .padding(.trailing, 9)
             }
             chevron(pointsForward: false, isEnabled: draft.isRated)
-            RatingStarsView(score: draft, starSize: 48, spacing: 9)
+            HStack(spacing: 9) {
+                ForEach(0..<RatingScore.starCount, id: \.self) { index in
+                    RatingStarView(
+                        fill: draft.fill(ofStar: index),
+                        size: 48,
+                        outline: Color.black.opacity(0.28),
+                        accent: Self.ink
+                    )
+                }
+            }
             chevron(pointsForward: true, isEnabled: !draft.isMax)
             Text(draft.isRated ? draft.display(locale: locale) : "–")
                 .font(.system(size: 30, weight: .bold).monospacedDigit())
@@ -288,25 +293,11 @@ private struct TVRatingPillSurface: View {
     }
 
     private func chevron(pointsForward: Bool, isEnabled: Bool) -> some View {
-        TVRatingChevronShape()
-            .fill(isEnabled ? Color.white : Self.dimChevron)
-            .frame(width: 13, height: 21)
-            .scaleEffect(x: pointsForward ? 1 : -1)
-            .flipsForRightToLeftLayoutDirection(true)
+        Image(systemName: pointsForward ? "chevron.forward" : "chevron.backward")
+            .font(.system(size: 20, weight: .bold))
+            .foregroundColor(Color.black.opacity(isEnabled ? 0.85 : 0.22))
             .frame(width: 24, height: 24)
             .animation(.easeOut(duration: 0.12), value: isEnabled)
-    }
-}
-
-/// The design's solid chevron, pointing right (toward the trailing side).
-private struct TVRatingChevronShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.closeSubpath()
-        return path
     }
 }
 
@@ -349,18 +340,6 @@ struct TVRatingHintLine: View {
 
     static func text(for hint: TVRatingEditor.Hint, locale: Locale) -> String {
         switch hint {
-        case .rate(let isSeries):
-            return AppLanguage.string(isSeries ? .detailRatingHintRateSeries : .detailRatingHintRateMovie, locale: locale)
-        case .rated(let score, let isSeries, let mentionsHold):
-            let value = score.display(locale: locale)
-            let key: LocalizedStringResource
-            switch (isSeries, mentionsHold) {
-            case (false, true): key = .detailRatingHintRated(value)
-            case (true, true): key = .detailRatingHintRatedSeries(value)
-            case (false, false): key = .detailRatingHintRatedNoHold(value)
-            case (true, false): key = .detailRatingHintRatedSeriesNoHold(value)
-            }
-            return AppLanguage.string(key, locale: locale)
         case .editing(let isSeries):
             return AppLanguage.string(isSeries ? .detailRatingHintEditingSeries : .detailRatingHintEditing, locale: locale)
         case .editingNone:

@@ -136,35 +136,18 @@ final class TVRatingEditorTests: XCTestCase {
         XCTAssertNil(editor.message)
     }
 
-    func testHintFollowsFocusEditingAndMessages() {
+    func testHintShowsOnlyWhileEditingAndAfterAnOutcome() {
         var editor = TVRatingEditor()
-        XCTAssertNil(editor.hint(isFocused: false, current: .none, isSeries: false, supportsHold: true))
-        XCTAssertEqual(
-            editor.hint(isFocused: true, current: .none, isSeries: true, supportsHold: true),
-            .rate(isSeries: true)
-        )
-        XCTAssertEqual(
-            editor.hint(isFocused: true, current: RatingScore(9), isSeries: false, supportsHold: false),
-            .rated(RatingScore(9), isSeries: false, mentionsHold: false)
-        )
+        // The idle button carries no hint, focused or not, rated or not.
+        XCTAssertNil(editor.hint(isSeries: false))
 
         _ = editor.select(current: RatingScore(1))
-        XCTAssertEqual(
-            editor.hint(isFocused: true, current: RatingScore(1), isSeries: true, supportsHold: true),
-            .editing(isSeries: true)
-        )
+        XCTAssertEqual(editor.hint(isSeries: true), .editing(isSeries: true))
         editor.step(.down)
-        XCTAssertEqual(
-            editor.hint(isFocused: true, current: RatingScore(1), isSeries: true, supportsHold: true),
-            .editingNone
-        )
+        XCTAssertEqual(editor.hint(isSeries: true), .editingNone)
 
         _ = editor.select(current: RatingScore(1))
-        // A message outlasts focus moving away, until its timer runs out.
-        XCTAssertEqual(
-            editor.hint(isFocused: false, current: .none, isSeries: false, supportsHold: true),
-            .removed
-        )
+        XCTAssertEqual(editor.hint(isSeries: false), .removed)
     }
 }
 #endif
