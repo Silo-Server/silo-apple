@@ -7,12 +7,12 @@ import XCTest
 final class PlaybackRealtimeClientTests: XCTestCase {
     private actor Recorder {
         private(set) var mints: [(sessionId: String, installationID: String)] = []
-        private(set) var ends: [(sessionId: String, reason: PlaybackServerEndReason)] = []
+        private(set) var pausedTimeouts: [String] = []
         func record(_ sessionId: String, _ authority: PlaybackV2SessionAuthority) {
             mints.append((sessionId, authority.installationID))
         }
-        func recordEnd(_ sessionId: String, _ reason: PlaybackServerEndReason) {
-            ends.append((sessionId, reason))
+        func recordPausedTimeout(_ sessionId: String) {
+            pausedTimeouts.append(sessionId)
         }
     }
 
@@ -74,40 +74,70 @@ final class PlaybackRealtimeClientTests: XCTestCase {
         await client.unbind()
     }
 
-    /// A ticket refused because the server ended the session for good stops
-    /// the loop at once and tells the player why, instead of minting again.
-    func testATicketRefusedForAServerEndedSessionStopsAndReportsWhy() async throws {
-        for (type, reason) in [("playback_session_ended", PlaybackServerEndReason.administrator),
-                               ("playback_session_paused_timeout", .pausedTimeout)] {
-            let problem = try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(
-                #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(type)","title":"t","status":410,"detail":"d"}"#.utf8))
-            let recorder = Recorder()
-            let ended = expectation(description: "session ended reported")
-            let client = PlaybackRealtimeClient(
-                handshake: { sessionId, authority in
-                    await recorder.record(sessionId, authority)
-                    throw APIv2Error.problem(problem)
-                },
-                ownerIsCurrent: { _ in true },
-                reconnectDelaysNanos: [1_000_000],
-                commandHandler: { _ in },
-                sessionEndedHandler: { sessionId, reason in
-                    await recorder.recordEnd(sessionId, reason)
-                    ended.fulfill()
-                }
-            )
-            await client.bind(sessionId: Self.sessionId, authority: Self.authority)
-            await fulfillment(of: [ended], timeout: 5)
+    private static func goneProblem(_ type: String) throws -> APIv2Problem {
+        try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(
+            #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(type)","title":"t","status":410,"detail":"d"}"#.utf8))
+    }
 
-            let mints = await recorder.mints
-            XCTAssertEqual(mints.count, 1, type)
-            let ends = await recorder.ends
-            XCTAssertEqual(ends.map(\.sessionId), [Self.sessionId], type)
-            XCTAssertEqual(ends.map(\.reason), [reason], type)
-            let unavailable = await client.isRealtimeUnavailable
-            XCTAssertTrue(unavailable, type)
-            await client.unbind()
-        }
+    /// A ticket refused because the session stayed paused too long stops the
+    /// loop at once and tells the player, instead of minting again.
+    func testATicketRefusedForAPausedTimeoutStopsAndReportsIt() async throws {
+        let problem = try Self.goneProblem("playback_session_paused_timeout")
+        let recorder = Recorder()
+        let ended = expectation(description: "paused timeout reported")
+        let client = PlaybackRealtimeClient(
+            handshake: { sessionId, authority in
+                await recorder.record(sessionId, authority)
+                throw APIv2Error.problem(problem)
+            },
+            ownerIsCurrent: { _ in true },
+            reconnectDelaysNanos: [1_000_000],
+            commandHandler: { _ in },
+            pausedTimeoutHandler: { sessionId in
+                await recorder.recordPausedTimeout(sessionId)
+                ended.fulfill()
+            }
+        )
+        await client.bind(sessionId: Self.sessionId, authority: Self.authority)
+        await fulfillment(of: [ended], timeout: 5)
+
+        let mints = await recorder.mints
+        XCTAssertEqual(mints.count, 1)
+        let pausedTimeouts = await recorder.pausedTimeouts
+        XCTAssertEqual(pausedTimeouts, [Self.sessionId])
+        let unavailable = await client.isRealtimeUnavailable
+        XCTAssertTrue(unavailable)
+        await client.unbind()
+    }
+
+    /// The server answers a ticket 410 `playback_session_ended` for every
+    /// stopped attempt, an expiry included, so the loop keeps minting and
+    /// never ends the player: its progress report decides between renewing
+    /// and leaving.
+    func testATicketRefusedAsEndedKeepsMintingWithoutEndingThePlayer() async throws {
+        let problem = try Self.goneProblem("playback_session_ended")
+        let recorder = Recorder()
+        let retried = expectation(description: "ticket minted again")
+        retried.assertForOverFulfill = false
+        let client = PlaybackRealtimeClient(
+            handshake: { sessionId, authority in
+                await recorder.record(sessionId, authority)
+                if await recorder.mints.count >= 2 { retried.fulfill() }
+                throw APIv2Error.problem(problem)
+            },
+            ownerIsCurrent: { _ in true },
+            reconnectDelaysNanos: [1_000_000],
+            commandHandler: { _ in },
+            pausedTimeoutHandler: { sessionId in
+                await recorder.recordPausedTimeout(sessionId)
+            }
+        )
+        await client.bind(sessionId: Self.sessionId, authority: Self.authority)
+        await fulfillment(of: [retried], timeout: 5)
+        await client.unbind()
+
+        let pausedTimeouts = await recorder.pausedTimeouts
+        XCTAssertTrue(pausedTimeouts.isEmpty)
     }
 
     func testTemporaryOutageKeepsMintingTicketsAfterTheFailureThreshold() async {

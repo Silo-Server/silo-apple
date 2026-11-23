@@ -1693,11 +1693,11 @@ class PlayerViewModel {
                 guard let self else { return }
                 await self.handleRealtimeEvent(event)
             },
-            sessionEndedHandler: { [weak self] sessionId, reason in
+            pausedTimeoutHandler: { [weak self] sessionId in
                 // A refusal about a session this player already moved on
                 // from must not end the playback that replaced it.
                 guard let self, sessionId == self.activePlaybackSessionId else { return }
-                self.leaveServerEndedSession(reason: reason)
+                self.leaveServerEndedSession(reason: .pausedTimeout)
             }
         )
         // Mirror websocket connectivity so the synchronous subtitle-AI
