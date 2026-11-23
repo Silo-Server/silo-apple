@@ -973,13 +973,11 @@ struct TVSeriesDetailView: View {
         return ShuffleAvailability.hasEnoughToShuffle(playableCount: playable.count) ? selectedSeason : nil
     }
 
+    /// "S1·E2", or the air date for a date-labeled series (sports).
     private func episodeCode(for episode: EpisodeListItem) -> String {
-        AppLanguage.string(
-            .detailEpisodeCode(
-                LocaleFormat.codeNumber(episode.seasonNumber),
-                LocaleFormat.codeNumber(episode.episodeNumber)
-            ),
-            locale: locale
+        EpisodeLabel.text(
+            season: episode.seasonNumber, episode: episode.episodeNumber, style: .dotted,
+            labels: detail.episodeLabels, airDate: episode.airDate, locale: locale
         )
     }
 
