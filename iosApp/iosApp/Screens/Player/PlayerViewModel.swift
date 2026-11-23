@@ -11373,23 +11373,40 @@ class PlayerViewModel {
         let position = position ?? currentTime
         guard position.isFinite, position >= 0 else { return }
         let duration = duration.isFinite && duration > 0 ? duration : 0
-        let creditsStart = duration > 0 ? capturedEndCreditsStart ?? endCreditsStart : nil
-        let reachedCredits = creditsStart.map { position >= $0 } ?? false
-        let watched = markCompleted
-            || Self.reachesWatched(position: position, duration: duration, endCreditsStart: creditsStart)
+        let sample = Self.offlineProgressSample(
+            position: position,
+            duration: duration,
+            markCompleted: markCompleted,
+            endCreditsStart: capturedEndCreditsStart ?? endCreditsStart
+        )
         DownloadManager.shared.recordOfflineProgress(
             mediaItemId: context.mediaItemId,
             position: position,
             duration: duration,
-            completed: watched,
-            // `/sync/progress` doesn't say which file played, so the server
-            // judges synced progress by its percentage alone. Progress into
-            // the credits goes up at the end, which the server stores as
-            // watched, as it does a streamed stop there. Below the credits
-            // the real position goes up, so the server's own threshold
-            // applies rather than this player's default.
-            queuedPosition: reachedCredits ? duration : position
+            completed: sample.completed,
+            queuedPosition: sample.queuedPosition
         )
+    }
+
+    /// How one offline sample is recorded: whether the item counts as
+    /// watched on this device, and the position queued for the server.
+    /// `/sync/progress` doesn't say which file played, so the server judges
+    /// synced progress by its percentage alone. Progress into the credits
+    /// goes up at the end, which the server stores as watched, as it does a
+    /// streamed stop there. Below the credits the real position goes up, so
+    /// the server's own threshold applies rather than this player's default.
+    /// Internal for tests.
+    static func offlineProgressSample(
+        position: Double,
+        duration: Double,
+        markCompleted: Bool,
+        endCreditsStart: Double?
+    ) -> (completed: Bool, queuedPosition: Double) {
+        let creditsStart = duration > 0 ? endCreditsStart : nil
+        let reachedCredits = creditsStart.map { position >= $0 } ?? false
+        let completed = markCompleted
+            || reachesWatched(position: position, duration: duration, endCreditsStart: creditsStart)
+        return (completed, reachedCredits ? duration : position)
     }
 
     /// Duration the transport overlay stays on-screen after the last user
