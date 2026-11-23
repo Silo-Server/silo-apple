@@ -1569,10 +1569,13 @@ final class DownloadManager {
             if let leafId, var record = record(forContentId: leafId),
                record.localStatus != .failed, record.localStatus != .revoked {
                 // The reconciled row has no air date, and the manifest
-                // carries none, so keep the request's.
-                if record.episodeLabels == nil, displayEpisodeDate.labels != nil {
-                    record.episodeLabels = displayEpisodeDate.labels
-                    record.airDate = record.airDate ?? displayEpisodeDate.airDate
+                // carries none, so keep the request's. Each field fills only
+                // a gap, as on the success path.
+                let labels = record.episodeLabels ?? displayEpisodeDate.labels
+                let airDate = record.airDate ?? displayEpisodeDate.airDate
+                if labels != record.episodeLabels || airDate != record.airDate {
+                    record.episodeLabels = labels
+                    record.airDate = airDate
                     file.records[record.id] = record
                     persist()
                 }
