@@ -508,9 +508,6 @@ class PlayerViewModel {
     static let connectionLostMessage =
         "Connection lost\nSilo couldn't reconnect to the server. Check your connection, then try again to continue where you left off."
     var remoteDismissToken: UUID?
-    /// Set when an episode ends with Show Next Up off: the player closes the
-    /// way Close does instead of opening Next Up.
-    var endOfPlaybackDismissToken: UUID?
     var audioTracks: [PlayerTrack] = [] {
         didSet { audioTracksFileId = currentSelectedVersion?.fileId }
     }
@@ -4069,14 +4066,18 @@ class PlayerViewModel {
         startNextUpCountdownIfNeeded()
     }
 
+    /// Whether Next Up can auto-play at all, and so shows its Auto-play
+    /// toggle. With Show Next Up off nothing plays on by itself; a Next Up
+    /// the viewer opened waits for Play Now. A shuffle still moves on.
+    var nextUpOffersAutoPlay: Bool {
+        settings.showsNextUp || shuffleState != nil
+    }
+
     /// Auto-play is on and the pick is the next episode or a shuffle's pick.
     /// An On Deck pick is another title the viewer didn't ask to continue
     /// into, so it waits for Play Now.
     private var nextUpPickAutoPlays: Bool {
-        guard settings.autoPlayNextEpisode, let pick = nextUpEpisode else { return false }
-        // With Show Next Up off nothing plays on by itself; a Next Up the
-        // viewer opened waits for Play Now. A shuffle still moves on.
-        guard settings.showsNextUp || shuffleState != nil else { return false }
+        guard nextUpOffersAutoPlay, settings.autoPlayNextEpisode, let pick = nextUpEpisode else { return false }
         #if !os(macOS)
         // The Mac player has no Next Up screen to wait on, so it never gates.
         guard !stillWatchingGuard.shouldGate(threshold: settings.stillWatchingThreshold) else { return false }
@@ -5873,15 +5874,9 @@ class PlayerViewModel {
         let keepsOpenNextUp = showNextUpScreen
         #endif
         if !isPremature, closesAtEndInsteadOfNextUp, !keepsOpenNextUp {
-            #if os(iOS)
-            // In picture in picture the cover is gone, so nothing observes the
-            // token; end the session here, as closing the window would.
-            if !isPlayerPresentationVisible, PictureInPictureCoordinator.shared.ownsEngagedSession(self) {
-                cleanup()
-                return
-            }
-            #endif
-            endOfPlaybackDismissToken = UUID()
+            // Ends the session here and closes however the player is shown,
+            // picture in picture included.
+            stopAndClose()
             return
         }
         beginNextUpPostroll(videoEnded: true)
