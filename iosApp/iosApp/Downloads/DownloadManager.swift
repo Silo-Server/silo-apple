@@ -1452,7 +1452,10 @@ final class DownloadManager {
             // A scope change or an all-skipped batch: nothing to reconcile.
             throw error
         } catch {
-            try await settleFailedCreate(error, leafId: isBatch ? nil : registrationContentId, owner: owner)
+            try await settleFailedCreate(
+                error, leafId: isBatch ? nil : registrationContentId,
+                displayEpisodeDate: isBatch ? (nil, nil) : displayEpisodeDate, owner: owner
+            )
         }
     }
 
@@ -1542,7 +1545,12 @@ final class DownloadManager {
     /// never sent again on its own: a conflict or an uncertain outcome reads
     /// the registry instead, and when that read shows a live entry for the
     /// item, the download goes ahead from it.
-    private func settleFailedCreate(_ error: Error, leafId: String?, owner: ScopeOwner) async throws {
+    private func settleFailedCreate(
+        _ error: Error,
+        leafId: String?,
+        displayEpisodeDate: (labels: String?, airDate: String?) = (nil, nil),
+        owner: ScopeOwner
+    ) async throws {
         let failure = APIv2Client.downloadRegistryFailure(error)
         Self.logger.warning("download create failed (\(String(describing: failure), privacy: .public)): \(String(describing: error), privacy: .public)")
         guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
@@ -1558,8 +1566,16 @@ final class DownloadManager {
             sendPendingServerDeletes()
             await serverDeleteTask?.value
             guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
-            if let leafId, let record = record(forContentId: leafId),
+            if let leafId, var record = record(forContentId: leafId),
                record.localStatus != .failed, record.localStatus != .revoked {
+                // The reconciled row has no air date, and the manifest
+                // carries none, so keep the request's.
+                if record.episodeLabels == nil, displayEpisodeDate.labels != nil {
+                    record.episodeLabels = displayEpisodeDate.labels
+                    record.airDate = record.airDate ?? displayEpisodeDate.airDate
+                    file.records[record.id] = record
+                    persist()
+                }
                 return
             }
             throw failure == .conflict ? DownloadError.registryChanged : DownloadError.registrationUncertain
