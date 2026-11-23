@@ -33,8 +33,6 @@ enum EpisodeLabel {
         case watchPartyLine
         /// "S1 E2", on the tvOS Home marquee.
         case spaced
-        /// "Season 1 · Episode 2" ("Specials · Episode 2" for season 0).
-        case eyebrow
         /// "Season 1, Episode 2", read by a screen reader.
         case spoken
     }
@@ -107,8 +105,6 @@ enum EpisodeLabel {
         case .watchParty: resource = .watchPartyFactsEpisodeCode(s, e)
         case .watchPartyLine: resource = .watchPartyEpisodesLine(s, e)
         case .spaced: resource = .homeSeasonEpisode(s, e)
-        case .eyebrow:
-            return AppLanguage.string(.detailEpisodeEyebrow(seasonName(season, locale: locale), LocaleFormat.integer(episode, locale: locale)), locale: locale)
         case .spoken:
             return [seasonName(season, locale: locale), AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode, locale: locale)), locale: locale)]
                 .joined(separator: ", ")
