@@ -13,20 +13,22 @@ final class TVPrimaryPillFitTests: XCTestCase {
 
     func testLongTitleStaysInsideFixedWidthPill() throws {
         for title in ["Продължаване на S1·E2", "Продолжить 20 нояб. 2026 г.", "Resume S2026·E296"] {
-            let overflow = try litColumnsPastPill(title: title, fixedWidth: pillWidth)
-            XCTAssertEqual(overflow, 0, "\(title) draws past the pill")
+            let columns = try litColumns(title: title, fixedWidth: pillWidth)
+            XCTAssertGreaterThan(columns.inside, 0, "\(title) drew nothing")
+            XCTAssertEqual(columns.outside, 0, "\(title) draws past the pill")
         }
     }
 
     /// Without a fixed width the pill grows to its title instead of shrinking it.
     func testUnfixedPillGrowsToFitTitle() throws {
-        let overflow = try litColumnsPastPill(title: "Продолжить 20 нояб. 2026 г.", fixedWidth: nil)
-        XCTAssertGreaterThan(overflow, 0)
+        let columns = try litColumns(title: "Продолжить 20 нояб. 2026 г.", fixedWidth: nil)
+        XCTAssertGreaterThan(columns.outside, 0)
     }
 
-    /// Counts pixel columns right of the fixed pill width that hold bright
-    /// (title) pixels. The canvas is black, so only the label can light them.
-    private func litColumnsPastPill(title: String, fixedWidth: CGFloat?) throws -> Int {
+    /// Renders the pill centred on a black canvas and counts pixel columns
+    /// holding bright (icon or title) pixels inside the fixed pill's bounds
+    /// and outside them on either side.
+    private func litColumns(title: String, fixedWidth: CGFloat?) throws -> (inside: Int, outside: Int) {
         let view = TVPrimaryPillButton(
             icon: "play.fill",
             title: title,
@@ -34,7 +36,7 @@ final class TVPrimaryPillFitTests: XCTestCase {
             fixedWidth: fixedWidth,
             action: {}
         )
-        .frame(width: canvasWidth, height: 100, alignment: .leading)
+        .frame(width: canvasWidth, height: 100)
         .background(Color.black)
 
         let renderer = ImageRenderer(content: view)
@@ -44,27 +46,35 @@ final class TVPrimaryPillFitTests: XCTestCase {
         let width = image.width
         let height = image.height
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        let context = try XCTUnwrap(CGContext(
-            data: &pixels,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ))
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let drew = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        XCTAssertTrue(drew)
 
-        // A few points of slack for antialiasing at the capsule's edge.
-        let firstColumn = Int(pillWidth) + 4
-        var lit = 0
-        for x in firstColumn..<width {
-            for y in 0..<height where pixels[(y * width + x) * 4] > 128 {
-                lit += 1
-                break
+        // A few points of slack for antialiasing at the capsule's edges.
+        let pillStart = (Int(canvasWidth) - Int(pillWidth)) / 2
+        let pillEnd = pillStart + Int(pillWidth)
+        var columns = (inside: 0, outside: 0)
+        for x in 0..<width {
+            let isLit = (0..<height).contains { y in pixels[(y * width + x) * 4] > 128 }
+            guard isLit else { continue }
+            if x >= pillStart && x < pillEnd {
+                columns.inside += 1
+            } else if x < pillStart - 4 || x >= pillEnd + 4 {
+                columns.outside += 1
             }
         }
-        return lit
+        return columns
     }
 }
 #endif
