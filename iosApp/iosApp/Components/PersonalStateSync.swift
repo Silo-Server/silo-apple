@@ -1,17 +1,19 @@
 import Foundation
 import os
 
-/// The per-item personal flags a viewer can change from a card or a detail
-/// page. Each maps to one v2 mutation pair.
+/// The per-item personal state a viewer can change from a card or a detail
+/// page. Each maps to one v2 mutation pair. `rating` carries a score, so it
+/// goes through `PersonalStateSync.setRating`, not `set`.
 enum PersonalStateTarget: String, Sendable {
     case favorite
     case watchlist
     case watched
     case notInterested
+    case rating
 }
 
-/// A mutation that was sent but never answered. Every v2 favorite, watchlist
-/// and watched write is `non_retryable`, so Silo cannot tell whether the
+/// A mutation that was sent but never answered. Every v2 favorite, watchlist,
+/// watched and rating write is `non_retryable`, so Silo cannot tell whether the
 /// server applied it and must not send it again on its own. The change stays
 /// held for its owner, item and flag until the viewer discards it.
 struct PersonalStateHeldChange: Identifiable, Equatable, Sendable {
@@ -19,6 +21,7 @@ struct PersonalStateHeldChange: Identifiable, Equatable, Sendable {
     let owner: CapturedOrdinaryRequestAuth
     let target: PersonalStateTarget
     let contentId: String
+    /// For a rating, whether the unanswered write set one (true) or removed it.
     let included: Bool
 }
 
@@ -97,7 +100,7 @@ final class PersonalStateHolds {
     }
 }
 
-/// The one dispatcher for favorite, watchlist and watched writes. It sends
+/// The one dispatcher for favorite, watchlist, watched and rating writes. It sends
 /// each change once through `APIv2Client` under a captured owner, holds an
 /// unanswered change instead of replaying it, and returns only after the
 /// owner has been checked again, so callers can apply the result locally.
@@ -118,6 +121,53 @@ enum PersonalStateSync {
         tokens: TokenStore = .shared,
         holds suppliedHolds: PersonalStateHolds? = nil
     ) async throws {
+        try await dispatch(target, contentId: contentId, included: included, owner: suppliedOwner,
+                           tokens: tokens, holds: suppliedHolds) { owner in
+            switch target {
+            case .favorite:
+                try await api.setFavoriteMembership(id: contentId, included: included, auth: owner)
+            case .watchlist:
+                try await api.setWatchlistMembership(id: contentId, included: included, auth: owner)
+            case .watched:
+                try await api.setWatchedState(id: contentId, included: included, auth: owner)
+            case .notInterested:
+                try await api.setNotInterested(id: contentId, included: included, auth: owner)
+            case .rating:
+                preconditionFailure("A rating carries a score; use setRating.")
+            }
+        }
+    }
+
+    /// Sets the viewer's rating of `contentId` to `score` (1 to 10), or
+    /// removes it when `score` is nil, with the same owner, hold and
+    /// in-flight rules as `set`. One hold covers both directions.
+    static func setRating(
+        contentId: String,
+        to score: Int?,
+        owner suppliedOwner: CapturedOrdinaryRequestAuth? = nil,
+        api: APIv2Client = SiloAPI.shared.apiV2Client,
+        tokens: TokenStore = .shared,
+        holds suppliedHolds: PersonalStateHolds? = nil
+    ) async throws {
+        try await dispatch(.rating, contentId: contentId, included: score != nil, owner: suppliedOwner,
+                           tokens: tokens, holds: suppliedHolds) { owner in
+            if let score {
+                try await api.setRating(id: contentId, score: score, auth: owner)
+            } else {
+                try await api.deleteRating(id: contentId, auth: owner)
+            }
+        }
+    }
+
+    private static func dispatch(
+        _ target: PersonalStateTarget,
+        contentId: String,
+        included: Bool,
+        owner suppliedOwner: CapturedOrdinaryRequestAuth?,
+        tokens: TokenStore,
+        holds suppliedHolds: PersonalStateHolds?,
+        write: (CapturedOrdinaryRequestAuth) async throws -> Void
+    ) async throws {
         let holds = suppliedHolds ?? .shared
         let captured: CapturedOrdinaryRequestAuth?
         if let suppliedOwner {
@@ -134,16 +184,7 @@ enum PersonalStateSync {
         defer { holds.end(key) }
 
         do {
-            switch target {
-            case .favorite:
-                try await api.setFavoriteMembership(id: contentId, included: included, auth: owner)
-            case .watchlist:
-                try await api.setWatchlistMembership(id: contentId, included: included, auth: owner)
-            case .watched:
-                try await api.setWatchedState(id: contentId, included: included, auth: owner)
-            case .notInterested:
-                try await api.setNotInterested(id: contentId, included: included, auth: owner)
-            }
+            try await write(owner)
         } catch {
             let delivery = MutationDelivery(error)
             logger.error("""

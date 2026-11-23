@@ -546,6 +546,8 @@ private struct ItemDetailPhoneContent: View {
     @State private var offlinePlayChoice: OfflinePlayChoice?
     @State private var unreachablePlayRequest: UnreachablePlayRequest?
     @State private var detailScrollState = PhoneDetailScrollState()
+    /// The movie or series rating control's open row, draft and Undo toast.
+    @State private var ratingController = PhoneRatingController()
     /// Whether a movie or series page lays out as a split; see `supportsScrollGlassChrome`.
     @State private var isSplitPage = false
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -610,6 +612,13 @@ private struct ItemDetailPhoneContent: View {
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
         .descriptionTranslation(viewModel)
+        .phoneRatingPage(ratingController, savedScore: RatingScore(server: viewModel.userRating)) { score in
+            Task { await viewModel.setRating(score) }
+        }
+        .onChange(of: viewModel.detail?.contentId) { _, _ in
+            // A draft belongs to the title it was started on.
+            ratingController.cancel()
+        }
         .themeMusic(
             viewModel.detail?.themes,
             seasonContentId: isSeriesPage ? viewModel.selectedSeason?.contentId : nil,
@@ -968,6 +977,16 @@ private struct ItemDetailPhoneContent: View {
     }
     #endif
 
+    /// The rating control for a loaded movie or series page.
+    private var ratingSlot: PhoneRatingSlot? {
+        guard viewModel.canRate else { return nil }
+        return PhoneRatingSlot(
+            score: RatingScore(server: viewModel.userRating),
+            isWatched: viewModel.isWatched,
+            controller: ratingController
+        )
+    }
+
     @ViewBuilder
     private func content(for detail: ItemDetail) -> some View {
         if detail.isAudiobook {
@@ -1110,6 +1129,7 @@ private struct ItemDetailPhoneContent: View {
                 scrollState: detailScrollState,
                 isProvisional: viewModel.isDetailProvisional,
                 seedArtwork: viewModel.seedArtwork,
+                ratingSlot: ratingSlot,
                 belowOverview: { translationView(for: detail) }
             )
             .task(id: playbackEpisode(for: detail)?.contentId) {
@@ -1195,6 +1215,7 @@ private struct ItemDetailPhoneContent: View {
                 scrollState: detailScrollState,
                 isProvisional: viewModel.isDetailProvisional,
                 seedArtwork: viewModel.seedArtwork,
+                ratingSlot: ratingSlot,
                 belowOverview: { translationView(for: detail) }
             )
         }
@@ -1722,6 +1743,8 @@ private struct ItemDetailPhoneContent: View {
         startFromBeginning: Bool,
         resumePosition: Double?
     ) {
+        // Starting playback saves an open rating row, as Done does.
+        ratingController.commit()
         #if os(iOS)
         // An engaged TV takes the request through the router's interceptor
         // (see `AppRouter.presentPlayer`). Skipping the local-copy choice and
