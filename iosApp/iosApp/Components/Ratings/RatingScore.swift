@@ -39,9 +39,18 @@ struct RatingScore: Hashable, Comparable, Sendable {
     var steppedDown: RatingScore { RatingScore(value - 1) }
 
     /// The stars as text, "4" or "4.5", with the locale's decimal separator
-    /// ("4,5" in German). "0" for no stars; callers show their own blank.
-    func display(locale: Locale = .current) -> String {
+    /// ("4,5" in German). "0" for no stars; callers show their own blank. A
+    /// view passes its `\.locale`.
+    func display(locale: Locale = AppLanguage.formattingLocale) -> String {
         stars.formatted(.number.precision(.fractionLength(0...1)).locale(locale))
+    }
+
+    /// What VoiceOver reads as the rating control's value: "4.5 of 5", or
+    /// "No rating" for no stars. A view passes its `\.locale`.
+    func accessibilityValue(locale: Locale = AppLanguage.formattingLocale) -> String {
+        isRated
+            ? AppLanguage.string(.detailRatingA11YValue(display(locale: locale)), locale: locale)
+            : AppLanguage.string(.detailRatingA11YNone, locale: locale)
     }
 
     /// How much of star `index` (0 is the leading star) is filled.
