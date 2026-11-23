@@ -150,7 +150,7 @@ final class BufferingQualityControllerTests: XCTestCase {
         h.clock.advance(to: 210_000)
         XCTAssertNil(h.controller.pill)
         XCTAssertEqual(h.shown, [
-            .init(131_000, .replan(Self.autoLowering(44_100))),
+            .init(131_000, .replan(Self.unsourcedLowering(44_100))),
             .init(134_000, .pillShown(.undo)),
             .init(200_000, .pillShown(.undo)),
         ], "coming back is shown again")
@@ -214,9 +214,9 @@ final class BufferingQualityControllerTests: XCTestCase {
         h.at(200_000) { $0.waiting() }
         h.clock.advance(to: 210_000)
         XCTAssertEqual(h.shown, [
-            .init(131_000, .replan(Self.autoLowering(44_100))),
+            .init(131_000, .replan(Self.unsourcedLowering(44_100))),
             .init(134_000, .pillShown(.undo)),
-            .init(206_000, .replan(Self.autoLowering(44_100))),
+            .init(206_000, .replan(Self.unsourcedLowering(44_100))),
         ])
     }
 
@@ -356,7 +356,7 @@ final class BufferingQualityControllerTests: XCTestCase {
         h.measuredKbps = 10_000
         h.clock.advance(to: 179_000)
         XCTAssertEqual(h.shown, [
-            .init(131_000, .replan(Self.autoLowering(44_100))),
+            .init(131_000, .replan(Self.unsourcedLowering(44_100))),
             .init(134_000, .pillShown(.undo)),
         ])
         XCTAssertTrue(h.controller.startDeadlinePassed())
@@ -387,7 +387,8 @@ final class BufferingQualityControllerTests: XCTestCase {
     /// stall. Gauntlet Apple TV V5: each lower plan's subtitle rendition was
     /// refused for 20-27 s, nothing measured the link, and Auto lowered eight
     /// times, to 125 kbps. Once the attempt has played, the stall rules need
-    /// no evidence.
+    /// no evidence to lower, only to report the link
+    /// (``testAfterPlaybackAStallClaimsTheLinkOnlyOnSlowTransfer()``).
     func testBeforeAnythingPlayedOnlyASlowLinkLowers() {
         // The start's own plan, waiting from 0: nothing measured (a subtitle
         // reader shares the link), or media at its bitrate. Nothing triggers
@@ -411,11 +412,15 @@ final class BufferingQualityControllerTests: XCTestCase {
         // bitrate (bedroom Apple TV, 5 Mbps link): that is evidence. A picked
         // quality asks at the long stall, and Auto lowers without sending the
         // reader's share; it sends what the link delivered to both readers
-        // when the device counted it. A bound at the bitrate is no evidence.
+        // when the device counted it. When the device counted the plan's
+        // bitrate or more, the other reader took the share on a fast link:
+        // Auto still lowers, but reports no slow link. A bound at the
+        // bitrate is no evidence.
         let sharedLink: [(String, Int, Int?, [Harness.Recorded])] = [
             ("original", 4_500, nil, [.init(16_000, .pillShown(.prompt))]),
             ("auto", 4_500, nil, [.init(16_000, .replan(Self.autoLowering(44_100)))]),
             ("auto", 2_500, 4_900, [.init(16_000, .replan(Self.autoLowering(44_100, observed: 4_900)))]),
+            ("auto", 4_500, 70_000, [.init(16_000, .replan(Self.unsourcedLowering(44_100)))]),
             ("original", 63_000, nil, []),
         ]
         for (quality, bound, link, expected) in sharedLink {
@@ -472,7 +477,50 @@ final class BufferingQualityControllerTests: XCTestCase {
         played.startPlaying(Self.plan("p1"))
         played.at(125_000) { $0.waiting() }
         played.clock.advance(to: 131_000)
-        XCTAssertEqual(played.shown, [.init(131_000, .replan(Self.autoLowering(44_100)))])
+        XCTAssertEqual(played.shown, [.init(131_000, .replan(Self.unsourcedLowering(44_100)))])
+    }
+
+    /// A stall after the attempt played still lowers, since a smaller
+    /// output also helps an encoder slower than real time, but it reports a
+    /// link fact (`observed_rebuffer`, which the server learns as this
+    /// device's limit for 24 h, and the measured throughput) only on evidence
+    /// that the media arrived slowly while it was arriving. Segments the
+    /// server answers in fast bursts after long waits for its encoder arrive
+    /// too quickly to be timed (nothing measured) or above the bitrate; either
+    /// way the step-down estimate goes out without a source, which the server
+    /// plans under and never records. Picking Lower on the prompt follows the
+    /// same rule. It holds with no device count (server HLS) and with one,
+    /// which on direct play with no shared reader equals the reader's rate.
+    func testAfterPlaybackAStallClaimsTheLinkOnlyOnSlowTransfer() {
+        let cases: [(measured: Int?, expected: Controller.ReplanRequest)] = [
+            (nil, Self.unsourcedLowering(44_100)),
+            (90_000, Self.unsourcedLowering(44_100)),
+            (20_000, Self.autoLowering(44_100, observed: 20_000)),
+        ]
+        for (measured, expected) in cases {
+            for link in [nil, measured] {
+                let automatic = Harness(mode: .always)
+                automatic.startPlaying(Self.plan("p1"))
+                automatic.measuredKbps = measured
+                automatic.linkKbps = link
+                automatic.at(125_000) { $0.waiting() }
+                automatic.clock.advance(to: 131_000)
+                XCTAssertEqual(
+                    automatic.shown, [.init(131_000, .replan(expected))], "always \(measured as Any) \(link as Any)"
+                )
+
+                let asked = Harness(mode: .ask)
+                asked.startPlaying(Self.plan("p1"))
+                asked.measuredKbps = measured
+                asked.linkKbps = link
+                asked.at(125_000) { $0.waiting() }
+                asked.at(133_000) { $0.selectLower() }
+                XCTAssertEqual(asked.shown, [
+                    .init(131_000, .pillShown(.prompt)),
+                    .init(133_000, .replan(expected)),
+                ], "ask \(measured as Any) \(link as Any)")
+            }
+        }
     }
 
     /// On Auto in `always`, a plan that never became playable within the
@@ -610,7 +658,7 @@ final class BufferingQualityControllerTests: XCTestCase {
         XCTAssertEqual(h.shown, [], "the room's stalls are not this history's")
         h.at(150_000) { $0.waiting() }
         h.at(151_200) { $0.playing() }
-        XCTAssertEqual(h.shown, [.init(151_200, .replan(Self.autoLowering(44_100)))])
+        XCTAssertEqual(h.shown, [.init(151_200, .replan(Self.unsourcedLowering(44_100)))])
     }
 
     /// Back on the undo pill hides it as its timer ending does, so a long
@@ -624,7 +672,7 @@ final class BufferingQualityControllerTests: XCTestCase {
         h.at(160_000) { $0.setCompetingPillVisible(false) }
         XCTAssertEqual(h.controller.pill?.kind, .undo)
         h.at(161_000) { _ = $0.back() }
-        XCTAssertEqual(h.shown.last, .init(161_000, .replan(Self.autoLowering(22_120))))
+        XCTAssertEqual(h.shown.last, .init(161_000, .replan(Self.unsourcedLowering(22_120))))
     }
 
     /// A wait the host noticed late (a frozen software playhead) is timed from
@@ -757,6 +805,13 @@ final class BufferingQualityControllerTests: XCTestCase {
             qualityPreference: "auto", bandwidthEstimateKbps: estimate, bandwidthEstimateSource: "observed_rebuffer",
             observedThroughputKbps: observed
         )
+    }
+
+    /// A lowering on a stall that had no slow-transfer evidence: the
+    /// step-down estimate alone, which the server plans under and does not
+    /// learn.
+    private static func unsourcedLowering(_ estimate: Int) -> Controller.ReplanRequest {
+        .init(qualityPreference: "auto", bandwidthEstimateKbps: estimate)
     }
 
     private static let knownActions: Set<String> = [

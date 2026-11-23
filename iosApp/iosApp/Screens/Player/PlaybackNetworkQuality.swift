@@ -16,18 +16,48 @@
 import Foundation
 import Network
 
-/// The rule for when a connection counts as metered.
+/// The network tier playback uses for quality selection:
+/// - `unmetered`: uses the main quality pair;
+/// - `metered`: cellular or an expensive hotspot without Low Data Mode — uses the cellular pair;
+/// - `lowData`: iOS Low Data Mode (`NWPath.isConstrained`) — applies the 2 Mbps ceiling on top of the cellular pair.
+enum PlaybackNetworkTier: Equatable, Sendable {
+    case unmetered
+    case metered
+    case lowData
+
+    var isMetered: Bool { self != .unmetered }
+
+    var logLabel: String {
+        switch self {
+        case .unmetered: return "unmetered"
+        case .metered: return "metered"
+        case .lowData: return "low data mode"
+        }
+    }
+}
+
+/// The rule for classifying a connection's playback tier.
 enum PlaybackNetworkPath {
-    static func isMetered(usesCellular: Bool, isExpensive: Bool, isConstrained: Bool) -> Bool {
-        usesCellular || isExpensive || isConstrained
+    static func tier(usesCellular: Bool, isExpensive: Bool, isConstrained: Bool) -> PlaybackNetworkTier {
+        if isConstrained { return .lowData }
+        if usesCellular || isExpensive { return .metered }
+        return .unmetered
     }
 
-    static func isMetered(_ path: NWPath) -> Bool {
-        isMetered(
+    static func tier(_ path: NWPath) -> PlaybackNetworkTier {
+        tier(
             usesCellular: path.usesInterfaceType(.cellular),
             isExpensive: path.isExpensive,
             isConstrained: path.isConstrained
         )
+    }
+
+    static func isMetered(usesCellular: Bool, isExpensive: Bool, isConstrained: Bool) -> Bool {
+        tier(usesCellular: usesCellular, isExpensive: isExpensive, isConstrained: isConstrained).isMetered
+    }
+
+    static func isMetered(_ path: NWPath) -> Bool {
+        tier(path).isMetered
     }
 }
 
@@ -57,7 +87,7 @@ final class PlaybackNetworkMonitor: @unchecked Sendable {
 
     private let lock = NSLock()
     private var monitor: NWPathMonitor?
-    private var metered = false
+    private var currentTier: PlaybackNetworkTier = .unmetered
     private var observers: [UUID: @Sendable () -> Void] = [:]
 
     /// Begin following the connection. Safe to call more than once.
@@ -74,13 +104,18 @@ final class PlaybackNetworkMonitor: @unchecked Sendable {
         }
     }
 
-    /// Whether the last connection seen is metered.
+    /// The last connection tier seen.
+    var tier: PlaybackNetworkTier {
+        lock.withLock { currentTier }
+    }
+
+    /// Whether the last connection seen is metered (cellular, expensive, or Low Data Mode).
     var isMetered: Bool {
-        lock.withLock { metered }
+        tier.isMetered
     }
 
     /// Call `handler`, on no particular thread, each time the connection
-    /// changes between metered and unmetered.
+    /// tier changes.
     func observe(_ handler: @escaping @Sendable () -> Void) -> ObserverToken {
         let id = UUID()
         lock.withLock { observers[id] = handler }
@@ -93,10 +128,10 @@ final class PlaybackNetworkMonitor: @unchecked Sendable {
         // No connection says nothing about the next one; keep the last answer
         // so going offline for a moment does not count as a change.
         guard path.status == .satisfied else { return }
-        let next = PlaybackNetworkPath.isMetered(path)
+        let next = PlaybackNetworkPath.tier(path)
         let handlers = lock.withLock { () -> [@Sendable () -> Void] in
-            guard next != metered else { return [] }
-            metered = next
+            guard next != currentTier else { return [] }
+            currentTier = next
             return Array(observers.values)
         }
         for handler in handlers {
@@ -105,15 +140,16 @@ final class PlaybackNetworkMonitor: @unchecked Sendable {
     }
 }
 
-/// Whether the connection is metered, as observable state. A detail page
-/// ranks its files with the connection's quality pair, so reading this in a
-/// view redraws it when the connection changes, and Play then starts the
-/// file the page shows. The monitor itself is not observable.
+/// The connection tier, as observable state. A detail page ranks its files
+/// with the connection's quality pair, so reading this in a view redraws it
+/// when the connection changes, and Play then starts the file the page shows.
+/// The monitor itself is not observable.
 @Observable
 final class PlaybackConnection {
     static let shared = PlaybackConnection()
 
-    private(set) var isMetered = false
+    private(set) var tier: PlaybackNetworkTier = .unmetered
+    var isMetered: Bool { tier.isMetered }
     @ObservationIgnored private var observation: PlaybackNetworkMonitor.ObserverToken?
 
     private init() {
@@ -121,16 +157,16 @@ final class PlaybackConnection {
         observation = PlaybackNetworkMonitor.shared.observe {
             DispatchQueue.main.async { PlaybackConnection.shared.refresh() }
         }
-        isMetered = PlaybackNetworkMonitor.shared.isMetered
+        tier = PlaybackNetworkMonitor.shared.tier
     }
 
     private func refresh() {
-        isMetered = PlaybackNetworkMonitor.shared.isMetered
+        tier = PlaybackNetworkMonitor.shared.tier
     }
 }
 
-/// Replans an active playback when the connection moves between metered and
-/// unmetered and the two quality pairs differ. Owned by the player.
+/// Replans an active playback when the connection tier changes and the
+/// target quality pair differs. Owned by the player.
 @MainActor
 final class PlaybackNetworkQualityController {
     enum ReplanOutcome {
@@ -141,9 +177,9 @@ final class PlaybackNetworkQualityController {
         case unavailable
     }
 
-    /// Whether the session in progress asked for the metered pair; nil while
+    /// The connection tier the session in progress asked for; nil while
     /// there is no session to follow.
-    private(set) var sessionUsesMeteredPair: Bool?
+    private(set) var sessionTier: PlaybackNetworkTier?
 
     /// Set while a fixed quality the viewer picked in the player applies: for
     /// the rest of that title, reloads included. Picking Auto is not such a
@@ -156,8 +192,8 @@ final class PlaybackNetworkQualityController {
     /// points puts its path on cellular. Leaving Wi-Fi for mobile data holds
     /// far longer than that.
     private let debounce: Duration
-    private let isMetered: () -> Bool
-    private let pair: (_ metered: Bool) -> AppleQualityAxes
+    private let currentTier: () -> PlaybackNetworkTier
+    private let pair: (PlaybackNetworkTier) -> AppleQualityAxes
     private let replan: (AppleQualityAxes) -> ReplanOutcome
     private var pendingCheck: Task<Void, Never>?
 
@@ -166,21 +202,21 @@ final class PlaybackNetworkQualityController {
 
     init(
         debounce: Duration = .seconds(30),
-        isMetered: @escaping () -> Bool,
-        pair: @escaping (_ metered: Bool) -> AppleQualityAxes,
+        tier: @escaping () -> PlaybackNetworkTier,
+        pair: @escaping (PlaybackNetworkTier) -> AppleQualityAxes,
         replan: @escaping (AppleQualityAxes) -> ReplanOutcome
     ) {
         self.debounce = debounce
-        self.isMetered = isMetered
+        self.currentTier = tier
         self.pair = pair
         self.replan = replan
     }
 
-    /// A session started with the pair for this side of the connection.
+    /// A session started with the pair for this connection tier.
     /// `keepsViewerPick` is true for a reload of the title the viewer picked
     /// a fixed quality for; any other title starts on the saved settings.
-    func sessionStarted(onMeteredNetwork: Bool, keepsViewerPick: Bool) {
-        sessionUsesMeteredPair = onMeteredNetwork
+    func sessionStarted(tier: PlaybackNetworkTier, keepsViewerPick: Bool) {
+        sessionTier = tier
         viewerPickedQuality = keepsViewerPick
     }
 
@@ -188,7 +224,7 @@ final class PlaybackNetworkQualityController {
     func stop() {
         pendingCheck?.cancel()
         pendingCheck = nil
-        sessionUsesMeteredPair = nil
+        sessionTier = nil
     }
 
     /// The viewer picked a fixed rung: it holds over the connection's pair.
@@ -200,25 +236,34 @@ final class PlaybackNetworkQualityController {
 
     /// The viewer picked Auto, which follows the saved settings for the
     /// connection. Later connection changes replan again; the session now
-    /// uses this side's cap.
-    func viewerDidPickAuto(onMeteredNetwork: Bool) {
+    /// uses this tier's cap. If the connection changed while the Auto pick
+    /// was in flight (when a prior fixed pick was still suppressing
+    /// `connectionDidChange()`), reconcile against the live tier now.
+    func viewerDidPickAuto(tier: PlaybackNetworkTier) {
         viewerPickedQuality = false
-        if sessionUsesMeteredPair != nil {
-            sessionUsesMeteredPair = onMeteredNetwork
+        guard sessionTier != nil else { return }
+        sessionTier = tier
+        if currentTier() != tier {
+            if pendingCheck == nil {
+                connectionDidChange()
+            }
+        } else {
+            pendingCheck?.cancel()
+            pendingCheck = nil
         }
     }
 
     /// The connection changed. Checks once it has held for ``debounce``; a
     /// newer change restarts the wait.
     func connectionDidChange() {
-        guard sessionUsesMeteredPair != nil, !viewerPickedQuality else {
+        guard sessionTier != nil, !viewerPickedQuality else {
             pendingCheck?.cancel()
             pendingCheck = nil
             return
         }
         // Without this line a report shows a reload but not what caused it,
         // and a blip that never reloaded leaves no trace at all.
-        let side = isMetered() ? "metered" : "unmetered"
+        let side = currentTier().logLabel
         cmpLog("[CMP-NET] connection now \(side); quality follows if it holds for \(debounce)")
         scheduleCheck(after: debounce)
     }
@@ -236,21 +281,26 @@ final class PlaybackNetworkQualityController {
     /// Replan when the connection's pair is not the one the session uses.
     /// Internal so tests can run a check without waiting out the debounce.
     func checkConnection() {
-        guard !viewerPickedQuality, let current = sessionUsesMeteredPair else { return }
-        let metered = isMetered()
-        guard metered != current else { return }
-        let target = pair(metered)
+        guard !viewerPickedQuality, let current = sessionTier else { return }
+        let nextTier = currentTier()
+        guard nextTier != current else { return }
+        let target = pair(nextTier)
         guard target != pair(current) else {
-            // Both sides ask for the same thing; nothing to reload.
-            sessionUsesMeteredPair = metered
+            // Both tiers ask for the same thing; nothing to reload.
+            sessionTier = nextTier
             return
         }
         switch replan(target) {
         case .issued:
-            sessionUsesMeteredPair = metered
-            cmpLog(metered
-                ? "[CMP-NET] connection stayed metered; reloading at the cellular quality"
-                : "[CMP-NET] connection stayed unmetered; reloading at the main quality")
+            sessionTier = nextTier
+            switch nextTier {
+            case .unmetered:
+                cmpLog("[CMP-NET] connection stayed unmetered; reloading at the main quality")
+            case .metered:
+                cmpLog("[CMP-NET] connection stayed metered; reloading at the cellular quality")
+            case .lowData:
+                cmpLog("[CMP-NET] connection stayed in low data mode; reloading at the low-data ceiling")
+            }
         case .busy:
             // The change has already held; only the reload in flight is in
             // the way, so ask again soon rather than waiting out the debounce.

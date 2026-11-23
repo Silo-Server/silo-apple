@@ -596,7 +596,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 .padding(.bottom, 6)
         }
         .frame(height: compactArtworkHeight)
-        .clipped()
+        .modifier(DetailHeroTopCardClip())
         // The artwork runs under the iPhone Duo's status column; the title
         // stays centred on the page beside it.
         .padding(statusColumnEdge, -statusColumnWidth)
@@ -687,14 +687,14 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             expandedText
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .background(alignment: .topLeading) { expandedArtwork(fillsHeight: true) }
-                .clipped()
+                .modifier(DetailHeroTopCardClip())
         } else {
             ZStack(alignment: .topLeading) {
                 expandedArtwork(fillsHeight: false)
                 expandedText
             }
             .frame(maxWidth: .infinity, minHeight: 550, alignment: .topLeading)
-            .clipped()
+            .modifier(DetailHeroTopCardClip())
         }
     }
 
@@ -1479,6 +1479,41 @@ private struct PhoneHeroTitle: View {
         // The title sits over fixed-height artwork with a two-line limit;
         // past AX1 a long title would truncate rather than read better.
         .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+    }
+}
+
+/// Rounds the top corners of the detail hero artwork to match the display or
+/// sheet card, so pulling down past the top of the scroll view reveals a
+/// rounded card edge instead of a square cut.
+private struct DetailHeroTopCardClip: ViewModifier {
+    #if os(iOS)
+    @Environment(\.detailPageTopSafeArea) private var topSafeArea
+    #endif
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if #available(iOS 26.0, *) {
+            content.clipShape(
+                ConcentricRectangle(
+                    uniformTopCorners: .concentric(minimum: .fixed(32)),
+                    uniformBottomCorners: .fixed(0)
+                )
+            )
+        } else {
+            let radius: CGFloat = topSafeArea >= 44 ? 44 : 24
+            content.clipShape(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: radius,
+                    bottomLeadingRadius: 0,
+                    bottomTrailingRadius: 0,
+                    topTrailingRadius: radius,
+                    style: .continuous
+                )
+            )
+        }
+        #else
+        content.clipped()
+        #endif
     }
 }
 

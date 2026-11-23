@@ -303,12 +303,12 @@ final class PlayerSettings {
     /// page shows on mobile data too. Observable through
     /// ``PlaybackConnection``, so the page follows a change of connection.
     var connectionPreferredQuality: String {
-        preferredQuality(onMeteredNetwork: PlaybackConnection.shared.isMetered)
+        preferredQuality(for: PlaybackConnection.shared.tier)
     }
 
-    /// The pair playback asks for on a metered or unmetered connection, as an id.
-    func preferredQuality(onMeteredNetwork: Bool) -> String {
-        let axes = playbackQualityAxes(onMeteredNetwork: onMeteredNetwork)
+    /// The pair playback asks for on a connection tier, as an id.
+    func preferredQuality(for tier: PlaybackNetworkTier) -> String {
+        let axes = playbackQualityAxes(for: tier)
         return AppleQualityAxes.join(resolution: axes.resolution, bitrateKbps: axes.bitrateKbps)
     }
 
@@ -344,16 +344,20 @@ final class PlayerSettings {
         #endif
     }
 
-    /// The contract default for the cellular pair: the 720p preset.
+    /// The contract default for the cellular pair: Auto, up to 10 Mbps.
     /// `SettingsConformanceTests` pins it to the vendored manifest.
-    static let defaultCellularQuality = AppleQualityAxes(resolution: "720p", bitrateKbps: 2_000)
+    static let defaultCellularQuality = AppleQualityAxes(resolution: "auto", bitrateKbps: 10_000)
+
+    /// Bitrate ceiling applied on top of the cellular pair when Low Data Mode is on.
+    static let lowDataMaxBitrateKbps = 2_000
 
     /// The resolution half of the cellular pair, a member of
     /// `playback.cellular_preferred_quality`.
     ///
     /// Playback uses this pair instead of the main one on mobile data, a
-    /// hotspot, or in Low Data Mode. On a server older than manifest revision
-    /// 20 the pair is kept on this device only, and still applied.
+    /// hotspot, or in Low Data Mode (where ``lowDataMaxBitrateKbps`` caps the
+    /// bitrate further). On a server older than manifest revision 20 the pair
+    /// is kept on this device only, and still applied.
     private(set) var cellularQualityResolution: String {
         didSet {
             guard !isLoadingCache else { return }
@@ -366,7 +370,7 @@ final class PlayerSettings {
         didSet {
             guard !isLoadingCache else { return }
             // Unlike the main cap, an absent value is the contract default
-            // (2000 kbps), so uncapped is stored as 0.
+            // (10000 kbps), so uncapped is stored as 0.
             defaults.set(cellularMaxBitrateKbps ?? 0, forKey: Self.cacheKey(Keys.cellularMaxBitrateKbps))
         }
     }
@@ -386,14 +390,24 @@ final class PlayerSettings {
         SiloQualityPresets.describe(resolution: cellularQualityResolution, bitrateKbps: cellularMaxBitrateKbps)
     }
 
-    /// The pair playback asks for on the current connection: the cellular
-    /// pair on a metered one (see ``PlaybackNetworkPath``), the main pair
-    /// otherwise.
-    func playbackQualityAxes(onMeteredNetwork: Bool) -> AppleQualityAxes {
-        guard onMeteredNetwork, Self.offersCellularQuality else {
+    /// The pair playback asks for on the given connection tier: the main pair
+    /// when unmetered, the cellular pair when metered, and the cellular pair
+    /// capped to ``lowDataMaxBitrateKbps`` in Low Data Mode.
+    func playbackQualityAxes(for tier: PlaybackNetworkTier) -> AppleQualityAxes {
+        guard Self.offersCellularQuality else {
             return AppleQualityAxes(resolution: preferredQualityResolution, bitrateKbps: maxBitrateKbps)
         }
-        return cellularQualityAxes
+        switch tier {
+        case .unmetered:
+            return AppleQualityAxes(resolution: preferredQualityResolution, bitrateKbps: maxBitrateKbps)
+        case .metered:
+            return cellularQualityAxes
+        case .lowData:
+            let base = cellularQualityAxes
+            let capped = base.bitrateKbps.flatMap { $0 > 0 ? min($0, Self.lowDataMaxBitrateKbps) : nil }
+                ?? Self.lowDataMaxBitrateKbps
+            return AppleQualityAxes(resolution: base.resolution, bitrateKbps: capped)
+        }
     }
 
     private(set) var audioLanguage: String {
