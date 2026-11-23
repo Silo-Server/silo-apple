@@ -114,7 +114,7 @@ struct TVRatingActionButton: View {
 
     private var accessibilityLabel: String {
         if editor.isEditing {
-            return AppLanguage.string(.detailRatingA11YLabel, locale: locale)
+            return AppLanguage.string(rating.isSeries ? .detailRatingYourSeriesRating : .detailRatingA11YLabel, locale: locale)
         }
         if score.isRated {
             let value = score.display(locale: locale)

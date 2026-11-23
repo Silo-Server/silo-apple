@@ -104,7 +104,10 @@ struct PhoneRatingLine: View {
                     .transition(swapTransition)
             }
         }
-        .frame(maxWidth: .infinity, alignment: alignment)
+        // An ideal width of zero keeps the open row from widening a panel
+        // that sizes to its content (the open iPhone Duo's left column); the
+        // row then fits the width the line is given.
+        .frame(idealWidth: 0, maxWidth: .infinity, alignment: alignment)
         .frame(height: lineHeight)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : SiloTheme.springAnimation, value: isOpen)
