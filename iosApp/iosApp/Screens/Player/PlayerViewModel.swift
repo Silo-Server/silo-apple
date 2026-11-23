@@ -1692,6 +1692,12 @@ class PlayerViewModel {
             eventHandler: { [weak self] event in
                 guard let self else { return }
                 await self.handleRealtimeEvent(event)
+            },
+            sessionEndedHandler: { [weak self] sessionId, reason in
+                // A refusal about a session this player already moved on
+                // from must not end the playback that replaced it.
+                guard let self, sessionId == self.activePlaybackSessionId else { return }
+                self.leaveServerEndedSession(reason: reason)
             }
         )
         // Mirror websocket connectivity so the synchronous subtitle-AI
@@ -3498,8 +3504,8 @@ class PlayerViewModel {
                 Self.logger.error(
                     "Protocol V3 replan failed: \(MediaLogRedactor.sanitize(error), privacy: .public)"
                 )
-                if PlaybackSessionBridge.isPlaybackSessionEnded(error) {
-                    self.leaveServerEndedSession()
+                if let endReason = PlaybackSessionBridge.serverEndReason(error) {
+                    self.leaveServerEndedSession(reason: endReason)
                     return
                 }
                 if self.reconnectCycle.isActive {
@@ -7280,8 +7286,8 @@ class PlayerViewModel {
     /// session, or give up.
     private func continueReconnect(after error: Error, step: PlaybackReconnectPolicy.Step) {
         guard !isDisposed, reconnectCycle.isActive else { return }
-        if PlaybackSessionBridge.isPlaybackSessionEnded(error) {
-            leaveServerEndedSession()
+        if let endReason = PlaybackSessionBridge.serverEndReason(error) {
+            leaveServerEndedSession(reason: endReason)
             return
         }
         isLoading = false
@@ -10254,19 +10260,25 @@ class PlayerViewModel {
     }
 
     /// The server ended this session for good: an administrator stopped it
-    /// while the player could not be told over the control socket. Leave the
-    /// way an administrator stop does, instead of renewing into a new session.
-    func leaveServerEndedSession() {
+    /// while the player could not be told over the control socket, or it
+    /// stayed paused past the server's limit. Leave the way an administrator
+    /// stop does, instead of renewing into a new session, and say which.
+    func leaveServerEndedSession(reason: PlaybackServerEndReason) {
         guard !isDisposed, !serverEndedSessionHandled else { return }
         serverEndedSessionHandled = true
         cancelReconnect()
         aetherPlaybackController.pause()
-        showNotice(
-            title: AppLanguage.string(.playerNoticeAdminStoppedTitle),
-            message: AppLanguage.string(.playerNoticeAdminEnded),
-            tone: .warning,
-            duration: 1.2
-        )
+        let title: String
+        let message: String
+        switch reason {
+        case .administrator:
+            title = AppLanguage.string(.playerNoticeAdminStoppedTitle)
+            message = AppLanguage.string(.playerNoticeAdminEnded)
+        case .pausedTimeout:
+            title = AppLanguage.string(.playerNoticePausedTimeoutTitle)
+            message = AppLanguage.string(.playerNoticePausedTimeout)
+        }
+        showNotice(title: title, message: message, tone: .warning, duration: 1.2)
         requestRemoteDismiss(after: 0.8)
     }
 
@@ -11314,12 +11326,12 @@ class PlayerViewModel {
                     position: self.progressReportPosition,
                     isPaused: !self.isPlaying
                 )
-                if result == .sessionEnded {
+                if case .sessionEnded(let reason) = result {
                     // A new load or renewal cancels this loop when it moves
                     // to another session. A late answer about the old one
                     // must not end the playback that replaced it.
                     if !Task.isCancelled {
-                        self.leaveServerEndedSession()
+                        self.leaveServerEndedSession(reason: reason)
                     }
                     return
                 }

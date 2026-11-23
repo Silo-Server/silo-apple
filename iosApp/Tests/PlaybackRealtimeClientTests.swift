@@ -7,8 +7,12 @@ import XCTest
 final class PlaybackRealtimeClientTests: XCTestCase {
     private actor Recorder {
         private(set) var mints: [(sessionId: String, installationID: String)] = []
+        private(set) var ends: [(sessionId: String, reason: PlaybackServerEndReason)] = []
         func record(_ sessionId: String, _ authority: PlaybackV2SessionAuthority) {
             mints.append((sessionId, authority.installationID))
+        }
+        func recordEnd(_ sessionId: String, _ reason: PlaybackServerEndReason) {
+            ends.append((sessionId, reason))
         }
     }
 
@@ -68,6 +72,42 @@ final class PlaybackRealtimeClientTests: XCTestCase {
         let mints = await recorder.mints
         XCTAssertEqual(mints.count, 1)
         await client.unbind()
+    }
+
+    /// A ticket refused because the server ended the session for good stops
+    /// the loop at once and tells the player why, instead of minting again.
+    func testATicketRefusedForAServerEndedSessionStopsAndReportsWhy() async throws {
+        for (type, reason) in [("playback_session_ended", PlaybackServerEndReason.administrator),
+                               ("playback_session_paused_timeout", .pausedTimeout)] {
+            let problem = try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(
+                #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(type)","title":"t","status":410,"detail":"d"}"#.utf8))
+            let recorder = Recorder()
+            let ended = expectation(description: "session ended reported")
+            let client = PlaybackRealtimeClient(
+                handshake: { sessionId, authority in
+                    await recorder.record(sessionId, authority)
+                    throw APIv2Error.problem(problem)
+                },
+                ownerIsCurrent: { _ in true },
+                reconnectDelaysNanos: [1_000_000],
+                commandHandler: { _ in },
+                sessionEndedHandler: { sessionId, reason in
+                    await recorder.recordEnd(sessionId, reason)
+                    ended.fulfill()
+                }
+            )
+            await client.bind(sessionId: Self.sessionId, authority: Self.authority)
+            await fulfillment(of: [ended], timeout: 5)
+
+            let mints = await recorder.mints
+            XCTAssertEqual(mints.count, 1, type)
+            let ends = await recorder.ends
+            XCTAssertEqual(ends.map(\.sessionId), [Self.sessionId], type)
+            XCTAssertEqual(ends.map(\.reason), [reason], type)
+            let unavailable = await client.isRealtimeUnavailable
+            XCTAssertTrue(unavailable, type)
+            await client.unbind()
+        }
     }
 
     func testTemporaryOutageKeepsMintingTicketsAfterTheFailureThreshold() async {
