@@ -390,11 +390,15 @@ struct SeriesDownloadSheet: View {
         switch row {
         case .episode:
             guard let episode else { return text(.downloadsSeriesSheetThisEpisode) }
-            let name = episode.title ?? text(.detailEpisode(LocaleFormat.integer(episode.episodeNumber, locale: locale)))
             let code = EpisodeLabel.text(
                 season: episode.seasonNumber, episode: episode.episodeNumber, style: .caption,
                 labels: episodeLabels, airDate: episode.airDate, locale: locale
             )
+            if let title = episode.title { return EpisodeCardCaption.titled(code: code, title: title, locale: locale) }
+            // An untitled game named by its air date shows the date alone,
+            // not its synthetic "Episode 296".
+            if EpisodeLabel.isNamedByDate(labels: episodeLabels, airDate: episode.airDate) { return code }
+            let name = text(.detailEpisode(LocaleFormat.integer(episode.episodeNumber, locale: locale)))
             return EpisodeCardCaption.titled(code: code, title: name, locale: locale)
         case .season: return oneTimeSeason?.displayName(locale: locale) ?? text(.downloadsSeriesSheetSeason)
         case .all: return text(.downloadsSeriesSheetAllEpisodes)

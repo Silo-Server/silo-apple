@@ -1358,8 +1358,10 @@ struct PlayerNextUpScreen: View {
                 HStack(spacing: 10) {
                     Text(episodeLabel)
                         .foregroundStyle(.white.opacity(0.62))
-                    Text(episode.title)
-                        .foregroundStyle(.white)
+                    if let title = episode.shownTitle {
+                        Text(title)
+                            .foregroundStyle(.white)
+                    }
                 }
                 .font(.system(size: subtitleSize, weight: .semibold))
                 .lineLimit(compact ? 1 : 2)

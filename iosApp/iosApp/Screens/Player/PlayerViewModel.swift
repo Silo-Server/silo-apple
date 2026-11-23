@@ -112,6 +112,12 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
     var episodeLabels: String? = nil
 
     var id: String { contentId }
+    /// The title beside `episodeLabel`; nil for an untitled episode named by
+    /// its air date, whose "Episode N" would show the synthetic number the
+    /// date replaces.
+    var shownTitle: String? {
+        titleIsFallback && EpisodeLabel.isNamedByDate(labels: episodeLabels, airDate: airDate) ? nil : title
+    }
     /// `title` as the Remote Control state sends it: English (D44).
     var remoteTitle: String {
         titleIsFallback ? AppLanguage.inEnglish { AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber))) } : title
