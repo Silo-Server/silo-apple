@@ -552,7 +552,7 @@ struct TVMainTabView: View {
         .onChange(of: ServerRegistry.shared.activeServerId) {
             controlReceiver.start(router: router)
         }
-        .onChange(of: ServerRegistry.shared.activeServer?.displayName) {
+        .onChange(of: ServerRegistry.shared.activeServer?.sharedName) {
             controlReceiver.start(router: router)
         }
         .onChange(of: scenePhase) { _, newPhase in

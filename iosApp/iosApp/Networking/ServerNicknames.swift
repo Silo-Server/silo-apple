@@ -98,6 +98,8 @@ final class UbiquitousServerNicknameCloud: ServerNicknameCloud {
             queue: .main
         ) { [weak self] notification in
             let reason = notification.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int
+            // Over quota, a merge would only try to write again.
+            if reason == NSUbiquitousKeyValueStoreQuotaViolationChange { return }
             let accountChanged = reason == NSUbiquitousKeyValueStoreAccountChange
             // An account change or first sync may list no keys; only skip a
             // change that names other keys.

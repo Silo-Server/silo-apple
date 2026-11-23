@@ -304,7 +304,7 @@ final class SettingsViewModel {
     }
 
     /// Account card subtitle: the username when the title is not already
-    /// showing it, and the server, named as the Apple TV profile menu does.
+    /// showing it, and the server: the user's nickname for it, else its host.
     var accountSubtitleLine: String {
         let server = serverLabel
         let username = userInfo?.username
@@ -320,11 +320,10 @@ final class SettingsViewModel {
         }
     }
 
-    /// The user's nickname for the active server, else its advertised name,
-    /// else its host.
+    /// The user's nickname for the active server, else its host. Without a
+    /// nickname the host tells servers apart; most advertise the default name.
     private var serverLabel: String? {
-        let server = ServerRegistry.shared.activeServer
-        return server?.nickname ?? server?.serverName ?? serverHost
+        ServerRegistry.shared.activeServer?.nickname ?? serverHost
     }
 
     private var serverHost: String? {

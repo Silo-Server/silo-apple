@@ -254,6 +254,118 @@ final class ServerNicknameTests: XCTestCase {
         XCTAssertEqual(cloud.records.map(\.serverId), [Self.id(Self.publicURL)])
     }
 
+    /// Another device's clock runs an hour ahead. A rename here still wins
+    /// over the name it gave, instead of being put back by the merge.
+    func testARenameWinsOverANameStampedByAClockRunningAhead() throws {
+        let cloud = CloudStorage()
+        cloud.records = [ServerNickname(
+            serverId: Self.id(Self.publicURL), verifiedServerId: nil, name: "Home", updatedAt: Date().addingTimeInterval(3600)
+        )]
+        let phone = try Device(saved: [Self.entry(Self.publicURL, name: "Silo")], cloud: cloud)
+
+        XCTAssertTrue(phone.registry.rename(serverId: Self.id(Self.publicURL), to: "Lounge"))
+
+        XCTAssertEqual(phone.registry.entry(with: Self.id(Self.publicURL))?.displayName, "Lounge")
+        XCTAssertEqual(cloud.records.map(\.name), ["Lounge"])
+    }
+
+    /// An address that took another address's name later reports a different
+    /// deployment: the copied name belonged to the old server and goes.
+    func testACopiedNameGoesWhenTheAddressReportsAnotherDeployment() throws {
+        let cloud = CloudStorage()
+        let phone = try Device(saved: [Self.entry(Self.publicURL, name: "Silo", deployment: Self.deployment)], cloud: cloud)
+        phone.registry.rename(serverId: Self.id(Self.publicURL), to: "Home")
+        let tv = try Device(saved: [Self.entry(Self.lanURL, name: "Silo", deployment: Self.deployment)], cloud: cloud)
+        XCTAssertEqual(tv.registry.entry(with: Self.id(Self.lanURL))?.displayName, "Home")
+
+        tv.registry.updateVerifiedServerId(for: Self.id(Self.lanURL), verifiedServerId: "deployment-2")
+
+        XCTAssertEqual(tv.registry.entry(with: Self.id(Self.lanURL))?.displayName, "Silo")
+    }
+
+    /// Saving the prompt without changing it writes nothing, so a name the
+    /// user later gives another address of the server still reaches this one.
+    func testSavingTheUnchangedNameKeepsTakingTheServersOtherNames() throws {
+        let cloud = CloudStorage()
+        let phone = try Device(saved: [Self.entry(Self.publicURL, name: "Silo", deployment: Self.deployment)], cloud: cloud)
+        let tv = try Device(saved: [Self.entry(Self.lanURL, name: "Silo", deployment: Self.deployment)], cloud: cloud)
+
+        XCTAssertTrue(tv.registry.rename(serverId: Self.id(Self.lanURL), to: ""))
+        phone.registry.rename(serverId: Self.id(Self.publicURL), to: "Home")
+        tv.cloudChanged()
+
+        XCTAssertEqual(tv.registry.entry(with: Self.id(Self.lanURL))?.displayName, "Home")
+        XCTAssertEqual(cloud.records.map(\.serverId), [Self.id(Self.publicURL)])
+    }
+
+    /// Other people's devices get the server's own name, never this user's
+    /// nickname for it.
+    func testTheNameSentToOtherDevicesIsNeverTheNickname() {
+        var named = Self.entry(Self.publicURL, name: "Silo")
+        named.nickname = "Home"
+        var unnamed = Self.entry(Self.publicURL, name: nil)
+        unnamed.nickname = "Home"
+
+        XCTAssertEqual(named.sharedName, "Silo")
+        XCTAssertEqual(unnamed.sharedName, Self.publicURL)
+    }
+
+    /// A named address proven to reach a saved server is merged into it at
+    /// launch. With no iCloud store to bring the name back, it moves to the
+    /// surviving entry with the address's other data.
+    func testANameMovesWithAnAddressMergedAtLaunch() throws {
+        let name = "ServerNicknameTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        let keychain = SharedKeychain(service: name, accessGroup: nil)
+        let accounts = AccountStore(keychain: keychain, defaults: defaults)
+        let dropped = Self.entry(Self.lanURL, name: "Silo", deployment: Self.deployment)
+        let survivor = Self.entry(Self.publicURL, name: "Silo", deployment: Self.deployment)
+        let account = try accounts.saveSignIn(serverId: dropped.id, origin: dropped.url, serverUserId: "user",
+                                              username: nil, accessToken: "access", refreshToken: nil,
+                                              replacingOtherAccounts: false).account
+        let stored = keychain.withAudience(.userIndependent)
+        addTeardownBlock {
+            _ = stored.delete(SharedStorage.accountIndexAccount)
+            _ = stored.delete(SharedStorage.accountIndexBackupAccount)
+            for server in [dropped.id, survivor.id] {
+                _ = stored.delete(SharedStorage.accountRecordAccount(serverID: server, localAccountID: account.localAccountId))
+            }
+            UserDefaults().removePersistentDomain(forName: name)
+        }
+        defaults.set(true, forKey: ServerRegistry.migratedKey)
+        defaults.set(try JSONEncoder().encode(SavedRegistry(activeServerId: survivor.id, entries: [dropped, survivor])),
+                     forKey: ServerRegistry.defaultsKey)
+        defaults.set(try JSONEncoder().encode([ServerNickname(
+            serverId: dropped.id, verifiedServerId: Self.deployment, name: "Home", updatedAt: Date()
+        )]), forKey: ServerRegistry.nicknamesKey)
+        // The stored login-session proof that lets `init` merge offline.
+        let proofsKey = "serverMerge.proofs.v1"
+        let previousProofs = SharedDefaults.shared.data(forKey: proofsKey)
+        addTeardownBlock {
+            if let previousProofs {
+                SharedDefaults.shared.set(previousProofs, forKey: proofsKey)
+            } else {
+                SharedDefaults.shared.removeObject(forKey: proofsKey)
+            }
+        }
+        let epoch = try XCTUnwrap(account.epoch).uuidString
+        let pair = ServerMerge.pairKey(dropped.id, survivor.id)
+        SharedDefaults.shared.set(Data(#"{"\#(pair)":{"outcome":"proven","epochs":{"\#(account.localAccountId)":"\#(epoch)"},"provenAt":0}}"#.utf8),
+                                  forKey: proofsKey)
+
+        let registry = ServerRegistry(
+            defaults: defaults,
+            keychain: keychain,
+            accounts: accounts,
+            launchPreferences: ProfileLaunchPreferences(defaults: defaults),
+            persistenceOverride: { _, _ in true }
+        )
+
+        XCTAssertEqual(registry.entries.map(\.id), [survivor.id], "the proven duplicate merged in init")
+        XCTAssertEqual(registry.entry(with: survivor.id)?.displayName, "Home")
+    }
+
     func testANameIsCutToTheLengthLimit() throws {
         let device = try Device(saved: [Self.entry(Self.publicURL, name: "Silo")])
 

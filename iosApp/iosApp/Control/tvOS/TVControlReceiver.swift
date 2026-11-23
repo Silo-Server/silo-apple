@@ -125,7 +125,7 @@ final class TVControlReceiver {
             return
         }
         let serverId = RemotePlaybackIdentityManager.shared.effectiveServerId ?? server.id
-        let serverName = RemotePlaybackIdentityManager.shared.effectiveServerName ?? server.displayName
+        let serverName = RemotePlaybackIdentityManager.shared.effectiveServerName ?? server.sharedName
         let serverIdentity = RemotePlaybackIdentityManager.shared.effectiveServerIdentity
         if listener != nil,
            advertisedServerId == serverId,
