@@ -434,6 +434,9 @@ class PlayerViewModel {
         didSet {
             resolveMarkerOccurrences()
             updateCreditsWindow()
+            #if os(tvOS)
+            askAgainForQuickSkipStillIfNeeded()
+            #endif
         }
     }
     var duration: Double = 0
@@ -906,6 +909,18 @@ class PlayerViewModel {
     }
 
     var requestedTVHUDEntryPoint: TVHUDEntryPoint?
+
+    /// Where the latest quick skip lands, for the preview card over the
+    /// passive timeline. Set by `quickSkip(forward:)` and kept, with the
+    /// card's still, after the skip's own seek commits, until
+    /// `endQuickSkipPreview()` or another seek, scrub or load takes over.
+    private(set) var quickSkipLandingTime: Double?
+    /// The quick skip's card asked again for its still once playback reached
+    /// the landing time.
+    @ObservationIgnored private var askedAgainForQuickSkipStill = false
+
+    /// "Press down to open Playback Menu", once per item.
+    let playbackMenuHint = PlaybackMenuHint()
     #endif
 
     /// Signed speed ladder the user steps through with Left/Right taps
@@ -5227,6 +5242,13 @@ class PlayerViewModel {
         // settled and deferred track picks may drive the engine.
         establishedAetherLoadEpoch = loadEpoch
         scrubPreviewProvider.activate(spec)
+        #if os(tvOS)
+        // A quick skip whose seek replanned lost its card's still with the
+        // old load; ask the new one.
+        if let landing = quickSkipLandingTime {
+            scrubPreviewProvider.request(atSourceTime: landing)
+        }
+        #endif
         loadServerTrickplay(for: prepared)
         adoptAetherInventory()
         reapplyAetherGain()
@@ -6127,6 +6149,7 @@ class PlayerViewModel {
         seekFilterTimeoutTask?.cancel()
         seekFilterTimeoutTask = nil
         tearDownHoldSeek()
+        releaseQuickSkipPreview()
         isScrubbing = false
         scrubPreviewTime = currentTime
         scrubPreviewProvider.endInteraction()
@@ -6458,6 +6481,9 @@ class PlayerViewModel {
         // again.
         if lastLoadRequest?.contentId != request.contentId {
             skipPrompts.forEach { $0.reset() }
+            #if os(tvOS)
+            playbackMenuHint.reset()
+            #endif
             resetBufferingQuality()
             autoSkippedRecapKeys = []
             viewingHasPlayed = false
@@ -7923,6 +7949,75 @@ class PlayerViewModel {
         return true
     }
 
+    #if os(tvOS)
+    /// Left or Right with the controls hidden: skips by the viewer's interval
+    /// without bringing up the controls, and holds the summed landing time
+    /// for the passive timeline's preview card. A party member who may not
+    /// seek gets today's skip, which shows the controls and is refused by
+    /// the room, so no card promises a seek that never lands. Returns true
+    /// when the card should show.
+    @discardableResult
+    func quickSkip(forward: Bool) -> Bool {
+        guard canRequestSeek else {
+            if forward { skipForward() } else { skipBackward() }
+            return false
+        }
+        let accepted = forward
+            ? skipForward(revealingControls: false)
+            : skipBackward(revealingControls: false)
+        guard accepted else { return false }
+        quickSkipLandingTime = scrubPreviewTime
+        askedAgainForQuickSkipStill = false
+        return true
+    }
+
+    /// The first ask for the card's still usually comes before the landing
+    /// point is buffered, and the player's cache answers only for frames it
+    /// holds. Once playback has run past the landing time after the skip's
+    /// seek, those frames are there: ask once more.
+    private func askAgainForQuickSkipStillIfNeeded() {
+        guard let landing = quickSkipLandingTime, !askedAgainForQuickSkipStill,
+              !isScrubbing, scrubPreviewImage == nil,
+              currentTime >= landing + 0.5 else { return }
+        askedAgainForQuickSkipStill = true
+        scrubPreviewProvider.request(atSourceTime: landing)
+    }
+
+    /// The passive timeline hid: the card goes with it, and so does the
+    /// still it kept, unless the skip's seek is still pending and will end
+    /// the interaction itself.
+    func endQuickSkipPreview() {
+        guard quickSkipLandingTime != nil else { return }
+        quickSkipLandingTime = nil
+        if !isScrubbing { scrubPreviewProvider.endInteraction() }
+    }
+    #endif
+
+    /// A quick skip's preview card is up, so its still outlives the skip's
+    /// seek and carries over to the next burst.
+    private var holdsQuickSkipPreview: Bool {
+        #if os(tvOS)
+        quickSkipLandingTime != nil
+        #else
+        false
+        #endif
+    }
+
+    /// Another seek, scrub or load takes over from the quick skip's card.
+    /// Its caller deals with the still.
+    private func releaseQuickSkipPreview() {
+        #if os(tvOS)
+        quickSkipLandingTime = nil
+        #endif
+    }
+
+    /// Ends the still interaction after a seek, unless the quick skip's card
+    /// still shows it.
+    private func endScrubPreviewAfterSeek() {
+        guard !holdsQuickSkipPreview else { return }
+        scrubPreviewProvider.endInteraction()
+    }
+
     /// Select at the player root while the timed intro pill is up: past the
     /// intro for `ask`, back to its start for `always`'s undo. Either way the
     /// intro is decided and the pill goes.
@@ -8009,6 +8104,7 @@ class PlayerViewModel {
         // A pending tap-skip debounce would commit behind our back; kill it.
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
+        releaseQuickSkipPreview()
 
         holdSeekRate = forward ? 1 : -1
         syncBufferingQualitySignals()
@@ -8117,7 +8213,9 @@ class PlayerViewModel {
 
         isScrubbing = true
         scrubPreviewTime = target
-        if wasScrubbing {
+        // A quick skip's card keeps its still until the next one arrives
+        // instead of blanking between bursts.
+        if wasScrubbing || holdsQuickSkipPreview {
             scrubPreviewProvider.request(atSourceTime: target)
         } else {
             scrubPreviewProvider.begin(atSourceTime: target)
@@ -8139,7 +8237,7 @@ class PlayerViewModel {
             Self.logger.info(
                 "[CMP-SEEK] skip debounce commit target=\(self.scrubPreviewTime, privacy: .public) current=\(self.currentTime, privacy: .public)"
             )
-            self.commitSeek(to: self.scrubPreviewTime, source: "skipDebounce")
+            self.commitSeek(to: self.scrubPreviewTime, source: "skipDebounce", keepsQuickSkipPreview: true)
             self.skipDebounceTask = nil
         }
     }
@@ -8158,19 +8256,23 @@ class PlayerViewModel {
     @discardableResult
     private func commitSeek(
         to target: Double, source: String = "unspecified", roomCommand: Bool = false,
-        requestedPaused: Bool? = nil
+        requestedPaused: Bool? = nil, keepsQuickSkipPreview: Bool = false
     ) -> Bool {
+        // Only the quick skip's own seek keeps its preview card.
+        if !keepsQuickSkipPreview { releaseQuickSkipPreview() }
         if !roomCommand, let outcome = watchPartyAdapter?.submit(.seek(target), isPaused: requestedPaused),
            outcome != .solo {
             isScrubbing = false
-            scrubPreviewProvider.endInteraction()
             // A request the room session did not send (denied, or not
             // connected and attached) never runs: nothing is held, and the
             // timeline stays on the engine.
             guard outcome == .sent else {
+                releaseQuickSkipPreview()
+                scrubPreviewProvider.endInteraction()
                 scrubPreviewTime = watchPartyPlaybackSnapshot.sourceTime
                 return true
             }
+            endScrubPreviewAfterSeek()
             // The room runs the seek a lead later. Until then show the
             // requested target, as a local seek does, so the timeline does
             // not snap back and the next relative skip builds on it instead
@@ -8197,7 +8299,7 @@ class PlayerViewModel {
             currentTime = clampedTarget
             scrubPreviewTime = clampedTarget
             isScrubbing = false
-            scrubPreviewProvider.endInteraction()
+            endScrubPreviewAfterSeek()
             return false
         }
         if hasStartedPlayback && freshLoadTask != nil && activeAetherLoadEpoch == nil {
@@ -8210,7 +8312,7 @@ class PlayerViewModel {
             currentTime = clampedTarget
             scrubPreviewTime = clampedTarget
             isScrubbing = false
-            scrubPreviewProvider.endInteraction()
+            endScrubPreviewAfterSeek()
             return false
         }
         // This seek reaches a transport, which a held one must not undo once
@@ -8250,7 +8352,7 @@ class PlayerViewModel {
         sourceWatch.seekCommitted(to: clampedTarget)
         scrubPreviewTime = shownTarget
         isScrubbing = false
-        scrubPreviewProvider.endInteraction()
+        endScrubPreviewAfterSeek()
 
         // Snapshotted synchronously, before the seek is even issued. A seek
         // that resolves `.requiresReplan` after a different item began
@@ -8727,6 +8829,7 @@ class PlayerViewModel {
         guard canBeginScrub else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
+        releaseQuickSkipPreview()
         isScrubbing = true
         scrubPreviewTime = max(0, min(fraction, 1)) * duration
         scrubPreviewProvider.begin(atSourceTime: scrubPreviewTime)
@@ -8811,6 +8914,7 @@ class PlayerViewModel {
         guard isScrubbing else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
+        releaseQuickSkipPreview()
         isScrubbing = false
         scrubPreviewTime = currentTime
         scrubPreviewProvider.endInteraction()

@@ -13,6 +13,14 @@ struct TVPlayerControls: View {
     fileprivate static let transportHorizontalInset: CGFloat = 80
     fileprivate static let scrubPreviewCardWidth: CGFloat = 340
     fileprivate static let scrubPreviewBottomInset: CGFloat = 300
+    /// The quick skip's card sits just above the passive timeline, whose bar
+    /// tops out about 112 pt above the bottom edge.
+    fileprivate static let quickSkipPreviewBottomInset: CGFloat = 128
+    /// The skip pills clear the passive timeline, and the quick skip's card
+    /// over it when it shows: the card can land at the trailing end, under
+    /// the pill.
+    private static let skipPillAboveTimelineInset: CGFloat = 132
+    private static let skipPillAboveQuickSkipCardInset: CGFloat = 384
 
     let viewModel: PlayerViewModel
     let showsTimelinePreview: Bool
@@ -97,12 +105,24 @@ struct TVPlayerControls: View {
     /// other side, so a pill never covers the end of the timeline or the
     /// remaining-time label; it drops toward the corner when they hide.
     private var skipPillBottomInset: CGFloat {
-        viewModel.showControls && !isHUDPresented ? 240 : 96
+        if viewModel.showControls && !isHUDPresented { return 240 }
+        if showsTimelineOverlay {
+            return viewModel.quickSkipLandingTime == nil
+                ? Self.skipPillAboveTimelineInset
+                : Self.skipPillAboveQuickSkipCardInset
+        }
+        return 96
+    }
+
+    /// The passive timeline: a finger resting on the clickpad, or a quick
+    /// skip, with the controls and the menu hidden.
+    private var showsTimelineOverlay: Bool {
+        showsTimelinePreview && !viewModel.showControls && !isHUDPresented
     }
 
     var body: some View {
         ZStack {
-            if showsTimelinePreview && !viewModel.showControls && !isHUDPresented {
+            if showsTimelineOverlay {
                 timelinePreviewOverlay
                     .transition(.opacity)
             }
@@ -299,6 +319,19 @@ struct TVPlayerControls: View {
     private var timelinePreviewOverlay: some View {
         ZStack(alignment: .bottom) {
             bottomGradient.ignoresSafeArea()
+            // A quick skip's landing point: the time at once, the still when
+            // it arrives. Kept after the skip's seek commits, until the
+            // timeline hides.
+            if let landing = viewModel.quickSkipLandingTime {
+                TVScrubPreviewLayer(
+                    time: landing,
+                    duration: viewModel.duration,
+                    image: viewModel.scrubPreviewImage,
+                    bottomInset: Self.quickSkipPreviewBottomInset
+                )
+                .mediaLayoutDirection()
+                .transition(.opacity)
+            }
             VStack(spacing: 10) {
                 TVPassiveTimelineBar(viewModel: viewModel)
                 TVPlayerTimeRow(viewModel: viewModel)
@@ -318,7 +351,15 @@ struct TVPlayerControls: View {
                 .padding(.top, showsCornerCapsule ? 120 : 64)
                 .padding(.horizontal, 80)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            TVScrubPreviewLayer(viewModel: viewModel)
+            if viewModel.isScrubbing, let image = viewModel.scrubPreviewImage {
+                TVScrubPreviewLayer(
+                    time: viewModel.scrubPreviewTime,
+                    duration: viewModel.duration,
+                    image: image,
+                    bottomInset: Self.scrubPreviewBottomInset
+                )
+                .transition(.opacity)
+            }
             transportStack
                 .padding(.horizontal, Self.transportHorizontalInset)
                 .padding(.bottom, 48)
@@ -435,6 +476,7 @@ struct TVPlayerControls: View {
             .padding(.bottom, skipPillBottomInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             .animation(.easeOut(duration: 0.22), value: viewModel.showControls)
+            .animation(.easeOut(duration: 0.22), value: skipPillBottomInset)
         }
     }
 
@@ -511,6 +553,21 @@ struct TVPlayerControls: View {
             .mediaLayoutDirection()
             TVPlayerTimeRow(viewModel: viewModel)
                 .mediaLayoutDirection()
+                // Centred under the timeline in the app's own direction, and
+                // only in scrub mode: a plain skip also sets `isScrubbing`.
+                // Select resumes playback only when scrub mode paused it, so
+                // the hint says "jump", which holds either way. It adds no
+                // height, so the transport keeps its layout.
+                .overlay {
+                    if isTimelineScrubbing {
+                        Text(.playerScrubberHint)
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.55))
+                            .lineLimit(1)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isTimelineScrubbing)
             TVPlayerTransportCluster(
                 viewModel: viewModel,
                 onOpenHUD: { openHUD() },
@@ -709,39 +766,50 @@ private struct TVPassiveTimelineBar: View {
     }
 }
 
-/// Still preview card that follows the scrubber puck while scrubbing.
+/// Still preview card above the timeline at `time`: the scrubber puck's
+/// target in scrub mode, or a quick skip's landing point over the passive
+/// timeline. Without a still yet, the card keeps the still's place and shows
+/// the time.
 private struct TVScrubPreviewLayer: View {
     private typealias Layout = TVPlayerControls
 
-    let viewModel: PlayerViewModel
+    let time: Double
+    let duration: Double
+    let image: CGImage?
+    let bottomInset: CGFloat
 
     var body: some View {
-        if viewModel.isScrubbing, let image = viewModel.scrubPreviewImage {
-            GeometryReader { proxy in
-                scrubPreviewCard(image)
-                    .frame(width: Layout.scrubPreviewCardWidth)
-                    .padding(.leading, scrubPreviewLeadingInset(in: proxy.size.width))
-                    .padding(.bottom, Layout.scrubPreviewBottomInset)
-                    .frame(
-                        maxWidth: .infinity,
-                        maxHeight: .infinity,
-                        alignment: .bottomLeading
-                    )
-            }
-            .transition(.opacity)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        GeometryReader { proxy in
+            scrubPreviewCard
+                .frame(width: Layout.scrubPreviewCardWidth)
+                .padding(.leading, scrubPreviewLeadingInset(in: proxy.size.width))
+                .padding(.bottom, bottomInset)
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: .infinity,
+                    alignment: .bottomLeading
+                )
         }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
-    private func scrubPreviewCard(_ image: CGImage) -> some View {
+    private var scrubPreviewCard: some View {
         VStack(spacing: 8) {
-            Image(decorative: image, scale: 1)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 320, height: 180)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            Text(PlayerTimeFormatter.formatHMS(viewModel.scrubPreviewTime))
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+                if let image {
+                    Image(decorative: image, scale: 1)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .transition(.opacity)
+                }
+            }
+            .frame(width: 320, height: 180)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: image == nil)
+            Text(PlayerTimeFormatter.formatHMS(time))
                 .font(.system(size: 24, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
                 .monospacedDigit()
@@ -754,12 +822,13 @@ private struct TVScrubPreviewLayer: View {
         .shadow(color: .black.opacity(0.5), radius: 18, y: 7)
     }
 
-    /// Aligns the preview with the scrubber puck while keeping the complete
-    /// card inside the same horizontal bounds as the transport timeline.
+    /// Aligns the preview with its point on the timeline while keeping the
+    /// complete card inside the same horizontal bounds as the transport
+    /// timeline.
     private func scrubPreviewLeadingInset(in containerWidth: CGFloat) -> CGFloat {
+        let fraction = duration > 0 ? min(max(time / duration, 0), 1) : 0
         let trackWidth = max(containerWidth - (Layout.transportHorizontalInset * 2), 0)
-        let playheadCenter = Layout.transportHorizontalInset
-            + (trackWidth * CGFloat(viewModel.timelineProgressFraction))
+        let playheadCenter = Layout.transportHorizontalInset + (trackWidth * CGFloat(fraction))
         let minimumLeading = Layout.transportHorizontalInset
         let maximumLeading = containerWidth
             - Layout.transportHorizontalInset
