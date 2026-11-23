@@ -35,6 +35,9 @@ struct MobilePlayerControls: View {
     /// it is purely presentation, and kept outside the `showControls` gate
     /// below so the auto-hide takes the transport away without it.
     @State private var showsStats = false
+    /// Height of the time row, scrubber and action row while the controls
+    /// show, so the skip pill can sit clear of them; 0 until first measured.
+    @State private var bottomStackHeight: CGFloat = 0
     @Environment(\.playerTabletopLayout) private var tabletopLayout
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -398,6 +401,9 @@ struct MobilePlayerControls: View {
             actionRow
                 .opacity(recedingOpacity)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+            bottomStackHeight = $0
+        }
     }
 
     // MARK: - Action row
@@ -666,12 +672,20 @@ struct MobilePlayerControls: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, 24)
-            // Clear the bottom stack while the controls are up; hug the
-            // bottom edge when the pill is floating alone.
-            .padding(.bottom, viewModel.showControls ? 88 : 24)
+            // Clear the bottom stack, time row included, while the controls
+            // are up; hug the bottom edge when the pill is floating alone.
+            .padding(.bottom, viewModel.showControls ? skipPillBottomInsetWithControls : 24)
             .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
             .transition(.opacity)
         }
+    }
+
+    /// Above the measured bottom stack, which sits 2 pt off the bottom edge
+    /// (see `body`), with a gap so the pill never touches the remaining-time
+    /// label at the right end of the time row. The old fixed inset stands in
+    /// until the stack has been measured.
+    private var skipPillBottomInsetWithControls: CGFloat {
+        bottomStackHeight > 0 ? bottomStackHeight + 2 + 12 : 88
     }
 
     // MARK: - Helpers
