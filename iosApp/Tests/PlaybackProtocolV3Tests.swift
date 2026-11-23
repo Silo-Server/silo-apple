@@ -3292,6 +3292,17 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 PlaybackProtocolV3.seekReanchorFeature
             )
         )
+        // Video starts claim the paused-timeout answer; audiobooks never do.
+        XCTAssertTrue(
+            ApplePlaybackV3Capabilities.startFeatures(authorizedMediaOrigins: false).contains(
+                PlaybackProtocolV3.pausedTimeoutFeature
+            )
+        )
+        XCTAssertFalse(
+            ApplePlaybackV3Capabilities.audiobookFeatures.contains(
+                PlaybackProtocolV3.pausedTimeoutFeature
+            )
+        )
         XCTAssertTrue(
             ApplePlaybackV3Capabilities.audiobookFeatures.contains(
                 PlaybackProtocolV3.planFeature
