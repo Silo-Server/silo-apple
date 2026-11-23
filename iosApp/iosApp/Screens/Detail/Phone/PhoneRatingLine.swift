@@ -104,10 +104,11 @@ struct PhoneRatingLine: View {
                     .transition(swapTransition)
             }
         }
-        // An ideal width of zero keeps the open row from widening a panel
-        // that sizes to its content (the open iPhone Duo's left column); the
-        // row then fits the width the line is given.
-        .frame(idealWidth: 0, maxWidth: .infinity, alignment: alignment)
+        // A flexible frame with no minimum grows to its content, so a full
+        // size row on a narrower line (the open iPhone Duo's 304pt column)
+        // would widen the line, be measured at that width, and never shrink.
+        // A zero minimum keeps the line at the width it is given.
+        .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: alignment)
         .frame(height: lineHeight)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : SiloTheme.springAnimation, value: isOpen)
