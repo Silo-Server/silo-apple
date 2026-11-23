@@ -101,6 +101,26 @@ final class ItemCollectionsTests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths.filter { $0 == Self.capabilitiesPath }.count, 1)
     }
 
+    /// A title the server no longer serves the viewer has no collections,
+    /// so a reread removes the row. A dropped connection is a failure, which
+    /// the page answers by keeping its last row.
+    func testTitleTheServerNoLongerServesHasNoCollections() async throws {
+        let api = try await api()
+        advertise(itemCollections: true)
+        let path = "/api/v2/catalog/items/movie:gone/collections"
+        stub.sequence(path: path, [
+            .json(404, #"{"type":"https://siloserver.org/docs/api/v2/problems/not_found","title":"Not found","status":404,"detail":"Not found","instance":"urn:test"}"#),
+            .failure(URLError(.networkConnectionLost)),
+        ])
+
+        let gone = try await api.itemCollections(contentId: "movie:gone", libraryId: 1)
+        XCTAssertNil(gone)
+        do {
+            _ = try await api.itemCollections(contentId: "movie:gone", libraryId: 1)
+            XCTFail("a dropped connection is a failure, not an answer")
+        } catch {}
+    }
+
     // MARK: The row
 
     private func card(_ id: String, _ title: String) -> SectionCollectionCard {

@@ -486,15 +486,25 @@ actor SiloAPI {
     }
 
     /// The collections holding the movie or series `contentId` for the
-    /// acting profile, opened from `libraryId` when known. Nil, without a
-    /// request, when the server does not advertise `item_collections`.
+    /// acting profile, opened from `libraryId` when known. Nil when the
+    /// server has no such title for the viewer, and without a request when
+    /// it does not advertise `item_collections`.
     func itemCollections(contentId: String, libraryId: Int?) async throws -> CatalogItemCollections? {
         let auth = try await detailReadAuth()
         guard try await serverAdvertises(\.itemCollections, auth: auth) else { return nil }
-        let read = try await apiV2Client.catalogItemCollections(
-            id: contentId, libraryId: libraryId.map(String.init),
-            artwork: await artworkQuery(.detail), auth: auth
-        )
+        let read: CatalogItemCollections?
+        do {
+            read = try await apiV2Client.catalogItemCollections(
+                id: contentId, libraryId: libraryId.map(String.init),
+                artwork: await artworkQuery(.detail), auth: auth
+            )
+        } catch let error as APIv2Error {
+            switch error {
+            case .httpStatus(404): read = nil
+            case .problem(let problem) where problem.status == 404: read = nil
+            default: throw error
+            }
+        }
         try await requireCurrentOwner(auth)
         return read
     }

@@ -46,7 +46,8 @@ class ItemDetailViewModel {
     @ObservationIgnored private var boxSetTask: Task<Void, Never>?
     /// The collections holding the movie or series, drawn as a row on its
     /// page. Nil while it loads, when the first read fails, on a server
-    /// without the read, and for anything but a movie or series.
+    /// without the read, and for anything but a movie or series. A failed
+    /// reread keeps the last answer.
     private(set) var itemCollections: CatalogItemCollections?
     @ObservationIgnored private var itemCollectionsTask: Task<Void, Never>?
 
@@ -529,8 +530,8 @@ class ItemDetailViewModel {
     }
 
     /// Reads the collections holding the movie or series beside the page's
-    /// own refresh. A failed read removes the row, as does the server
-    /// answering "none"; a cancelled one changes nothing.
+    /// own refresh. As with the box set and on web, a failed reread keeps
+    /// the row on screen; the server answering "none" removes it.
     private func refreshItemCollections(for item: ItemDetail) {
         itemCollectionsTask?.cancel()
         guard SiloMediaType.isMovieLibrary(item.type) || SiloMediaType.isSeries(item.type) else {
@@ -543,7 +544,7 @@ class ItemDetailViewModel {
             do {
                 fresh = try await SiloAPI.shared.itemCollections(contentId: contentId, libraryId: libraryId)
             } catch {
-                fresh = nil
+                return
             }
             guard let self, !Task.isCancelled, self.detail?.contentId == contentId else { return }
             if self.itemCollections != fresh { self.itemCollections = fresh }

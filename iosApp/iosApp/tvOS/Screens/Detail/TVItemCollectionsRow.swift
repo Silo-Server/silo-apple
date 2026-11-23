@@ -5,7 +5,8 @@ import SwiftUI
 /// collection holds the title, its other titles show under its name, ending
 /// with an Explore all card that opens it. Otherwise an "Also in" row shows a
 /// poster card for every collection. A native focus graph like
-/// `TVSimilarRail`: one focus section, entered on its first card.
+/// `TVSimilarRail`: one focus section, entered on the card the viewer last
+/// left while the row still shows it, else on its first card.
 struct TVItemCollectionsRow: View {
     let content: ItemCollectionsRowContent
     /// Each new value moves focus onto the row's entry card, for a page that
