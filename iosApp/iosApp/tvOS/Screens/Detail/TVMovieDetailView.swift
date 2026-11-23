@@ -45,6 +45,13 @@ struct TVMovieDetailView: View {
     /// item keeps the action reachable without adding a focus stop to the
     /// hero, whose synopsis is deliberately not focusable.
     var onTranslateDescription: (() -> Void)? = nil
+    /// The viewer's rating, 1...10, nil when unrated.
+    var userRating: Int? = nil
+    /// False on the card's provisional copy of the page: the star button is
+    /// shown but takes no input yet.
+    var canRate = false
+    /// Nil removes the rating. Nil hides the star button.
+    var onSetRating: ((Int?) -> Void)? = nil
 
     @Namespace private var detailFocusNamespace
     @FocusState private var focusedAction: TVDetailAction?
@@ -57,6 +64,9 @@ struct TVMovieDetailView: View {
     /// vertical reveal.
     @FocusState private var boxSetRailFocused: Bool
     @FocusState private var similarRailFocused: Bool
+    /// True while the star button edits; the page below the action row is
+    /// disabled meanwhile so remote presses have nowhere else to go.
+    @State private var isRatingEditing = false
     private let heroScrollId = "detail-hero"
     private let boxSetSectionScrollId = "detail-box-set-section"
     private let similarSectionScrollId = "detail-similar-section"
@@ -81,6 +91,7 @@ struct TVMovieDetailView: View {
                             synopsisStatus: synopsisStatus,
                             factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
                             ratings: detail.displayRatings,
+                            personalRating: TVHeroPersonalRating(score: userRating, isSeries: false),
                             starringText: TVHeroMetadata.starringText(from: detail, locale: locale),
                             playbackSummary: TVPlaybackSelectionSummary.make(
                                 currentVersion: currentVersion,
@@ -119,6 +130,7 @@ struct TVMovieDetailView: View {
                         }
                         .padding(.horizontal, TVDetailLayout.horizontalInset)
                         .padding(.bottom, TVDetailLayout.pageBottomPadding)
+                        .disabled(isRatingEditing)
                     }
                 }
                 .ignoresSafeArea()
@@ -164,6 +176,8 @@ struct TVMovieDetailView: View {
             rowFocused: $actionRowFocused,
             stabilizesFocusMotion: true,
             primaryButtonWidth: 340,
+            rating: ratingInput,
+            isRatingEditing: $isRatingEditing,
             playbackSelectors: { focusedAction in
                 TVPlaybackActionSelectors(
                     versions: availableVersions,
@@ -187,6 +201,17 @@ struct TVMovieDetailView: View {
                 )
             },
             moreMenu: { moreMenu }
+        )
+    }
+
+    private var ratingInput: TVDetailRating? {
+        guard detail.type == "movie", let onSetRating else { return nil }
+        return TVDetailRating(
+            score: userRating,
+            isSeries: false,
+            isWatched: isWatched,
+            isAvailable: canRate,
+            onChange: onSetRating
         )
     }
 
