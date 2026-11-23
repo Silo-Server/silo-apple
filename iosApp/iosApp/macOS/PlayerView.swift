@@ -129,7 +129,7 @@ private struct MacPlayerScreen: View {
 
                 if let pill = viewModel.introSkipPrompt.pill {
                     MacIntroSkipPill(pill: pill) {
-                        viewModel.selectIntroSkipPrompt()
+                        viewModel.activateIntroSkipPrompt()
                     }
                     .padding(.trailing, 32)
                     // Above the controls while they show; toward the corner
@@ -243,6 +243,10 @@ private struct MacPlayerScreen: View {
         }
         // Pills and notices wait while this window can't be seen.
         .background(MacWindowVisibilityReader { viewModel.playerWindowVisibilityChanged($0) })
+        // The intro pill that timed out returns while the controls show.
+        .onChange(of: shouldShowControls, initial: true) { _, visible in
+            viewModel.playerControlsVisibilityChanged(visible)
+        }
         // In full screen the title bar comes and goes with the controls, so
         // the picture has the screen to itself while they're hidden.
         .background(MacPlayerFullScreenBridge(hidesToolbar: !shouldShowControls) { isFullScreen = $0 })
@@ -318,8 +322,9 @@ private struct MacPlayerScreen: View {
                 dismiss()
             }
         case .confirm:
-            // Return acts on the pill that is up; with none showing it does
-            // nothing. The controller never shows the two pills together.
+            // Return acts on the timed pill that is up; with none showing, or
+            // only the untimed intro pill that returns with the controls, it
+            // does nothing. The controller never shows the two pills together.
             if viewModel.showBufferingPill {
                 viewModel.selectBufferingPrimary()
             } else {

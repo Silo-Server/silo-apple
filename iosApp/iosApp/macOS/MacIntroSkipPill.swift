@@ -5,15 +5,16 @@ import SwiftUI
 /// skipped" caption over "Watch Intro" for `always`'s undo.
 ///
 /// Pointer rules, like the web player: click is Select, Return selects too
-/// while the pill is up, and Escape dismisses it (both routed by
-/// ``PlayerView``'s command capture).
+/// while the timed pill is up, and Escape dismisses it (both routed by
+/// ``PlayerView``'s command capture). The untimed pill that returns with the
+/// controls draws no fill and answers only a click.
 struct MacIntroSkipPill: View {
     let pill: IntroSkipPrompt.Pill
     let action: () -> Void
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 5) {
-            if let caption = pill.kind.caption {
+            if let caption = pill.caption {
                 Text(caption)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.75))
@@ -21,8 +22,8 @@ struct MacIntroSkipPill: View {
                     .padding(.trailing, 12)
                     .accessibilityHidden(true)
             }
-            MacPlayerPillButton(title: pill.kind.actionTitle, pill: pill, action: action)
-                .accessibilityLabel(pill.kind.accessibilityLabel)
+            MacPlayerPillButton(title: pill.actionTitle, pill: pill.countdown, action: action)
+                .accessibilityLabel(pill.accessibilityLabel)
         }
     }
 }

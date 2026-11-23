@@ -49,13 +49,15 @@ enum IntroSkipMode: String, CaseIterable, Identifiable, Sendable {
     var legacyAutoSkip: Bool { self == .always }
 }
 
-/// The intro-skip pill's state machine, shared by the iOS, tvOS and macOS
-/// players.
+/// The skip pill's state machine, shared by the iOS, tvOS and macOS players.
 ///
-/// The player feeds it playback inputs through ``update(_:)`` and acts on the
-/// pill through ``select()`` and ``dismiss()``. Everything else — the timer,
-/// which intros have been decided, when the pill may come back — lives here so
-/// the platforms cannot drift from each other or from web and Android.
+/// One instance runs each marker kind: the intro, and the recap and credits
+/// ranges, which follow the `ask` table whatever the intro mode is (the spec's
+/// "Recap and credits pills"). The player feeds it playback inputs through
+/// ``update(_:)`` and acts on the pill through ``select()``, ``activate()`` and
+/// ``dismiss()``. Everything else — the timer, which ranges have been decided,
+/// when the pill may come back — lives here so the platforms cannot drift from
+/// each other or from web and Android.
 ///
 /// ### Seeks
 ///
@@ -71,11 +73,19 @@ enum IntroSkipMode: String, CaseIterable, Identifiable, Sendable {
 @MainActor
 @Observable
 final class IntroSkipPrompt {
-    /// The spec's `INTRO_PROMPT_SECONDS`.
-    nonisolated static let promptSeconds: TimeInterval = 5
+    /// The spec's `INTRO_PROMPT_SECONDS`. It times the intro offer, the
+    /// `always` undo, and the recap and credits pills.
+    nonisolated static let promptSeconds: TimeInterval = 10
     /// The spec's `PLAYBACK_PAUSE_GRACE_MS`: a stall shorter than this is a
     /// rebuffer and does not touch the timer.
     static let pauseGraceSeconds: TimeInterval = 1.5
+
+    /// The marker kind an instance runs, which names its pill.
+    enum Segment: Equatable {
+        case intro
+        case recap
+        case credits
+    }
 
     enum Kind: Equatable {
         /// `ask`: "Skip Intro". Select seeks to the intro's end.
@@ -96,8 +106,14 @@ final class IntroSkipPrompt {
     }
 
     struct Pill: Equatable {
+        let segment: Segment
         let kind: Kind
-        /// When the timer runs out; nil while a pause holds it.
+        /// False for the `ask` offer that returns with the controls after its
+        /// timer ran out: no timer, no focus on appear, and root-level Select
+        /// and Back leave it alone.
+        let isTimed: Bool
+        /// When the timer runs out; nil while a pause holds it, and always nil
+        /// for the untimed pill.
         let deadline: Date?
         /// Seconds left as of the last arm or freeze.
         let remaining: TimeInterval
@@ -113,6 +129,9 @@ final class IntroSkipPrompt {
         var key: String?
         var mode: IntroSkipMode
         var activity: Activity
+        /// The controls are up, as each platform defines it. An `ask` offer
+        /// that timed out comes back untimed while this holds.
+        var controlsVisible = false
     }
 
     /// The pill on screen, or nil.
@@ -120,6 +139,7 @@ final class IntroSkipPrompt {
 
     var isVisible: Bool { pill != nil }
 
+    let segment: Segment
     @ObservationIgnored private let clock: PlayerPromptClock
     @ObservationIgnored private let duration: TimeInterval
 
@@ -130,18 +150,21 @@ final class IntroSkipPrompt {
     /// it. Timing out does not resolve the intro, but it must not re-offer on
     /// the spot either, so this holds until the position leaves the range.
     @ObservationIgnored private var expiredKey: String?
-    @ObservationIgnored private var active: (key: String, range: TimeRange, kind: Kind)?
+    @ObservationIgnored private var active: (key: String, range: TimeRange, kind: Kind, isTimed: Bool)?
     @ObservationIgnored private var lastMode: IntroSkipMode?
     @ObservationIgnored private var activity: Activity = .paused
+    @ObservationIgnored private var controlsVisible = false
     /// Time left when a stall began, while its grace window runs.
     @ObservationIgnored private var remainingAtStall: TimeInterval?
     @ObservationIgnored private var expiryTimer: PlayerPromptTimer?
     @ObservationIgnored private var graceTimer: PlayerPromptTimer?
 
     init(
+        segment: Segment = .intro,
         clock: PlayerPromptClock? = nil,
         duration: TimeInterval = IntroSkipPrompt.promptSeconds
     ) {
+        self.segment = segment
         self.clock = clock ?? LivePlayerPromptClock()
         self.duration = duration
     }
@@ -155,6 +178,7 @@ final class IntroSkipPrompt {
     @discardableResult
     func update(_ inputs: Inputs) -> Double? {
         activity = inputs.activity
+        controlsVisible = inputs.controlsVisible
 
         // A mode change re-evaluates from scratch: ask -> never takes the offer
         // down, never -> always skips the intro the viewer is sitting in.
@@ -189,8 +213,20 @@ final class IntroSkipPrompt {
             clearPrompt()
         }
 
-        if inputs.mode == .never || resolved.contains(key) || key == expiredKey {
+        if inputs.mode == .never || resolved.contains(key) {
             clearPrompt()
+            return nil
+        }
+
+        // The offer timed out inside this range. It comes back without a timer
+        // while the controls are up and goes again with them; the range stays
+        // undecided either way.
+        if key == expiredKey {
+            if inputs.controlsVisible, inputs.mode == .ask {
+                if active?.isTimed != false { showUntimed(key: key, range: range) }
+            } else {
+                clearPrompt()
+            }
             return nil
         }
 
@@ -205,12 +241,12 @@ final class IntroSkipPrompt {
 
         switch inputs.mode {
         case .always:
-            active = (key, range, .undo)
+            active = (key, range, .undo, true)
             resolved.insert(key)
             arm(remaining: duration)
             return range.end
         case .ask:
-            active = (key, range, .skip)
+            active = (key, range, .skip, true)
             arm(remaining: duration)
             return nil
         case .never:
@@ -218,12 +254,21 @@ final class IntroSkipPrompt {
         }
     }
 
-    /// The pill's action — tap, click, or Select while it is focused.
+    /// Select at the player root — the remote's Select with the controls
+    /// hidden, or Return on a Mac — while the timed pill shows.
     ///
-    /// Resolves the intro, hides the pill, and returns where the caller must
-    /// seek: the intro's end for the `ask` offer, its start for the `always`
-    /// undo. Nil when no pill is showing, so a stray press does nothing.
+    /// Resolves the range, hides the pill, and returns where the caller must
+    /// seek: the range's end for the `ask` offer, its start for the `always`
+    /// undo. Nil when no timed pill is showing, so a stray press does nothing
+    /// and the untimed pill that returns with the controls is left alone.
     func select() -> Double? {
+        guard active?.isTimed == true else { return nil }
+        return activate()
+    }
+
+    /// The pill's own action — tap, click, or Select while it is focused —
+    /// on the timed pill or the untimed one alike. Same result as ``select()``.
+    func activate() -> Double? {
         guard let active else { return nil }
         resolved.insert(active.key)
         expiredKey = nil
@@ -234,16 +279,27 @@ final class IntroSkipPrompt {
         }
     }
 
-    /// Back / Menu / Escape while the pill is showing: hide it and resolve the
-    /// intro without moving playback. True when a pill was dismissed, so the
-    /// caller consumes the press only then and a second Back behaves normally.
+    /// Back / Menu / Escape while the timed pill is showing: hide it and
+    /// resolve the range without moving playback. True when a pill was
+    /// dismissed, so the caller consumes the press only then and a second Back
+    /// behaves normally. The untimed pill does not claim Back.
     @discardableResult
     func dismiss() -> Bool {
-        guard let active else { return false }
+        guard let active, active.isTimed else { return false }
         resolved.insert(active.key)
         expiredKey = nil
         clearPrompt()
         return true
+    }
+
+    /// Decides a range the player skipped on its own, such as an automatic
+    /// recap or credits skip: no pill comes back for it.
+    func resolve(key: String) {
+        resolved.insert(key)
+        if active?.key == key {
+            expiredKey = nil
+            clearPrompt()
+        }
     }
 
     /// Takes the pill down without deciding anything, for when playback stops
@@ -288,7 +344,7 @@ final class IntroSkipPrompt {
     /// (firing at once if the stall outlasted it); if not, the timer freezes at
     /// what it had left when the stall began.
     private func applyActivity() {
-        guard let pill else { return }
+        guard let pill, pill.isTimed else { return }
         switch activity {
         case .playing:
             graceTimer?.cancel()
@@ -333,19 +389,42 @@ final class IntroSkipPrompt {
 
     private func publish(deadline: Date?, remaining: TimeInterval) {
         guard let active else { return }
-        pill = Pill(kind: active.kind, deadline: deadline, remaining: remaining, total: duration)
+        pill = Pill(
+            segment: segment,
+            kind: active.kind,
+            isTimed: active.isTimed,
+            deadline: deadline,
+            remaining: remaining,
+            total: duration
+        )
+    }
+
+    /// The `ask` offer after its timer: no timer, nothing to freeze.
+    private func showUntimed(key: String, range: TimeRange) {
+        cancelTimers()
+        remainingAtStall = nil
+        active = (key, range, .skip, false)
+        publish(deadline: nil, remaining: 0)
     }
 
     /// The timer ran out. The two pills differ here and only here: the `ask`
     /// offer withdraws without deciding anything, while the `always` undo
     /// resolves the intro — the viewer was told it was skipped and let it go.
+    /// With the controls up, the `ask` offer stays as the untimed pill.
     private func expire() {
         guard let active else { return }
         switch active.kind {
-        case .undo: resolved.insert(active.key)
-        case .skip: expiredKey = active.key
+        case .undo:
+            resolved.insert(active.key)
+            clearPrompt()
+        case .skip:
+            expiredKey = active.key
+            if controlsVisible {
+                showUntimed(key: active.key, range: active.range)
+            } else {
+                clearPrompt()
+            }
         }
-        clearPrompt()
     }
 
     private func cancelTimers() {

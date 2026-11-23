@@ -1,12 +1,14 @@
 #if os(tvOS)
 import SwiftUI
 
-/// The tvOS intro-skip pill: "Skip Intro" for `ask`, and a muted
-/// "Intro skipped" caption over "Watch Intro" for `always`'s undo.
+/// The tvOS skip pill: "Skip Intro", "Skip Recap" or "Skip Credits" for
+/// `ask`, and a muted "Intro skipped" caption over "Watch Intro" for
+/// `always`'s undo.
 ///
 /// Same treatment as the Android TV pill so the two remotes feel alike: a dark
 /// capsule whose fill creeps left to right as the timer runs out, dimmed while
 /// unfocused, lit with a white ring when focused, and solid while pressed.
+/// The untimed pill that returns with the controls draws no fill.
 /// Positioning, focus and Menu belong to ``TVPlayerControls`` and the player
 /// shell; this view only draws the pill and forwards Select.
 struct TVIntroSkipPill: View {
@@ -18,7 +20,7 @@ struct TVIntroSkipPill: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 10) {
-            if let caption = pill.kind.caption {
+            if let caption = pill.caption {
                 Text(caption)
                     .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(.white.opacity(0.72))
@@ -27,10 +29,10 @@ struct TVIntroSkipPill: View {
                     .accessibilityHidden(true)
             }
             Button(action: action) {
-                Text(pill.kind.actionTitle)
+                Text(pill.actionTitle)
             }
-            .buttonStyle(TVPlayerPillButtonStyle(pill: pill, isSelectTarget: isSelectTarget))
-            .accessibilityLabel(pill.kind.accessibilityLabel)
+            .buttonStyle(TVPlayerPillButtonStyle(pill: pill.countdown, isSelectTarget: isSelectTarget))
+            .accessibilityLabel(pill.accessibilityLabel)
         }
     }
 }

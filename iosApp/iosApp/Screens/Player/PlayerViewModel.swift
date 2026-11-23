@@ -488,7 +488,10 @@ class PlayerViewModel {
     /// The English of the terminal error `error` shows, for the Remote
     /// Control state (D44: the phone gets English, as it did before).
     private var displayedError: (shown: String, english: String)?
-    var showControls = false
+    var showControls = false {
+        // The skip pill that timed out returns while the controls are up.
+        didSet { if showControls != oldValue { syncIntroSkipPrompt() } }
+    }
     #if os(iOS)
     var shouldShowMobilePlayerChrome: Bool {
         // Loading and Next Up must not independently reveal player chrome.
@@ -561,14 +564,19 @@ class PlayerViewModel {
     private(set) var creditsRange: TimeRange? {
         didSet { updateCreditsWindow() }
     }
-    /// Whether the playhead is inside `creditsRange`. Stored so readers of
-    /// `showCreditsSkip` change only on entering or leaving the credits, not
-    /// on every clock tick.
+    /// Whether the playhead is inside `creditsRange`. Stored so readers
+    /// change only on entering or leaving the credits, not on every clock
+    /// tick.
     private(set) var isInCreditsWindow = false
     private(set) var isInRecapWindow = false
     /// The intro-skip pill — `ask`'s "Skip Intro" offer or `always`'s undo.
     /// See IntroSkipPrompt.swift and the server's intro-skip-mode spec.
     let introSkipPrompt = IntroSkipPrompt()
+    /// The Skip Recap and Skip Credits pills, on the same state machine in
+    /// `ask` (the spec's "Recap and credits pills").
+    let recapSkipPrompt = IntroSkipPrompt(segment: .recap)
+    let creditsSkipPrompt = IntroSkipPrompt(segment: .credits)
+    private var skipPrompts: [IntroSkipPrompt] { [introSkipPrompt, recapSkipPrompt, creditsSkipPrompt] }
     /// Lowers quality when playback keeps buffering, with its prompt and undo
     /// pills. See BufferingQualityController.swift and the server's
     /// buffering-quality spec.
@@ -650,6 +658,10 @@ class PlayerViewModel {
     /// The app is in the background, or the Mac's player window can't be
     /// seen: the player cannot show its pills.
     private(set) var isPlayerSurfaceHidden = false
+    #if os(macOS)
+    /// The Mac player's controls are up, as its view reports them.
+    @ObservationIgnored private var macPlayerControlsVisible = false
+    #endif
     /// A sheet covers the player where its pills show (iPhone and iPad).
     private(set) var isPlayerCoveredBySheet = false
     /// A buffering notice waiting for the notice slot: it shows once the
@@ -777,13 +789,28 @@ class PlayerViewModel {
     /// of truth so both `TVPlayerControls` (presentation) and `PlayerView`
     /// (shell-level Menu / exit handling) can agree on state without relying
     /// on an indirection flag. Driven by `openHUD()` / `closeHUD()`.
-    var isHUDPresented = false
+    var isHUDPresented = false {
+        // An open menu counts as the controls being down for the skip pills.
+        didSet { if isHUDPresented != oldValue { syncIntroSkipPrompt() } }
+    }
 
     /// True while the intro-skip pill is on screen. Its timer, not the intro's
-    /// range, decides this: the pill is up for a few seconds, not the whole
-    /// intro.
+    /// range, decides this: the pill is up for ten seconds, not the whole
+    /// intro, or for as long as the controls when it returns untimed.
     var showIntroSkip: Bool {
         introSkipPrompt.isVisible
+    }
+
+    /// The recap or credits pill while it is on screen. One skip pill shows at
+    /// a time, so it waits behind the intro pill.
+    var segmentSkipPill: IntroSkipPrompt.Pill? {
+        guard !introSkipPrompt.isVisible else { return nil }
+        return recapSkipPrompt.pill ?? creditsSkipPrompt.pill
+    }
+
+    /// The skip pill on screen: the intro pill, else the recap or credits pill.
+    var skipPill: IntroSkipPrompt.Pill? {
+        introSkipPrompt.pill ?? segmentSkipPill
     }
 
     /// The buffering prompt or undo pill while it is on screen.
@@ -800,24 +827,40 @@ class PlayerViewModel {
         return startedAetherLoadEpoch == epoch
     }
 
-    var showCreditsSkip: Bool {
-        // A party member who may not seek has nothing to press.
-        markerPlaybackHasStarted && !isLoading && isInCreditsWindow && canRequestSeek
+    var showSegmentSkip: Bool { segmentSkipPill != nil }
+
+    private var showingSegmentSkipPrompt: IntroSkipPrompt? {
+        guard let pill = segmentSkipPill else { return nil }
+        return pill.segment == .recap ? recapSkipPrompt : creditsSkipPrompt
     }
 
-    var showRecapSkip: Bool {
-        markerPlaybackHasStarted && !isLoading && isInRecapWindow && canRequestSeek
-    }
-    var showSegmentSkip: Bool { showRecapSkip || showCreditsSkip }
-    var segmentSkipLabel: String { AppLanguage.string(showRecapSkip ? .markerSkipRecap : .markerSkipCredits) }
-
+    /// The recap or credits pill's action, timed or untimed, in one press:
+    /// past the recap, or through `skipCredits()`, which keeps the Next Up
+    /// path for credits that run to the end of the file. Select at the tvOS
+    /// root reaches it only with the controls hidden, where no untimed pill
+    /// exists.
     func skipCurrentSegment() {
+        guard let prompt = showingSegmentSkipPrompt,
+              let target = withoutAnimation({ prompt.activate() }) else { return }
         stillWatchingGuard.recordViewerAction()
-        if showRecapSkip, let recapRange {
-            seekTo(seconds: recapRange.end, revealingControls: false)
-        } else if showCreditsSkip {
+        Self.logger.info(
+            "[CMP-MARKERS] segment prompt selected segment=\(String(describing: prompt.segment), privacy: .public) target=\(target, privacy: .public)"
+        )
+        if prompt.segment == .credits {
             skipCredits()
+        } else {
+            seekTo(seconds: target, revealingControls: false)
         }
+    }
+
+    /// Back / Menu while the timed recap or credits pill is up. Returns true
+    /// when it took the pill down, so the caller consumes the press only then.
+    @discardableResult
+    func dismissSegmentSkipPrompt() -> Bool {
+        guard let prompt = showingSegmentSkipPrompt,
+              withoutAnimation({ prompt.dismiss() }) else { return false }
+        Self.logger.info("[CMP-MARKERS] segment prompt dismissed")
+        return true
     }
 
     /// Points each marker range at its occurrence for the playhead: the one
@@ -6394,7 +6437,7 @@ class PlayerViewModel {
         // its end, and a recap the viewer went back to watch is not skipped
         // again.
         if lastLoadRequest?.contentId != request.contentId {
-            introSkipPrompt.reset()
+            skipPrompts.forEach { $0.reset() }
             resetBufferingQuality()
             autoSkippedRecapKeys = []
             viewingHasPlayed = false
@@ -7009,7 +7052,7 @@ class PlayerViewModel {
             isPlaying = false
             // The reload froze the pill's timer; with no playback left under
             // it, it would sit over the dead player indefinitely.
-            introSkipPrompt.withdraw()
+            skipPrompts.forEach { $0.withdraw() }
             showNotice(
                 title: AppLanguage.string(.playerNoticeRecoveryFailedTitle),
                 message: message,
@@ -7115,7 +7158,7 @@ class PlayerViewModel {
         activePreparedProtocolV3 = nil
         // The error view hides the pill, but Menu, Escape and Return still
         // reach it; a reload's stall froze its timer, so it would never leave.
-        introSkipPrompt.withdraw()
+        skipPrompts.forEach { $0.withdraw() }
         let shown = displayMessage ?? Self.displayedPlaybackError(message)
         error = shown
         displayedError = (shown, message)
@@ -7860,10 +7903,21 @@ class PlayerViewModel {
         return true
     }
 
-    /// The intro pill's action: past the intro for `ask`, back to its start
-    /// for `always`'s undo. Either way the intro is decided and the pill goes.
+    /// Select at the player root while the timed intro pill is up: past the
+    /// intro for `ask`, back to its start for `always`'s undo. Either way the
+    /// intro is decided and the pill goes.
     func selectIntroSkipPrompt() {
-        guard let target = withoutAnimation({ introSkipPrompt.select() }) else { return }
+        seekForIntroSkip(to: withoutAnimation { introSkipPrompt.select() })
+    }
+
+    /// The intro pill's own button, which also answers on the untimed pill
+    /// that returns with the controls.
+    func activateIntroSkipPrompt() {
+        seekForIntroSkip(to: withoutAnimation { introSkipPrompt.activate() })
+    }
+
+    private func seekForIntroSkip(to target: Double?) {
+        guard let target else { return }
         stillWatchingGuard.recordViewerAction()
         Self.logger.info(
             "[CMP-MARKERS] intro prompt selected target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
@@ -8372,11 +8426,13 @@ class PlayerViewModel {
         }
     }
 
-    /// Feeds the intro pill the latest playback state.
+    /// Feeds the intro pill, then the recap and credits pills, the latest
+    /// playback state.
     ///
-    /// Called wherever one of its inputs moves: the playhead, the markers, and
-    /// the play/pause, loading and buffering state. The pill's own timer runs
-    /// in between. The one seek it can ask for is `always`'s immediate skip.
+    /// Called wherever one of their inputs moves: the playhead, the markers,
+    /// the play/pause, loading and buffering state, and the controls. Each
+    /// pill's own timer runs in between. The one seek they can ask for is the
+    /// intro's `always` immediate skip.
     private func syncIntroSkipPrompt() {
         // Do not offer or resolve a skip while the engine has yet to present
         // this load. Seeking and pausing before its first frame can prevent
@@ -8388,9 +8444,11 @@ class PlayerViewModel {
                 range: range,
                 key: range.flatMap(currentIntroSkipKey(for:)),
                 mode: introSkipMode,
-                activity: introSkipActivity
+                activity: introSkipActivity,
+                controlsVisible: skipPillControlsAreUp
             )
         )
+        syncSegmentSkipPrompts()
         guard let target, !hasReachedEndOfFile else { return }
         Self.logger.info(
             "[CMP-MARKERS] auto-skip intro target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
@@ -8400,6 +8458,81 @@ class PlayerViewModel {
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
         commitSeek(to: target, source: "introAutoSkip")
+    }
+
+    /// Feeds the recap and credits pills, after the intro pill. A pill waits
+    /// behind the one above it (intro, then recap, then credits) and behind
+    /// the Next Up screen by seeing playback as paused: it does not start its
+    /// timer, so it gets the full ten seconds when it first shows, and one
+    /// already up freezes until it can be seen again.
+    private func syncSegmentSkipPrompts() {
+        let started = markerPlaybackHasStarted
+        let recap = started ? recapRange : nil
+        recapSkipPrompt.update(segmentSkipInputs(
+            range: recap,
+            key: recap.flatMap { markerSkipPromptKey("recap", for: $0) },
+            autoSkipPending: autoSkipIsPending(
+                enabled: settings.autoSkipRecap,
+                latchKey: recap.flatMap(currentRecapSkipKey(for:)),
+                skipped: autoSkippedRecapKeys
+            ),
+            held: introSkipPrompt.isVisible
+        ))
+        let credits = started ? creditsRange : nil
+        creditsSkipPrompt.update(segmentSkipInputs(
+            range: credits,
+            key: credits.flatMap { markerSkipPromptKey("credits", for: $0) },
+            autoSkipPending: autoSkipIsPending(
+                enabled: settings.autoSkipCredits,
+                latchKey: credits.flatMap(currentCreditsSkipKey(for:)),
+                skipped: autoSkippedCreditsKeys
+            ),
+            held: introSkipPrompt.isVisible || recapSkipPrompt.isVisible
+        ))
+    }
+
+    /// Whether the automatic recap or credits skip will take this range: it
+    /// is on, this is not a Watch Party, and the range has not been skipped.
+    private func autoSkipIsPending(enabled: Bool, latchKey: String?, skipped: Set<String>) -> Bool {
+        guard enabled, !isWatchPartyPlayback, let latchKey else { return false }
+        return !skipped.contains(latchKey)
+    }
+
+    private func segmentSkipInputs(
+        range: TimeRange?,
+        key: String?,
+        autoSkipPending: Bool,
+        held: Bool
+    ) -> IntroSkipPrompt.Inputs {
+        #if os(macOS)
+        // The Mac player draws only the intro pill.
+        let mode = IntroSkipMode.never
+        #else
+        // A party member who may not seek has nothing to press, and a range
+        // the automatic skip is about to take shows no pill first.
+        let mode: IntroSkipMode = canRequestSeek && !autoSkipPending ? .ask : .never
+        #endif
+        return IntroSkipPrompt.Inputs(
+            position: currentTime,
+            range: range,
+            key: key,
+            mode: mode,
+            activity: held || showNextUpScreen ? .paused : introSkipActivity,
+            controlsVisible: skipPillControlsAreUp
+        )
+    }
+
+    /// The spec's "the controls are up", for the untimed skip pill: on tvOS
+    /// the controls with no menu open, on iPhone and iPad the controls, and on
+    /// a Mac the player's own controls-visible state.
+    private var skipPillControlsAreUp: Bool {
+        #if os(tvOS)
+        return showControls && !isHUDPresented
+        #elseif os(macOS)
+        return macPlayerControlsVisible
+        #else
+        return showControls
+        #endif
     }
 
     /// A Watch Party never skips an intro on its own, because the seek would
@@ -8437,6 +8570,9 @@ class PlayerViewModel {
         // Set the latch before seeking: a synchronous backend time callback
         // caused by the seek must see this marker as already handled.
         autoSkippedCreditsKeys.insert(key)
+        if let range = creditsRange, let promptKey = markerSkipPromptKey("credits", for: range) {
+            creditsSkipPrompt.resolve(key: promptKey)
+        }
         Self.logger.info(
             "[CMP-MARKERS] auto-skip credits target=\(target, privacy: .public) current=\(time, privacy: .public)"
         )
@@ -8463,6 +8599,9 @@ class PlayerViewModel {
         // Set the latch before seeking: a synchronous backend time callback
         // caused by the seek must see this recap as already handled.
         autoSkippedRecapKeys.insert(key)
+        if let range = recapRange, let promptKey = markerSkipPromptKey("recap", for: range) {
+            recapSkipPrompt.resolve(key: promptKey)
+        }
         Self.logger.info(
             "[CMP-MARKERS] auto-skip recap target=\(target, privacy: .public) current=\(time, privacy: .public)"
         )
@@ -8524,6 +8663,16 @@ class PlayerViewModel {
             return nil
         }
         return "\(contentId):\(fileId):\(range.start):\(range.end)"
+    }
+
+    /// Identifies a recap or credits range for its pill, like the intro key:
+    /// not tied to the session, so a replan cannot bring a decided pill back.
+    private func markerSkipPromptKey(_ kind: String, for range: TimeRange) -> String? {
+        guard let contentId = currentWatchDetail?.contentId,
+              let fileId = currentSelectedVersion?.fileId else {
+            return nil
+        }
+        return "\(contentId):\(fileId):\(kind):\(range.start):\(range.end)"
     }
 
     /// Names the marker, not the session, like the intro key: a remount
@@ -9879,7 +10028,7 @@ class PlayerViewModel {
         markerReconcileTask?.cancel()
         markerReconcileTask = nil
         markerReconcileRequestId = nil
-        introSkipPrompt.reset()
+        skipPrompts.forEach { $0.reset() }
         autoSkippedCreditsKeys = []
         autoSkippedRecapKeys = []
         knownExternalSubtitles = []
@@ -12523,6 +12672,14 @@ extension PlayerViewModel {
     func playerWindowVisibilityChanged(_ visible: Bool) {
         isPlayerSurfaceHidden = !visible
     }
+
+    /// The Mac player's own controls came up or went: its view decides,
+    /// counting a pause or an open menu as the controls being up.
+    func playerControlsVisibilityChanged(_ visible: Bool) {
+        guard visible != macPlayerControlsVisible else { return }
+        macPlayerControlsVisible = visible
+        syncIntroSkipPrompt()
+    }
     #endif
 
     private func syncBufferingHostInputs() {
@@ -12568,7 +12725,7 @@ extension PlayerViewModel {
         PictureInPictureCoordinator.shared.endSessionForIdentityChange()
         #endif
         endHoldFastForward()
-        introSkipPrompt.reset()
+        skipPrompts.forEach { $0.reset() }
         resetBufferingQuality()
         syncBufferingHostInputs()
         cancelNextUpFlow()
