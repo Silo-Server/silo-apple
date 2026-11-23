@@ -3068,6 +3068,7 @@ class PlayerViewModel {
         if !keepsPlaying { showProtocolV3ReplanLoading() }
         streamLoadGeneration &+= 1
         let currentStreamLoadGeneration = streamLoadGeneration
+        let replanFreshLoadGeneration = freshLoadGeneration
         let qualityChange = viewerQualityChange ? sendViewerQualityChange() : nil
         protocolV3ReplanIsReport = keepsPlaying
         protocolV3ReplanTask = Task { @MainActor [weak self] in
@@ -3416,7 +3417,10 @@ class PlayerViewModel {
                 }
                 if previousSessionId != prepared.session.sessionId {
                     await self.realtimeClient.unbind()
-                    await self.bindRealtimeControl(sessionId: prepared.session.sessionId)
+                    await self.bindRealtimeControl(
+                        sessionId: prepared.session.sessionId,
+                        freshLoadGeneration: replanFreshLoadGeneration
+                    )
                 }
             } catch is CancellationError {
                 // Same rule as the fresh-load arm: an abandoned replan load
@@ -6688,7 +6692,10 @@ class PlayerViewModel {
                     // committed session. Binding before Aether accepts the
                     // candidate can leave commands attached to a rolled-back
                     // session after a failed load.
-                    await self.bindRealtimeControl(sessionId: session.sessionId)
+                    await self.bindRealtimeControl(
+                        sessionId: session.sessionId,
+                        freshLoadGeneration: currentFreshLoadGeneration
+                    )
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
                 }
@@ -10006,10 +10013,13 @@ class PlayerViewModel {
     }
 
     /// Binds the control socket to a committed session under the owner and
-    /// installation that started it.
-    private func bindRealtimeControl(sessionId: String) async {
-        let generation = freshLoadGeneration
-        guard let authority = await sessionBridge.committedProtocolV3Authority(sessionId: sessionId) else { return }
+    /// installation that started it, for the fresh load `generation` names.
+    /// A caller a newer fresh load overtook, while it was suspended, binds
+    /// nothing: that load binds its own session.
+    private func bindRealtimeControl(sessionId: String, freshLoadGeneration generation: UInt64) async {
+        guard generation == freshLoadGeneration,
+              let authority = await sessionBridge.committedProtocolV3Authority(sessionId: sessionId),
+              generation == freshLoadGeneration else { return }
         realtimeBindingGeneration = generation
         await realtimeClient.bind(sessionId: sessionId, authority: authority)
     }
