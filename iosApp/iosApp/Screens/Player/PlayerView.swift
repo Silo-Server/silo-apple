@@ -997,6 +997,14 @@ struct PlayerView: View {
 
     @ViewBuilder
     private func errorView(_ error: String) -> some View {
+        #if os(tvOS)
+        TVPlayerErrorCard(
+            message: error,
+            retryTitle: viewModel.errorIsRetryable ? viewModel.retryButtonTitle : nil,
+            onRetry: { viewModel.retry() },
+            onGoBack: { dismissPlayer() }
+        )
+        #else
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 40))
@@ -1022,6 +1030,7 @@ struct PlayerView: View {
                     .frame(minWidth: 140)
             }
         }
+        #endif
     }
 }
 
