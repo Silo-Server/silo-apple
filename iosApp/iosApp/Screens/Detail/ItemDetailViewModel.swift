@@ -231,6 +231,15 @@ class ItemDetailViewModel {
     /// Items with a rating write in flight, each with the newest value chosen
     /// while it runs. One write per item at a time.
     @ObservationIgnored private var ratingWrites: [String: QueuedRating] = [:]
+    /// Bumped by every rating change, so a detail load that began before it
+    /// does not seed the older rating. Kept apart from
+    /// `userStateMutationGeneration`: a favorite or watchlist tap during a
+    /// load must not stop the fetched rating from being taken.
+    @ObservationIgnored private var ratingMutationGeneration = 0
+    /// The item whose rating changed on this page since a load last seeded
+    /// it. Until then `userRating` is newer than any payload for that item,
+    /// so details published or cached meanwhile carry it.
+    @ObservationIgnored private var ratedContentId: String?
     /// Invalidates favorite/watchlist lookups that began before a local
     /// mutation. Without this, a slow entry load can overwrite an optimistic
     /// button tap and put the stale pair back into `ResponseCache`.
@@ -309,6 +318,7 @@ class ItemDetailViewModel {
             seedArtwork = nil
             userRating = nil
             confirmedUserRating = nil
+            ratedContentId = nil
             resetSeriesState()
         }
         if detail?.contentId != contentId {
@@ -378,6 +388,7 @@ class ItemDetailViewModel {
 
         do {
             let userStateGeneration = userStateMutationGeneration
+            let ratingGeneration = ratingMutationGeneration
             personalStateOwner = await TokenStore.shared.captureOrdinaryRequestAuth()
 
             let item: ItemDetail
@@ -426,6 +437,8 @@ class ItemDetailViewModel {
             // flight wins.
             if userStateMutationGeneration == userStateGeneration {
                 isWatched = enriched.userData?.played ?? false
+            }
+            if ratingMutationGeneration == ratingGeneration {
                 seedUserRating(from: enriched)
             }
 
@@ -573,6 +586,7 @@ class ItemDetailViewModel {
         PosterImageCache.prefetchVisibleMovieCast(for: item)
         #endif
 
+        let item = carryingPageRating(item)
         let initial: ItemDetail
         if item.supportsPlaybackMetadata,
            let cachedWatchDetail: WatchDetail = ResponseCache.shared.get(
@@ -595,13 +609,15 @@ class ItemDetailViewModel {
 
         playbackEnrichmentTask = Task { [weak self] in
             guard let self,
-                  let enriched = await self.enrichPlaybackMetadata(
+                  let fetched = await self.enrichPlaybackMetadata(
                       for: item,
                       contentId: contentId,
                       coalescesMetadataRequest: coalescesMetadataRequest
                   ),
                   !Task.isCancelled,
                   generation == self.detailGeneration else { return }
+            // The rating may have changed while `/watch` was in flight.
+            let enriched = self.carryingPageRating(fetched)
 
             self.detail = enriched
             #if DEBUG
@@ -1674,7 +1690,7 @@ class ItemDetailViewModel {
     /// series page, not the card's provisional copy.
     var canRate: Bool {
         guard let detail, !isDetailProvisional else { return false }
-        return detail.type == "movie" || detail.type == "series"
+        return SiloMediaType.isMovieLibrary(detail.type) || SiloMediaType.isSeries(detail.type)
     }
 
     /// Sets the viewer's rating of this movie or series to `score` (1 to 10,
@@ -1698,7 +1714,8 @@ class ItemDetailViewModel {
     ) async {
         guard canRate, let contentId = detail?.contentId else { return }
         let requested = score.flatMap { $0 > 0 ? min($0, 10) : nil }
-        userStateMutationGeneration += 1
+        ratingMutationGeneration += 1
+        ratedContentId = contentId
         userRating = requested
         writeBackRating(requested, contentId: contentId)
         if ratingWrites[contentId] != nil {
@@ -1719,7 +1736,9 @@ class ItemDetailViewModel {
                 }
                 guard detail?.contentId == contentId else {
                     // The page moved to another item; its state is not ours.
-                    if outcome == .applied { invalidateRelatedCaches(contentId: contentId) }
+                    // Applied or not, drop that item's cached detail, which
+                    // still holds the optimistic rating.
+                    invalidateRelatedCaches(contentId: contentId)
                     return
                 }
                 guard outcome == .applied else {
@@ -1732,7 +1751,7 @@ class ItemDetailViewModel {
                 confirmedUserRating = next
                 // A load that began before the server accepted this value
                 // must not land the older one over it.
-                userStateMutationGeneration += 1
+                ratingMutationGeneration += 1
                 invalidateRelatedCaches(contentId: contentId)
             }
             guard let queued = ratingWrites[contentId], !queued.isEmpty else { return }
@@ -1755,6 +1774,16 @@ class ItemDetailViewModel {
         guard ratingWrites[item.contentId] == nil else { return }
         userRating = item.userRating
         confirmedUserRating = item.userRating
+        ratedContentId = nil
+    }
+
+    /// `item` with this page's rating, when the rating changed here after
+    /// the payload could have been read.
+    private func carryingPageRating(_ item: ItemDetail) -> ItemDetail {
+        guard ratedContentId == item.contentId, item.userRating != userRating else { return item }
+        var item = item
+        item.userRating = userRating
+        return item
     }
 
     /// Keeps the cached detail in step with the page, so reopening it inside

@@ -575,7 +575,7 @@ struct TVSeriesDetailView: View {
     }
 
     private var ratingInput: TVDetailRating? {
-        guard detail.type == "series", let onSetRating else { return nil }
+        guard SiloMediaType.isSeries(detail.type), let onSetRating else { return nil }
         return TVDetailRating(
             score: userRating,
             isSeries: true,
