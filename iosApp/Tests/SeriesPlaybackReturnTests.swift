@@ -242,6 +242,34 @@ final class SeriesPlaybackReturnTests: XCTestCase {
         XCTAssertEqual(returned?.seasonNumber, 3)
     }
 
+    /// The server marks an episode watched once playback reaches its end
+    /// credits, even below 90%. Leaving there moves the page on; credits
+    /// placed outside the file's tail window don't count.
+    func testLeavingDuringTheEndCreditsFinishesTheEpisode() throws {
+        // A 2600 s episode: its tail window starts at 2150 s, and 2250 s is 86.5%.
+        let cases: [(credits: TimeRange?, stoppedAt: Double, completed: Bool)] = [
+            (TimeRange(start: 2_200, end: 2_590), 2_250, true),
+            (TimeRange(start: 2_200, end: 2_590), 2_190, false),
+            (TimeRange(start: 2_000, end: 2_590), 2_250, false),
+            (nil, 2_250, false),
+        ]
+        for (credits, stoppedAt, completed) in cases {
+            SeriesPlaybackReturnInbox.discardPending()
+            let model = PlayerViewModel()
+            model.bindMarkerReconciliationForTesting(
+                sessionId: "session-1", detail: try watchDetail(), version: try fileVersion(fileId: 1, credits: nil)
+            )
+            model.adoptReplannedVersion(try fileVersion(fileId: 2, credits: credits))
+            model.duration = 2_600
+            model.currentTime = stoppedAt
+            model.cleanup()
+
+            let returned = SeriesPlaybackReturnInbox.take(seriesContentId: seriesId)
+            XCTAssertEqual(returned?.episodeContentId, "s1e1")
+            XCTAssertEqual(returned?.completed, completed, "credits \(String(describing: credits)), stopped at \(stoppedAt)")
+        }
+    }
+
     func testUpNextCountsDownOnlyForTheNextEpisodeNotAnOnDeckPick() throws {
         let item = try JSONDecoder().decode(SectionItem.self, from: Data(
             #"{"contentId":"half-watched-movie","type":"movie","title":"Elsewhere"}"#.utf8
@@ -304,6 +332,25 @@ final class SeriesPlaybackReturnTests: XCTestCase {
         try JSONDecoder().decode(EpisodeListItem.self, from: Data(
             "{\"contentId\":\"s\(season)e\(number)\",\"seasonNumber\":\(season),\"episodeNumber\":\(number)}".utf8
         ))
+    }
+
+    private func fileVersion(fileId: Int, credits: TimeRange?) throws -> FileVersion {
+        var json: [String: Any] = ["file_id": fileId]
+        if let credits { json["credits"] = ["start": credits.start, "end": credits.end] }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(FileVersion.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
+    private func watchDetail() throws -> WatchDetail {
+        WatchDetail(
+            contentId: "s1e1", type: "episode", title: "Episode", year: nil, overview: nil,
+            versions: [try fileVersion(fileId: 1, credits: nil)], subtitles: nil,
+            intro: nil, credits: nil, userData: nil,
+            seriesId: seriesId, seriesTitle: nil, seasonNumber: 1, episodeNumber: 1,
+            effectiveSubtitleLanguage: nil, effectiveSubtitleMode: nil,
+            effectiveShowForcedSubtitles: nil, effectiveSubtitleTrackSignature: nil
+        )
     }
 
     private func clearCache() {

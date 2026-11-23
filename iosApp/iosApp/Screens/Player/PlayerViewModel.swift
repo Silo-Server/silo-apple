@@ -1230,6 +1230,23 @@ class PlayerViewModel {
     /// Series page moves past an episode the server now counts as watched.
     private static let defaultWatchedFraction: Double = 0.9
 
+    /// Where the playing file's end credits start, nil when it has none.
+    /// Reaching them finishes the item, as the server judges a streamed stop.
+    private var endCreditsStart: Double? {
+        markerTimeline.endCreditsStart(
+            duration: duration,
+            isEpisode: currentWatchDetail.map { SiloMediaType.isEpisode($0.type) } ?? false
+        )
+    }
+
+    /// Whether stopping at `position` finishes the item: past the default
+    /// watched threshold, or into its end credits.
+    private static func reachesWatched(position: Double, duration: Double, endCreditsStart: Double?) -> Bool {
+        guard duration.isFinite, duration > 0 else { return false }
+        if position / duration > defaultWatchedFraction { return true }
+        return endCreditsStart.map { position >= $0 } ?? false
+    }
+
     /// Cached external subtitle URLs returned by the server; added to the
     /// player once the file has loaded.
     private var pendingExternalSubtitles: [SubtitleUrl] = []
@@ -9790,11 +9807,16 @@ class PlayerViewModel {
             endedPrematurely: endedPrematurely
         )
         recordCurrentPlaybackMutation()
-        // The server counts an episode watched past its threshold, which is
-        // often before the Next Up prompt. Leaving during the credits must
-        // still move the Series page on to the next episode.
-        let crossedWatchedThreshold = duration.isFinite && duration > 0
-            && reportedPosition / duration > Self.defaultWatchedFraction
+        // The server counts an episode watched past its threshold or once it
+        // reaches the end credits, which is often before the Next Up prompt.
+        // Leaving during the credits must still move the Series page on to
+        // the next episode. Read before the teardown below clears the markers.
+        let finalEndCreditsStart = endCreditsStart
+        let crossedWatchedThreshold = Self.reachesWatched(
+            position: reportedPosition,
+            duration: duration,
+            endCreditsStart: finalEndCreditsStart
+        )
         SeriesPlaybackReturnInbox.publish(
             seriesPlaybackReturn(completed: currentItemCompleted || crossedWatchedThreshold),
             generation: seriesReturnGeneration
@@ -9923,7 +9945,8 @@ class PlayerViewModel {
                 self.recordOfflineProgress(
                     context: offline,
                     position: finalOfflinePosition,
-                    markCompleted: endedNaturally
+                    markCompleted: endedNaturally,
+                    endCreditsStart: finalEndCreditsStart
                 )
             }
         }
@@ -11371,23 +11394,51 @@ class PlayerViewModel {
     /// `position` lets the terminal flushes (EOF, player close) pin the
     /// end-state instead of relying on the last observed tick; `markCompleted`
     /// force-latches watched on natural end even when the file's duration
-    /// never resolved.
+    /// never resolved. `endCreditsStart` is for a write after teardown has
+    /// cleared the markers; without it the live markers apply.
     private func recordOfflineProgress(
         context: OfflinePlaybackContext,
         position: Double? = nil,
-        markCompleted: Bool = false
+        markCompleted: Bool = false,
+        endCreditsStart capturedEndCreditsStart: Double? = nil
     ) {
         let position = position ?? currentTime
         guard position.isFinite, position >= 0 else { return }
         let duration = duration.isFinite && duration > 0 ? duration : 0
-        let watched = markCompleted
-            || (duration > 0 && position / duration > Self.defaultWatchedFraction)
+        let sample = Self.offlineProgressSample(
+            position: position,
+            duration: duration,
+            markCompleted: markCompleted,
+            endCreditsStart: capturedEndCreditsStart ?? endCreditsStart
+        )
         DownloadManager.shared.recordOfflineProgress(
             mediaItemId: context.mediaItemId,
             position: position,
             duration: duration,
-            completed: watched
+            completed: sample.completed,
+            queuedPosition: sample.queuedPosition
         )
+    }
+
+    /// How one offline sample is recorded: whether the item counts as
+    /// watched on this device, and the position queued for the server.
+    /// `/sync/progress` doesn't say which file played, so the server judges
+    /// synced progress by its percentage alone. Progress into the credits
+    /// goes up at the end, which the server stores as watched, as it does a
+    /// streamed stop there. Below the credits the real position goes up, so
+    /// the server's own threshold applies rather than this player's default.
+    /// Internal for tests.
+    static func offlineProgressSample(
+        position: Double,
+        duration: Double,
+        markCompleted: Bool,
+        endCreditsStart: Double?
+    ) -> (completed: Bool, queuedPosition: Double) {
+        let creditsStart = duration > 0 ? endCreditsStart : nil
+        let reachedCredits = creditsStart.map { position >= $0 } ?? false
+        let completed = markCompleted
+            || reachesWatched(position: position, duration: duration, endCreditsStart: creditsStart)
+        return (completed, reachedCredits ? duration : position)
     }
 
     /// Duration the transport overlay stays on-screen after the last user

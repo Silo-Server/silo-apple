@@ -117,6 +117,15 @@ extension Color {
     /// Text-field caret tint.
     static let siloFieldTint = Color(hex: "#0A84FF")
 
+    // MARK: - Personal rating
+
+    /// The viewer's own rating: filled stars, the nudge outline and the
+    /// Undo button. The one accent the title page allows.
+    static let siloRatingStar = Color(hex: "#F5C24B")
+
+    /// Unfilled stars in a rating track.
+    static let siloRatingStarOutline = Color(hex: "#8B8F99")
+
     #if os(macOS)
     /// Mac page canvas: one flat charcoal behind every signed-in page.
     static let siloPageCanvas = Color(hex: "#1A1A1C")
