@@ -48,8 +48,15 @@ enum SiloQualityPresets {
 
     static let all: [SiloQualityPreset] = [
         .init(
+            id: "auto-10mbps",
+            label: "Auto, up to 10 Mbps",
+            description: "Plays the original file up to 10 Mbps, and converts larger files to fit.",
+            resolution: resolutionAuto,
+            bitrateKbps: 10_000
+        ),
+        .init(
             id: "auto",
-            label: "Auto",
+            label: "Auto, no limit",
             description: "Plays the original file whenever this device can, and converts it only when it can't.",
             resolution: resolutionAuto,
             bitrateKbps: nil

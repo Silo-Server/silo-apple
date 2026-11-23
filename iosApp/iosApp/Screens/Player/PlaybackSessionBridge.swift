@@ -865,7 +865,7 @@ actor PlaybackSessionBridge {
         allowNearEndResume: Bool = false,
         prefersLastUsedVersion: Bool = false,
         preferredQualityOverride: String? = nil,
-        onMeteredNetwork: Bool = false,
+        networkTier: PlaybackNetworkTier = .unmetered,
         bufferingQualityMode: BufferingQualityMode,
         // A fresh bandwidth probe result, sent with source `probe`.
         probeEstimateKbps: Int? = nil,
@@ -904,7 +904,7 @@ actor PlaybackSessionBridge {
             // Start Over on a later part restarts its presentation.
             startsAtFirstPart: startsAtFirstPart || startFromBeginning,
             preferredQualityOverride: preferredQualityOverride,
-            settingsQuality: PlayerSettings.shared.playbackQualityAxes(onMeteredNetwork: onMeteredNetwork)
+            settingsQuality: PlayerSettings.shared.playbackQualityAxes(for: networkTier)
         )
         let selectedVersion = start.version
         if let preferredFileId, start.source != .requested {
