@@ -4,7 +4,8 @@ import XCTest
 
 /// Which store the download check loads, and when it reads the capability
 /// again. A store loaded for one account while requests ran as another
-/// could never read its capability, which hid Download until a relaunch.
+/// could never read its capability, so Download stayed hidden. Whether that
+/// state caused the reported relaunch-only Download is not established.
 final class DownloadCapabilityCheckTests: XCTestCase {
     private typealias Identity = DownloadManager.SignedInIdentity
 

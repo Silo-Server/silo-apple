@@ -307,6 +307,9 @@ final class DownloadManager {
     /// Watching, signed out, a disagreeing selection) is recorded once rather
     /// than crowding the journal.
     @ObservationIgnored private var recordedActivationOutcomes: Set<String> = []
+    /// The last capability read outcome recorded since a read stored an
+    /// answer, for the same reason.
+    @ObservationIgnored private var recordedReadOutcome: String?
     /// Capability reads started, and the newest one whose answer was stored.
     /// An older reply that lands after a newer one is dropped.
     @ObservationIgnored private var capabilityReadsStarted: UInt64 = 0
@@ -724,7 +727,7 @@ final class DownloadManager {
 
     /// Re-point the manager at the active `(server, account, profile)`
     /// scope, loading that scope's persisted blob. Returns false when no
-    /// account and profile are selected on the active server.
+    /// account and profile can be resolved on the active server.
     ///
     /// The scope is the account requests use (`TokenStore`), the same
     /// identity `captureScopeOwner` checks, so a loaded store can always
@@ -833,16 +836,23 @@ final class DownloadManager {
         if scopeLoadToken == loadToken {
             // Exactly one waiter installs this snapshot. Later waiters observe
             // the already-hydrated `file` instead of assigning it a second time.
-            // A reload of the installed scope (it has no records and no
-            // capability yet, so activation loads it again) keeps a
-            // capability read while it loaded.
+            // A reload of the installed scope (it had no records and no
+            // capability, so activation loads it again) keeps what reached
+            // it while it loaded: a capability read, and the records a sync
+            // then imported. The store was empty when the reload began and
+            // every change to it is saved, so a store that gained records is
+            // newer than the snapshot.
             let installed = fileServerId == serverId && fileAccountId == accountId && fileProfileId == profileId
                 ? file : nil
-            file = loaded.file
-            if let installed, let readAt = installed.capabilityFetchedAt,
-               readAt > (file.capabilityFetchedAt ?? .distantPast) {
-                file.capability = installed.capability
-                file.capabilityFetchedAt = readAt
+            let installedGainedRecords = installed.map { !$0.records.isEmpty } ?? false
+            if !installedGainedRecords {
+                var next = loaded.file
+                if let installed, let readAt = installed.capabilityFetchedAt,
+                   readAt > (next.capabilityFetchedAt ?? .distantPast) {
+                    next.capability = installed.capability
+                    next.capabilityFetchedAt = readAt
+                }
+                file = next
             }
             fileServerId = serverId
             fileAccountId = accountId
@@ -1225,12 +1235,18 @@ final class DownloadManager {
     /// authoritative for the active scope, before the (potentially slow)
     /// server reconciliation and sync work. Callers that only need to know
     /// whether the Downloads tab exists should not wait for the rest.
+    ///
+    /// When downloads aren't usable yet, the reconcile and sync are left to
+    /// the first title page that finds them usable (`refreshCapabilityIfStale`).
     func onAppActive(onCapabilityRefreshed: (() -> Void)? = nil) async {
         guard await activateScopeIfNeeded() else {
             Self.logger.notice("Downloads app-active pass stopped: no downloads scope")
             syncSkippedForCapability = true
             return
         }
+        // This pass runs the reconcile and sync itself once its read is in,
+        // so a title page whose read lands first doesn't start them too.
+        syncSkippedForCapability = false
         sessionDelegate.refreshProgressDelivery()
         await refreshCapability()
         Self.logger.notice("Downloads app-active pass: capability \(self.downloadsEnabled ? "usable" : "unusable", privacy: .public)")
@@ -1367,15 +1383,18 @@ final class DownloadManager {
     func refreshCapabilityIfStale() async {
         // Activated first: until then `file` can still hold the previous
         // scope's capability, and its age says nothing about this one.
-        guard await activateScopeIfNeeded(),
-              Self.capabilityReadIsDue(hasAnswer: file.capability != nil,
-                                       fetchedAt: file.capabilityFetchedAt, now: Date()) else { return }
-        await refreshCapability()
-        // An app-active pass that found downloads unusable stopped before its
-        // reconcile and sync. Run them once, now that they're usable; a pass
-        // still waiting on its own read runs them itself. They run outside
-        // the page's task, so leaving the page doesn't cut them short, and
-        // each step captures the current scope's owner itself.
+        guard await activateScopeIfNeeded() else { return }
+        if Self.capabilityReadIsDue(hasAnswer: file.capability != nil,
+                                    fetchedAt: file.capabilityFetchedAt, now: Date()) {
+            await refreshCapability()
+        }
+        // An app-active pass that found downloads unusable, or had no scope,
+        // stopped before its reconcile and sync. Run them once, now that
+        // they're usable, whether this page read the capability or found a
+        // fresh answer; a pass still waiting on its own read has cleared the
+        // flag and runs them itself. They run outside the page's task, so
+        // leaving the page doesn't cut them short, and each step captures the
+        // current scope's owner itself.
         guard downloadsEnabled, syncSkippedForCapability else { return }
         syncSkippedForCapability = false
         Task { await self.syncAfterUsableCapability() }
@@ -1390,7 +1409,7 @@ final class DownloadManager {
         guard let owner = await captureScopeOwner() else {
             let reason = await scopeOwnerMismatch()
             Self.logger.notice("Download capability not read: \(reason, privacy: .public)")
-            Self.recordCapabilityCheck(phase: "read", outcome: "skipped", reason: reason)
+            recordRead(outcome: "skipped", reason: reason)
             return
         }
         capabilityReadsStarted += 1
@@ -1407,6 +1426,7 @@ final class DownloadManager {
                 return
             }
             newestCapabilityReadStored = read
+            recordedReadOutcome = nil
             file.capability = capability
             file.capabilityFetchedAt = Date()
             persist()
@@ -1415,8 +1435,20 @@ final class DownloadManager {
             guard !Task.isCancelled else { return }
             Self.logger.warning("Download capability read failed: \(String(describing: error), privacy: .public)")
             // The error's type only: its description can carry a server address.
-            Self.recordCapabilityCheck(phase: "read", outcome: "failed", reason: String(describing: type(of: error)))
+            recordRead(outcome: "failed", reason: String(describing: type(of: error)))
         }
+    }
+
+    /// Records a read outcome once until a read stores an answer. Title
+    /// pages read too, so a state that persists (offline, a temporary
+    /// remote scope) is recorded once rather than on every page.
+    private func recordRead(outcome: String, reason: String) {
+        let key = outcome + ": " + reason
+        guard key != recordedReadOutcome else { return }
+        #if os(iOS)
+        if DiagTrace.shouldCapture(.essential) { recordedReadOutcome = key }
+        #endif
+        Self.recordCapabilityCheck(phase: "read", outcome: outcome, reason: reason)
     }
 
     // MARK: - Public download actions
@@ -3405,6 +3437,9 @@ final class DownloadManager {
     private func scopeOwnerMismatch() async -> String {
         guard let scope = loadedScope else { return "no store is loaded" }
         guard let auth = await TokenStore.shared.captureOrdinaryRequestAuth() else { return "no signed-in account" }
+        // A temporary remote scope names no account; it isn't the account
+        // disagreement the next checks report.
+        if auth.credentialOwner == .temporary { return "a temporary remote scope is active" }
         if auth.account.serverId != scope.serverId { return "the signed-in server differs from the loaded store" }
         if auth.account.localAccountId != scope.localAccountId { return "the signed-in account differs from the loaded store" }
         if auth.profileId != scope.profileId {
