@@ -240,6 +240,14 @@ struct TVSeriesDetailView: View {
     /// item keeps the action reachable without adding a focus stop to the
     /// hero, whose synopsis is deliberately not focusable.
     var onTranslateDescription: (() -> Void)? = nil
+    /// The viewer's rating of the series (never of an episode), 1...10, nil
+    /// when unrated.
+    var userRating: Int? = nil
+    /// False on the card's provisional copy of the page: the star button is
+    /// shown but takes no input yet.
+    var canRate = false
+    /// Nil removes the rating. Nil hides the star button.
+    var onSetRating: ((Int?) -> Void)? = nil
 
     @Namespace private var detailFocusNamespace
     @Namespace private var modeFocusNamespace
@@ -265,6 +273,9 @@ struct TVSeriesDetailView: View {
     @State private var pageScrollCoordinator = PageScrollCoordinator()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var shuffleLauncher = ShuffleLauncher()
+    /// True while the star button edits; the season row, episodes and the
+    /// rest of the page are disabled meanwhile.
+    @State private var isRatingEditing = false
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.locale) private var locale
@@ -291,6 +302,7 @@ struct TVSeriesDetailView: View {
                         }
                         .padding(.horizontal, TVDetailLayout.horizontalInset)
                         .padding(.bottom, TVDetailLayout.pageBottomPadding)
+                        .disabled(isRatingEditing)
                     }
                     .background {
                         TVDetailScrollViewResolver { scrollView in
@@ -529,6 +541,8 @@ struct TVSeriesDetailView: View {
             isPlaybackLoading: isLoadingEpisodes && playbackEpisode == nil,
             allowsInitialPlayFocus: !userNavigated,
             tracksInitialFocusNavigation: true,
+            rating: ratingInput,
+            isRatingEditing: $isRatingEditing,
             playbackSelectors: { focusedAction in
                 // Keep all three triggers mounted while a newly focused
                 // episode's playback detail loads. They disable themselves
@@ -555,6 +569,17 @@ struct TVSeriesDetailView: View {
                 )
             },
             moreMenu: { moreMenu }
+        )
+    }
+
+    private var ratingInput: TVDetailRating? {
+        guard detail.type == "series", let onSetRating else { return nil }
+        return TVDetailRating(
+            score: userRating,
+            isSeries: true,
+            isWatched: isSeriesWatched,
+            isAvailable: canRate,
+            onChange: onSetRating
         )
     }
 
