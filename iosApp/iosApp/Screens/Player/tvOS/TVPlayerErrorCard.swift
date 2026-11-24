@@ -30,18 +30,21 @@ struct TVPlayerErrorCard: View {
                 .font(.system(size: 52, weight: .semibold))
                 .foregroundStyle(Color.siloWarning)
                 .accessibilityHidden(true)
+                .layoutPriority(1)
 
             Text(.playerErrorCantPlayTitle)
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
+                .layoutPriority(1)
 
             // Server and engine messages arrive as written and can run long.
+            // The message takes whatever height the screen leaves, and only
+            // past that does it give way, so the pills always stay on screen.
             Text(message)
                 .font(.siloBody)
                 .foregroundStyle(.white.opacity(0.65))
                 .multilineTextAlignment(.center)
-                .lineLimit(5)
 
             HStack(spacing: 24) {
                 if let retryTitle {
@@ -62,6 +65,7 @@ struct TVPlayerErrorCard: View {
             }
             .padding(.top, 18)
             .focusScope(focusNamespace)
+            .layoutPriority(1)
         }
         .padding(.horizontal, 64)
         .padding(.vertical, 52)
