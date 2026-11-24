@@ -79,6 +79,7 @@ final class CollectionPlacementModel {
         let startIdentity = requestIdentity()
         let startHomeGen = homeMutationGeneration
         let startShareGen = shareMutationGeneration
+        let startTitleGen = titleGeneration
         let startLibGens = libraryMutationGeneration
         isLoading = true
         defer {
@@ -128,7 +129,7 @@ final class CollectionPlacementModel {
             case .success(let editor):
                 collectionVersion = editor.version
                 let canonicalName = editor.value.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !canonicalName.isEmpty {
+                if !canonicalName.isEmpty && titleGeneration == startTitleGen {
                     titleGeneration += 1
                     collectionTitle = canonicalName
                 }

@@ -1028,6 +1028,7 @@ struct IOSHomeOptionsSheet: View {
 /// so every page can be curated cleanly from Settings without leaving it.
 struct IOSHomeSectionsSettingsView: View {
     @State private var selectedScope: ProfileSectionsScope = .home
+    @State private var scopeSelectionGeneration = 0
     @State private var editors: [ProfileSectionsScope: HomeSectionsEditorModel] = [
         .home: HomeSectionsEditorModel(scope: .home),
     ]
@@ -1106,23 +1107,25 @@ struct IOSHomeSectionsSettingsView: View {
         if editors[scope] == nil {
             editors[scope] = HomeSectionsEditorModel(scope: scope)
         }
+        scopeSelectionGeneration += 1
         selectedScope = scope
         Task { await loadArtwork(for: scope) }
     }
 
     private func settleOtherEditors(excluding currentScope: ProfileSectionsScope) async -> Bool {
-        var firstFailedScope: ProfileSectionsScope?
+        let startScopeGen = scopeSelectionGeneration
         for (scope, otherEditor) in editors where scope != currentScope {
-            let settled = await otherEditor.waitForPendingSaves()
-            if !settled && firstFailedScope == nil {
-                firstFailedScope = scope
+            let settled = await otherEditor.waitForPendingSaves(
+                acknowledgeFailureIf: { scopeSelectionGeneration == startScopeGen }
+            )
+            if !settled {
+                if scopeSelectionGeneration == startScopeGen {
+                    selectedScope = scope
+                }
+                return false
             }
         }
-        if let failedScope = firstFailedScope {
-            selectedScope = failedScope
-            return false
-        }
-        return true
+        return scopeSelectionGeneration == startScopeGen
     }
 
     private var pageSwitcherBar: some View {

@@ -120,29 +120,53 @@ class CollectionsViewModel {
         return !action.needsEditor || (editorVersion != nil && !editorNeedsReload)
     }
 
+    private var loadGeneration = 0
+
     func loadCollections() async {
+        loadGeneration += 1
+        let myGen = loadGeneration
+        let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
+        let startToken = ResponseCache.shared.writeToken
         if collections.isEmpty && groups.isEmpty {
             isLoading = true
         } else {
             isRefreshing = true
         }
+        defer {
+            if loadGeneration == myGen {
+                isLoading = false
+                isRefreshing = false
+            }
+        }
         error = nil
-        let startToken = ResponseCache.shared.writeToken
         async let support: Void = refreshGroupSupport()
         do {
             let response: CollectionsResponse = try await api.collections()
+            guard !Task.isCancelled,
+                  loadGeneration == myGen,
+                  SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
+                  !ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startToken) else {
+                await support
+                return
+            }
             ResponseCache.shared.set(response, for: CacheKey.collections, fetchedAt: startToken)
             collections = response.collections ?? []
             groups = sortGroups(response.groups ?? [])
             rebuildSections()
         } catch let err {
+            guard !(err is CancellationError),
+                  !Task.isCancelled,
+                  loadGeneration == myGen,
+                  SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
+                  !ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startToken) else {
+                await support
+                return
+            }
             if collections.isEmpty && groups.isEmpty {
                 self.error = ErrorState(err)
             }
         }
         await support
-        isLoading = false
-        isRefreshing = false
     }
 
     /// Re-reads group support after a failed capability read.

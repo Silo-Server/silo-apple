@@ -834,8 +834,9 @@ final class HomeSectionsEditorModel {
     /// Returns `false` if any unacknowledged save failed (either right before
     /// Done or during the waited batch, even if a later save succeeded) so the
     /// editor stays open once to show the failure; a subsequent Done tap with no
-    /// new failure acknowledges it and closes cleanly.
-    func waitForPendingSaves() async -> Bool {
+    /// new failure acknowledges it and closes cleanly. Pass `acknowledgeFailureIf`
+    /// to skip acknowledging when the caller will not display this editor's error.
+    func waitForPendingSaves(acknowledgeFailureIf shouldAcknowledge: (() -> Bool)? = nil) async -> Bool {
         let failureCountAtTap = saveFailureCount
         var generation: Int
         repeat {
@@ -843,7 +844,9 @@ final class HomeSectionsEditorModel {
             await saveChain?.value
         } while generation != editGeneration || pendingSaveCount > 0
         if saveFailureCount > acknowledgedFailureCount || saveFailureCount > failureCountAtTap {
-            acknowledgedFailureCount = saveFailureCount
+            if shouldAcknowledge?() ?? true {
+                acknowledgedFailureCount = saveFailureCount
+            }
             return false
         }
         return true

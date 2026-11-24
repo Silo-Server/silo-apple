@@ -34,10 +34,15 @@ final class LibraryCollectionDetailViewModel {
     private var owner: CapturedOrdinaryRequestAuth?
     private var continuation: APIv2CatalogContinuation?
     private var generation = 0
+    private var invalidationGeneration = 0
 
     init(api: SiloAPI = .shared, tokens: TokenStore = .shared) {
         self.api = api
         self.tokens = tokens
+    }
+
+    func noteInvalidation() {
+        invalidationGeneration += 1
     }
 
     @discardableResult
@@ -58,6 +63,7 @@ final class LibraryCollectionDetailViewModel {
             return false
         }
         let requestGeneration = generation
+        let startInvalidation = invalidationGeneration
         let startToken = ResponseCache.shared.writeToken
         isLoading = true
         error = nil
@@ -66,11 +72,15 @@ final class LibraryCollectionDetailViewModel {
             if requestGeneration == generation { isLoading = false }
         }
 
+        var capturedOwner: CapturedOrdinaryRequestAuth?
         do {
             guard let requestOwner = await tokens.captureOrdinaryRequestAuth() else {
                 throw HTTPError.requestIdentityChanged
             }
-            guard requestGeneration == generation, !Task.isCancelled else { return false }
+            capturedOwner = requestOwner
+            guard requestGeneration == generation,
+                  invalidationGeneration == startInvalidation,
+                  !Task.isCancelled else { return false }
             if let owner, !owner.sameCredentialIdentity(as: requestOwner) { clearPage() }
             owner = requestOwner
             if resetsPage, items.isEmpty,
@@ -96,6 +106,7 @@ final class LibraryCollectionDetailViewModel {
             }
             let stillOwnsRequest = await api.isCurrentOwner(requestOwner)
             guard requestGeneration == generation,
+                  invalidationGeneration == startInvalidation,
                   !Task.isCancelled,
                   !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
             guard stillOwnsRequest else { throw HTTPError.requestIdentityChanged }
@@ -114,9 +125,20 @@ final class LibraryCollectionDetailViewModel {
             refreshError = nil
             return true
         } catch {
+            let stillOwnsRequest: Bool
+            if let capturedOwner {
+                stillOwnsRequest = await api.isCurrentOwner(capturedOwner)
+            } else {
+                stillOwnsRequest = false
+            }
             guard requestGeneration == generation,
+                  invalidationGeneration == startInvalidation,
                   !Task.isCancelled,
                   !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
+            if !stillOwnsRequest {
+                clearPage()
+                return false
+            }
             if case HTTPError.requestIdentityChanged = error { clearPage() }
             if case HTTPError.authorityChanged = error { clearPage() }
             if items.isEmpty {

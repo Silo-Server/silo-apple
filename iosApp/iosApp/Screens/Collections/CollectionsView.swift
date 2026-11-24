@@ -844,6 +844,7 @@ struct LibraryCollectionDetailView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .collectionItemsDidChange)) { note in
             guard kind == .userCollections, (note.object as? String) == collectionId else { return }
+            viewModel.noteInvalidation()
             invalidationGeneration += 1
             hasPendingInvalidation = true
             if isVisible {
