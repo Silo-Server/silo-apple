@@ -780,6 +780,66 @@ final class ProfileHomeLayoutTests: XCTestCase {
         // When PUT #1 fails, replaying move2 onto [A, B, C] must NOT swap B with C.
         XCTAssertEqual(editor.rows.map(\.id), ["sec-a", "sec-b", "sec-c"])
     }
+
+    @MainActor
+    func testReplayingCommittedDragDoesNotRestoreRejectedPriorReorder() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "drag-replay-test")
+        await tokens.setServerUrl("https://drag.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "drag-replay-test",
+            serverURL: "https://drag.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+
+        let settingsJSON = """
+        {"items":[
+          {"id":"sec-a","section_type":"recently_added","title":"A","default_title":"A","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":0},
+          {"id":"sec-b","section_type":"recently_added","title":"B","default_title":"B","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":1},
+          {"id":"sec-c","section_type":"recently_added","title":"C","default_title":"C","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":2}
+        ]}
+        """
+        stub.reply(path: "/api/v2/profile/sections/settings", 200, settingsJSON)
+        stub.reply(path: "/api/v2/profile/sections", 200, #"{"items":[]}"#)
+
+        let editor = HomeSectionsEditorModel(scope: .home, api: api, requestIdentity: { identity })
+        let loaded = await editor.load()
+        XCTAssertTrue(loaded)
+
+        // PUT #1 (moving C to top) is rejected; PUT #2 (replaying drag of B above A) succeeds.
+        stub.sequence(path: "/api/v2/profile/sections", [
+            .json(500, #"{"error":{"code":"internal","message":"failed"}}"#),
+            .json(200, "{}"),
+        ])
+        stub.hold(path: "/api/v2/profile/sections")
+
+        let moveC = editor.moveToTop(id: "sec-c")
+        await stub.waitUntilHeld()
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-c", "sec-a", "sec-b"])
+
+        // Drag B above A while PUT #1 is pending -> draft [C, B, A].
+        XCTAssertTrue(editor.swapVisibleDuringDrag(id: "sec-b", by: -1))
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-c", "sec-b", "sec-a"])
+        let dragB = editor.commitDraggedOrder()
+
+        stub.release()
+        await moveC.value
+        await dragB.value
+
+        // PUT #1 failed, so replaying the drag of B above A onto [A, B, C] must yield [B, A, C],
+        // NOT [C, B, A].
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-b", "sec-a", "sec-c"])
+    }
 }
 
 @MainActor

@@ -20,7 +20,11 @@ struct IOSHomeCustomizeView: View {
     var pageTitle: String? = nil
     /// Optional hook awaited after this editor settles (e.g. to drain pending
     /// saves on sibling library editors in Settings before dismissing).
-    var beforeDone: (() async -> Bool)? = nil
+    /// Receives the exact scope whose saves were already awaited.
+    var beforeDone: ((ProfileSectionsScope) async -> Bool)? = nil
+    /// Optional callback notified while Done is settling so a parent wrapper
+    /// (such as Settings' page switcher) can lock scope switches during Done.
+    var onFinishingChange: ((Bool) -> Void)? = nil
     let onDone: () -> Void
 
     @State private var isHiddenExpanded = false
@@ -614,10 +618,13 @@ struct IOSHomeCustomizeView: View {
                 guard !isFinishingDone else { return }
                 hapticCount += 1
                 isFinishingDone = true
+                onFinishingChange?(true)
+                let initialScope = editor.scope
                 Task {
                     let settled = await editor.waitForPendingSaves()
-                    let othersSettled = settled ? (await beforeDone?() ?? true) : true
+                    let othersSettled = settled ? (await beforeDone?(initialScope) ?? true) : true
                     isFinishingDone = false
+                    onFinishingChange?(false)
                     if settled && othersSettled {
                         editor.triggerFeedRefresh()
                         onDone()
@@ -1003,9 +1010,17 @@ struct IOSHomeOptionsSheet: View {
                 titleVisibility: .visible
             ) {
                 Button(.homeCustomizeResetConfirmAction, role: .destructive) {
+                    guard !isFinishingDone else { return }
+                    isFinishingDone = true
                     Task {
                         await editor.resetToServerDefault()
-                        dismiss()
+                        let prefsSettled = editor.scope == .home
+                            ? await preferences.waitForPendingWrites()
+                            : true
+                        isFinishingDone = false
+                        if prefsSettled {
+                            dismiss()
+                        }
                     }
                 }
                 Button(.commonCancel, role: .cancel) {}
@@ -1029,6 +1044,7 @@ struct IOSHomeOptionsSheet: View {
 struct IOSHomeSectionsSettingsView: View {
     @State private var selectedScope: ProfileSectionsScope = .home
     @State private var scopeSelectionGeneration = 0
+    @State private var isFinishingDone = false
     @State private var editors: [ProfileSectionsScope: HomeSectionsEditorModel] = [
         .home: HomeSectionsEditorModel(scope: .home),
     ]
@@ -1086,9 +1102,10 @@ struct IOSHomeSectionsSettingsView: View {
                     topInset: 0,
                     isStandaloneScreen: true,
                     pageTitle: activePageTitle,
-                    beforeDone: {
-                        await settleOtherEditors(excluding: selectedScope)
+                    beforeDone: { settledScope in
+                        await settleOtherEditors(excluding: settledScope)
                     },
+                    onFinishingChange: { isFinishingDone = $0 },
                     onDone: { dismiss() }
                 )
             }
@@ -1104,6 +1121,7 @@ struct IOSHomeSectionsSettingsView: View {
     }
 
     private func selectScope(_ scope: ProfileSectionsScope) {
+        guard !isFinishingDone else { return }
         if editors[scope] == nil {
             editors[scope] = HomeSectionsEditorModel(scope: scope)
         }
@@ -1153,6 +1171,7 @@ struct IOSHomeSectionsSettingsView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
         }
+        .disabled(isFinishingDone)
     }
 
     private func pagePill(

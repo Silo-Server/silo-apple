@@ -38,6 +38,9 @@ final class HomeSectionsEditorModel {
     /// Live drag-reorder visible row IDs, projected onto `committedRows` so
     /// visibility or membership changes that settle during a drag are never overwritten.
     private var dragDraftVisibleOrder: [String]?
+    /// The single row being dragged/grabbed so committing the drag replays only
+    /// that row's placement without restoring an earlier rejected reorder.
+    @ObservationIgnored private var draggedRowId: String?
     /// Every row of the profile in display order, hidden rows included.
     var rows: [APIv2ProfileSectionSetting] {
         guard let order = dragDraftVisibleOrder else { return committedRows }
@@ -551,6 +554,7 @@ final class HomeSectionsEditorModel {
         guard let index = visible.firstIndex(where: { $0.id == id }),
               visible.indices.contains(index + offset) else { return false }
         visible.swapAt(index, index + offset)
+        draggedRowId = id
         dragDraftVisibleOrder = visible.map(\.id)
         return true
     }
@@ -558,18 +562,41 @@ final class HomeSectionsEditorModel {
     /// Discards an active drag/grab draft without persisting it.
     func cancelDraggedOrder() {
         dragDraftVisibleOrder = nil
+        draggedRowId = nil
     }
 
-    /// Persists the final order after a live drag or tvOS grab ends (no-op if unchanged).
-    /// Applies only the dragged visible order onto the latest `committedRows`,
-    /// never re-applying visibility or membership changes that settled concurrently.
+    /// Persists the final placement of the dragged row after a live drag or tvOS
+    /// grab ends (no-op if unchanged). Replays only the dragged row's placement
+    /// relative to its drop anchor so an earlier rejected reorder is never restored.
     @discardableResult
     func commitDraggedOrder() -> Task<Void, Never> {
         guard let order = dragDraftVisibleOrder else { return Task {} }
+        let movedId = draggedRowId
         dragDraftVisibleOrder = nil
+        draggedRowId = nil
+        guard let movedId, let movedIndex = order.firstIndex(of: movedId) else {
+            return applyEdit { rows in
+                let next = Self.applyingVisibleOrder(order, to: rows)
+                return next == rows ? nil : next
+            }
+        }
+        let anchorAfterId = movedIndex + 1 < order.count ? order[movedIndex + 1] : nil
+        let anchorBeforeId = movedIndex > 0 ? order[movedIndex - 1] : nil
         return applyEdit { rows in
-            let next = Self.applyingVisibleOrder(order, to: rows)
-            return next == rows ? nil : next
+            Self.reorderVisibleSlots(in: rows, transform: { currentVisible in
+                guard let fromIndex = currentVisible.firstIndex(where: { $0.id == movedId }) else { return false }
+                let row = currentVisible.remove(at: fromIndex)
+                if let anchorAfterId,
+                   let afterIndex = currentVisible.firstIndex(where: { $0.id == anchorAfterId }) {
+                    currentVisible.insert(row, at: afterIndex)
+                } else if let anchorBeforeId,
+                          let beforeIndex = currentVisible.firstIndex(where: { $0.id == anchorBeforeId }) {
+                    currentVisible.insert(row, at: beforeIndex + 1)
+                } else {
+                    currentVisible.insert(row, at: min(movedIndex, currentVisible.count))
+                }
+                return true
+            })
         }
     }
 

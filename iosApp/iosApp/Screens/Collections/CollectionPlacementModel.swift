@@ -668,10 +668,14 @@ final class AddToCollectionModel {
 
             var toggleError: String?
             do {
+                let auth = try await self.api.captureMutationAuth()
+                guard !Task.isCancelled,
+                      self.requestIdentity() == startIdentity,
+                      Self.authMatchesIdentity(auth, startIdentity) else { return }
                 if nextIn {
-                    try await self.api.addItemToCollection(collectionId: collectionId, itemId: self.contentId, position: 0)
+                    try await self.api.addItemToCollection(collectionId: collectionId, itemId: self.contentId, position: 0, auth: auth)
                 } else {
-                    try await self.api.removeItemFromCollection(collectionId: collectionId, itemId: self.contentId)
+                    try await self.api.removeItemFromCollection(collectionId: collectionId, itemId: self.contentId, auth: auth)
                 }
                 ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
                 ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(collectionId))
@@ -757,9 +761,27 @@ final class AddToCollectionModel {
                 return .failed
             }
 
+            let mutationAuth: CapturedOrdinaryRequestAuth
+            do {
+                mutationAuth = try await self.api.captureMutationAuth()
+            } catch {
+                releaseMutationAccounting()
+                guard self.requestIdentity() == startIdentity else { return .failed }
+                let message = ErrorState(error).message
+                self.mutationFailureCount += 1
+                self.errorMessage = message
+                return .failed
+            }
+            guard !Task.isCancelled,
+                  self.requestIdentity() == startIdentity,
+                  Self.authMatchesIdentity(mutationAuth, startIdentity) else {
+                releaseMutationAccounting()
+                return .failed
+            }
+
             let created: UserCollection
             do {
-                created = try await self.api.createCollection(name: trimmed)
+                created = try await self.api.createCollection(name: trimmed, auth: mutationAuth)
             } catch {
                 releaseMutationAccounting()
                 guard self.requestIdentity() == startIdentity else { return .failed }
@@ -800,7 +822,7 @@ final class AddToCollectionModel {
             let result: CreateResult
             var addError: String?
             do {
-                try await self.api.addItemToCollection(collectionId: created.id, itemId: self.contentId, position: 0)
+                try await self.api.addItemToCollection(collectionId: created.id, itemId: self.contentId, position: 0, auth: mutationAuth)
                 guard self.requestIdentity() == startIdentity else {
                     releaseMutationAccounting()
                     return .failed
@@ -857,5 +879,14 @@ final class AddToCollectionModel {
     @discardableResult
     func createAndAdd(name: String) async -> CreateResult {
         await startCreateAndAdd(name: name).value
+    }
+
+    private static func authMatchesIdentity(
+        _ auth: CapturedOrdinaryRequestAuth,
+        _ expected: HTTPRequestIdentity?
+    ) -> Bool {
+        guard let expected else { return true }
+        return auth.account.serverId == expected.serverId
+            && auth.profileId == expected.profileId
     }
 }

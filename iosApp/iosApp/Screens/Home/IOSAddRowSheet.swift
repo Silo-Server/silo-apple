@@ -233,7 +233,7 @@ struct IOSAddRowSheet: View {
                                 subtitle: serverCollectionSubtitle(collection, locale: locale),
                                 posterUrl: collection.posterUrl,
                                 posterThumbhash: collection.posterThumbhash,
-                                badge: editor.isCollectionPresent(collectionId: collection.id, isUserCollection: collection.isUserCollection)
+                                badge: editor.isCollectionPresent(collectionId: collection.collectionId, isUserCollection: collection.isUserCollection)
                                     ? AppLanguage.string(.homeAddRowOnPageBadge(pageLabel), locale: locale)
                                     : nil
                             )

@@ -307,6 +307,10 @@ actor SiloAPI {
 
     /// The owner a write is sent for. Without one nothing is sent, which the
     /// error says, so the write reads as a definite failure.
+    func captureMutationAuth() async throws -> CapturedOrdinaryRequestAuth {
+        try await mutationAuth()
+    }
+
     private func mutationAuth() async throws -> CapturedOrdinaryRequestAuth {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
             throw APIv2OwnerChangedBeforeDispatch()
@@ -587,8 +591,17 @@ actor SiloAPI {
 
     /// `non_retryable`: dispatched once. A lost answer may still have created
     /// the collection, so the caller re-reads the list instead of resending.
-    func createCollection(name: String) async throws -> UserCollection {
-        try await apiV2Client.createCollection(name: name, auth: try await mutationAuth())
+    func createCollection(
+        name: String,
+        auth: CapturedOrdinaryRequestAuth? = nil
+    ) async throws -> UserCollection {
+        let resolvedAuth: CapturedOrdinaryRequestAuth
+        if let auth {
+            resolvedAuth = auth
+        } else {
+            resolvedAuth = try await mutationAuth()
+        }
+        return try await apiV2Client.createCollection(name: name, auth: resolvedAuth)
     }
 
     /// The canonical collection and the version an edit of it must send.
@@ -609,20 +622,41 @@ actor SiloAPI {
         try await apiV2Client.moveCollection(version, toGroupId: groupId)
     }
 
-    func addItemToCollection(collectionId: String, itemId: String, position: Int = 0) async throws {
+    func addItemToCollection(
+        collectionId: String,
+        itemId: String,
+        position: Int = 0,
+        auth: CapturedOrdinaryRequestAuth? = nil
+    ) async throws {
+        let resolvedAuth: CapturedOrdinaryRequestAuth
+        if let auth {
+            resolvedAuth = auth
+        } else {
+            resolvedAuth = try await mutationAuth()
+        }
         try await apiV2Client.addItemToCollection(
             collectionId: collectionId,
             itemId: itemId,
             position: position,
-            auth: try await mutationAuth()
+            auth: resolvedAuth
         )
     }
 
-    func removeItemFromCollection(collectionId: String, itemId: String) async throws {
+    func removeItemFromCollection(
+        collectionId: String,
+        itemId: String,
+        auth: CapturedOrdinaryRequestAuth? = nil
+    ) async throws {
+        let resolvedAuth: CapturedOrdinaryRequestAuth
+        if let auth {
+            resolvedAuth = auth
+        } else {
+            resolvedAuth = try await mutationAuth()
+        }
         try await apiV2Client.removeItemFromCollection(
             collectionId: collectionId,
             itemId: itemId,
-            auth: try await mutationAuth()
+            auth: resolvedAuth
         )
     }
 

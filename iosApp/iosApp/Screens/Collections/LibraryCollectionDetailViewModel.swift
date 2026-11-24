@@ -59,7 +59,7 @@ final class LibraryCollectionDetailViewModel {
             // Refreshing the same selection keeps every visible page if the
             // network fails. A different selection cannot reuse those rows.
             if selectionChanged { clearPage() }
-        } else if isLoading || !hasMore {
+        } else if isLoading || !hasMore || refreshError != nil {
             return false
         }
         let requestGeneration = generation
@@ -67,7 +67,9 @@ final class LibraryCollectionDetailViewModel {
         let startToken = ResponseCache.shared.writeToken
         isLoading = true
         error = nil
-        refreshError = nil
+        if resetsPage {
+            refreshError = nil
+        }
         defer {
             if requestGeneration == generation { isLoading = false }
         }
@@ -111,7 +113,8 @@ final class LibraryCollectionDetailViewModel {
                   !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
             guard stillOwnsRequest else { throw HTTPError.requestIdentityChanged }
 
-            if nextPage != nil, !page.startsOver {
+            let replacedPageOne = nextPage == nil || page.startsOver
+            if !replacedPageOne {
                 items.append(contentsOf: page.response.items)
             } else {
                 items = page.response.items
@@ -122,7 +125,9 @@ final class LibraryCollectionDetailViewModel {
             continuation = page.continuation
             hasMore = page.continuation != nil
             error = nil
-            refreshError = nil
+            if replacedPageOne {
+                refreshError = nil
+            }
             return true
         } catch {
             let stillOwnsRequest: Bool
@@ -143,7 +148,7 @@ final class LibraryCollectionDetailViewModel {
             if case HTTPError.authorityChanged = error { clearPage() }
             if items.isEmpty {
                 self.error = ErrorState(error)
-            } else {
+            } else if resetsPage {
                 self.refreshError = ErrorState(error)
             }
             return false
