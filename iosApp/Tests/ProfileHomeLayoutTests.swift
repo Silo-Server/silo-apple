@@ -570,6 +570,83 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertFalse(model.hideWatchedItems)
         XCTAssertEqual(writeTransport.writtenValues.last, .bool(false))
     }
+
+    @MainActor
+    func testAddToCollectionWaitForPendingMutationsKeepsSheetOpenOnceOnFailure() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "collection-test")
+        await tokens.setServerUrl("https://collection.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "collection-test",
+            serverURL: "https://collection.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+
+        let collectionsJSON = """
+        {"items":[
+          {"id":"col-1","name":"Favorites","collection_type":"manual","item_count":2}
+        ],"groups":[]}
+        """
+        stub.reply(path: "/api/v2/collections", 200, collectionsJSON)
+        stub.reply(path: "/api/v2/catalog/items/movie-42/collections", 200, #"{"items":[]}"#)
+
+        let model = AddToCollectionModel(
+            contentId: "movie-42",
+            api: api,
+            requestIdentity: { identity }
+        )
+        await model.load()
+        XCTAssertTrue(model.hasLoaded)
+        XCTAssertEqual(model.entries.count, 1)
+
+        let itemPath = "/api/v2/collections/col-1/items/movie-42"
+        stub.sequence(path: itemPath, [
+            .json(500, #"{"error":{"code":"internal","message":"server error"}}"#),
+            .json(204, ""),
+        ])
+        stub.hold(path: itemPath)
+
+        let failedToggle = Task { await model.toggle(collectionId: "col-1") }
+        await stub.waitUntilHeld()
+        XCTAssertTrue(model.hasPendingMutations)
+
+        let waitOnFailure = Task { await model.waitForPendingMutations() }
+        stub.release()
+
+        await failedToggle.value
+        let settledAfterFailure = await waitOnFailure.value
+        XCTAssertFalse(settledAfterFailure)
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertFalse(model.hasPendingMutations)
+        XCTAssertEqual(model.entries.first?.containsItem, false)
+
+        // Second Done tap with no new failure acknowledges the error and closes cleanly.
+        let acknowledged = await model.waitForPendingMutations()
+        XCTAssertTrue(acknowledged)
+
+        // A subsequent successful mutation settles and allows Done to dismiss.
+        stub.hold(path: itemPath)
+        let succeededToggle = Task { await model.toggle(collectionId: "col-1") }
+        await stub.waitUntilHeld()
+        let waitOnSuccess = Task { await model.waitForPendingMutations() }
+        stub.release()
+
+        await succeededToggle.value
+        let settledAfterSuccess = await waitOnSuccess.value
+        XCTAssertTrue(settledAfterSuccess)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.entries.first?.containsItem, true)
+    }
 }
 
 @MainActor

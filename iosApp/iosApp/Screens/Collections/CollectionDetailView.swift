@@ -9,7 +9,11 @@ struct CollectionDetailView: View {
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
     @State private var error: ErrorState?
+    @State private var refreshError: ErrorState?
     @State private var loadGeneration = 0
+    @State private var isVisible = false
+    @State private var hasPendingInvalidation = false
+    @State private var reloadTask: Task<Void, Never>?
     @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
@@ -19,7 +23,7 @@ struct CollectionDetailView: View {
             if !items.isEmpty {
                 gridContent
             } else if let error {
-                ErrorView(state: error, onRetry: { Task { await loadItems() } })
+                ErrorView(state: error, onRetry: { scheduleReload(delay: nil) })
             } else if isLoading {
                 Color.clear
             } else {
@@ -37,11 +41,30 @@ struct CollectionDetailView: View {
             await loadItems()
         }
         .refreshable {
+            reloadTask?.cancel()
+            reloadTask = nil
             await loadItems()
+        }
+        .onAppear {
+            isVisible = true
+            if hasPendingInvalidation {
+                scheduleReload(delay: nil)
+            }
+        }
+        .onDisappear {
+            isVisible = false
+            reloadTask?.cancel()
+            reloadTask = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: .collectionItemsDidChange)) { note in
             guard (note.object as? String) == collectionId else { return }
-            Task { await loadItems() }
+            hasPendingInvalidation = true
+            if isVisible {
+                scheduleReload(delay: .milliseconds(350))
+            } else {
+                reloadTask?.cancel()
+                reloadTask = nil
+            }
         }
         .shuffleFailureAlert(shuffleLauncher)
         #if os(tvOS)
@@ -70,6 +93,24 @@ struct CollectionDetailView: View {
             // Up from any grid column reaches Shuffle & Pin to Home.
             .focusSection()
             #endif
+            if let refreshError {
+                HStack(spacing: 10) {
+                    Label(refreshError.message, systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .lineLimit(2)
+                    Spacer(minLength: 8)
+                    Button(.commonRetry) {
+                        scheduleReload(delay: nil)
+                    }
+                    .font(.footnote.weight(.semibold))
+                    #if os(tvOS)
+                    .buttonStyle(.bordered)
+                    #endif
+                }
+                .padding(.horizontal, SiloTheme.padding)
+                .padding(.top, SiloTheme.smallPadding)
+            }
             VStack(alignment: .leading, spacing: 0) {
                 CatalogGrid(
                     items: items,
@@ -83,6 +124,17 @@ struct CollectionDetailView: View {
                 )
             }
             .padding(SiloTheme.padding)
+        }
+    }
+
+    private func scheduleReload(delay: Duration?) {
+        reloadTask?.cancel()
+        reloadTask = Task {
+            if let delay {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled else { return }
+            }
+            await loadItems()
         }
     }
 
@@ -107,6 +159,7 @@ struct CollectionDetailView: View {
             }
         }
         error = nil
+        refreshError = nil
         do {
             let response = try await SiloAPI.shared.collectionItems(collectionId: collectionId)
             guard !Task.isCancelled,
@@ -115,6 +168,9 @@ struct CollectionDetailView: View {
                   !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) else { return }
             ResponseCache.shared.set(response, for: cacheKey, fetchedAt: startToken)
             items = response.items
+            error = nil
+            refreshError = nil
+            hasPendingInvalidation = false
         } catch let err {
             guard !(err is CancellationError),
                   !Task.isCancelled,
@@ -123,6 +179,9 @@ struct CollectionDetailView: View {
                   !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) else { return }
             if items.isEmpty {
                 self.error = ErrorState(err)
+            } else {
+                self.refreshError = ErrorState(err)
+                self.hasPendingInvalidation = true
             }
         }
     }

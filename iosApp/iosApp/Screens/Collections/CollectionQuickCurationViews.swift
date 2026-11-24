@@ -293,6 +293,7 @@ struct IOSAddToCollectionSheet: View {
     @State private var model: AddToCollectionModel
     @State private var newCollectionName = ""
     @State private var nameEditGeneration = 0
+    @State private var isFinishing = false
     @State private var hapticCount = 0
     @Environment(\.dismiss) private var dismiss
     @Environment(\.locale) private var locale
@@ -315,11 +316,11 @@ struct IOSAddToCollectionSheet: View {
                         TextField(AppLanguage.string(.collectionsCreateTitle, locale: locale), text: $newCollectionName)
                             .submitLabel(.done)
                             .onSubmit(createCollection)
-                            .disabled(model.isCreating || model.hasUncertainCreation)
+                            .disabled(isFinishing || model.isCreating || model.hasUncertainCreation)
                         if !newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             Button(.collectionsGroupCreate, action: createCollection)
                                 .font(.subheadline.weight(.semibold))
-                                .disabled(model.isCreating || model.hasUncertainCreation)
+                                .disabled(isFinishing || model.isCreating || model.hasUncertainCreation)
                         }
                     }
                 } header: {
@@ -393,7 +394,7 @@ struct IOSAddToCollectionSheet: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(model.busyCollectionIds.contains(entry.id))
+                                .disabled(isFinishing || model.busyCollectionIds.contains(entry.id))
                                 .accessibilityValue(Text(entry.containsItem ? LocalizedStringResource.detailActionOn : .detailActionOff))
                                 .accessibilityAddTraits(entry.containsItem ? [.isSelected] : [])
                             }
@@ -417,12 +418,31 @@ struct IOSAddToCollectionSheet: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(.commonDone) { dismiss() }
+                    Button {
+                        guard !isFinishing else { return }
+                        isFinishing = true
+                        Task {
+                            let settled = await model.waitForPendingMutations()
+                            isFinishing = false
+                            if settled {
+                                dismiss()
+                            }
+                        }
+                    } label: {
+                        if isFinishing {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text(.commonDone)
+                        }
+                    }
+                    .disabled(isFinishing)
                 }
             }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(model.hasPendingMutations || isFinishing)
         .onChange(of: newCollectionName) { _, _ in
             nameEditGeneration += 1
         }
@@ -435,6 +455,7 @@ struct IOSAddToCollectionSheet: View {
     }
 
     private func createCollection() {
+        guard !isFinishing else { return }
         let name = newCollectionName
         let capturedGeneration = nameEditGeneration
         Task {

@@ -450,10 +450,13 @@ final class AddToCollectionModel {
     private(set) var isLoading = false
     private(set) var busyCollectionIds = Set<String>()
     private(set) var isCreating = false
+    private(set) var activeMutationCount = 0
     /// True after a collection creation request failed with an ambiguous outcome
     /// (response lost; server may have created it) until a list reread settles.
     private(set) var hasUncertainCreation = false
     private(set) var errorMessage: String?
+
+    var hasPendingMutations: Bool { activeMutationCount > 0 }
 
     enum CreateResult: Equatable {
         case createdAndAdded
@@ -470,6 +473,9 @@ final class AddToCollectionModel {
     @ObservationIgnored private var entryGeneration: [String: Int] = [:]
     @ObservationIgnored private var needsReconciliation = false
     @ObservationIgnored private var pendingReconciliationError: String?
+    @ObservationIgnored private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var mutationFailureCount = 0
+    @ObservationIgnored private var acknowledgedFailureCount = 0
 
     init(
         contentId: String,
@@ -531,6 +537,9 @@ final class AddToCollectionModel {
             needsReconciliation = false
             pendingReconciliationError = nil
             errorMessage = preservingError
+            if preservingError == nil {
+                acknowledgedFailureCount = mutationFailureCount
+            }
         } catch {
             guard !(error is CancellationError),
                   !Task.isCancelled,
@@ -552,17 +561,55 @@ final class AddToCollectionModel {
 
     func clearError() {
         errorMessage = nil
+        acknowledgedFailureCount = mutationFailureCount
+    }
+
+    /// Waits for any in-flight membership toggle or collection creation (including
+    /// follow-up reconciliation reads) to finish before dismissing the sheet.
+    /// Returns `false` once when any unacknowledged mutation failed so the user
+    /// sees the error; a subsequent Done tap with no new failure dismisses cleanly.
+    func waitForPendingMutations() async -> Bool {
+        let failureCountAtTap = mutationFailureCount
+        while activeMutationCount > 0 {
+            await withCheckedContinuation { continuation in
+                mutationWaiters.append(continuation)
+            }
+        }
+        if mutationFailureCount > acknowledgedFailureCount || mutationFailureCount > failureCountAtTap {
+            acknowledgedFailureCount = mutationFailureCount
+            return false
+        }
+        return true
+    }
+
+    private func beginMutation() {
+        if activeMutationCount == 0 {
+            errorMessage = nil
+            acknowledgedFailureCount = mutationFailureCount
+        }
+        activeMutationCount += 1
+    }
+
+    private func endMutation() {
+        activeMutationCount = max(0, activeMutationCount - 1)
+        guard activeMutationCount == 0, !mutationWaiters.isEmpty else { return }
+        let waiters = mutationWaiters
+        mutationWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
     }
 
     func toggle(collectionId: String) async {
         guard !busyCollectionIds.contains(collectionId),
               let index = entries.firstIndex(where: { $0.id == collectionId }) else { return }
+        beginMutation()
+        defer { endMutation() }
         let startIdentity = requestIdentity()
         pendingMutations += 1
         mutationGeneration += 1
         entryGeneration[collectionId, default: 0] += 1
         busyCollectionIds.insert(collectionId)
-        errorMessage = nil
 
         let wasIn = entries[index].containsItem
         let previousItemCount = entries[index].itemCount
@@ -585,6 +632,7 @@ final class AddToCollectionModel {
         } catch {
             if requestIdentity() == startIdentity {
                 let message = ErrorState(error).message
+                mutationFailureCount += 1
                 toggleError = message
                 errorMessage = message
                 if !APIv2MutationOutcome(error).mayHaveApplied {
@@ -625,12 +673,13 @@ final class AddToCollectionModel {
     func createAndAdd(name: String) async -> CreateResult {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isCreating, !hasUncertainCreation else { return .failed }
+        beginMutation()
+        defer { endMutation() }
         let startIdentity = requestIdentity()
         pendingMutations += 1
         mutationGeneration += 1
         isCreating = true
         defer { isCreating = false }
-        errorMessage = nil
 
         var createdCollectionId: String?
         var releasedMutation = false
@@ -652,6 +701,7 @@ final class AddToCollectionModel {
             releaseMutationAccounting()
             guard requestIdentity() == startIdentity else { return .failed }
             let message = ErrorState(error).message
+            mutationFailureCount += 1
             errorMessage = message
             if APIv2MutationOutcome(error).mayHaveApplied {
                 // POST may have created the collection on the server; reread
@@ -709,6 +759,7 @@ final class AddToCollectionModel {
                 return .failed
             }
             let message = ErrorState(error).message
+            mutationFailureCount += 1
             addError = message
             errorMessage = message
             if APIv2MutationOutcome(error).mayHaveApplied {
