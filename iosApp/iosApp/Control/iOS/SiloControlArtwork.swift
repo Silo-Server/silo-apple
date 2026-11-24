@@ -54,8 +54,9 @@ final class SiloControlArtworkResolver {
     }
 
     private func seriesPosterURL(for detail: ItemDetail) async -> String? {
-        guard SiloMediaType.isEpisode(detail.type),
-              let seriesId = detail.seriesId, !seriesId.isEmpty else { return nil }
+        guard SiloMediaType.isEpisode(detail.type) else { return nil }
+        if let poster = detail.seriesPosterUrl, !poster.isEmpty { return poster }
+        guard let seriesId = detail.seriesId, !seriesId.isEmpty else { return nil }
         let key = CacheKey.itemDetail(seriesId)
         let series: ItemDetail
         if let cached: ItemDetail = ResponseCache.shared.get(key) {

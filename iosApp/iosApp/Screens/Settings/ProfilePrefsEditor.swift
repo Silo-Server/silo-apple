@@ -16,7 +16,7 @@ final class ProfilePrefsEditor {
     enum PrefSaveState: Equatable {
         case saving
         case saved
-        case failed(String)
+        case failed(LocalizedStringResource)
         /// The server predates the canonical settings API. Distinct from a
         /// failure because retrying cannot help and the user needs to be told
         /// something actionable rather than shown an error they can't act on.
@@ -59,7 +59,7 @@ final class ProfilePrefsEditor {
 
     /// User-facing explanation when a narrower subtitle scope wins over the
     /// profile row edited by this screen.
-    var subtitleProfileOverrideMessage: String? {
+    var subtitleProfileOverrideMessage: LocalizedStringResource? {
         let scopes = Set(Self.subtitleKeys.compactMap { key -> SettingScope? in
             guard case .scope(let scope) = resolvedSources[key],
                   Self.profileWriteMayBeShadowed(by: .scope(scope)) else {
@@ -69,19 +69,19 @@ final class ProfilePrefsEditor {
         })
         guard let scope = scopes.first else { return nil }
         guard scopes.count == 1 else {
-            return "More specific device, library, or series subtitle settings override this profile default. Changes here are saved for the profile, but those overrides still apply where configured."
+            return .settingsProfilePrefsOverrideSeveral
         }
         switch scope {
         case .profileClient:
-            return "This device family has a more specific subtitle setting. Changes here update the profile default, but the family override still applies."
+            return .settingsProfilePrefsOverrideFamily
         case .profileDevice:
-            return "This device, for this profile, has a more specific subtitle setting. Changes here update the profile default, but the device override still applies."
+            return .settingsProfilePrefsOverrideDevice
         case .profileLibrary:
-            return "A library-specific subtitle setting overrides this profile default. Changes here are saved for the profile, but the library override still applies."
+            return .settingsProfilePrefsOverrideLibrary
         case .profileSeries:
-            return "A series-specific subtitle setting overrides this profile default. Changes here are saved for the profile, but the series override still applies."
+            return .settingsProfilePrefsOverrideSeries
         case .other:
-            return "A more specific subtitle setting overrides this profile default. Changes here are saved for the profile, but the override still applies."
+            return .settingsProfilePrefsOverrideOther
         case .account, .profile:
             return nil
         }
@@ -150,11 +150,7 @@ final class ProfilePrefsEditor {
     /// server predates the canonical settings API. Playback is unaffected —
     /// it falls back to this device's local defaults — so the message says
     /// that rather than implying nothing works.
-    static let serverUpgradeMessage = """
-        This server is too old to store playback preferences. \
-        Playback still works using this device's defaults. \
-        Ask your server administrator to update Silo.
-        """
+    static let serverUpgradeMessage: LocalizedStringResource = .settingsProfilePrefsServerUpgrade
 
     private let writer: ProfileSettingsWriter
 
@@ -851,23 +847,23 @@ final class ProfilePrefsEditor {
 
     private static func saveState(for error: Error) -> PrefSaveState {
         guard let settingsError = error as? SettingsAPIError else {
-            return .failed((error as? LocalizedError)?.errorDescription ?? String(describing: error))
+            return .failed(.verbatim((error as? LocalizedError)?.errorDescription ?? String(describing: error)))
         }
         switch settingsError {
         case .serverUpgradeRequired:
             return .serverUpgradeRequired
         case .profileRequired:
-            return .failed("Choose a profile first.")
+            return .failed(.settingsProfilePrefsChooseProfile)
         case .invalidValue(let message):
-            return .failed(message.isEmpty ? "That value isn't allowed." : message)
+            return .failed(message.isEmpty ? .settingsProfilePrefsValueNotAllowed : .verbatim(message))
         case .unknownSetting, .scopeNotAllowed:
-            return .failed("This server can't store that preference.")
+            return .failed(.settingsProfilePrefsUnsupported)
         case .ownerChanged:
-            return .failed("The profile changed before this could be saved.")
+            return .failed(.settingsProfilePrefsProfileChanged)
         case .server(let status, _, _) where settingsError.writeFailure == .release:
-            return .failed("The server didn't accept this change (HTTP \(status)).")
+            return .failed(.settingsProfilePrefsServerRejected(String(status)))
         case .noValueAtScope, .server, .transport:
-            return .failed("Couldn't reach the server.")
+            return .failed(.settingsProfilePrefsUnreachable)
         }
     }
 }

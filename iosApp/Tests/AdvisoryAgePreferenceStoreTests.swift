@@ -334,8 +334,7 @@ private func advisoryCapabilities(revision: Int) -> APIv2SettingsContractCapabil
         allowed: true,
         manifestRevision: revision,
         clientFamilies: ["ios"],
-        supportsBatchedEffective: true,
-        supportsAtomicShortcuts: true
+        supportsBatchedEffective: true
     )
 }
 

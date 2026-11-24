@@ -35,17 +35,22 @@ enum SiloControlClosePolicy {
 struct SiloControlPendingReplace: Equatable {
     let request: SiloControlPlaybackRequest
     let nowPlaying: SiloControlNowPlayingSummary?
-    let tvName: String
+    /// Nil when the phone no longer knows which TV it is talking to.
+    let tvName: String?
     /// The TV's own wording, used when it sent no summary.
     let fallbackMessage: String
 
     var message: String {
         guard let nowPlaying else { return fallbackMessage }
-        let who = nowPlaying.profileName ?? "Someone"
         let what = [nowPlaying.subtitle, nowPlaying.title]
             .compactMap { $0?.isEmpty == false ? $0 : nil }
             .joined(separator: " · ")
-        return "\(who) is watching \(what) on \(tvName). Play yours instead?"
+        switch (nowPlaying.profileName, tvName) {
+        case let (who?, tv?): return AppLanguage.string(.castReplaceProfileWatching(who, what, tv))
+        case let (nil, tv?): return AppLanguage.string(.castReplaceSomeoneWatching(what, tv))
+        case let (who?, nil): return AppLanguage.string(.remoteReplaceProfileWatchingTheTv(who, what))
+        case (nil, nil): return AppLanguage.string(.remoteReplaceSomeoneWatchingTheTv(what))
+        }
     }
 }
 
@@ -66,6 +71,38 @@ enum SiloControlOfferTitle {
     static func make(for detail: ItemDetail) -> String? {
         make(type: detail.type, title: detail.title, seriesTitle: detail.seriesTitle,
              seasonNumber: detail.seasonNumber, episodeNumber: detail.episodeNumber)
+    }
+}
+
+/// The track indexes a Roku takes in `launch` (silo-roku
+/// `docs/silocontrol.md` section 7.2). The Apple and Android TVs convert the
+/// phones' own values in their players; a Roku can't tell those apart, so the
+/// phone sends it the server's ordinals: audio as the position in the
+/// version's audio tracks (already what the phone sends) and subtitles as the
+/// combined index `/api/v2/playback/start` takes, external tracks first, and
+/// negative for none.
+enum SiloControlRokuLaunch {
+    /// `request` with its subtitle index converted from the FFmpeg stream
+    /// index the detail screen picks to the combined ordinal in `version`,
+    /// the version `request.fileId` names. A pick that can't be converted is
+    /// dropped, so the Roku applies the profile's preference rather than
+    /// another track.
+    static func playback(_ request: SiloControlPlaybackRequest, version: FileVersion?) -> SiloControlPlaybackRequest {
+        var subtitle = request.subtitleTrackIndex
+        if let ffmpegIndex = subtitle, ffmpegIndex >= 0 {
+            subtitle = version.flatMap {
+                ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(ffmpegStreamIndex: ffmpegIndex, in: $0)
+            }
+        }
+        return SiloControlPlaybackRequest(
+            contentId: request.contentId,
+            fileId: request.fileId,
+            audioTrackIndex: request.audioTrackIndex,
+            subtitleTrackIndex: subtitle,
+            startFromBeginning: request.startFromBeginning,
+            resumePosition: request.resumePosition,
+            pinsVersion: request.pinsVersion
+        )
     }
 }
 

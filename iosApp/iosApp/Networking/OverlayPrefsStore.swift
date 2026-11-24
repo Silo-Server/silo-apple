@@ -19,6 +19,10 @@
 //  This is winner-take-all, not layered merging, matching the web's
 //  `useOverlayPrefs.ts` hook. This app only reads the document.
 //
+//  `overlay-config` also lists the images administrators uploaded for
+//  badges. The rendered prefs keep only the image refs that list has, so
+//  a deleted image costs no request per card.
+//
 //  A `@MainActor` observable singleton, idempotent hydration, and a
 //  `clear()` hook for sign-out and profile switches so the next
 //  profile doesn't briefly see the previous profile's badge layout.
@@ -41,13 +45,18 @@ final class OverlayPrefsStore: ObservableObject {
     /// Resolved prefs (user value > admin defaults > registry
     /// defaults). Card views read this directly.
     @Published private(set) var prefs: CardOverlayPrefs = OverlaySchema.buildDefaults()
-    // Every mounted card observes this store, so only `enabled` and `prefs`
-    // publish, and only when they change. These two are read imperatively.
+    /// The server's uploaded badge images by ref, for `CardOverlays`.
+    @Published private(set) var images: [String: OverlayImageAsset] = [:]
+    // Every mounted card observes this store, so only `enabled`, `prefs` and
+    // `images` publish, and only when they change. These two are read
+    // imperatively.
     private(set) var isLoading: Bool = false
     private(set) var lastError: String?
 
     private var hasHydrated = false
     private var adminDefaultsRaw: String?
+    /// The resolved document as stored, before unlisted image refs are dropped.
+    private var storedPrefs: CardOverlayPrefs = OverlaySchema.buildDefaults()
     /// The two inputs to `enabled`, cached separately so a failed read of
     /// one keeps the last answer for that half without discarding the other.
     private var serverEnabled = true
@@ -123,12 +132,14 @@ final class OverlayPrefsStore: ObservableObject {
 
         var resolvedEnabled = true
         var resolvedAdminDefaults: String?
+        var resolvedImages: [String: OverlayImageAsset] = [:]
         var resolvedError: String?
         var configFetchFailed = false
         do {
             let config = try configResult.get()
             resolvedEnabled = config.enabled
             resolvedAdminDefaults = config.defaults
+            resolvedImages = Self.imageAssets(config.images ?? [])
         } catch {
             resolvedError = (error as? LocalizedError)?.errorDescription
                 ?? String(describing: error)
@@ -172,6 +183,7 @@ final class OverlayPrefsStore: ObservableObject {
         if !configFetchFailed {
             self.serverEnabled = resolvedEnabled
             self.adminDefaultsRaw = resolvedAdminDefaults
+            if images != resolvedImages { images = resolvedImages }
         }
         // Same rule for the profile half: a transient failure keeps the
         // last choice, and an unreadable value means no choice.
@@ -191,9 +203,11 @@ final class OverlayPrefsStore: ObservableObject {
             // fall back to the cached value when the config fetch failed
             // this round but a prior refresh had captured it.
             let defaults = configFetchFailed ? adminDefaultsRaw : resolvedAdminDefaults
-            let resolvedPrefs = OverlaySchema.parse(userRaw ?? defaults)
-            if prefs != resolvedPrefs { prefs = resolvedPrefs }
+            self.storedPrefs = OverlaySchema.parse(userRaw ?? defaults)
         }
+        // After both halves: either one changes which image refs draw.
+        let resolvedPrefs = OverlaySchema.withoutUnlistedImages(storedPrefs, listed: Set(images.keys))
+        if prefs != resolvedPrefs { prefs = resolvedPrefs }
         // Only complete hydration when BOTH endpoints gave a definitive
         // answer. Either failure leaves `hasHydrated` false so the
         // next `.task { await hydrateIfNeeded() }` retries.
@@ -212,7 +226,9 @@ final class OverlayPrefsStore: ObservableObject {
         serverEnabled = true
         profileEnabled = nil
         enabled = true
-        prefs = OverlaySchema.buildDefaults()
+        storedPrefs = OverlaySchema.buildDefaults()
+        prefs = storedPrefs
+        images = [:]
         adminDefaultsRaw = nil
         hasHydrated = false
         lastError = nil
@@ -227,6 +243,20 @@ final class OverlayPrefsStore: ObservableObject {
     }
 
     // MARK: - Wire bridging
+
+    /// The listed images a card can draw: an absolute URL and usable
+    /// dimensions. The first of a repeated ref wins.
+    private static func imageAssets(_ images: [APIv2OverlayImage]) -> [String: OverlayImageAsset] {
+        var assets: [String: OverlayImageAsset] = [:]
+        for image in images where assets[image.ref] == nil {
+            guard image.width > 0, image.height > 0,
+                  let url = URL(string: image.url), url.scheme != nil else { continue }
+            assets[image.ref] = OverlayImageAsset(
+                url: url, aspectRatio: CGFloat(image.width) / CGFloat(image.height)
+            )
+        }
+        return assets
+    }
 
     /// The contract stores the document as a JSON object; `OverlaySchema`
     /// speaks JSON strings (shared with the admin `overlay-config`

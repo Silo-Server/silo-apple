@@ -4,6 +4,9 @@ import OSLog
 actor PlaybackRealtimeClient {
     typealias CommandHandler = @MainActor (PlaybackRealtimeCommandEnvelope) async throws -> Void
     typealias EventHandler = @MainActor (PlaybackRealtimeEventEnvelope) async -> Void
+    /// The server refused a ticket because the session stayed paused past
+    /// its limit (410 `playback_session_paused_timeout`).
+    typealias PausedTimeoutHandler = @MainActor (_ sessionId: String) async -> Void
     /// Mints a fresh single-use ticket for one connect of `sessionId`.
     typealias Handshake = @Sendable (_ sessionId: String, _ authority: PlaybackV2SessionAuthority) async throws
         -> APIv2PlaybackControlHandshake
@@ -16,6 +19,7 @@ actor PlaybackRealtimeClient {
 
     private let commandHandler: CommandHandler
     private let eventHandler: EventHandler?
+    private let pausedTimeoutHandler: PausedTimeoutHandler?
     private let session: URLSession
     private let handshake: Handshake
     private let ownerIsCurrent: OwnerCheck
@@ -67,7 +71,8 @@ actor PlaybackRealtimeClient {
         reconnectDelaysNanos: [UInt64] = [500_000_000, 1_000_000_000, 2_000_000_000, 5_000_000_000],
         reconnectCooldownNanos: UInt64 = 30_000_000_000,
         commandHandler: @escaping CommandHandler,
-        eventHandler: EventHandler? = nil
+        eventHandler: EventHandler? = nil,
+        pausedTimeoutHandler: PausedTimeoutHandler? = nil
     ) {
         self.session = session
         self.handshake = handshake
@@ -76,6 +81,7 @@ actor PlaybackRealtimeClient {
         self.reconnectCooldownNanos = reconnectCooldownNanos
         self.commandHandler = commandHandler
         self.eventHandler = eventHandler
+        self.pausedTimeoutHandler = pausedTimeoutHandler
     }
 
     @Sendable private static func isCurrentOwner(_ owner: CapturedOrdinaryRequestAuth) async -> Bool {
@@ -152,14 +158,18 @@ actor PlaybackRealtimeClient {
             } catch is CancellationError {
                 break
             } catch where Self.endsControl(error) {
-                // Retrying cannot help: the owner moved on, or the server does
-                // not serve the control handshake for it.
+                // Retrying cannot help: the owner moved on, the server does
+                // not serve the control handshake for it, or it ended the
+                // session because it stayed paused too long.
                 Self.logger.warning(
                     "Realtime control stopped for session \(sessionId, privacy: .public): \(String(describing: error), privacy: .public)"
                 )
                 if isCurrentBinding(sessionId: sessionId, generation: generation) {
                     closeSocket()
                     setRealtimeUnavailable(true)
+                    if PlaybackSessionBridge.serverEndReason(error) == .pausedTimeout {
+                        await pausedTimeoutHandler?(sessionId)
+                    }
                 }
                 break
             } catch {
@@ -192,8 +202,14 @@ actor PlaybackRealtimeClient {
     }
 
     /// Failures that no reconnect can fix: the session's owner is no longer
-    /// the current one, the server does not serve the control handshake, or
-    /// the server needs an update for v2.
+    /// the current one, the server does not serve the control handshake, the
+    /// server needs an update for v2, or it ended the session because it
+    /// stayed paused too long (410 `playback_session_paused_timeout`).
+    ///
+    /// A ticket's 410 `playback_session_ended` is not one of them: the server
+    /// answers it for every stopped attempt, an expiry included, which the
+    /// player renews from on its next progress report. Leaving on it would
+    /// turn an expiry into an administrator's end.
     ///
     /// `HTTPError.requestIdentityChanged` is not one of them. The HTTP client
     /// also throws it while any identity transition holds the dispatch gate,
@@ -206,7 +222,7 @@ actor PlaybackRealtimeClient {
              HTTPError.authorityChanged, APIv2Error.serverUpdateRequired:
             return true
         default:
-            return false
+            return PlaybackSessionBridge.serverEndReason(error) == .pausedTimeout
         }
     }
 

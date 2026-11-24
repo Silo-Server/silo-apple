@@ -28,6 +28,55 @@ final class CatalogV2Tests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(seed.episodeWatchState).isUnwatched)
     }
 
+    func testEpisodeParentArtworkDecodesOnCardsAndDetail() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let card = Data(#"""
+            {"content_id":"e1","type":"episode","title":"Pilot","series_id":"s1",
+             "backdrop_url":"https://img.example/still.jpg","backdrop_is_episode_still":true,
+             "series_backdrop_url":"https://img.example/series-bg.jpg","series_backdrop_thumbhash":"BG",
+             "series_poster_url":"https://img.example/series.jpg","series_poster_thumbhash":"SP",
+             "season_poster_url":"https://img.example/season.jpg","season_poster_thumbhash":"SN"}
+            """#.utf8)
+        let section = try decoder.decode(SectionItem.self, from: card)
+        XCTAssertEqual(section.episodeSeriesBackdrop?.url, "https://img.example/series-bg.jpg")
+        XCTAssertEqual(section.episodeSeriesBackdrop?.thumbhash, "BG")
+        XCTAssertEqual(section.episodeShowPoster?.url, "https://img.example/season.jpg")
+        let browse = try decoder.decode(BrowseItem.self, from: card)
+        XCTAssertEqual(SectionItem(browseItem: browse).seriesPosterThumbhash, "SP")
+        XCTAssertEqual(BrowseItem(sectionItem: section).seriesBackdropUrl, "https://img.example/series-bg.jpg")
+
+        // A search result opens its series; the loading frame keeps the
+        // series backdrop, which spoiler protection never hides.
+        let seed = TVItemDetailRouteSeed(browse)
+        XCTAssertEqual(seed.backdropUrl, "https://img.example/series-bg.jpg")
+        XCTAssertEqual(seed.backdropIsEpisodeStill, false)
+
+        var body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(detailJSON.utf8)) as? [String: Any])
+        body["type"] = "episode"
+        body["series_poster_url"] = "https://img.example/series.jpg"
+        body["series_poster_thumbhash"] = "SP"
+        body["series_backdrop_url"] = "https://img.example/series-bg.jpg"
+        body["season_poster_url"] = "https://img.example/season.jpg"
+        body["season_poster_thumbhash"] = "SN"
+        let wire = try decoder.decode(APIv2CatalogRead.CatalogItemDetail.self, from: JSONSerialization.data(withJSONObject: body))
+        let detail = try ItemDetail(catalog: wire)
+        XCTAssertEqual(detail.seriesPosterUrl, "https://img.example/series.jpg")
+        XCTAssertEqual(detail.episodeSeriesBackdrop?.url, "https://img.example/series-bg.jpg")
+        XCTAssertEqual(detail.seasonPosterThumbhash, "SN")
+        XCTAssertEqual(detail.episodeShowPoster?.url, "https://img.example/season.jpg")
+        XCTAssertEqual(detail.episodeShowPoster?.thumbhash, "SN")
+    }
+
+    func testOlderServersAndOtherTypesHaveNoParentArtwork() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let episode = try decoder.decode(SectionItem.self, from: Data(#"{"content_id":"e1","type":"episode","title":"Pilot","backdrop_url":"https://img.example/still.jpg"}"#.utf8))
+        XCTAssertNil(episode.episodeSeriesBackdrop)
+        XCTAssertNil(episode.episodeShowPoster)
+        XCTAssertEqual(TVItemDetailRouteSeed(episode).backdropUrl, "https://img.example/still.jpg")
+        let movie = try decoder.decode(SectionItem.self, from: Data(#"{"content_id":"m1","type":"movie","title":"Film","series_backdrop_url":"https://img.example/other.jpg"}"#.utf8))
+        XCTAssertNil(movie.episodeSeriesBackdrop)
+    }
+
     private let terminal = #"{"items":[],"page":{"has_more":false},"total":10000,"total_exact":false,"window_cursor":"window"}"#
     private var stub = APIv2TestStub()
 
@@ -45,6 +94,8 @@ final class CatalogV2Tests: XCTestCase {
             defaults: SharedDefaults(suite: suite, standard: suite))
         await tokens.switchActiveServer(serverId: "test-server")
         await tokens.setServerUrl("https://catalog.example")
+        // A profile proof belongs to a signed-in account.
+        _ = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
         await tokens.setProfileId("profile-one")
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens,
             requestCaptureBarrier: { await captureBarrier?(tokens) })

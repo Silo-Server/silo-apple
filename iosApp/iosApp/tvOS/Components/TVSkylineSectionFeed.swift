@@ -10,9 +10,12 @@ import SwiftUI
 /// scroll view. Programmatic focus is reserved for entering the page and
 /// returning from detail; ordinary Up/Down movement stays geometric.
 struct TVSkylineSectionFeed: View {
-    /// Section rows to page through, in order (already filtered to
-    /// non-empty, non-featured by the caller).
+    /// Section rows to page through, in order (already filtered to rows
+    /// with cards, `hasCards`, and non-featured by the caller). A row may
+    /// hold collections instead of titles.
     let sections: [ResolvedSection]
+    /// The app language, so a switch gives the marquee the row's current title.
+    @Environment(\.locale) private var locale
     /// Marquee scale. Every Skyline landing currently uses `.home` so the
     /// pages render identically; kept as a parameter for explicit variants.
     var marqueeScale: TVFocusMarquee.Scale = .home
@@ -28,6 +31,9 @@ struct TVSkylineSectionFeed: View {
     let onTopMenuFocusRequest: (() -> Void)?
     /// Open a content item (detail).
     let onItemTap: (_ destinationContentId: String, _ item: SectionItem) -> Void
+    /// Opens a row's full page from its trailing Explore all card. Home and
+    /// library feeds supply it; feeds of rows without a page leave it nil.
+    var onExploreAll: ((ResolvedSection) -> Void)? = nil
     /// Optional Home-only action. Library feeds leave this nil.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     /// Optional Home-only watched-state mutation. Library feeds leave this nil.
@@ -48,7 +54,7 @@ struct TVSkylineSectionFeed: View {
     /// The card the marquee content was last built from, kept so a spoiler
     /// settings change can rebuild it. The settings load after sign-in and
     /// can land after Home has already seeded the marquee.
-    @State private var marqueeSource: (item: SectionItem, section: ResolvedSection)?
+    @State private var marqueeSource: TVSkylineMarqueeSource?
 
     init(
         sections: [ResolvedSection],
@@ -59,6 +65,7 @@ struct TVSkylineSectionFeed: View {
         isTopMenuFocused: Bool = false,
         onTopMenuFocusRequest: (() -> Void)?,
         onItemTap: @escaping (String, SectionItem) -> Void,
+        onExploreAll: ((ResolvedSection) -> Void)? = nil,
         onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil,
         onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     ) {
@@ -69,6 +76,7 @@ struct TVSkylineSectionFeed: View {
         self.isTopMenuFocused = isTopMenuFocused
         self.onTopMenuFocusRequest = onTopMenuFocusRequest
         self.onItemTap = onItemTap
+        self.onExploreAll = onExploreAll
         self.onRemoveFromContinueWatching = onRemoveFromContinueWatching
         self.onSetWatched = onSetWatched
         _marqueeModel = State(initialValue: TVFocusMarqueeModel(libraryId: libraryId))
@@ -105,25 +113,25 @@ struct TVSkylineSectionFeed: View {
         }
         // Rows mount only after the async section load; a deferred entry
         // token re-fires once they exist.
-        .onChange(of: sections.map(\.id)) { _, _ in
+        .onChange(of: sections.map(\.id)) { oldIds, newIds in
+            handOffFocusRestoration(from: oldIds, to: newIds)
             seedMarqueeFromFirstItem()
             if let pending = pendingFocusRequest { requestEntryFocus(pending) }
         }
-        .onChange(of: sections.map(\.items)) { _, _ in
-            guard let source = marqueeSource,
-                  let section = sections.first(where: { $0.id == source.section.id }),
-                  let item = section.items.first(where: { $0.contentId == source.item.contentId }) else {
-                marqueeSource = nil
-                marqueeModel.clearSelection()
-                seedMarqueeFromFirstItem()
-                return
-            }
-            marqueeSource = (item, section)
-            marqueeModel.replaceContent(marqueeContent(for: item, in: section))
+        .onChange(of: sections.map(\.items)) { _, _ in refreshMarqueeSource() }
+        .onChange(of: sections.map(\.collections)) { _, _ in refreshMarqueeSource() }
+        // A collection preview names another profile's collection from the
+        // profile list, which can arrive after the first preview is built.
+        .task(id: sections.flatMap(\.collections).compactMap(\.creatorProfileId)) {
+            let cards = sections.flatMap(\.collections)
+            guard CollectionOwnerName.needsProfiles(cards),
+                  await CollectionOwnerName.profiles() != nil,
+                  case .collection = marqueeSource else { return }
+            refreshMarqueeSource()
         }
         .onChange(of: EpisodeSpoilerPreferences.shared.settings) { _, _ in
             guard let source = marqueeSource else { return }
-            marqueeModel.replaceContent(marqueeContent(for: source.item, in: source.section))
+            marqueeModel.replaceContent(marqueeContent(for: source))
         }
     }
 
@@ -188,6 +196,7 @@ struct TVSkylineSectionFeed: View {
         SectionRow(
             section: section,
             onItemTap: onItemTap,
+            onExploreAll: onExploreAll.map { open in { open(section) } },
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
             onSetWatched: onSetWatched,
             // Cold entry: let the engine's *initial* focus resolution land on
@@ -213,7 +222,13 @@ struct TVSkylineSectionFeed: View {
                 focusRestorationOwnerSectionId = section.id
                 previewFocusedItem(item, in: section)
             },
-            cardWidth: SiloTheme.Skyline.densePosterCardWidth,
+            // The marquee keeps the last card it previewed.
+            onExploreAllFocus: { focusRestorationOwnerSectionId = section.id },
+            onCollectionFocus: { card in
+                focusRestorationOwnerSectionId = section.id
+                previewFocusedCollection(card, in: section)
+            },
+            cardWidth: SiloTheme.Skyline.denseCardWidth(for: SectionRow.layout(for: section)),
             cardVerticalPadding: SiloTheme.Skyline.rowBandCardVerticalPadding,
             focusRestorationOwner: Binding(
                 get: { focusRestorationOwnerSectionId == section.id },
@@ -234,13 +249,18 @@ struct TVSkylineSectionFeed: View {
     /// so a Down press reveals painted artwork rather than thumbhashes.
     private func warmRows(after index: Int) -> [CardArtwork] {
         let next = sections.dropFirst(index + 1).prefix(ArtworkLookahead.rowsAhead)
-        return ArtworkLookahead.warmRows(next, items: \.items) { section, item in
-            MediaRow.cardArtwork(
+        let titles = ArtworkLookahead.warmRows(next, items: \.items) { section, item in
+            let layout = SectionRow.layout(for: section)
+            return MediaRow.cardArtwork(
                 for: item,
-                layout: SectionRow.layout(for: section),
-                cardWidth: SiloTheme.Skyline.densePosterCardWidth
+                layout: layout,
+                cardWidth: SiloTheme.Skyline.denseCardWidth(for: layout)
             )
         }
+        let collections = ArtworkLookahead.warmRows(next, items: \.collections) { _, card in
+            TVCollectionsRow.cardArtwork(for: card, cardWidth: SiloTheme.Skyline.denseCardWidth(for: .poster))
+        }
+        return titles + collections
     }
 
     // MARK: - Focus
@@ -273,27 +293,111 @@ struct TVSkylineSectionFeed: View {
         contentFocusToken += 1
     }
 
+    /// Not interested on a title page can empty the row it was opened from,
+    /// and Home then drops that row. Hand restoration to the row that took its
+    /// place (or the one above, when it was last), so Back still lands on a card.
+    private func handOffFocusRestoration(from oldIds: [String], to newIds: [String]) {
+        guard let ownerId = focusRestorationOwnerSectionId,
+              !newIds.contains(ownerId),
+              let ownerIndex = oldIds.firstIndex(of: ownerId),
+              !newIds.isEmpty else { return }
+        focusRestorationOwnerSectionId = newIds[min(ownerIndex, newIds.count - 1)]
+    }
+
     private func previewFocusedItem(_ item: SectionItem, in section: ResolvedSection) {
-        marqueeSource = (item, section)
+        marqueeSource = .title(item, section: section)
         marqueeModel.preview(
             marqueeContent(for: item, in: section),
             neighborBackdropURLs: neighborBackdropURLs(around: item, in: section)
         )
     }
 
+    private func previewFocusedCollection(_ card: SectionCollectionCard, in section: ResolvedSection) {
+        marqueeSource = .collection(card, section: section)
+        marqueeModel.preview(
+            marqueeContent(for: card, in: section),
+            neighborBackdropURLs: neighborBackdropURLs(around: card, in: section)
+        )
+    }
+
+    private func marqueeContent(for source: TVSkylineMarqueeSource) -> TVMarqueeContent {
+        switch source {
+        case .title(let item, let section): marqueeContent(for: item, in: section)
+        case .collection(let card, let section): marqueeContent(for: card, in: section)
+        }
+    }
+
     private func marqueeContent(for item: SectionItem, in section: ResolvedSection) -> TVMarqueeContent {
         TVMarqueeContent(
             item: item,
             rowId: section.id,
-            rowTitle: section.title,
+            rowTitle: section.displayTitle(in: locale),
             isContinueWatching: section.isContinueWatchingSection,
             isFeatured: section.isFeatured,
             spoilers: EpisodeSpoilerPreferences.shared.settings
         )
     }
 
+    /// A collection preview, built like the Requests page's previews: no
+    /// content id, so the marquee requests no title detail. A server
+    /// collection's backdrop fills the hero as a title's does; without one
+    /// the poster is framed as a cover there, and a collection with neither
+    /// shows only the text.
+    private func marqueeContent(for card: SectionCollectionCard, in section: ResolvedSection) -> TVMarqueeContent {
+        var meta: [String] = []
+        if card.itemCount > 0 {
+            meta.append(AppLanguage.string(
+                .collectionsItemCount(count: card.itemCount, LocaleFormat.groupedCount(card.itemCount, locale: locale)),
+                locale: locale
+            ))
+        }
+        if let byline = CollectionOwnerName.byline(for: card, locale: locale) {
+            meta.append(byline)
+        }
+        return TVMarqueeContent(
+            id: "\(section.id)#\(card.rowKey)",
+            contentId: nil,
+            rowId: section.id,
+            eyebrow: section.displayTitle(in: locale),
+            title: card.title,
+            logoUrl: nil,
+            badges: [],
+            metaParts: meta,
+            rating: nil,
+            trailingMetaParts: [],
+            runtimeMetaIndex: meta.count,
+            runtimeText: nil,
+            synopsis: nil,
+            backdropUrl: card.backdropUrl,
+            backdropThumbhash: card.backdropThumbhash,
+            fallbackArtworkUrl: card.posterUrl,
+            fallbackArtworkThumbhash: card.posterThumbhash,
+            fallbackArtworkAspect: .poster,
+            baseOverlayData: nil,
+            contentRatingBadge: nil,
+            progressUpdatedAt: nil,
+            prefersLastUsedPlaybackMetadata: false,
+            isEpisode: false,
+            protectsEpisodeImages: false,
+            seriesContextId: nil,
+            seriesContextSeasonNumber: nil
+        )
+    }
+
+    /// Backdrops of the collections on either side of `card` in its row.
+    private func neighborBackdropURLs(
+        around card: SectionCollectionCard,
+        in section: ResolvedSection
+    ) -> [String] {
+        guard let index = section.collections.firstIndex(where: { $0.rowKey == card.rowKey }) else { return [] }
+        let radius = SiloTheme.Skyline.marqueeNeighborBackdropPrefetchRadius
+        let window = section.collections.indices.clamped(to: (index - radius)..<(index + radius + 1))
+        return window.compactMap { $0 == index ? nil : section.collections[$0].backdropUrl }
+    }
+
     /// Section-level backdrops of the cards on either side of `item` in its
-    /// row. Only direct backdrops qualify: episodes and items without one
+    /// row: a card's own backdrop, or an episode's series backdrop when the
+    /// card carries one. Other episodes and items without a backdrop
     /// resolve their hero art from detail enrichment, which is a metadata
     /// request the marquee already rate-limits and must not be duplicated
     /// here for cards the user may never rest on.
@@ -307,6 +411,7 @@ struct TVSkylineSectionFeed: View {
         return window.compactMap { neighborIndex -> String? in
             guard neighborIndex != index else { return nil }
             let neighbor = section.items[neighborIndex]
+            if let seriesBackdrop = neighbor.episodeSeriesBackdrop { return seriesBackdrop.url }
             guard neighbor.type.lowercased() != "episode",
                   let url = neighbor.backdropUrl, !url.isEmpty else { return nil }
             return url
@@ -318,12 +423,53 @@ struct TVSkylineSectionFeed: View {
     /// report remains authoritative if the engine lands on another card.
     private func seedMarqueeFromFirstItem() {
         guard marqueeModel.content == nil,
-              let section = sections.first,
-              let item = section.items.first else { return }
-        marqueeSource = (item, section)
-        marqueeModel.seed(marqueeContent(for: item, in: section))
+              let source = sections.first.flatMap(TVSkylineMarqueeSource.firstCard(in:)) else { return }
+        marqueeSource = source
+        marqueeModel.seed(marqueeContent(for: source))
     }
 
+    /// The rows changed: keep the previewed card, rebuilt from the new rows,
+    /// while it is still there; otherwise start over from the first card.
+    private func refreshMarqueeSource() {
+        guard let source = marqueeSource?.refreshed(in: sections) else {
+            marqueeSource = nil
+            marqueeModel.clearSelection()
+            seedMarqueeFromFirstItem()
+            return
+        }
+        marqueeSource = source
+        marqueeModel.replaceContent(marqueeContent(for: source))
+    }
+
+}
+
+/// The card the marquee preview was built from: a title or a collection,
+/// with its row.
+private enum TVSkylineMarqueeSource {
+    case title(SectionItem, section: ResolvedSection)
+    case collection(SectionCollectionCard, section: ResolvedSection)
+
+    /// The first card of `section`, in the kind the row holds.
+    static func firstCard(in section: ResolvedSection) -> TVSkylineMarqueeSource? {
+        if section.holdsCollections {
+            return section.collections.first.map { .collection($0, section: section) }
+        }
+        return section.items.first.map { .title($0, section: section) }
+    }
+
+    /// The same card in `sections`, or nil when its row no longer shows it.
+    func refreshed(in sections: [ResolvedSection]) -> TVSkylineMarqueeSource? {
+        switch self {
+        case .title(let item, let section):
+            guard let row = sections.first(where: { $0.id == section.id }),
+                  let current = row.items.first(where: { $0.contentId == item.contentId }) else { return nil }
+            return .title(current, section: row)
+        case .collection(let card, let section):
+            guard let row = sections.first(where: { $0.id == section.id }),
+                  let current = row.collections.first(where: { $0.rowKey == card.rowKey }) else { return nil }
+            return .collection(current, section: row)
+        }
+    }
 }
 
 /// Cancel artwork work when a row leaves the viewport without removing its
@@ -363,8 +509,10 @@ struct TVSkylineBackdrop: View {
             tints: model.tints,
             artworkURL: model.backdropURL,
             artworkThumbhash: model.backdropThumbhash,
+            artworkCoverAspect: model.backdropCoverAspect,
             isVisible: model.backdropURL != nil,
-            crossfadeDuration: SiloTheme.Skyline.marqueeCrossfadeDuration
+            crossfadeDuration: SiloTheme.Skyline.marqueeCrossfadeDuration,
+            washCrossfadeDuration: SiloTheme.Skyline.marqueeWashCrossfadeDuration
         )
     }
 }

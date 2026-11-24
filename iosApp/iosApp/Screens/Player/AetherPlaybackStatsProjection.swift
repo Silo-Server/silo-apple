@@ -5,7 +5,15 @@ import Foundation
 struct AetherPlaybackStatsSourceMetadata: Equatable {
     let source: String?
     let delivery: String?
+    /// The delivery in viewer terms: "Direct play", "Offline file".
+    let playMethod: String?
+    /// Why the server chose this delivery, as a sentence.
+    let decisionReason: String?
+    let warnings: [String]
     let container: String?
+    /// The codec of the video that reaches the device. Aether names only
+    /// its decoder.
+    let videoCodec: String?
     let playbackRate: Double?
     let secondarySubtitleLabel: String?
     let plannedSourceDynamicRange: String?
@@ -17,14 +25,24 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
         delivery: String?,
         container: String?,
         playbackRate: Double?,
+        videoCodec: String? = nil,
+        decisionReason: String? = nil,
+        warnings: [String] = [],
         secondarySubtitleLabel: String? = nil,
         plannedSourceDynamicRange: String? = nil,
         plannedOutputDynamicRange: String? = nil,
         plannedSourceDolbyVisionProfile: Int? = nil
     ) {
+        let isOffline = sourceURL?.isFileURL == true
         source = Self.sourceLabel(for: sourceURL)
         self.delivery = Self.deliveryLabel(delivery)
+        playMethod = isOffline
+            ? AppLanguage.string(.playerStatsOfflineFile)
+            : Self.playMethodLabel(delivery)
+        self.decisionReason = Self.reasonLabel(decisionReason)
+        self.warnings = warnings.compactMap(Self.normalized)
         self.container = Self.containerLabel(container)
+        self.videoCodec = Self.normalized(videoCodec)
         self.playbackRate = playbackRate
         self.secondarySubtitleLabel = secondarySubtitleLabel
         self.plannedSourceDynamicRange = plannedSourceDynamicRange
@@ -33,8 +51,8 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
     }
 
     private static func sourceLabel(for url: URL?) -> String? {
-        guard let url else { return nil }
-        if url.isFileURL { return "Offline file" }
+        // A local file is named by the play method.
+        guard let url, !url.isFileURL else { return nil }
         if let host = url.host, !host.isEmpty { return host }
         return url.scheme?.uppercased()
     }
@@ -42,13 +60,34 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
     private static func deliveryLabel(_ value: String?) -> String? {
         guard let value = normalized(value) else { return nil }
         switch value.lowercased() {
-        case PlaybackProtocolV3.PlanDelivery.originalHTTP: return "Original HTTP"
-        case PlaybackProtocolV3.PlanDelivery.remuxProgressive: return "Server Remux"
-        case PlaybackProtocolV3.PlanDelivery.remuxHLS: return "Server Remux HLS"
-        case PlaybackProtocolV3.PlanDelivery.transcodeHLS: return "Server Transcode HLS"
+        case PlaybackProtocolV3.PlanDelivery.originalHTTP: return AppLanguage.string(.playerStatsDeliveryOriginalHttp)
+        case PlaybackProtocolV3.PlanDelivery.remuxProgressive: return AppLanguage.string(.playerStatsDeliveryServerRemux)
+        case PlaybackProtocolV3.PlanDelivery.remuxHLS: return AppLanguage.string(.playerStatsDeliveryServerRemuxHls)
+        case PlaybackProtocolV3.PlanDelivery.transcodeHLS: return AppLanguage.string(.playerStatsDeliveryServerTranscodeHls)
         default:
             return value.replacingOccurrences(of: "_", with: " ")
         }
+    }
+
+    private static func playMethodLabel(_ value: String?) -> String? {
+        switch normalized(value)?.lowercased() {
+        case PlaybackProtocolV3.PlanDelivery.originalHTTP:
+            return AppLanguage.string(.playerStatsPlayMethodDirectPlay)
+        case PlaybackProtocolV3.PlanDelivery.remuxProgressive, PlaybackProtocolV3.PlanDelivery.remuxHLS:
+            return AppLanguage.string(.playerStatsPlayMethodRemuxed)
+        case PlaybackProtocolV3.PlanDelivery.transcodeHLS:
+            return AppLanguage.string(.playerStatsPlayMethodTranscoded)
+        default:
+            return nil
+        }
+    }
+
+    /// The server's reason code as a sentence: `video_codec_unsupported`
+    /// reads "Video codec unsupported".
+    private static func reasonLabel(_ value: String?) -> String? {
+        guard let value = normalized(value) else { return nil }
+        let words = value.replacingOccurrences(of: "_", with: " ")
+        return words.prefix(1).uppercased() + words.dropFirst()
     }
 
     private static func containerLabel(_ value: String?) -> String? {
@@ -195,11 +234,14 @@ enum AetherPlaybackStatsProjection {
 
         return PlaybackStats(
             sampledAt: sampledAt,
+            playMethod: source.playMethod,
+            decisionReason: source.decisionReason,
+            warnings: source.warnings,
             route: routeLabel(snapshot.route),
             source: source.source,
             delivery: source.delivery,
             container: source.container,
-            video: videoStream(snapshot),
+            video: videoStream(snapshot, codec: source.videoCodec),
             audio: audioStream(track: activeAudio, decoder: snapshot.activeAudioDecoder),
             dynamicRange: dynamicRangeLabel(snapshot, source: source),
             subtitles: subtitleLabel(
@@ -230,50 +272,87 @@ enum AetherPlaybackStatsProjection {
         )
     }
 
-    private static func videoStream(_ snapshot: AetherPlaybackStatsSnapshot) -> PlaybackStats.MediaStream {
+    private static func videoStream(
+        _ snapshot: AetherPlaybackStatsSnapshot,
+        codec: String?
+    ) -> PlaybackStats.MediaStream {
+        let hasPicture = snapshot.sourceVideoWidth > 0 && snapshot.sourceVideoHeight > 0
         let dimensions = dimensionLabel(
             width: snapshot.sourceVideoWidth,
             height: snapshot.sourceVideoHeight,
             pixelAspectRatio: snapshot.sourceVideoPixelAspectRatio
         )
         let frameRate = snapshot.sourceVideoFrameRate.flatMap { fps in
-            fps.isFinite && fps > 0 ? String(format: "%.3f fps", fps) : nil
+            fps.isFinite && fps > 0 ? LocaleFormat.trimmed(fps, maxFractionDigits: 3) + " fps" : nil
         }
-        let details = [dimensions, frameRate]
-            .compactMap { $0 }
-            .joined(separator: " · ")
+        let range = presentedVideoFormat(snapshot)
         return PlaybackStats.MediaStream(
-            codec: snapshot.activeVideoDecoder,
-            detail: details.isEmpty ? nil : details,
+            description: joined([hasPicture ? codec.map(videoCodecLabel) : nil, dimensions, frameRate]),
             bitrateBps: snapshot.sourceVideoBitrateBps > 0
                 ? Double(snapshot.sourceVideoBitrateBps)
-                : nil
+                : nil,
+            decoder: normalized(snapshot.activeVideoDecoder),
+            summary: joined([
+                resolutionClass(
+                    width: snapshot.sourceVideoWidth,
+                    height: snapshot.sourceVideoHeight,
+                    pixelAspectRatio: snapshot.sourceVideoPixelAspectRatio
+                ),
+                hasPicture && range != .sdr ? videoFormatLabel(range, dvProfile: nil) : nil,
+            ])
         )
     }
 
+    /// "4K", "1080p" and so on, for the picture as displayed. Either
+    /// dimension reaching a class's size is enough: a scope crop of a 1080p
+    /// master (1920×800) and a 4:3 picture (1440×1080) are both 1080p. An
+    /// anamorphic stream counts its displayed width, as `dimensionLabel` does.
+    private static func resolutionClass(width: Int32, height: Int32, pixelAspectRatio: Double) -> String? {
+        guard width > 0, height > 0 else { return nil }
+        let hasSquarePixels = !(pixelAspectRatio.isFinite && pixelAspectRatio > 0)
+            || abs(pixelAspectRatio - 1) <= 0.001
+        let displayWidth = hasSquarePixels
+            ? Int(width)
+            : Int((Double(width) * pixelAspectRatio).rounded())
+        let classes: [(width: Int, height: Int, label: String)] = [
+            (3_800, 2_100, "4K"),
+            (2_500, 1_400, "1440p"),
+            (1_900, 1_060, "1080p"),
+            (1_260, 700, "720p"),
+        ]
+        let match = classes.first { displayWidth >= $0.width || Int(height) >= $0.height }
+        return match?.label ?? "\(height)p"
+    }
+
+    private static func videoCodecLabel(_ codec: String) -> String {
+        switch codec.lowercased() {
+        case "hevc", "h265", "hvc1", "hev1": return "HEVC"
+        case "h264", "avc", "avc1", "avc3": return "H.264"
+        case "av1", "av01": return "AV1"
+        case "vp9", "vp09": return "VP9"
+        case "mpeg2video", "mpeg2": return "MPEG-2"
+        case "mpeg4": return "MPEG-4"
+        case "vc1": return "VC-1"
+        default: return codec.uppercased()
+        }
+    }
+
+    /// "English · EAC3 5.1", as the track pickers name a track: the language,
+    /// or the track's own title when it has none. The picker keeps the rest
+    /// of the title; here it would only crowd out the format.
     private static func audioStream(track: TrackInfo?, decoder: String?) -> PlaybackStats.MediaStream {
         guard let track else {
-            return PlaybackStats.MediaStream(codec: decoder, detail: nil, bitrateBps: nil)
+            return PlaybackStats.MediaStream(decoder: normalized(decoder))
         }
-        var details: [String] = []
-        if !track.name.isEmpty { details.append(track.name) }
-        if let language = normalized(track.language),
-           !details.contains(where: { $0.caseInsensitiveCompare(language) == .orderedSame }) {
-            details.append(language)
-        }
-        if track.isAtmos {
-            details.append("Atmos")
-        } else if let channels = channelLabel(track.channels) {
-            details.append(channels)
-        }
-        if let decoder = normalized(decoder),
-           !details.contains(where: { $0.caseInsensitiveCompare(decoder) == .orderedSame }) {
-            details.append(decoder)
-        }
+        let layout = track.isAtmos ? "Atmos" : channelLabel(track.channels)
         return PlaybackStats.MediaStream(
-            codec: track.codec,
-            detail: details.joined(separator: " · "),
-            bitrateBps: track.bitrate > 0 ? Double(track.bitrate) : nil
+            description: joined([
+                TrackLabels.languageName(track.language)
+                    ?? TrackLabels.audioTitle(track.name, language: track.language),
+                joined([TrackLabels.audioCodec(track.codec), layout], separator: " "),
+            ]),
+            bitrateBps: track.bitrate > 0 ? Double(track.bitrate) : nil,
+            decoder: normalized(decoder)
         )
     }
 
@@ -285,38 +364,51 @@ enum AetherPlaybackStatsProjection {
         secondaryLabel: String?
     ) -> String? {
         guard route != .none else { return nil }
-        guard active else { return secondaryActive ? "Secondary only" : "Off" }
+        guard active else {
+            return AppLanguage.string(secondaryActive ? .playerStatsSubtitlesSecondaryOnly : .playerTracksSubtitlesOff)
+        }
 
         var primaryParts: [String] = []
         if let track {
-            if !track.name.isEmpty { primaryParts.append(track.name) }
-            if let language = normalized(track.language),
-               !primaryParts.contains(where: { $0.caseInsensitiveCompare(language) == .orderedSame }) {
-                primaryParts.append(language)
+            // The track pickers' vocabulary: the language leads, and the
+            // track's own title follows only when it says something more. A
+            // release name stamped on every track does not.
+            if let title = TrackLabels.subtitleTitle(
+                track.name,
+                language: track.language,
+                codec: track.codec,
+                showsHearingImpaired: track.isHearingImpaired
+            ) {
+                primaryParts.append(title)
             }
-            if !track.codec.isEmpty { primaryParts.append(track.codec.uppercased()) }
+            // A title usually names its language ("English SDH"); the
+            // language is added only when it does not.
+            if let language = TrackLabels.languageName(track.language),
+               !containsToken(language, in: primaryParts) {
+                primaryParts.insert(language, at: 0)
+            }
+            if let codec = TrackLabels.subtitleCodec(track.codec) { primaryParts.append(codec) }
             if track.isForced, !containsToken("forced", in: primaryParts) {
-                primaryParts.append("Forced")
+                primaryParts.append(AppLanguage.string(.detailTrackForced))
             }
             if track.isHearingImpaired, !containsToken("sdh", in: primaryParts) {
-                primaryParts.append("SDH")
+                primaryParts.append(AppLanguage.string(.detailTrackSdh))
             }
         }
-        var label = primaryParts.isEmpty ? "On" : primaryParts.joined(separator: " · ")
-        if secondaryActive {
-            label += " + \(normalized(secondaryLabel) ?? "secondary")"
-        }
-        return label
+        let label = primaryParts.isEmpty ? AppLanguage.string(.optionsOn) : primaryParts.joined(separator: " · ")
+        guard secondaryActive else { return label }
+        let secondary = normalized(secondaryLabel) ?? AppLanguage.string(.playerStatsSubtitlesSecondary)
+        return AppLanguage.string(.playerStatsSubtitlesWithSecondary(label, secondary))
     }
 
     private static func dimensionLabel(width: Int32, height: Int32, pixelAspectRatio: Double) -> String? {
         guard width > 0, height > 0 else { return nil }
-        let coded = "\(width)×\(height)"
+        let coded = LocaleFormat.localized("\(width)×\(height)")
         guard pixelAspectRatio.isFinite,
               pixelAspectRatio > 0,
               abs(pixelAspectRatio - 1) > 0.001 else { return coded }
         let displayWidth = Int((Double(width) * pixelAspectRatio).rounded())
-        return "\(coded) (\(displayWidth)×\(height) display)"
+        return AppLanguage.string(.playerStatsDimensionsWithDisplay(coded, LocaleFormat.localized("\(displayWidth)×\(height)")))
     }
 
     private static func dynamicRangeLabel(
@@ -327,16 +419,22 @@ enum AetherPlaybackStatsProjection {
         if let planned = plannedDynamicRangeLabel(metadata) { return planned }
         let source = videoFormatLabel(snapshot.sourceVideoFormat, dvProfile: snapshot.sourceDVProfile)
         let unconfirmed = unconfirmedSentVideoFormat(snapshot)
-        let outputFormat = unconfirmed ?? snapshot.outputVideoFormat
-        let suffix = unconfirmed == nil ? "" : " (unconfirmed)"
+        let outputFormat = presentedVideoFormat(snapshot)
+        let label: String
         if outputFormat == .dolbyVision,
            snapshot.dolbyVisionConversion == .profile7ToProfile81 {
-            return "\(source) → Profile 8.1\(suffix)"
+            label = AppLanguage.string(.playerStatsDynamicRangeToProfile81(source))
+        } else {
+            let output = videoFormatLabel(outputFormat, dvProfile: nil)
+            label = snapshot.sourceVideoFormat == outputFormat ? source : "\(source) → \(output)"
         }
-        let output = videoFormatLabel(outputFormat, dvProfile: nil)
-        return snapshot.sourceVideoFormat == outputFormat
-            ? "\(source)\(suffix)"
-            : "\(source) → \(output)\(suffix)"
+        return unconfirmed == nil ? label : AppLanguage.string(.playerStatsDynamicRangeUnconfirmed(label))
+    }
+
+    /// The range that reaches the display: what Aether sent an Apple TV whose
+    /// mode it can't confirm, otherwise its own `videoFormat`.
+    private static func presentedVideoFormat(_ snapshot: AetherPlaybackStatsSnapshot) -> VideoFormat {
+        unconfirmedSentVideoFormat(snapshot) ?? snapshot.outputVideoFormat
     }
 
     /// The range Aether sent to an Apple TV when it can't confirm the TV's
@@ -402,7 +500,7 @@ enum AetherPlaybackStatsProjection {
         case "hdr10_plus", "hdr10+": return "HDR10+"
         case "hlg": return "HLG"
         case "dolby_vision":
-            return dvProfile.map { "Dolby Vision Profile \($0)" } ?? "Dolby Vision"
+            return dvProfile.map { AppLanguage.string(.playerStatsDolbyVisionProfile(String($0))) } ?? "Dolby Vision"
         default: return nil
         }
     }
@@ -413,7 +511,7 @@ enum AetherPlaybackStatsProjection {
         case .hdr10: return "HDR10"
         case .hdr10Plus: return "HDR10+"
         case .dolbyVision:
-            return dvProfile.map { "Dolby Vision Profile \($0)" } ?? "Dolby Vision"
+            return dvProfile.map { AppLanguage.string(.playerStatsDolbyVisionProfile(String($0))) } ?? "Dolby Vision"
         case .hlg: return "HLG"
         }
     }
@@ -421,34 +519,35 @@ enum AetherPlaybackStatsProjection {
     private static func routeLabel(_ route: VideoRoute) -> String? {
         switch route {
         case .none: return nil
-        case .remoteBypass: return "Aether remote HLS"
-        case .loopback: return "Aether loopback HLS"
-        case .software: return "Aether software video"
-        case .audio: return "Aether audio"
+        case .remoteBypass: return AppLanguage.string(.playerStatsRouteRemoteHls)
+        case .loopback: return AppLanguage.string(.playerStatsRouteLoopbackHls)
+        case .software: return AppLanguage.string(.playerStatsRouteSoftwareVideo)
+        case .audio: return AppLanguage.string(.playerStatsRouteAudio)
         }
     }
 
     private static func phaseLabel(_ phase: PlaybackPhase) -> String? {
         switch phase {
         case .idle: return nil
-        case .loading: return "Loading"
-        case .playing: return "Playing"
-        case .paused: return "Paused"
-        case .seeking: return "Seeking"
-        case .rebuffering: return "Rebuffering"
-        case .stalled(let reconnecting): return reconnecting ? "Reconnecting" : "Stalled"
-        case .ended: return "Ended"
-        case .error: return "Error"
+        case .loading: return AppLanguage.string(.commonLoading)
+        case .playing: return AppLanguage.string(.playerStatsPhasePlaying)
+        case .paused: return AppLanguage.string(.playerStatsPhasePaused)
+        case .seeking: return AppLanguage.string(.playerStatsPhaseSeeking)
+        case .rebuffering: return AppLanguage.string(.playerStatsPhaseRebuffering)
+        case .stalled(let reconnecting):
+            return AppLanguage.string(reconnecting ? .playerStatsPhaseReconnecting : .playerStatsPhaseStalled)
+        case .ended: return AppLanguage.string(.playerStatsPhaseEnded)
+        case .error: return AppLanguage.string(.playerStatsPhaseError)
         }
     }
 
     private static func channelLabel(_ channels: Int) -> String? {
         switch channels {
-        case 1: return "Mono"
-        case 2: return "Stereo"
+        case 1: return AppLanguage.string(.detailMono)
+        case 2: return AppLanguage.string(.detailStereo)
         case 6: return "5.1"
         case 8: return "7.1"
-        case let count where count > 0: return "\(count) channels"
+        case let count where count > 0: return AppLanguage.string(.playerStatsChannelCount(count))
         default: return nil
         }
     }
@@ -462,6 +561,12 @@ enum AetherPlaybackStatsProjection {
         guard let value else { return nil }
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalized.isEmpty ? nil : normalized
+    }
+
+    /// The non-empty parts joined, or nil when none are left.
+    private static func joined(_ parts: [String?], separator: String = " · ") -> String? {
+        let present = parts.compactMap(normalized)
+        return present.isEmpty ? nil : present.joined(separator: separator)
     }
 
     private static func containsToken(_ token: String, in values: [String]) -> Bool {

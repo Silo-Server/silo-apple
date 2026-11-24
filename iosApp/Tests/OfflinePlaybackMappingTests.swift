@@ -19,7 +19,8 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         selectedAudioTrackIndex: Int? = nil,
         targetBitrateKbps: Int? = nil,
         fileSize: Int64? = 1_000_000_000,
-        durationSeconds: Double? = 1358.176
+        durationSeconds: Double? = 1358.176,
+        markerSegmentsJSON: String? = nil
     ) throws -> OfflineManifest {
         var fields = [
             "\"download_id\": \"d1\"",
@@ -37,6 +38,10 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         if let audioTracksJSON { fields.append("\"audio_tracks\": \(audioTracksJSON)") }
         if let selectedAudioTrackIndex {
             fields.append("\"selected_audio_track_index\": \(selectedAudioTrackIndex)")
+        }
+        if let markerSegmentsJSON {
+            fields.append("\"credits\": {\"start\": 1100, \"end\": 1200}")
+            fields.append("\"marker_segments\": \(markerSegmentsJSON)")
         }
         if let targetBitrateKbps {
             fields.append("\"target_bitrate_kbps\": \(targetBitrateKbps)")
@@ -74,6 +79,25 @@ final class OfflinePlaybackMappingTests: XCTestCase {
       "default": true
     }]
     """
+
+    // MARK: - Markers
+
+    /// Offline playback honours every occurrence, from the server's manifest
+    /// and from the copy stored beside the media file.
+    func testEveryMarkerOccurrenceReachesOfflinePlayback() throws {
+        let fromServer = try manifest(markerSegmentsJSON: """
+        [{"kind": "credits", "start_seconds": 1100, "end_seconds": 1200},
+         {"kind": "credits", "start_seconds": 1250, "end_seconds": 1358}]
+        """)
+        let stored = try JSONDecoder().decode(OfflineManifest.self, from: JSONEncoder().encode(fromServer))
+
+        for manifest in [fromServer, stored] {
+            let timeline = PlayerMarkerTimeline(version: prepared(manifest).selectedVersion)
+            XCTAssertEqual(timeline.ranges(.credits), [
+                TimeRange(start: 1100, end: 1200), TimeRange(start: 1250, end: 1358),
+            ])
+        }
+    }
 
     // MARK: - Audio track identity
 
@@ -133,6 +157,49 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         // Ordinal into `version.audioTracks` — the same space the server's
         // `audio_track_index` uses.
         XCTAssertEqual(session.audioTrackIndex, 0)
+    }
+
+    // MARK: - Series track preference
+
+    func testSeriesTrackPreferenceSeedsDownloadedPlayback() throws {
+        let tracks = """
+        [{"index": 0, "language": "eng", "codec": "eac3", "default": true},
+         {"index": 1, "language": "jpn", "codec": "eac3"}]
+        """
+        let signature = SubtitleTrackSignature(language: "en", forced: false, hearingImpaired: true)
+        let playback = OfflinePlaybackBuilder.makePreparedPlayback(
+            leafContentId: "leaf",
+            manifest: try manifest(audioTracksJSON: tracks, selectedAudioTrackIndex: 0),
+            mediaURL: URL(fileURLWithPath: "/tmp/media.mkv"),
+            subtitleURLs: [],
+            subtitlePrefs: EffectiveSubtitlePrefs(language: "en", mode: "always", showForced: false, signature: signature),
+            audioPref: AudioPrefRequest(audioTrackIndex: 1, audioLanguage: "ja", trackSignature: nil),
+            resumePosition: nil
+        )
+
+        XCTAssertEqual(playback.session.audioTrackIndex, 1, "the series' Japanese pick replaces the download-time track")
+        // The player's subtitle resolver reads these as it does a streamed
+        // item's `effective_subtitle_*`.
+        XCTAssertEqual(playback.watchDetail.effectiveSubtitleLanguage, "en")
+        XCTAssertEqual(playback.watchDetail.effectiveSubtitleMode, "always")
+        XCTAssertEqual(playback.watchDetail.effectiveShowForcedSubtitles, false)
+        XCTAssertEqual(playback.watchDetail.effectiveSubtitleTrackSignature, signature)
+    }
+
+    func testDownloadWithoutAnAudioListStartsFromTheSeriesLanguage() throws {
+        let playback = OfflinePlaybackBuilder.makePreparedPlayback(
+            leafContentId: "leaf",
+            manifest: try manifest(),
+            mediaURL: URL(fileURLWithPath: "/tmp/media.mkv"),
+            subtitleURLs: [],
+            audioPref: AudioPrefRequest(audioTrackIndex: 1, audioLanguage: "ja", trackSignature: nil),
+            resumePosition: nil
+        )
+
+        XCTAssertNil(playback.session.audioTrackIndex)
+        XCTAssertEqual(AetherInitialAudioPreference.languages(for: playback, profileLanguage: "en"), ["ja"])
+        XCTAssertEqual(AetherInitialAudioPreference.languages(for: prepared(try manifest()), profileLanguage: "en"),
+                       ["en"])
     }
 
     // MARK: - Bitrate

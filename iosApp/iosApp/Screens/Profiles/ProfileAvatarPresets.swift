@@ -17,16 +17,16 @@ enum ProfileAvatarPresets {
     /// Available DiceBear styles, in display order. Kept in sync with
     /// `PROFILE_AVATAR_STYLES` on the web.
     static let styles: [Style] = [
-        Style(id: "identicon", label: "Identicon",
-              summary: "Geometric patterns"),
-        Style(id: "initials", label: "Initials",
-              summary: "Letter-based with bold backgrounds"),
-        Style(id: "bottts-neutral", label: "Bottts",
-              summary: "Modular robot faces"),
-        Style(id: "fun-emoji", label: "Fun Emoji",
-              summary: "Big, colorful faces"),
-        Style(id: "pixel-art-neutral", label: "Pixel Art",
-              summary: "Retro pixel characters"),
+        Style(id: "identicon", label: .profilesAvatarStyleIdenticon,
+              summary: .profilesAvatarStyleSummaryIdenticon),
+        Style(id: "initials", label: .profilesAvatarStyleInitials,
+              summary: .profilesAvatarStyleSummaryInitials),
+        Style(id: "bottts-neutral", label: .profilesAvatarStyleBottts,
+              summary: .profilesAvatarStyleSummaryBottts),
+        Style(id: "fun-emoji", label: .profilesAvatarStyleFunEmoji,
+              summary: .profilesAvatarStyleSummaryFunEmoji),
+        Style(id: "pixel-art-neutral", label: .profilesAvatarStylePixelArt,
+              summary: .profilesAvatarStyleSummaryPixelArt),
     ]
 
     static let defaultStyleId: String = "fun-emoji"
@@ -66,10 +66,15 @@ enum ProfileAvatarPresets {
         return "https://api.dicebear.com/9.x/\(s)/png?seed=\(d)&size=\(size)"
     }
 
+    /// `id` is the DiceBear style sent in the avatar ref; the label and
+    /// summary are only shown.
     struct Style: Identifiable, Hashable {
         let id: String
-        let label: String
-        let summary: String
+        let label: LocalizedStringResource
+        let summary: LocalizedStringResource
+
+        static func == (lhs: Style, rhs: Style) -> Bool { lhs.id == rhs.id }
+        func hash(into hasher: inout Hasher) { hasher.combine(id) }
     }
 
     struct Preset: Hashable, Identifiable {

@@ -285,7 +285,7 @@ actor ASSOverlayPresenter {
             case .empty:
                 if queuedPixels {
                     guard let clear = renderer.transparentCanvas() else {
-                        // Nothing to clear with yet; this frame renders again next step.
+                        // Every canvas is still queued; this frame renders again next step.
                         forceNextRender = true
                         schedule.prune(before: now - 2, in: timing.frameSource)
                         return report

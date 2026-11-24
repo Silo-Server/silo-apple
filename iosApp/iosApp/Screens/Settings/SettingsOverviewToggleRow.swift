@@ -2,8 +2,8 @@
 import SwiftUI
 
 struct SettingsOverviewToggleRow: View {
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringResource
+    let subtitle: LocalizedStringResource
     let systemImage: String
     @Binding var isOn: Bool
 
@@ -17,8 +17,8 @@ struct SettingsOverviewToggleRow: View {
             }
         }
         .tint(.siloSwitchOn)
-        .accessibilityLabel(title)
-        .accessibilityHint(subtitle)
+        .accessibilityLabel(Text(title))
+        .accessibilityHint(Text(subtitle))
     }
 }
 #endif

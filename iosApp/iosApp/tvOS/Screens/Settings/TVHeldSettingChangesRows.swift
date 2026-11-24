@@ -11,7 +11,7 @@ struct TVHeldSettingChangesRows: View {
     var message: String = HeldSettingChange.message
 
     var body: some View {
-        TVSettingsSectionHeader("NOT SAVED")
+        TVSettingsSectionHeader(.settingsHeldChangeHeaderTv)
 
         Button {
             Task { await retry() }
@@ -19,7 +19,7 @@ struct TVHeldSettingChangesRows: View {
             HStack(spacing: 16) {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 22, weight: .medium))
-                Text("Try Again")
+                Text(.settingsHeldChangeTryAgain)
                     .font(.system(size: 26))
                 Spacer(minLength: 0)
             }
@@ -32,14 +32,14 @@ struct TVHeldSettingChangesRows: View {
             HStack(spacing: 16) {
                 Image(systemName: "xmark.circle")
                     .font(.system(size: 22, weight: .medium))
-                Text("Discard Held Change")
+                Text(.settingsHeldChangeDiscard)
                     .font(.system(size: 26))
                 Spacer(minLength: 0)
             }
         }
         .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
 
-        TVSettingsWarningFooter(message)
+        TVSettingsWarningFooter(.verbatim(message))
     }
 }
 #endif

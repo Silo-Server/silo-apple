@@ -6,8 +6,8 @@ enum WatchPartyAPIError: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidRequest: return "This Watch Party request is no longer valid. Reopen the room and try again."
-        case .invalidResponse: return "The server returned an incomplete Watch Party response."
+        case .invalidRequest: return AppLanguage.string(.errorsAppleWatchPartyInvalidRequest)
+        case .invalidResponse: return AppLanguage.string(.errorsAppleWatchPartyInvalidResponse)
         }
     }
 }

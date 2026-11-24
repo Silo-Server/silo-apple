@@ -2,14 +2,18 @@
 import SwiftUI
 
 /// Movie detail for tvOS: a full-width hero with Play, the version/audio/
-/// subtitle selectors and More, then cast, trailers, recommendations and
-/// details rails.
+/// subtitle selectors and More, then cast, trailers and extras, the box set,
+/// recommendations and details rails.
 struct TVMovieDetailView: View {
     let detail: ItemDetail
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
+    /// The box set the movie belongs to; nil draws no row.
+    var boxSet: CatalogBoxSetDetail? = nil
     let selectedVersionFileId: Int?
+    /// The edition picked on this visit; nil opens on the last-played one.
+    let selectedEditionId: String?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
     /// True once the user explicitly resets subtitles to "Auto" this visit.
@@ -22,21 +26,17 @@ struct TVMovieDetailView: View {
     /// whether remote cards exist at all). Empty hides the rail.
     let trailerEntries: [TrailerRailEntry]
     let onSelectTrailer: (TrailerRailEntry) -> Void
-    /// Whether the manual "Find Trailers" action can be offered.
-    let supportsTrailerFetch: Bool
-    let onFindTrailers: () -> Void
-    /// Copy from the fetch coordinator; nil while idle.
-    let trailerFetchStatus: String?
-    let isFetchingTrailers: Bool
-    /// Called once a terminal fetch message has been on screen long enough.
-    let onTrailerStatusShown: () -> Void
     let onPlay: (_ startFromBeginning: Bool) -> Void
     let onSelectVersion: (Int?) -> Void
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
+    /// Nil hides Not interested: the server predates it.
+    var isNotInterested: Bool? = nil
+    var onToggleNotInterested: (() -> Void)? = nil
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     /// On-view description translation status, drawn inside the synopsis.
@@ -45,18 +45,33 @@ struct TVMovieDetailView: View {
     /// item keeps the action reachable without adding a focus stop to the
     /// hero, whose synopsis is deliberately not focusable.
     var onTranslateDescription: (() -> Void)? = nil
+    /// The viewer's rating, 1...10, nil when unrated.
+    var userRating: Int? = nil
+    /// False on the card's provisional copy of the page: the star button is
+    /// shown but takes no input yet.
+    var canRate = false
+    /// Nil removes the rating. Nil hides the star button.
+    var onSetRating: ((Int?) -> Void)? = nil
 
     @Namespace private var detailFocusNamespace
-    @FocusState private var playFocused: Bool
+    @FocusState private var focusedAction: TVDetailAction?
+    @State private var preferredAction: TVDetailAction = .play
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
-    /// Whole recommendation rail focus, used only to keep its heading and
-    /// focused poster comfortably framed during native vertical reveal.
+    /// Whole poster rail focus (box set, recommendations), used only to keep
+    /// the rail's heading and focused poster comfortably framed during native
+    /// vertical reveal.
+    @FocusState private var boxSetRailFocused: Bool
     @FocusState private var similarRailFocused: Bool
+    /// True while the star button edits; the page below the action row is
+    /// disabled meanwhile so remote presses have nowhere else to go.
+    @State private var isRatingEditing = false
     private let heroScrollId = "detail-hero"
+    private let boxSetSectionScrollId = "detail-box-set-section"
     private let similarSectionScrollId = "detail-similar-section"
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
+    @Environment(\.locale) private var locale
 
     var body: some View {
         TVDetailPageSurface(backdropURL: detail.backdropUrl) {
@@ -69,14 +84,15 @@ struct TVMovieDetailView: View {
                             backdropUrl: detail.backdropUrl,
                             backdropThumbhash: detail.backdropThumbhash,
                             eyebrow: nil,
-                            sourceTokens: TVHeroMetadata.movieSourceTokens(from: detail),
+                            sourceTokens: TVHeroMetadata.movieSourceTokens(from: detail, locale: locale),
                             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
                             overlayData: OverlayData.from(detail),
                             overview: detail.overview,
                             synopsisStatus: synopsisStatus,
                             factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
                             ratings: detail.displayRatings,
-                            starringText: TVHeroMetadata.starringText(from: detail),
+                            personalRating: TVHeroPersonalRating(score: userRating, isSeries: false),
+                            starringText: TVHeroMetadata.starringText(from: detail, locale: locale),
                             playbackSummary: TVPlaybackSelectionSummary.make(
                                 currentVersion: currentVersion,
                                 selectedVersionFileId: selectedVersionFileId,
@@ -89,7 +105,8 @@ struct TVMovieDetailView: View {
                                     ? nil
                                     : detail.effectiveSubtitleTrackSignature,
                                 preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
-                                showForcedSubtitles: detail.showsForcedSubtitles
+                                showForcedSubtitles: detail.showsForcedSubtitles,
+                                locale: locale
                             ),
                             actions: { actionColumn },
                             belowSynopsis: { EmptyView() }
@@ -101,6 +118,11 @@ struct TVMovieDetailView: View {
                                 castSection(cast: cast)
                             }
                             trailersSection
+                            if let boxSet {
+                                TVBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
+                                    .focused($boxSetRailFocused)
+                                    .id(boxSetSectionScrollId)
+                            }
                             similarSection
                                 .focused($similarRailFocused)
                                 .id(similarSectionScrollId)
@@ -108,39 +130,34 @@ struct TVMovieDetailView: View {
                         }
                         .padding(.horizontal, TVDetailLayout.horizontalInset)
                         .padding(.bottom, TVDetailLayout.pageBottomPadding)
+                        .disabled(isRatingEditing)
                     }
                 }
                 .ignoresSafeArea()
                 .focusScope(detailFocusNamespace)
-                .defaultFocus($playFocused, true, priority: .userInitiated)
+                .defaultFocus($focusedAction, preferredAction, priority: .userInitiated)
                 .detailFocusScroll(
                     proxy: scrollProxy,
                     actionRowFocused: actionRowFocused,
                     heroId: heroScrollId,
-                    similarRailFocused: similarRailFocused,
-                    similarSectionId: similarSectionScrollId
+                    focusedPosterRailId: focusedPosterRailId
                 )
                 .tvActionPopoverHost()
             }
         }
     }
 
+    /// The poster rail section holding focus, which the page centers.
+    private var focusedPosterRailId: String? {
+        if boxSetRailFocused { return boxSetSectionScrollId }
+        if similarRailFocused { return similarSectionScrollId }
+        return nil
+    }
+
     // MARK: - Hero actions
 
-    @ViewBuilder
     private var actionColumn: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            actionRow
-            if let trailerFetchStatus {
-                // Non-focusable readout, so it adds no stop to the action
-                // column's focus traversal.
-                TVTrailerStatusPill(
-                    message: trailerFetchStatus,
-                    isFetching: isFetchingTrailers,
-                    onAutoDismiss: onTrailerStatusShown
-                )
-            }
-        }
+        actionRow
     }
 
     private var actionRow: some View {
@@ -154,11 +171,14 @@ struct TVMovieDetailView: View {
             focusResetKey: detail.contentId,
             initialFocusScope: .page,
             focusNamespace: detailFocusNamespace,
-            playFocused: $playFocused,
+            focusedAction: $focusedAction,
+            preferredAction: $preferredAction,
             rowFocused: $actionRowFocused,
             stabilizesFocusMotion: true,
             primaryButtonWidth: 340,
-            playbackSelectors: {
+            rating: ratingInput,
+            isRatingEditing: $isRatingEditing,
+            playbackSelectors: { focusedAction in
                 TVPlaybackActionSelectors(
                     versions: availableVersions,
                     currentVersion: currentVersion,
@@ -174,18 +194,31 @@ struct TVMovieDetailView: View {
                     showForcedSubtitles: detail.showsForcedSubtitles,
                     preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                     onSelectVersion: onSelectVersion,
+                    onSelectEdition: onSelectEdition,
                     onSelectAudioTrack: onSelectAudioTrack,
-                    onSelectSubtitleTrack: onSelectSubtitleTrack
+                    onSelectSubtitleTrack: onSelectSubtitleTrack,
+                    focusedAction: focusedAction
                 )
             },
             moreMenu: { moreMenu }
         )
     }
 
+    private var ratingInput: TVDetailRating? {
+        guard SiloMediaType.isMovieLibrary(detail.type), let onSetRating else { return nil }
+        return TVDetailRating(
+            score: userRating,
+            isSeries: false,
+            isWatched: isWatched,
+            isAvailable: canRate,
+            onChange: onSetRating
+        )
+    }
+
     // MARK: - More menu
 
     private enum MoreAction: String {
-        case watchParty, favorite, watched, trailers, translate
+        case watchParty, favorite, watched, translate, notInterested
     }
 
     @Environment(AppRouter.self) private var partyRouter
@@ -193,39 +226,56 @@ struct TVMovieDetailView: View {
 
     private var moreMenu: some View {
         TVCircleMenuButton(
-            title: "More",
-            accessibilityLabel: "More options",
+            title: AppLanguage.string(.detailMore, locale: locale),
+            accessibilityLabel: AppLanguage.string(.detailMoreOptions, locale: locale),
             stabilizesFocusMotion: true,
             items: {
                 var items: [TVActionPopoverItem] = [
                     TVActionPopoverItem(
-                        id: MoreAction.favorite.rawValue,
-                        title: isFavorite ? "Remove from Favorites" : "Add to Favorites",
-                        systemImage: isFavorite ? "heart.fill" : "heart"
-                    ),
-                    TVActionPopoverItem(
                         id: MoreAction.watched.rawValue,
-                        title: isWatched ? "Mark as Unwatched" : "Mark as Watched",
+                        title: AppLanguage.string(
+                            isWatched ? .detailMoreMarkUnwatched : .detailMoreMarkWatched,
+                            locale: locale
+                        ),
                         systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
                     ),
+                    TVActionPopoverItem(
+                        id: MoreAction.favorite.rawValue,
+                        title: AppLanguage.string(
+                            isFavorite ? .detailMoreRemoveFavorite : .detailMoreAddFavorite,
+                            locale: locale
+                        ),
+                        systemImage: isFavorite ? "heart.fill" : "heart"
+                    ),
                 ]
-                if supportsTrailerFetch {
+                if WatchPartyEntry.isAvailable {
                     items.append(TVActionPopoverItem(
-                        id: MoreAction.trailers.rawValue,
-                        title: "Find Trailers",
-                        systemImage: "film.stack"
+                        id: MoreAction.watchParty.rawValue,
+                        title: WatchPartyEntry.actionTitle,
+                        systemImage: "person.3",
+                        startsSection: true
                     ))
                 }
+                var startedUtilitySection = false
                 if onTranslateDescription != nil {
                     items.append(TVActionPopoverItem(
                         id: MoreAction.translate.rawValue,
-                        title: "Translate Description",
-                        systemImage: MachineTranslation.symbol
+                        title: AppLanguage.string(.detailMoreTranslate, locale: locale),
+                        systemImage: MachineTranslation.symbol,
+                        startsSection: !startedUtilitySection
                     ))
+                    startedUtilitySection = true
                 }
-                if WatchPartyEntry.isAvailable {
-                    items.append(TVActionPopoverItem(id: MoreAction.watchParty.rawValue,
-                        title: WatchPartyEntry.actionTitle, systemImage: "person.3"))
+                if let isNotInterested, onToggleNotInterested != nil {
+                    items.append(TVActionPopoverItem(
+                        id: MoreAction.notInterested.rawValue,
+                        title: AppLanguage.string(
+                            isNotInterested ? .cardMenuShowInRecommendations : .cardMenuNotInterested,
+                            locale: locale
+                        ),
+                        systemImage: isNotInterested ? "hand.thumbsup" : "hand.thumbsdown",
+                        startsSection: !startedUtilitySection
+                    ))
                 }
                 return items
             },
@@ -233,16 +283,16 @@ struct TVMovieDetailView: View {
                 switch MoreAction(rawValue: item.id) {
                 case .watchParty:
                     WatchPartyEntry.open(contentId: detail.contentId, title: detail.title, type: detail.type,
-                        fileId: selectedVersionFileId, libraryId: partyLibraryId,
+                        fileId: watchPartyFileId, libraryId: partyLibraryId,
                         preview: WatchPartySelectedItem(previewing: detail), router: partyRouter)
                 case .favorite:
                     onToggleFavorite()
                 case .watched:
                     onToggleWatched()
-                case .trailers:
-                    onFindTrailers()
                 case .translate:
                     onTranslateDescription?()
+                case .notInterested:
+                    onToggleNotInterested?()
                 case .none:
                     break
                 }
@@ -250,7 +300,12 @@ struct TVMovieDetailView: View {
         )
     }
 
+    /// Nil also when the position was saved on another edition than the
+    /// one shown: Play starts the shown one at 0.
     private var resumePositionSeconds: Double? {
+        guard DetailVersionSelection.savedPositionIsInEdition(
+            of: currentVersion, in: availableVersions, userData: detail.userData
+        ) else { return nil }
         guard let pos = detail.userData?.positionSeconds, pos > 30 else { return nil }
         if let dur = detail.userData?.durationSeconds, dur > 0, pos >= dur - 5 {
             return nil
@@ -261,8 +316,8 @@ struct TVMovieDetailView: View {
     private var hasResumeProgress: Bool { resumePositionSeconds != nil }
 
     private var primaryPlayLabel: String {
-        guard let pos = resumePositionSeconds else { return "Play" }
-        return "Resume \(PlayerTimeFormatter.formatHMS(pos))"
+        guard let pos = resumePositionSeconds else { return AppLanguage.string(.commonPlay, locale: locale) }
+        return AppLanguage.string(.detailResumeAt(PlayerTimeFormatter.formatHMS(pos)), locale: locale)
     }
 
     private var similarSection: some View {
@@ -270,7 +325,7 @@ struct TVMovieDetailView: View {
         // recommendations are disabled or empty.
         TVSimilarRail(
             contentId: detail.contentId,
-            title: "Related Movies",
+            title: AppLanguage.string(.detailRelatedMovies, locale: locale),
             onSelect: onNavigateToItem
         )
     }
@@ -292,7 +347,7 @@ struct TVMovieDetailView: View {
     @ViewBuilder
     private func castSection(cast: [CastMember]) -> some View {
         VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
-            TVSectionHeader(title: "Cast & Crew")
+            TVSectionHeader(title: AppLanguage.string(.detailCast, locale: locale))
             TVDetailCastRail(cast: cast, onTap: onPersonTap)
         }
     }
@@ -301,7 +356,7 @@ struct TVMovieDetailView: View {
 
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
-            TVSectionHeader(title: "Details")
+            TVSectionHeader(title: AppLanguage.string(.detailDetails, locale: locale))
             TVDetailFactsSection(detail: detail)
         }
     }
@@ -317,8 +372,18 @@ struct TVMovieDetailView: View {
             versions: availableVersions,
             selectedFileId: selectedVersionFileId,
             lastFileId: detail.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            lastFileInProgress: detail.userData?.hasResumePoint ?? false,
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: selectedEditionId,
+            lastEditionKey: detail.userData?.lastEditionKey,
+            variants: detail.playbackVariants
         )
+    }
+
+    /// The file a party starts from: the one the page shows once the viewer
+    /// picked an edition or a version here, else the server's default.
+    private var watchPartyFileId: Int? {
+        selectedVersionFileId == nil && selectedEditionId == nil ? nil : currentVersion?.fileId
     }
 }
 #endif

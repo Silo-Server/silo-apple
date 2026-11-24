@@ -582,11 +582,13 @@ struct EffectiveSettingValuesResponse: Decodable, Hashable, Sendable {
     }
 
     /// True when every requested key existed in the contract the server used
-    /// for this resolution. A key introduced later has no row, and applying
-    /// the response would silently substitute this client's contract default
-    /// for a value the server never resolved.
+    /// for this resolution: its revision covers the key, or it sent the key's
+    /// row, its own answer whatever revision this build records for the key.
+    /// A key the server doesn't know has no row, and applying the response
+    /// would silently substitute this client's contract default for a value
+    /// the server never resolved.
     func servesAll(_ keys: [SettingKey]) -> Bool {
-        keys.allSatisfy { $0.isServed(atRevision: revision) }
+        keys.allSatisfy { $0.isServed(atRevision: revision) || value(for: $0) != nil }
     }
 }
 
@@ -655,6 +657,15 @@ enum SettingsAPIError: Error, Equatable, Sendable {
     case server(status: Int, code: String?, message: String?)
     /// The request never reached the server, or the response did not parse.
     case transport(description: String)
+
+    /// The server answered that it doesn't serve a requested key: a 422 at
+    /// the key, or an answer from a contract without it.
+    var isUnknownKeyAnswer: Bool {
+        switch self {
+        case .unknownSetting, .serverUpgradeRequired: true
+        default: false
+        }
+    }
 
     /// Maps an error from the settings calls onto the contract's vocabulary.
     ///

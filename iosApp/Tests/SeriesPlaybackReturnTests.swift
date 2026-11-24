@@ -26,9 +26,29 @@ final class SeriesPlaybackReturnTests: XCTestCase {
     }
 
     func testFinishedRegularEpisodeDoesNotContinueIntoSpecials() throws {
-        // Specials sort after the last regular season in the Apple TV window.
+        // Guards lists where a special follows a regular episode, such as a
+        // caller that orders seasons differently from the Apple TV window.
         let episodes = try [episode(2, 1), episode(2, 2), episode(0, 1)]
         XCTAssertNil(playback("s2e2", season: 2, completed: true).episodeToSelect(in: episodes))
+    }
+
+    func testFinishedLastSpecialContinuesIntoTheFirstEpisode() throws {
+        // Specials sort before season 1 in the Apple TV window.
+        let episodes = try [episode(0, 1), episode(0, 2), episode(1, 1), episode(1, 2)]
+        XCTAssertEqual(playback("s0e2", season: 0, completed: true).episodeToSelect(in: episodes), "s1e1")
+    }
+
+    func testFinishedLastSpecialLoadsSeasonOne() async throws {
+        let model = try seriesModel(showing: 0, seasons: [0, 1, 2])
+        defer { clearCache() }
+
+        let selected = await model.prepareSeriesPlaybackReturn(
+            playback("s0e2", season: 0, completed: true),
+            fetchEpisodes: { _, season in try self.page(season, count: 2) }
+        )
+
+        XCTAssertEqual(selected, "s1e1")
+        XCTAssertEqual(model.selectedSeason?.seasonNumber, 1)
     }
 
     func testFinishedFinaleOfTheLastSeasonStaysOnTheFinale() async throws {
@@ -222,6 +242,60 @@ final class SeriesPlaybackReturnTests: XCTestCase {
         XCTAssertEqual(returned?.seasonNumber, 3)
     }
 
+    /// The server marks an episode watched once playback reaches its end
+    /// credits, even below 90%. Leaving there moves the page on; credits
+    /// placed outside the file's tail window don't count.
+    func testLeavingDuringTheEndCreditsFinishesTheEpisode() throws {
+        // A 2600 s episode: its tail window starts at 2150 s, and 2250 s is 86.5%.
+        let cases: [(credits: TimeRange?, stoppedAt: Double, completed: Bool)] = [
+            (TimeRange(start: 2_200, end: 2_590), 2_250, true),
+            (TimeRange(start: 2_200, end: 2_590), 2_190, false),
+            (TimeRange(start: 2_000, end: 2_590), 2_250, false),
+            (nil, 2_250, false),
+        ]
+        for (credits, stoppedAt, completed) in cases {
+            SeriesPlaybackReturnInbox.discardPending()
+            let model = PlayerViewModel()
+            model.bindMarkerReconciliationForTesting(
+                sessionId: "session-1", detail: try watchDetail(), version: try fileVersion(fileId: 1, credits: nil)
+            )
+            model.adoptReplannedVersion(try fileVersion(fileId: 2, credits: credits))
+            model.duration = 2_600
+            model.currentTime = stoppedAt
+            model.cleanup()
+
+            let returned = SeriesPlaybackReturnInbox.take(seriesContentId: seriesId)
+            XCTAssertEqual(returned?.episodeContentId, "s1e1")
+            XCTAssertEqual(returned?.completed, completed, "credits \(String(describing: credits)), stopped at \(stoppedAt)")
+        }
+    }
+
+    func testUpNextCountsDownOnlyForTheNextEpisodeNotAnOnDeckPick() throws {
+        let item = try JSONDecoder().decode(SectionItem.self, from: Data(
+            #"{"contentId":"half-watched-movie","type":"movie","title":"Elsewhere"}"#.utf8
+        ))
+        for fromOnDeck in [true, false] {
+            let model = PlayerViewModel()
+            defer { model.cleanup() }
+            // PlayerSettings.shared keeps a cached value; turning it on here
+            // would queue a server write and a device override.
+            try XCTSkipUnless(model.settings.autoPlayNextEpisode, "needs auto-play on, its default")
+            model.duration = 2600
+            model.currentTime = 2550
+            var pick = PlayerNextUpEpisode(onDeckItem: PlayerOnDeckItem(item: item))
+            pick.isFromOnDeck = fromOnDeck
+            model.nextUpEpisode = pick
+            // The controls' Up Next button, 50 s from the end.
+            model.showNextUpNow()
+            XCTAssertTrue(model.showNextUpScreen)
+            if fromOnDeck {
+                XCTAssertNil(model.nextUpCountdownSeconds, "an On Deck pick waits for Play Now")
+            } else {
+                XCTAssertEqual(model.nextUpCountdownSeconds, 50, "the next episode counts down")
+            }
+        }
+    }
+
     // MARK: - Fixtures
 
     /// A Series page showing `season`. Regular seasons have two episodes each.
@@ -258,6 +332,25 @@ final class SeriesPlaybackReturnTests: XCTestCase {
         try JSONDecoder().decode(EpisodeListItem.self, from: Data(
             "{\"contentId\":\"s\(season)e\(number)\",\"seasonNumber\":\(season),\"episodeNumber\":\(number)}".utf8
         ))
+    }
+
+    private func fileVersion(fileId: Int, credits: TimeRange?) throws -> FileVersion {
+        var json: [String: Any] = ["file_id": fileId]
+        if let credits { json["credits"] = ["start": credits.start, "end": credits.end] }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(FileVersion.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
+    private func watchDetail() throws -> WatchDetail {
+        WatchDetail(
+            contentId: "s1e1", type: "episode", title: "Episode", year: nil, overview: nil,
+            versions: [try fileVersion(fileId: 1, credits: nil)], subtitles: nil,
+            intro: nil, credits: nil, userData: nil,
+            seriesId: seriesId, seriesTitle: nil, seasonNumber: 1, episodeNumber: 1,
+            effectiveSubtitleLanguage: nil, effectiveSubtitleMode: nil,
+            effectiveShowForcedSubtitles: nil, effectiveSubtitleTrackSignature: nil
+        )
     }
 
     private func clearCache() {

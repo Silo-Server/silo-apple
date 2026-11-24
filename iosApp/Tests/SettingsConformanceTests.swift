@@ -392,6 +392,20 @@ final class SettingsConformanceTests: XCTestCase {
         XCTAssertEqual(SettingKey.cellularQualityRevision, SettingKey.playbackCellularPreferredQuality.introducedIn)
     }
 
+    /// On a server without the key the contract default is the only mode
+    /// there is, and the settings rows show the contract's choices and copy.
+    func testTheBufferingQualityModeMatchesTheVendoredManifest() throws {
+        let definition = try XCTUnwrap(try rawDefinitions()[SettingKey.playbackBufferingQualityMode.rawValue])
+        XCTAssertEqual(definition["default_value"] as? String, BufferingQualityMode.default.wireValue)
+        let schema = try XCTUnwrap(definition["value_schema"] as? [String: Any])
+        let values = try XCTUnwrap(schema["values"] as? [[String: Any]])
+        XCTAssertEqual(values.compactMap { $0["value"] as? String }, BufferingQualityMode.allCases.map(\.wireValue))
+        XCTAssertEqual(values.compactMap { $0["label"] as? String }, BufferingQualityMode.allCases.map(\.label))
+        XCTAssertEqual(definition["label"] as? String, AppLanguage.string(SettingsViewModel.bufferingQualityTitle))
+        XCTAssertEqual(definition["description"] as? String, AppLanguage.string(SettingsViewModel.bufferingQualityDescription))
+        XCTAssertEqual(definition["allowed_scopes"] as? [String], ["profile", "profile_device"])
+    }
+
     /// Every Maximum Bitrate choice is a cap the contract accepts.
     func testMaximumBitrateChoicesAreInsideTheContractRange() throws {
         let definitions = try rawDefinitions()

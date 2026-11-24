@@ -66,6 +66,23 @@ enum SharedStorage {
     static let applePushDisplayTokenExpiresAtKey = "applePush.displayTokenExpiresAt"
     static let applePushDisplayTokenServerIdKey = "applePush.displayTokenServerId"
 
+    /// The saved-account index and its backup copy (`AccountIndex`), in the
+    /// user-independent keychain.
+    static let accountIndexAccount = keychainAccountPrefix + "accounts.v1"
+    static let accountIndexBackupAccount = keychainAccountPrefix + "accounts.v1.backup"
+
+    /// One saved account (`Account`), in the user-independent keychain.
+    static func accountRecordAccount(serverID: String, localAccountID: String) -> String {
+        keychainAccountPrefix + "signIn.v1.\(serverID).\(localAccountID)"
+    }
+
+    /// The current device user's profile verification proof for one account.
+    static func accountProfileTokenAccount(serverID: String, localAccountID: String) -> String {
+        keychainAccountPrefix + "signIn.v1.\(serverID).\(localAccountID).profileToken"
+    }
+
+    // Per-server credential slots from before accounts. Only
+    // `AccountMigration` reads them.
     static func accessTokenAccount(for serverID: String) -> String {
         keychainAccountPrefix + "\(serverID).accessToken"
     }
@@ -88,6 +105,12 @@ enum SharedStorage {
     static let serverUrlKey = "serverUrl"
     static let activeServerIdKey = "activeServerId"
     static let profileIdKey = "profileId"
+    /// The selected account (`AccountSelection`). On tvOS, like the two keys
+    /// above, it belongs to the current Apple TV user.
+    static let activeAccountKey = "activeAccount.v1"
+    /// Set once this device user's profile proofs and remembered profiles
+    /// from before accounts have moved onto accounts (`AccountMigration`).
+    static let accountUserStateAdoptedKey = "accountUserStateAdopted.v1"
     static let profileLaunchStateKey = "profileLaunchState.v1"
 
     /// Breadcrumb keys the Top Shelf extension writes after each run.
@@ -236,6 +259,23 @@ struct SharedDefaults: @unchecked Sendable {
         suite.object(forKey: key) != nil || standard.object(forKey: key) != nil
     }
 
+    func object(forKey key: String) -> Any? {
+        suite.object(forKey: key) ?? standard.object(forKey: key)
+    }
+
+    /// Any property-list value, for code that moves values whose type it
+    /// doesn't know.
+    func setObject(_ value: Any, forKey key: String) {
+        suite.set(value, forKey: key)
+        standard.set(value, forKey: key)
+    }
+
+    /// Every key either domain holds (the standard domain includes global
+    /// and registered keys).
+    var allKeys: Set<String> {
+        Set(suite.dictionaryRepresentation().keys).union(standard.dictionaryRepresentation().keys)
+    }
+
     func set(_ value: String?, forKey key: String) {
         if let value {
             suite.set(value, forKey: key)
@@ -377,6 +417,63 @@ struct SharedKeychain {
         guard configured.status == errSecItemNotFound else {
             Self.logger.error("Keychain checked read failed: status=\(configured.status, privacy: .public)")
             throw ReadError(status: configured.status)
+        }
+        return nil
+    }
+
+    /// `getChecked`, then the older locations `get` moves values forward
+    /// from (tvOS ordinary persona, access groups from before the shared
+    /// one), each read strictly: a location that can't be read throws
+    /// `ReadError` instead of passing for empty. A group this build isn't
+    /// entitled to holds nothing it wrote, so it reads as empty. A value
+    /// moves forward only into an empty slot; a value already there wins.
+    /// Either way the old copy is deleted from the one group it was found in.
+    func getCheckedIncludingOlderLocations(_ account: String) throws -> String? {
+        if let value = try getChecked(account) { return value }
+        // As in `get`: with the app-local fallback in use, that group is the
+        // store, and moving "legacy" copies out of it would delete them.
+        guard !shouldUseAppLocalFallback(for: readResult(account: account, accessGroup: accessGroup).status) else {
+            return nil
+        }
+        #if os(tvOS)
+        if audience == .userIndependent, usesUserIndependentKeychain {
+            let legacyKeychain = withAudience(.currentUser)
+            if let legacy = try legacyKeychain.getCheckedIncludingOlderLocations(account) {
+                let status = addIfAbsent(legacy, for: account)
+                guard status == errSecSuccess || status == errSecDuplicateItem else { return legacy }
+                // A value written meanwhile is newer; either way the old copy
+                // goes, so nothing can move it forward again later.
+                legacyKeychain.delete(account)
+                return try status == errSecSuccess ? legacy : getChecked(account)
+            }
+        }
+        #endif
+        guard let accessGroup else { return nil }
+        for candidate in Self.legacyFallbackAccessGroups() {
+            let result = readResultWithAccessGroup(account: account, accessGroup: candidate)
+            switch result.status {
+            case errSecSuccess:
+                break
+            case errSecItemNotFound, errSecMissingEntitlement:
+                continue
+            default:
+                Self.logger.error("Keychain checked read of an older location failed: status=\(result.status, privacy: .public)")
+                throw ReadError(status: result.status)
+            }
+            guard let legacy = result.value else { continue }
+            // The search without a group also finds the shared group, which
+            // holds a value written since the read above.
+            if result.accessGroup == accessGroup { return legacy }
+            let status = addIfAbsent(legacy, for: account)
+            guard status == errSecSuccess || status == errSecDuplicateItem else { return legacy }
+            // A value written meanwhile is newer; either way the old copy
+            // goes, so nothing can move it forward again later. Deleted only
+            // from the group it was found in: a query without one would match
+            // the shared copy too. An item whose group isn't known stays.
+            if let found = result.accessGroup {
+                deleteLegacy(account: account, accessGroup: found)
+            }
+            return try status == errSecSuccess ? legacy : getChecked(account)
         }
         return nil
     }
@@ -595,6 +692,38 @@ struct SharedKeychain {
             return (errSecDecode, nil)
         }
         return (status, value)
+    }
+
+    /// `readResult`, plus the access group of the item found, so a search
+    /// without a group can tell which group it matched.
+    private func readResultWithAccessGroup(
+        account: String,
+        accessGroup: String?
+    ) -> (status: OSStatus, value: String?, accessGroup: String?) {
+        var query = baseQuery(account: account, accessGroup: accessGroup)
+        query[kSecReturnData as String] = true
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let item = result as? [String: Any],
+              let data = item[kSecValueData as String] as? Data else {
+            return (status, nil, nil)
+        }
+        guard let value = String(data: data, encoding: .utf8) else {
+            return (errSecDecode, nil, nil)
+        }
+        return (status, value, item[kSecAttrAccessGroup as String] as? String)
+    }
+
+    /// Writes `value` under `account` in the configured group only when no
+    /// item is there: `errSecDuplicateItem` when one is.
+    private func addIfAbsent(_ value: String, for account: String) -> OSStatus {
+        guard let data = value.data(using: .utf8) else { return errSecParam }
+        var query = baseQuery(account: account, accessGroup: accessGroup)
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(query as CFDictionary, nil)
     }
 
     private func write(_ data: Data, for account: String, accessGroup: String?) -> OSStatus {

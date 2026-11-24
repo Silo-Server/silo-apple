@@ -2,6 +2,38 @@
 import Foundation
 import SwiftUI
 
+extension View {
+    /// Shows the TV remote as a sheet, or over the whole window where an
+    /// iPhone sheet can't fill it. On the iPhone Duo's open display iOS 27.1
+    /// caps a sheet at about 650pt wide, and on its folded screen the sheet
+    /// is an inset card with the page showing at its edges, so on both the
+    /// remote covers the window. Its Minimize button closes it.
+    ///
+    /// When `coversWindow` changes while the remote is up, it moves between
+    /// the two, and the one it leaves must not close it.
+    func siloRemoteControl(
+        isPresented: Binding<Bool>,
+        coversWindow: Bool,
+        controller: SiloControlClient,
+        onDismiss: (() -> Void)? = nil
+    ) -> some View {
+        let covers = coversWindow && UIDevice.current.userInterfaceIdiom == .phone
+        return sheet(isPresented: Binding(
+            get: { isPresented.wrappedValue && !covers },
+            set: { if $0 || !covers { isPresented.wrappedValue = $0 } }
+        ), onDismiss: onDismiss) {
+            SiloControlRemoteView(controller: controller)
+                .presentationDetents([.large])
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { isPresented.wrappedValue && covers },
+            set: { if $0 || covers { isPresented.wrappedValue = $0 } }
+        ), onDismiss: onDismiss) {
+            SiloControlRemoteView(controller: controller)
+        }
+    }
+}
+
 /// Full-screen TV remote: connection states, toolbar, and hardware-volume
 /// interception around `RemoteNowPlayingContent`.
 struct SiloControlRemoteView: View {
@@ -34,7 +66,7 @@ struct SiloControlRemoteView: View {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 16, weight: .semibold))
                     }
-                    .accessibilityLabel("Minimize")
+                    .accessibilityLabel(Text(.castRemoteMinimize))
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     RemoteMoreOptionsMenu(
@@ -55,7 +87,7 @@ struct SiloControlRemoteView: View {
                 SiloControlTargetPickerView(request: nil, controller: controller)
             }
             .alert(
-                "Replace What's Playing?",
+                Text(.remoteReplaceAlertTitle),
                 isPresented: Binding(
                     get: { controller.pendingReplace != nil },
                     // Buttons run before the alert dismisses, so Replace has
@@ -64,8 +96,8 @@ struct SiloControlRemoteView: View {
                 ),
                 presenting: controller.pendingReplace
             ) { _ in
-                Button("Replace") { controller.confirmReplace() }
-                Button("Cancel", role: .cancel) { controller.cancelReplace() }
+                Button(.castReplaceConfirm) { controller.confirmReplace() }
+                Button(.commonCancel, role: .cancel) { controller.cancelReplace() }
             } message: { pending in
                 Text(pending.message)
             }
@@ -80,6 +112,7 @@ struct SiloControlRemoteView: View {
         .onDisappear { volumeButtons.stop() }
         .onChange(of: scenePhase) { updateVolumeInterception() }
         .onChange(of: hasActivePlayback) { updateVolumeInterception() }
+        .onChange(of: controller.volumeIsMuteOnly) { updateVolumeInterception() }
         .task(id: controller.state?.contentId) {
             await artwork.resolve(contentId: controller.state?.contentId)
         }
@@ -89,14 +122,15 @@ struct SiloControlRemoteView: View {
     /// no player to route volume at, so commands come back `player_not_ready`;
     /// interception there would only cost the phone its own volume buttons.
     private var hasActivePlayback: Bool {
-        !(controller.state?.contentId ?? "").isEmpty
+        controller.hasRemotePlayback
     }
 
     /// Hardware-volume interception is live only while the scene is active and
     /// the TV is actually playing something: an inactive scene must return the
-    /// buttons to the phone, and without playback a press reaches nothing.
+    /// buttons to the phone, and without playback a press reaches nothing. A
+    /// TV that can only mute has no level for the buttons to step.
     private func updateVolumeInterception() {
-        if scenePhase == .active, hasActivePlayback {
+        if scenePhase == .active, hasActivePlayback, !controller.volumeIsMuteOnly {
             volumeButtons.start()
         } else {
             volumeButtons.stop()
@@ -120,6 +154,8 @@ struct SiloControlRemoteView: View {
                 skipIntervals: controller.skipIntervals,
                 onSeek: { controller.seekOptimistic(to: $0) },
                 onPlayNext: { controller.playNext() },
+                volumeIsMuteOnly: controller.volumeIsMuteOnly,
+                supportsPlaybackSpeed: controller.supportsPlaybackSpeed,
                 onSetVolume: { controller.setVolume($0) },
                 onSetMuted: { controller.setMuted($0) }
             )
@@ -133,10 +169,10 @@ struct SiloControlRemoteView: View {
             Image(systemName: "appletvremote.gen4")
                 .font(.system(size: 44, weight: .medium))
                 .foregroundStyle(Color.siloOnSurface)
-            Text("Connected to \(controller.activeTarget?.name ?? "Silo TV")")
+            Text(.castRemoteConnectedTo(controller.activeTarget?.name ?? "Silo TV"))
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Color.siloOnSurface)
-            Text("Pick something from your library to start playing.")
+            Text(.castRemoteIdleHint)
                 .font(.subheadline)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Color.siloSecondaryText)
@@ -147,10 +183,12 @@ struct SiloControlRemoteView: View {
     private var reconnectingView: some View {
         VStack(spacing: 18) {
             ProgressView()
-            Text("Reconnecting to \(controller.lastTarget?.name ?? "Silo TV")…")
+            Text(.remoteReconnectingTo(controller.lastTarget?.name ?? "Silo TV"))
                 .font(.headline)
                 .foregroundStyle(Color.siloSecondaryText)
-            Text("Make sure the TV is on and on the same network.")
+            (controller.lastTarget?.transport.isRoku == true
+             ? Text(.remoteReconnectRokuHint)
+             : Text(.remoteReconnectTvHint))
                 .font(.subheadline)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Color.siloSecondaryText)
@@ -158,7 +196,7 @@ struct SiloControlRemoteView: View {
                 controller.cancelReconnect()
                 dismiss()
             } label: {
-                Text("Stop Reconnecting")
+                Text(.remoteReconnectStop)
                     .font(.subheadline.weight(.semibold))
             }
             .buttonStyle(.bordered)
@@ -183,14 +221,14 @@ struct SiloControlRemoteView: View {
                 Button {
                     isShowingPicker = true
                 } label: {
-                    Label("Choose a TV", systemImage: "tv")
+                    Label(.castRemoteChooseTv, systemImage: "tv")
                         .font(.subheadline.weight(.semibold))
                 }
                 .buttonStyle(.bordered)
                 .tint(Color.siloOnSurface)
             } else {
                 ProgressView()
-                Text("Connecting to \(controller.activeTarget?.name ?? "Silo TV")…")
+                Text(.castRemoteConnectingTo(controller.activeTarget?.name ?? "Silo TV"))
                     .font(.headline)
                     .foregroundStyle(Color.siloSecondaryText)
             }
@@ -212,6 +250,10 @@ private struct RemoteNowPlayingContent: View {
     let skipIntervals: SeekIntervalPair
     let onSeek: (Double) -> Void
     let onPlayNext: () -> Void
+    /// The TV can mute but not set a level: a mute toggle replaces the slider.
+    var volumeIsMuteOnly = false
+    /// False for a TV that can't change speed: the speed menu is hidden.
+    var supportsPlaybackSpeed = true
     let onSetVolume: (Double) -> Void
     let onSetMuted: (Bool) -> Void
 
@@ -219,6 +261,24 @@ private struct RemoteNowPlayingContent: View {
     @State private var scrubSettleTask: Task<Void, Never>?
 
     var body: some View {
+        GeometryReader { proxy in
+            if Self.splits(proxy.size) {
+                splitLayout
+            } else {
+                stackedLayout
+            }
+        }
+    }
+
+    /// A wide, short iPhone window (the iPhone Duo's open display) puts
+    /// what's playing beside the controls instead of stacking them in its
+    /// height. iPad keeps the stacked remote.
+    static func splits(_ size: CGSize) -> Bool {
+        UIDevice.current.userInterfaceIdiom == .phone
+            && size.width >= 700 && size.width >= size.height * 1.2
+    }
+
+    private var stackedLayout: some View {
         VStack(spacing: 0) {
             artwork
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -229,12 +289,44 @@ private struct RemoteNowPlayingContent: View {
             transport.padding(.top, 20)
             volumeRow.padding(.top, 20)
             secondaryControls.padding(.top, 20)
-            if let error = state.error, !error.isEmpty {
-                errorBanner(error).padding(.top, 12)
-            }
+            errorRow
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 12)
+    }
+
+    private var splitLayout: some View {
+        HStack(spacing: 48) {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                artwork
+                titleBlock.padding(.top, 20)
+                playingOnPill.padding(.top, 10)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity)
+
+            // Controls sit at the bottom, within reach of the thumbs.
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                scrubber
+                transport.padding(.top, 32)
+                volumeRow.padding(.top, 32)
+                secondaryControls.padding(.top, 32)
+                errorRow
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 32)
+        .padding(.top, 16)
+        .padding(.bottom, 24)
+    }
+
+    @ViewBuilder
+    private var errorRow: some View {
+        if let error = state.error, !error.isEmpty {
+            errorBanner(error).padding(.top, 12)
+        }
     }
 
     private var artwork: some View {
@@ -259,7 +351,7 @@ private struct RemoteNowPlayingContent: View {
 
     private var titleBlock: some View {
         VStack(spacing: 4) {
-            Text(state.title.isEmpty ? "Loading" : state.title)
+            (state.title.isEmpty ? Text(.commonLoading) : Text(state.title))
                 .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
@@ -280,7 +372,7 @@ private struct RemoteNowPlayingContent: View {
             HStack(spacing: 6) {
                 Image(systemName: "appletvremote.gen4")
                     .font(.system(size: 12, weight: .semibold))
-                Text("Playing on \(targetName)")
+                Text(.castPlayingOn(targetName))
                     .font(.caption.weight(.medium))
             }
             .foregroundStyle(Color.siloSecondaryText)
@@ -290,7 +382,10 @@ private struct RemoteNowPlayingContent: View {
         }
     }
 
-    private var scrubber: some View {
+    /// The timeline and transport read left to right in every language.
+    private var scrubber: some View { scrubberContent.mediaLayoutDirection() }
+
+    private var scrubberContent: some View {
         // Ticks only while playing; a paused clock's time doesn't move.
         TimelineView(.animation(minimumInterval: 0.25, paused: !clock.isPlaying())) { ctx in
             let live = scrubPreview ?? clock.displayTime(asOf: ctx.date)
@@ -304,7 +399,7 @@ private struct RemoteNowPlayingContent: View {
                 )
                 .tint(Color.siloOnSurface)
                 .disabled(state.duration <= 0)
-                .accessibilityLabel("Playback position")
+                .accessibilityLabel(Text(.playerProgressPosition))
                 .accessibilityValue(PlayerTimeFormatter.formatHMS(live))
 
                 HStack {
@@ -366,7 +461,9 @@ private struct RemoteNowPlayingContent: View {
         ))
     }
 
-    private var transport: some View {
+    private var transport: some View { transportContent.mediaLayoutDirection() }
+
+    private var transportContent: some View {
         HStack(spacing: 28) {
             if state.hasNextEpisode {
                 Image(systemName: "forward.end.fill")
@@ -396,7 +493,7 @@ private struct RemoteNowPlayingContent: View {
                     }
                 }
             }
-            .accessibilityLabel(clock.isPlaying() ? "Pause" : "Play")
+            .accessibilityLabel(clock.isPlaying() ? Text(.playerAudioPause) : Text(.playerAudioPlay))
 
             Button {
                 skip(.forward)
@@ -410,14 +507,36 @@ private struct RemoteNowPlayingContent: View {
                 Button { onPlayNext() } label: {
                     Image(systemName: "forward.end.fill").font(.system(size: 24, weight: .regular))
                 }
-                .accessibilityLabel(state.nextEpisodeTitle.map { "Next: \($0)" } ?? "Next episode")
+                .accessibilityLabel(state.nextEpisodeTitle.map { Text(.castRemoteNextNamed($0)) } ?? Text(.castRemoteNextEpisode))
             }
         }
         .foregroundStyle(Color.siloOnSurface)
         .buttonStyle(.plain)
     }
 
+    @ViewBuilder
     private var volumeRow: some View {
+        if volumeIsMuteOnly {
+            muteToggle
+        } else {
+            volumeSlider
+        }
+    }
+
+    private var muteToggle: some View {
+        Button { onSetMuted(!state.isMuted) } label: {
+            Label(state.isMuted ? LocalizedStringResource.castRemoteUnmute : .castRemoteMute,
+                  systemImage: state.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(Capsule().fill(Color.siloChromeRestingFill))
+        }
+        .foregroundStyle(Color.siloOnSurface)
+        .buttonStyle(.plain)
+    }
+
+    private var volumeSlider: some View {
         HStack(spacing: 14) {
             Button { onSetMuted(!state.isMuted) } label: {
                 Image(systemName: state.isMuted || state.volume <= 0.001
@@ -425,7 +544,7 @@ private struct RemoteNowPlayingContent: View {
                     .font(.system(size: 18, weight: .medium))
                     .frame(width: 28)
             }
-            .accessibilityLabel(state.isMuted ? "Unmute" : "Mute")
+            .accessibilityLabel(state.isMuted ? Text(.castRemoteUnmute) : Text(.castRemoteMute))
 
             Slider(
                 value: Binding(
@@ -435,8 +554,8 @@ private struct RemoteNowPlayingContent: View {
                 in: 0...1
             )
             .tint(Color.siloOnSurface)
-            .accessibilityLabel("Volume")
-            .accessibilityValue("\(Int((state.isMuted ? 0 : state.volume) * 100)) percent")
+            .accessibilityLabel(Text(.remoteVolume))
+            .accessibilityValue(Text(.remoteVolumePercent(LocaleFormat.integer(Int((state.isMuted ? 0 : state.volume) * 100)))))
 
             Image(systemName: "speaker.wave.3.fill")
                 .font(.system(size: 18, weight: .medium))
@@ -449,7 +568,8 @@ private struct RemoteNowPlayingContent: View {
     }
 
     private var secondaryControls: some View {
-        RemoteOptionMenus(model: RemoteMenuModel(state: state), onCommand: onCommand)
+        RemoteOptionMenus(model: RemoteMenuModel(state: state, supportsPlaybackSpeed: supportsPlaybackSpeed),
+                          onCommand: onCommand)
             .equatable()
     }
 
@@ -479,8 +599,9 @@ struct RemoteMenuModel: Equatable {
     let activeQualityId: String
     let isQualitySwitching: Bool
     let playbackSpeed: Double
+    let supportsPlaybackSpeed: Bool
 
-    init(state: SiloControlPlaybackState) {
+    init(state: SiloControlPlaybackState, supportsPlaybackSpeed: Bool = true) {
         audioTracks = state.audioTracks
         subtitleTracks = state.subtitleTracks
         selectedAudioTrackId = state.selectedAudioTrackId
@@ -489,6 +610,7 @@ struct RemoteMenuModel: Equatable {
         activeQualityId = state.activeQualityId
         isQualitySwitching = state.isQualitySwitching
         playbackSpeed = state.playbackSpeed
+        self.supportsPlaybackSpeed = supportsPlaybackSpeed
     }
 }
 
@@ -512,7 +634,7 @@ private struct RemoteOptionMenus: View, Equatable {
             // Subtitle delay and position stay on the TV's own player menu;
             // from the couch the remote only switches the language.
             if !model.subtitleTracks.isEmpty { subtitleMenu }
-            speedMenu
+            if model.supportsPlaybackSpeed { speedMenu }
         }
         // These menus open upward from the bottom of the screen, where iOS
         // would otherwise list their items in reverse.
@@ -526,22 +648,22 @@ private struct RemoteOptionMenus: View, Equatable {
                     Label(track.title, systemImage: model.selectedAudioTrackId == track.trackId ? "checkmark" : "waveform")
                 }
             }
-        } label: { RemoteChipLabel(systemImage: "waveform", caption: "Audio") }
-        .accessibilityValue(model.audioTracks.first(where: { $0.trackId == model.selectedAudioTrackId })?.title ?? "None")
+        } label: { RemoteChipLabel(systemImage: "waveform", caption: .castRemoteAudio) }
+        .accessibilityValue(model.audioTracks.first(where: { $0.trackId == model.selectedAudioTrackId }).map { Text($0.title) } ?? Text(.remoteAudioNone))
     }
 
     private var subtitleMenu: some View {
         Menu {
             Button { onCommand(.selectSubtitleTrack(nil)) } label: {
-                Label("Off", systemImage: model.selectedSubtitleTrackId == nil ? "checkmark" : "captions.bubble")
+                Label(.castSubtitlesOff, systemImage: model.selectedSubtitleTrackId == nil ? "checkmark" : "captions.bubble")
             }
             ForEach(model.subtitleTracks) { track in
                 Button { onCommand(.selectSubtitleTrack(track.trackId)) } label: {
                     Label(track.title, systemImage: model.selectedSubtitleTrackId == track.trackId ? "checkmark" : "captions.bubble")
                 }
             }
-        } label: { RemoteChipLabel(systemImage: "captions.bubble", caption: "Subtitles") }
-        .accessibilityValue(model.subtitleTracks.first(where: { $0.trackId == model.selectedSubtitleTrackId })?.title ?? "Off")
+        } label: { RemoteChipLabel(systemImage: "captions.bubble", caption: .castSubtitlesTitle) }
+        .accessibilityValue(model.subtitleTracks.first(where: { $0.trackId == model.selectedSubtitleTrackId }).map { Text($0.title) } ?? Text(.castSubtitlesOff))
     }
 
     private var qualityMenu: some View {
@@ -551,7 +673,7 @@ private struct RemoteOptionMenus: View, Equatable {
                     Label(option.label, systemImage: model.activeQualityId == option.id ? "checkmark" : "slider.horizontal.3")
                 }
             }
-        } label: { RemoteChipLabel(systemImage: "slider.horizontal.3", caption: "Quality") }
+        } label: { RemoteChipLabel(systemImage: "slider.horizontal.3", caption: .castRemoteQuality) }
         .accessibilityValue(model.qualityOptions.first(where: { $0.id == model.activeQualityId })?.label ?? model.activeQualityId)
         .disabled(model.isQualitySwitching)
     }
@@ -563,12 +685,12 @@ private struct RemoteOptionMenus: View, Equatable {
                     Label(speedLabel(speed), systemImage: abs(model.playbackSpeed - speed) < 0.01 ? "checkmark" : "speedometer")
                 }
             }
-        } label: { RemoteChipLabel(systemImage: "speedometer", caption: "Speed") }
+        } label: { RemoteChipLabel(systemImage: "speedometer", caption: .playerSettingsSpeed) }
         .accessibilityValue(speedLabel(model.playbackSpeed))
     }
 
     private func speedLabel(_ speed: Double) -> String {
-        "\(speed)×"
+        LocaleFormat.localized("\(speed)") + "×"
     }
 }
 
@@ -591,10 +713,10 @@ private struct RemoteMoreOptionsMenu: View, Equatable {
     var body: some View {
         Menu {
             Button(action: onChooseTV) {
-                Label("Choose a Different TV", systemImage: "tv")
+                Label(.castRemoteChooseDifferentTv, systemImage: "tv")
             }
             Button(action: onStop) {
-                Label("Stop Playback", systemImage: "stop.fill")
+                Label(.castRemoteStopPlayback, systemImage: "stop.fill")
             }
             if supportsVideoGravity {
                 Menu {
@@ -604,24 +726,24 @@ private struct RemoteMoreOptionsMenu: View, Equatable {
                         }
                     }
                 } label: {
-                    Label("Aspect Ratio", systemImage: "rectangle.inset.filled")
+                    Label(.castRemoteAspectRatio, systemImage: "rectangle.inset.filled")
                 }
             }
             Divider()
             Button(role: .destructive, action: onDisconnect) {
-                Label("Disconnect", systemImage: "tv.slash")
+                Label(.castRemoteDisconnect, systemImage: "tv.slash")
             }
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 16, weight: .semibold))
         }
-        .accessibilityLabel("More options")
+        .accessibilityLabel(Text(.castRemoteMoreOptions))
     }
 }
 
 private struct RemoteChipLabel: View {
     let systemImage: String
-    let caption: String
+    let caption: LocalizedStringResource
 
     var body: some View {
         VStack(spacing: 5) {
@@ -640,15 +762,15 @@ private struct RemoteChipLabel: View {
 private extension SiloControlPlaybackState {
     static func previewPlaying() -> SiloControlPlaybackState {
         SiloControlPlaybackState(
-            contentId: "preview", sessionId: "s1", title: "The Bear",
-            subtitle: "Season 3 · Episode 4 · Children",
+            contentId: "preview", sessionId: "s1", title: "The Bear", // i18n-ignore: debug preview data
+            subtitle: "Season 3 · Episode 4 · Children", // i18n-ignore: debug preview data
             isPlaying: true, isLoading: false, isBuffering: false,
             currentTime: 1104, duration: 2895,
-            audioTracks: [SiloControlTrack(kind: "audio", trackId: 1, title: "English 5.1", detail: "AC-3")],
-            subtitleTracks: [SiloControlTrack(kind: "subtitle", trackId: 10, title: "English", detail: nil)],
+            audioTracks: [SiloControlTrack(kind: "audio", trackId: 1, title: "English 5.1", detail: "AC-3")], // i18n-ignore: debug preview data
+            subtitleTracks: [SiloControlTrack(kind: "subtitle", trackId: 10, title: "English", detail: nil)], // i18n-ignore: debug preview data
             selectedAudioTrackId: 1, selectedSubtitleTrackId: nil,
-            qualityOptions: [SiloControlOption(id: "auto", label: "Auto", detail: nil),
-                             SiloControlOption(id: "1080", label: "1080p", detail: nil)],
+            qualityOptions: [SiloControlOption(id: "auto", label: "Auto", detail: nil), // i18n-ignore: debug preview data
+                             SiloControlOption(id: "1080", label: "1080p", detail: nil)], // i18n-ignore: debug preview data
             activeQualityId: "auto", isQualitySwitching: false,
             playbackSpeed: 1.0, videoGravity: VideoGravity.fit.rawValue, hdrEnabled: false,
             supportsVideoGravity: true,

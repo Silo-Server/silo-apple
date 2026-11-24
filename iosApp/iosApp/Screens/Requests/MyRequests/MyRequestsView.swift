@@ -2,10 +2,10 @@ import SwiftUI
 
 /// Request management. On iOS/macOS: the signed-in user's requests as an
 /// inset-grouped list in the Downloads manager's shape — a stage track on
-/// every row, swipe to cancel, Open once a title lands, and a filter menu in
-/// the navigation bar. Request administration (approve, decline, retry)
-/// stays in the web admin. tvOS renders the same data as a Skyline page
-/// (`TVRequestsPage`).
+/// every row, swipe to cancel (or to remove a failed request), Open once a
+/// title lands, and a filter menu in the navigation bar. Request
+/// administration (approve, decline, retry) stays in the web admin. tvOS
+/// renders the same data as a Skyline page (`TVRequestsPage`).
 struct MyRequestsView: View {
     var body: some View {
         #if os(tvOS)
@@ -18,8 +18,11 @@ struct MyRequestsView: View {
 
 #if !os(tvOS)
 private struct PhoneMyRequestsView: View {
+    @Environment(\.locale) private var locale
     @State private var viewModel = MyRequestsViewModel()
     @State private var filter: MyRequestsBucket?
+    /// The failed request waiting on the remove confirmation.
+    @State private var pendingRemoval: MediaRequest?
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -33,7 +36,7 @@ private struct PhoneMyRequestsView: View {
         #endif
         .scrollContentBackground(.hidden)
         .siloPageBackground()
-        .navigationTitle("My Requests")
+        .navigationTitle(.requestsMyRequests)
         .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()
         .toolbar {
@@ -50,9 +53,34 @@ private struct PhoneMyRequestsView: View {
         .onChange(of: RequestsEventBus.shared.lastUpdate) { _, update in
             if let update { viewModel.applyRequestUpdate(update) }
         }
+        // A removal in another window drops the row here too.
+        .onChange(of: RequestsEventBus.shared.lastRemoval) { _, removed in
+            if let removed { viewModel.applyRemoval(removed) }
+        }
         .onChange(of: viewModel.buckets.map(\.bucket)) { _, buckets in
             // A filter whose last request moved on would leave a blank list.
             if let filter, !buckets.contains(filter) { self.filter = nil }
+        }
+        .requestRemoveConfirmation($pendingRemoval) { record in
+            Task { await viewModel.remove(record) }
+        }
+        // Outside the list, so it stays when the last row goes.
+        .overlay(alignment: .bottom) {
+            if let notice = viewModel.notice {
+                Text(notice)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.siloOnSurface)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(Capsule().fill(Color.siloChromeSelectedFill))
+                    .padding(.bottom, 24)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: viewModel.notice)
+        .onChange(of: viewModel.notice) { _, notice in
+            if let notice { AccessibilityNotification.Announcement(notice).post() }
         }
     }
 
@@ -62,11 +90,14 @@ private struct PhoneMyRequestsView: View {
     /// the section headers. The icon fills while a filter is on.
     private var filterMenu: some View {
         Menu {
-            Picker("Show", selection: $filter) {
-                Label("All Requests", systemImage: "tray.full")
+            Picker(.requestsFilterShow, selection: $filter) {
+                Label(.requestsFilterAll, systemImage: "tray.full")
                     .tag(MyRequestsBucket?.none)
                 ForEach(viewModel.buckets, id: \.bucket) { entry in
-                    Label("\(entry.bucket.title) (\(entry.requests.count))", systemImage: entry.bucket.systemImage)
+                    Label(
+                        .requestsFilterOption(AppLanguage.string(entry.bucket.title), LocaleFormat.integer(entry.requests.count)),
+                        systemImage: entry.bucket.systemImage
+                    )
                         .tag(Optional(entry.bucket))
                 }
             }
@@ -75,7 +106,7 @@ private struct PhoneMyRequestsView: View {
                 ? "line.3.horizontal.decrease.circle"
                 : "line.3.horizontal.decrease.circle.fill")
         }
-        .accessibilityLabel(filter.map { "Filter: \($0.title)" } ?? "Filter")
+        .accessibilityLabel(filter.map { LocalizedStringResource.requestsFilterActive(AppLanguage.string($0.title)) } ?? .requestsFilterButton)
         .sensoryFeedback(.selection, trigger: filter)
     }
 
@@ -91,8 +122,8 @@ private struct PhoneMyRequestsView: View {
             fullRow {
                 EmptyStateView(
                     icon: "tray",
-                    title: "No requests yet",
-                    subtitle: "Movies and series you request will show up here"
+                    title: AppLanguage.string(.requestsMineEmptyTitle),
+                    subtitle: AppLanguage.string(.requestsMineEmptyBody)
                 )
                 .padding(.top, 80)
             }
@@ -112,8 +143,8 @@ private struct PhoneMyRequestsView: View {
                     ForEach(entry.requests) { record in
                         MyRequestRow(
                             record: record,
-                            isBusy: viewModel.cancellingId == record.id,
-                            isDimmed: viewModel.cancellingId == record.id,
+                            isBusy: viewModel.isBusy(record),
+                            isDimmed: viewModel.isBusy(record),
                             onOpen: { router.openRequestRecord(record) },
                             onOpenInLibrary: record.libraryContentId.map { id in
                                 { router.navigate(to: .itemDetail(contentId: id)) }
@@ -121,20 +152,34 @@ private struct PhoneMyRequestsView: View {
                         )
                         .listRowBackground(Color.siloGroupedCell)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            if isCancelable(record) {
+                            if viewModel.canCancel(record) {
                                 Button(role: .destructive) {
                                     Task { await viewModel.cancel(record) }
                                 } label: {
-                                    Label("Cancel", systemImage: "xmark")
+                                    Label(.requestsRowSwipeCancel, systemImage: "xmark")
+                                }
+                            }
+                            if viewModel.canRemove(record) {
+                                Button(role: .destructive) {
+                                    pendingRemoval = record
+                                } label: {
+                                    Label(.requestsRowRemove, systemImage: "trash")
                                 }
                             }
                         }
                         .contextMenu {
-                            if isCancelable(record) {
+                            if viewModel.canCancel(record) {
                                 Button(role: .destructive) {
                                     Task { await viewModel.cancel(record) }
                                 } label: {
-                                    Label("Cancel Request", systemImage: "xmark.circle")
+                                    Label(.requestsActionCancel, systemImage: "xmark.circle")
+                                }
+                            }
+                            if viewModel.canRemove(record) {
+                                Button(role: .destructive) {
+                                    pendingRemoval = record
+                                } label: {
+                                    Label(.requestsRowRemoveRequest, systemImage: "trash")
                                 }
                             }
                         }
@@ -151,10 +196,6 @@ private struct PhoneMyRequestsView: View {
         return viewModel.buckets.filter { $0.bucket == filter }
     }
 
-    private func isCancelable(_ record: MediaRequest) -> Bool {
-        RequestDisplayState(record: record).isCancelable && !viewModel.isCancelUnconfirmed(record)
-    }
-
     // MARK: - Helpers
 
     private func fullRow<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
@@ -164,7 +205,7 @@ private struct PhoneMyRequestsView: View {
             .listRowSeparator(.hidden)
     }
 
-    private func sectionHeader(_ title: String, count: Int) -> some View {
+    private func sectionHeader(_ title: LocalizedStringResource, count: Int) -> some View {
         HStack {
             Text(title)
             Spacer()
@@ -236,9 +277,9 @@ struct MyRequestRow: View {
     @ViewBuilder
     private func trailing(progress: RequestProgress) -> some View {
         if let onOpenInLibrary, progress.display == .inLibrary {
-            RequestRowCapsuleButton(title: "Open", systemImage: "arrow.up.right", action: onOpenInLibrary)
+            RequestRowCapsuleButton(title: .requestsRowOpen, systemImage: "arrow.up.forward", action: onOpenInLibrary)
         } else {
-            Image(systemName: "chevron.right")
+            Image(systemName: "chevron.forward")
                 .font(.footnote.weight(.semibold))
                 .foregroundColor(.siloSecondaryText.opacity(0.7))
         }
@@ -262,7 +303,7 @@ private struct RequestRowPoster: View {
 }
 
 private struct RequestRowCapsuleButton: View {
-    let title: String
+    let title: LocalizedStringResource
     let systemImage: String
     let action: () -> Void
 
@@ -281,15 +322,40 @@ private struct RequestRowCapsuleButton: View {
 
 #endif
 
+extension View {
+    /// Asks before removing a failed request, naming its title. Shared by the
+    /// phone list and the tvOS page; the copy matches the web app.
+    func requestRemoveConfirmation(
+        _ pending: Binding<MediaRequest?>,
+        onConfirm: @escaping (MediaRequest) -> Void
+    ) -> some View {
+        alert(
+            Text(.requestsRemoveTitle),
+            isPresented: Binding(
+                get: { pending.wrappedValue != nil },
+                set: { if !$0 { pending.wrappedValue = nil } }
+            ),
+            presenting: pending.wrappedValue
+        ) { record in
+            Button(.requestsRemoveConfirm, role: .destructive) { onConfirm(record) }
+            Button(.requestsRemoveKeep, role: .cancel) {}
+        } message: { record in
+            Text(.requestsRemoveBody(record.title))
+        }
+    }
+}
+
 /// Row copy shared by the phone list and the tvOS marquee.
 enum RequestRowCopy {
     /// "Movie · Requested Sep 24", or "Movie · Added Sep 13" once it landed.
     static func meta(_ record: MediaRequest, progress: RequestProgress) -> String {
         let kind = record.mediaType.displayName
         if progress.display == .inLibrary, let completed = record.completedAt {
-            return "\(kind) · Added \(completed.formatted(.dateTime.month(.abbreviated).day()))"
+            let added = AppLanguage.string(.requestsAddedOn(completed.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale))))
+            return "\(kind) · \(added)"
         }
-        return "\(kind) · Requested \(record.createdAt.formatted(.dateTime.month(.abbreviated).day()))"
+        let requested = AppLanguage.string(.requestsRequestedOn(record.createdAt.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale))))
+        return "\(kind) · \(requested)"
     }
 
     /// The status line under the stage track: the long label, plus the

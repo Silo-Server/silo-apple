@@ -7,6 +7,7 @@ struct ThirdPartyCreditRow: View {
     var nameFont: Font = .headline
     var detailFont: Font = .subheadline
     var logoHeight: CGFloat = 14
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -32,7 +33,11 @@ struct ThirdPartyCreditRow: View {
         .foregroundStyle(Color.siloSecondaryText)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel([credit.name, credit.use, credit.notice].compactMap { $0 }.joined(separator: ". "))
+        .accessibilityLabel(
+            [credit.name, AppLanguage.string(credit.use, locale: locale), credit.notice]
+                .compactMap { $0 }
+                .joined(separator: ". ")
+        )
     }
 }
 
@@ -49,7 +54,7 @@ struct AcknowledgementsView: View {
                         .listRowBackground(Color.siloGroupedCell)
                 }
             } header: {
-                Text("Services")
+                Text(.settingsAboutServicesHeader)
                     .foregroundStyle(Color.siloSecondaryText)
             } footer: {
                 Text(ThirdPartyCredits.trademarkNotice)
@@ -60,20 +65,20 @@ struct AcknowledgementsView: View {
                 NavigationLink {
                     OpenSourceAcknowledgementsView()
                 } label: {
-                    Text("Open Source Licenses")
+                    Text(.settingsAboutOpenSourceLicenses)
                         .foregroundStyle(Color.siloOnSurface)
                 }
                 .listRowBackground(Color.siloGroupedCell)
             } header: {
-                Text("Open Source")
+                Text(.settingsAboutOpenSourceHeader)
                     .foregroundStyle(Color.siloSecondaryText)
             } footer: {
-                Text("Silo's license, and the licenses and exact source revisions of the code built into it.")
+                Text(.settingsAboutOpenSourceFooter)
                     .foregroundStyle(Color.siloSecondaryText)
             }
         }
         .settingsListChrome()
-        .navigationTitle("Acknowledgements")
+        .navigationTitle(Text(.settingsAboutAcknowledgements))
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
     }

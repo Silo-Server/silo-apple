@@ -43,7 +43,61 @@ enum PlaybackProtocolV3 {
     /// Scoped to `original_http`: after probing the complete source, Aether
     /// maps the plan's selected audio ordinal to its concrete stream id.
     static let embeddedSubtitlesFeature = "embedded_subtitles_v1"
+    /// A `server_transcode_hls` plan may carry its embedded text subtitle as
+    /// a WebVTT SUBTITLES rendition of the stream itself
+    /// (`subtitle.hls_rendition`). AVPlayer then plays it from the
+    /// multivariant playlist, so no whole-file sidecar is fetched.
+    static let hlsSubtitleRenditionsFeature = "hls_subtitle_renditions_v1"
+    /// Extends `hls_subtitle_renditions_v1`, which it requires, to
+    /// `server_remux_hls`: a copy remux carries its embedded text track as the
+    /// same rendition instead of a sidecar extracted from the whole file.
+    static let hlsRemuxSubtitleRenditionsFeature = "hls_remux_subtitle_renditions_v1"
+    /// Extends both: every embedded text track the source's index can read is
+    /// a rendition of the plan's HLS stream, listed on its inventory row as
+    /// `hls_rendition`, and switching among them keeps the stream. /api/v2
+    /// only, attempt-sticky, and sent only to a server that advertises it.
+    static let hlsSubtitleRenditionsAllFeature = "hls_subtitle_renditions_all_v1"
+    /// The server may end a video session that stays paused too long and
+    /// answer its progress, replan or control ticket with 410
+    /// `playback_session_paused_timeout` instead of the administrator's
+    /// `playback_session_ended`, so the player can say why it left.
+    /// Attempt-sticky; a client without it still gets the administrator answer.
+    static let pausedTimeoutFeature = "paused_timeout_v1"
     static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
+    /// Native v2 only. The server accepts `bandwidth_estimate_source` and
+    /// `learned_limit` on a start or replan whose `client_features` names it,
+    /// and records and applies learned bandwidth limits only for such requests.
+    /// See ``PlaybackV3BufferingQualityRequest``.
+    static let bufferingQualityFeature = "buffering_quality_v1"
+    /// Native v2 only. The server accepts the `plan_summary` route event.
+    static let planSummaryFeature = "playback_plan_summary_v1"
+    /// Capability only. The server advertises `bandwidth_probe_url`, takes
+    /// probe results, and adds `probe` and `auto_budget_kbps` to the
+    /// connection endpoint. See ``BandwidthProbeScheduler``.
+    static let connectionSpeedFeature = "connection_speed_v1"
+
+    /// Where a request's `bandwidth_estimate_kbps` came from.
+    enum BandwidthEstimateSource {
+        static let probe = "probe"
+        /// The step-down estimate after repeated rebuffering. The server keeps
+        /// it as this device's learned limit on the current connection.
+        static let observedRebuffer = "observed_rebuffer"
+    }
+
+    /// What a request asks the server to do with the learned limit. Absent,
+    /// the limit applies to Auto.
+    enum LearnedLimit {
+        /// Plan without the limit and keep it stored.
+        static let ignore = "ignore"
+        /// Delete the limit for this connection, then plan without it.
+        static let clear = "clear"
+    }
+
+    enum RouteEvent {
+        /// Sent when a plan stops being the playing plan; see
+        /// ``BufferingQualityController/PlanSummary/routeEventDiagnostics``.
+        static let planSummary = "plan_summary"
+    }
 
     /// Delivery classes are the unit a client negotiates in
     /// `client_playback_context.deliveries`. They are deliberately coarser than
@@ -153,7 +207,13 @@ extension AppleDecodeCapabilities {
     /// model. Keeping this adapter beside the model lets shared capability code
     /// compile in extensions that do not carry the playback protocol.
     static func playbackV3VideoDecodeAttestation() -> [PlaybackV3VideoDecodeCapability] {
-        videoDecodeAttestation().map { capability in
+        playbackV3VideoDecode(videoDecodeAttestation())
+    }
+
+    static func playbackV3VideoDecode(
+        _ capabilities: [AppleVideoDecodeCapability]
+    ) -> [PlaybackV3VideoDecodeCapability] {
+        capabilities.map { capability in
             PlaybackV3VideoDecodeCapability(
                 codec: capability.codec,
                 decoderName: capability.decoderName,
@@ -288,6 +348,11 @@ struct PlaybackV3StartRequest: Codable, Equatable {
     let clientPlaybackContext: PlaybackV3ClientContext
     /// Room playback keeps one source timeline across all participant plans.
     var allowAlternateVersions: Bool? = nil
+    /// `buffering_quality_v1` members, taken from a
+    /// ``PlaybackV3BufferingQualityRequest``. The wire body sends them only
+    /// alongside the feature.
+    var bandwidthEstimateSource: String? = nil
+    var learnedLimit: String? = nil
 }
 
 struct PlaybackV3TrackIdentity: Codable, Equatable {
@@ -333,6 +398,101 @@ struct PlaybackV3ReplanRequest: Codable, Equatable {
     let localMutations: [String]
     let clientCapabilities: PlaybackV3CodecCapabilities
     let clientPlaybackContext: PlaybackV3ClientContext
+    /// `buffering_quality_v1` members, as on ``PlaybackV3StartRequest``.
+    var bandwidthEstimateSource: String? = nil
+    var learnedLimit: String? = nil
+    /// The playing plan's throughput so far, sent only with
+    /// `observed_rebuffer` (``PlaybackV3BufferingQualityRequest``).
+    var observedThroughputKbps: Int? = nil
+}
+
+/// The client features and buffering-quality members of one start or replan.
+///
+/// The server refuses `bandwidth_estimate_source`, `learned_limit` and
+/// `observed_throughput_kbps` unless `client_features` names
+/// `buffering_quality_v1`, refuses a source without
+/// `bandwidth_estimate_kbps`, and a throughput without the
+/// `observed_rebuffer` source. Requests take these values from here, and the
+/// v2 wire bodies apply ``permittedMembers`` again when they encode, so no
+/// refused shape can be sent.
+struct PlaybackV3BufferingQualityRequest: Equatable, Sendable {
+    let clientFeatures: [String]
+    let bandwidthEstimateKbps: Int?
+    let bandwidthEstimateSource: String?
+    let learnedLimit: String?
+    /// What the playing plan received so far, measured as its
+    /// `plan_summary` `throughput_kbps`. The server plans a lowering with the
+    /// lower of this and the estimate.
+    let observedThroughputKbps: Int?
+
+    /// - Parameters:
+    ///   - serverAdvertisesFeature: whether the server advertises
+    ///     `buffering_quality_v1`. Without it the estimate is still sent, and
+    ///     the two members are dropped.
+    ///   - mode: the effective `playback.buffering_quality_mode`. In `never`
+    ///     a request carries `learned_limit: "ignore"`, so a limit another
+    ///     profile on this device learned does not lower its plans.
+    ///   - learnedLimit: an explicit choice, which wins over the mode (Restore
+    ///     quality sends `clear`).
+    init(
+        baseFeatures: [String],
+        serverAdvertisesFeature: Bool,
+        mode: BufferingQualityMode,
+        bandwidthEstimateKbps: Int? = nil,
+        bandwidthEstimateSource: String? = nil,
+        learnedLimit: String? = nil,
+        observedThroughputKbps: Int? = nil
+    ) {
+        let features = serverAdvertisesFeature && !baseFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature)
+            ? baseFeatures + [PlaybackProtocolV3.bufferingQualityFeature]
+            : baseFeatures
+        let permitted = Self.permittedMembers(
+            clientFeatures: features,
+            bandwidthEstimateKbps: bandwidthEstimateKbps,
+            bandwidthEstimateSource: bandwidthEstimateSource,
+            learnedLimit: learnedLimit ?? (mode == .never ? PlaybackProtocolV3.LearnedLimit.ignore : nil),
+            observedThroughputKbps: observedThroughputKbps
+        )
+        clientFeatures = features
+        self.bandwidthEstimateKbps = bandwidthEstimateKbps
+        self.bandwidthEstimateSource = permitted.bandwidthEstimateSource
+        self.learnedLimit = permitted.learnedLimit
+        self.observedThroughputKbps = permitted.observedThroughputKbps
+    }
+
+    /// The members a request may carry: none without the feature in
+    /// `clientFeatures`, no source without an estimate, and no throughput
+    /// without the `observed_rebuffer` source.
+    static func permittedMembers(
+        clientFeatures: [String],
+        bandwidthEstimateKbps: Int?,
+        bandwidthEstimateSource: String?,
+        learnedLimit: String?,
+        observedThroughputKbps: Int? = nil
+    ) -> (bandwidthEstimateSource: String?, learnedLimit: String?, observedThroughputKbps: Int?) {
+        guard clientFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature) else { return (nil, nil, nil) }
+        let source = bandwidthEstimateKbps == nil ? nil : bandwidthEstimateSource
+        let observed = source == PlaybackProtocolV3.BandwidthEstimateSource.observedRebuffer
+            ? observedThroughputKbps
+            : nil
+        return (source, learnedLimit, observed)
+    }
+}
+
+extension PlaybackV3ReplanRequest {
+    /// This request with only the buffering-quality members the server accepts.
+    var withPermittedBufferingQualityMembers: PlaybackV3ReplanRequest {
+        var request = self
+        (request.bandwidthEstimateSource, request.learnedLimit, request.observedThroughputKbps) =
+            PlaybackV3BufferingQualityRequest.permittedMembers(
+                clientFeatures: clientFeatures,
+                bandwidthEstimateKbps: bandwidthEstimateKbps,
+                bandwidthEstimateSource: bandwidthEstimateSource,
+                learnedLimit: learnedLimit,
+                observedThroughputKbps: observedThroughputKbps
+            )
+        return request
+    }
 }
 
 struct PlaybackV3RouteEvent: Codable, Equatable {
@@ -349,6 +509,28 @@ struct PlaybackV3RouteEvent: Codable, Equatable {
     let quirkRegistryRevision: String?
     let outputContextId: String?
     let diagnostics: [String: String]
+}
+
+/// What one plan did while it was the playing plan, as the `plan_summary`
+/// route event carries it: sent when the plan is replaced, stopped or fails,
+/// and only to a server that advertises `playback_plan_summary_v1`.
+extension BufferingQualityController.PlanSummary {
+    /// The event's diagnostics. Every value is a string, and an unknown
+    /// estimate or bitrate is left out rather than sent as zero.
+    var routeEventDiagnostics: [String: String] {
+        var values = [
+            "played_ms": String(max(0, playedMs)),
+            "stall_count": String(max(0, stallCount)),
+            "stall_total_ms": String(max(0, stallTotalMs)),
+            "stall_longest_ms": String(max(0, stallLongestMs)),
+            "buffering_mode": mode.wireValue,
+            "buffering_action": action.rawValue,
+        ]
+        values["delivered_kbps"] = deliveredKbps.map(String.init)
+        values["bandwidth_estimate_kbps"] = bandwidthEstimateKbps.map(String.init)
+        values["throughput_kbps"] = throughputKbps.map(String.init)
+        return values
+    }
 }
 
 struct PlaybackV3Stream: Codable, Equatable {
@@ -476,10 +658,56 @@ struct PlaybackV3SubtitleInventoryItem: Codable, Equatable {
     /// and downloaded SRT, WebVTT, ASS, and SSA tracks. Opaque, and stable
     /// across sessions and inventory order.
     var syncKey: String? = nil
+    /// Embedded rows only, on servers that publish them: the row's absolute
+    /// probed stream index (the FFmpeg id `embedded.stream_index` uses), its
+    /// container track id (Matroska TrackNumber or MP4 `tkhd` ID), and
+    /// whether selecting it on this plan's stream would plan `embedded`.
+    var streamIndex: Int? = nil
+    var containerTrackId: String? = nil
+    var nativeSelectable: Bool? = nil
+    /// Under `hls_subtitle_renditions_all_v1`: the row's WebVTT rendition in
+    /// the plan's HLS stream.
+    var hlsRendition: PlaybackV3InventoryHLSRendition? = nil
+}
+
+/// Where an inventory row's track sits in the HLS stream's SUBTITLES group:
+/// the EXT-X-MEDIA named `name` (unique in the group), at 1-based `index`.
+struct PlaybackV3InventoryHLSRendition: Codable, Equatable {
+    let groupId: String
+    let name: String
+    let index: Int
+}
+
+extension PlaybackV3SubtitleInventoryItem {
+    /// The FFmpeg stream an embedded row names, from the row itself: its
+    /// `stream_index`, else the `embedded_stream_index` the server puts on
+    /// every embedded sidecar URL. Nil for other sources, or when the server
+    /// published neither; only then may a caller count catalog tracks.
+    var embeddedStreamIndex: Int? {
+        guard source == "embedded" else { return nil }
+        if let streamIndex { return streamIndex >= 0 ? streamIndex : nil }
+        guard let url,
+              let value = URLComponents(string: url)?.queryItems?
+                .first(where: { $0.name == "embedded_stream_index" })?.value,
+              let index = Int(value), index >= 0 else { return nil }
+        return index
+    }
 }
 
 struct PlaybackV3EmbeddedSubtitle: Codable, Equatable {
     let streamIndex: Int
+}
+
+/// The selected subtitle is carried by the plan's HLS stream: one WebVTT
+/// rendition in the multivariant playlist's SUBTITLES group `groupId`.
+struct PlaybackV3HLSSubtitleRendition: Codable, Equatable {
+    let groupId: String
+    let name: String
+    let format: String
+    let mimeType: String
+    /// The selected row's `hls_rendition.index` when the group lists every
+    /// embedded text track; nil for the single pipeline rendition.
+    var index: Int? = nil
 }
 
 struct PlaybackV3SubtitleDecision: Codable, Equatable {
@@ -487,6 +715,8 @@ struct PlaybackV3SubtitleDecision: Codable, Equatable {
     let trackId: String?
     let artifact: PlaybackV3SubtitleArtifact?
     var embedded: PlaybackV3EmbeddedSubtitle? = nil
+    /// Mutually exclusive with `artifact` and `embedded`.
+    var hlsRendition: PlaybackV3HLSSubtitleRendition? = nil
     /// Authoritative list of every subtitle track for this plan. Select a track
     /// by echoing an entry's `trackId` or `combinedIndex` — never by counting
     /// tracks, summing arrays, or taking max(index) + 1.
@@ -541,9 +771,21 @@ struct PlaybackV3Plan: Codable, Equatable {
     let subtitleFidelityPolicy: String
     /// Quality rungs the server will honour for a `quality_change` replan.
     let availableQualities: [PlaybackV3AvailableQuality]
+    /// Present only when this device's learned limit lowered the plan.
+    var bandwidthLimit: PlaybackV3BandwidthLimit? = nil
     /// The `availableQualities` label this plan delivers, when the server
     /// advertises `plan_active_quality_v1`; nil when it delivers none.
     var activeQuality: String? = nil
+}
+
+/// `playback_plan.bandwidth_limit`: the learned limit Auto planned under,
+/// after repeated rebuffering on this device and connection.
+struct PlaybackV3BandwidthLimit: Codable, Equatable, Sendable {
+    let kbps: Int
+    /// Always `observed_rebuffer` today.
+    let source: String
+    /// RFC 3339.
+    let expiresAt: String
 }
 
 extension PlaybackV3Plan {
@@ -614,7 +856,7 @@ extension PlaybackV3DecisionResponse {
         if outcome == "adaptation_unavailable" {
             return .terminal(terminal ?? PlaybackV3Terminal(
                 reason: "invalid_terminal_response",
-                message: "The server could not produce a playable Apple route.",
+                message: "The server could not produce a playable Apple route.", // i18n-ignore: English data: logged or sent to the server (D44)
                 retryable: false
             ))
         }

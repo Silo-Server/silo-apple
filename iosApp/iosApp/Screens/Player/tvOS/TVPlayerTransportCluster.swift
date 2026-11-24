@@ -46,20 +46,20 @@ struct TVPlayerTransportCluster: View {
             iconButton(
                 systemName: SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward),
                 focus: .skipBack,
-                accessibilityLabel: SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward)
+                accessibilityLabel: Text(SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward))
             ) { viewModel.skipBackward() }
 
             iconButton(
                 systemName: viewModel.isPlaying ? "pause.fill" : "play.fill",
                 focus: .playPause,
-                accessibilityLabel: viewModel.isPlaying ? "Pause" : "Play",
+                accessibilityLabel: Text(viewModel.isPlaying ? LocalizedStringResource.playerAudioPause : .playerAudioPlay),
                 isPrimary: true
             ) { viewModel.togglePlayPause() }
 
             iconButton(
                 systemName: SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward),
                 focus: .skipForward,
-                accessibilityLabel: SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward)
+                accessibilityLabel: Text(SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward))
             ) { viewModel.skipForward() }
         }
     }
@@ -70,20 +70,20 @@ struct TVPlayerTransportCluster: View {
                 iconButton(
                     systemName: "rectangle.stack.fill",
                     focus: .nextUp,
-                    accessibilityLabel: "Show Up Next",
+                    accessibilityLabel: Text(.playerControlsShowUpNext),
                     action: viewModel.showNextUpNow
                 )
             }
             iconButton(
                 systemName: "slider.horizontal.3",
                 focus: .options,
-                accessibilityLabel: "Info and options",
+                accessibilityLabel: Text(.playerAudioOptions),
                 action: onOpenHUD
             )
             iconButton(
                 systemName: "xmark",
                 focus: .dismiss,
-                accessibilityLabel: "Close player",
+                accessibilityLabel: Text(.playerAudioClose),
                 action: onDismiss
             )
         }
@@ -101,7 +101,7 @@ struct TVPlayerTransportCluster: View {
     private func iconButton(
         systemName: String,
         focus: FocusTarget,
-        accessibilityLabel: String,
+        accessibilityLabel: Text,
         isPrimary: Bool = false,
         action: @escaping () -> Void
     ) -> some View {

@@ -83,6 +83,11 @@ struct APIv2Account: Decodable, Hashable, Sendable {
     let downloadAllowed: Bool
     /// Present only while an administrator impersonates this account.
     let impersonation: APIv2Impersonation?
+    /// The account holds a temporary password an administrator set. Read
+    /// from the account, not the session: right after the change it is
+    /// false while the access token still carries the restriction. Absent
+    /// from servers that predate it.
+    var passwordChangeRequired: Bool? = nil
 }
 
 struct APIv2Impersonation: Decodable, Hashable, Sendable {
@@ -205,8 +210,31 @@ struct APIv2Profile: Decodable, Hashable, Sendable {
     let subtitleMode: String
     let showForcedSubtitles: Bool
     let allowedLibraryIds: [String]?
+    /// False only when a household manager blocked this profile from
+    /// requests and request discovery. Absent on a server that predates the
+    /// switch, which means allowed.
+    let requestsAllowed: Bool?
     let createdAt: Date?
     let updatedAt: Date
+}
+
+/// `GET /api/v2/profiles` response. Besides the rows, the envelope reports
+/// which optional profile members this server accepts; the profile writes
+/// reject unknown members, so a client sends one only when it is reported.
+struct APIv2ProfileCollection: Decodable {
+    let items: [APIv2Profile]
+    let page: APIv2Page?
+    /// The server accepts and enforces `requests_allowed`. Absent on a server
+    /// that predates the per-profile requests switch.
+    let requestsAllowedSupported: Bool?
+    /// How many profiles the account may have. Absent on a remote-playback
+    /// handoff session, when the server could not read the limit, and on a
+    /// server that predates it.
+    let maxProfiles: Int?
+
+    func completeItems() throws -> [APIv2Profile] {
+        try APIv2CatalogReadCollection(items: items, page: page).completeItems()
+    }
 }
 
 /// A PATCH member that distinguishes "leave unchanged" (omitted) from
@@ -320,6 +348,21 @@ struct APIv2Problem: Decodable, Hashable, Sendable {
     var identifier: String {
         type.split(separator: "/").last.map(String.init) ?? type
     }
+
+    /// The server's `text` for this problem in the language on screen (D33).
+    /// English shows `text` as sent. Another language shows `field`'s
+    /// `error.field.<code>` (the first field error unless the caller shows
+    /// another), then `error.<identifier>`, when the catalog translates it,
+    /// else `text`.
+    func localized(
+        _ text: String,
+        field: APIv2ProblemError? = nil,
+        language: String = AppLanguage.displayedLanguage
+    ) -> String {
+        let byType = AppLanguage.serverText(text, key: "error.\(identifier)", language: language)
+        let fieldCode = (field ?? errors?.first)?.code
+        return AppLanguage.serverText(byType, key: fieldCode.map { "error.field.\($0)" }, language: language)
+    }
 }
 
 struct APIv2ProblemError: Decodable, Hashable, Sendable {
@@ -336,6 +379,9 @@ struct APIv2ProfileCreate: Encodable {
     let maxContentRating: String?
     let libraryRestrictionsEnabled: Bool
     let allowedLibraryIds: [String]
+    /// Sent only to a server that reports `requests_allowed_supported`;
+    /// omitted means allowed.
+    let requestsAllowed: Bool?
 }
 
 extension APIv2Profile {

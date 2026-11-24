@@ -352,9 +352,9 @@ final class NetworkSignInTests: XCTestCase {
         XCTAssertFalse(unserved.keepsPasswordOnNetworkLink, "no network link to keep it on")
 
         let item = AccountSignInModel.Connectable(provider: Self.network(), method: .network)
-        XCTAssertEqual(AccountSignInModel.connectFooter(for: item, networkLinkKeepsPassword: true),
+        XCTAssertEqual(AppLanguage.string(AccountSignInModel.connectFooter(for: item, networkLinkKeepsPassword: true)),
             "Enter your Silo password to confirm. This connects Alice Example, the Tailscale account this device belongs to. You can then sign in with Tailscale or your password. Tailscale sign-in works only when you open this server at its Tailscale address.")
-        XCTAssertEqual(AccountSignInModel.connectFooter(for: item, networkLinkKeepsPassword: false),
+        XCTAssertEqual(AppLanguage.string(AccountSignInModel.connectFooter(for: item, networkLinkKeepsPassword: false)),
             "Enter your Silo password to confirm. This connects Alice Example, the Tailscale account this device belongs to. After connecting, you sign in with Tailscale instead of your password, and only when you open this server at its Tailscale address.")
     }
 
@@ -438,7 +438,7 @@ final class NetworkSignInTests: XCTestCase {
         stub.reply(path: APIv2Client.identityLinkNetworkPath, 201, fixture("link_account_identity_with_network_ok"))
         let connected = await model.connect(item.provider, password: "local")
         XCTAssertTrue(connected)
-        XCTAssertEqual(model.resultMessage, "Connected to Tailscale.")
+        XCTAssertEqual(model.resultMessage.map { AppLanguage.string($0) }, "Connected to Tailscale.")
         XCTAssertNil(model.errorMessage)
     }
 

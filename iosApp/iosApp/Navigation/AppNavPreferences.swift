@@ -3,9 +3,10 @@ import Observation
 
 /// Local, per-profile navigation/content preferences.
 ///
-/// The preference is device-local and scoped by platform, server, and profile:
-/// hiding audiobooks on Apple TV should not hide them on iPhone. tvOS keeps
-/// its original storage key for compatibility with existing installs.
+/// The preference is device-local and scoped by platform, server, account,
+/// and profile: hiding audiobooks on Apple TV should not hide them on iPhone.
+/// tvOS keeps its original storage prefix for compatibility with existing
+/// installs.
 @Observable
 final class AppNavPreferences {
     static let shared = AppNavPreferences()
@@ -49,21 +50,17 @@ final class AppNavPreferences {
         return defaults.bool(forKey: key)
     }
 
+    /// `<prefix>.v2.<server>.<account>.<profile>`, after the legacy owner
+    /// takes over the choice saved before accounts. Nil without a profile.
     private static func showAudiobooksKey() -> String? {
-        // No profile -> nothing to scope. Persisting under an anonymous key
-        // would leak one user's choice into the next signed-in profile.
-        guard let profileId = AuthService.shared.profileId, !profileId.isEmpty else {
-            return nil
-        }
-        let serverId = ServerRegistry.shared.activeServerId ?? "default"
-        return "\(storagePrefix).\(serverId).\(profileId)"
+        AccountScope.current?.adoptedKey(storagePrefix, defaults: .shared)
     }
 
     /// Contract default for `nav.show_audiobooks`: this is an opt-in surface
     /// on every Apple platform. A stored per-profile choice still wins.
     private static let defaultShowAudiobooks = false
 
-    private static var storagePrefix: String {
+    static var storagePrefix: String {
         #if os(tvOS)
         "skyline.nav.showAudiobooks"
         #elseif os(iOS)

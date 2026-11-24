@@ -48,6 +48,32 @@ final class AetherPlaybackController {
         case ended
         case failure(PlaybackErrorInfo)
         case transportRestoreFailed(String)
+        /// The native route's AVPlayer appeared, went away, or changed its
+        /// `timeControlStatus` or `reasonForWaitingToPlay`; read
+        /// ``nativeTransport``.
+        case nativeTransportChanged
+        /// The current AVPlayerItem posted `playbackStalledNotification`.
+        case itemStalled
+        /// The current AVPlayerItem logged a failed media request
+        /// (`newErrorLogEntryNotification`) on server HLS.
+        case itemMediaRequestFailed
+        /// ``shouldPlayWhenReady`` or ``isRestoringTransport`` changed. The
+        /// engine can stay in `.loading` across a Play or Pause, so no state
+        /// event follows.
+        case transportIntentChanged
+    }
+
+    /// The native route's AVPlayer transport, as AVFoundation reports it.
+    struct NativeTransport: Equatable {
+        let status: AVPlayer.TimeControlStatus
+        /// Nil unless `status` is `.waitingToPlayAtSpecifiedRate`.
+        let waitingReason: AVPlayer.WaitingReason?
+        /// The player holds an item. Aether removes it when it tears the video
+        /// down for the background.
+        var hasItem = true
+        /// Media AVPlayer has loaded past its playhead, in seconds, from the
+        /// item's own loaded ranges; nil when it reports none.
+        var loadedAheadSeconds: Double? = nil
     }
 
     struct ScopedEvent {
@@ -93,11 +119,20 @@ final class AetherPlaybackController {
 
     private(set) var activeSpec: AetherLoadSpec?
     private(set) var activeLoadEpoch: LoadEpoch?
+    /// The engine's latest seek while its picture has not reached the
+    /// target, or nil. A native seek that spends its budget stops being
+    /// `isSeeking` with the clock held at the target and the picture still
+    /// at the old position; it stays here until a later `.landed` under its
+    /// id, or the next load.
+    private(set) var unlandedSeekID: UInt64?
     /// The headers Aether holds for the active direct-play source, and which
     /// resolver answer installed them, so answers land in the order asked.
     private(set) var appliedRequestHeaders: [String: String] = [:]
     private var requestHeaderAsks: UInt64 = 0
     private var appliedRequestHeaderAsk: UInt64 = 0
+    /// Silo's appearance for the subtitles AVPlayer draws itself
+    /// (`HLSRenditionTextStyle`); nil leaves the device's caption style.
+    private var hlsRenditionTextStyleRules: [AVTextStyleRule]?
     /// The last `[CMP-AUDIO]` line's load and pipeline.
     private struct LoggedAudioPipeline: Equatable {
         let epoch: LoadEpoch?
@@ -132,11 +167,83 @@ final class AetherPlaybackController {
             #if os(macOS)
             refreshDisplaySleepPrevention()
             #endif
+            if shouldPlayWhenReady != oldValue { publish(.transportIntentChanged) }
         }
+    }
+    /// A Play is rebuilding the session Aether tore down in the background:
+    /// a reload of the same plan, not a stall.
+    private(set) var isRestoringTransport = false {
+        didSet { if isRestoringTransport != oldValue { publish(.transportIntentChanged) } }
+    }
+    private var transportObservations: [NSKeyValueObservation] = []
+    private var itemStallSubscription: AnyCancellable?
+    private var itemErrorSubscription: AnyCancellable?
+
+    /// Bytes the load's reader has pulled from the origin, as of the engine's
+    /// latest 1 Hz telemetry; nil without a reader: server HLS, where AVPlayer
+    /// fetches the origin through the engine's relay, an audio-only load,
+    /// whose engine reports a constant 0 that would read as silence, or no
+    /// load.
+    private(set) var upstreamBytesFetched: Int64?
+    /// On server HLS, the engine relay's running totals of the media bytes it
+    /// received from the origin and of the time they spent arriving, each
+    /// segment timed from its first byte to its last, as of the latest
+    /// telemetry, with the load whose relay counted them. Nil on other routes
+    /// and without a relay.
+    ///
+    /// Not AVPlayer's access log: it times each request on the loopback hop
+    /// from when it was sent, so a segment the server answers only once its
+    /// encoder has written it reads the encode as a slow link.
+    private(set) var relayMediaTransfer: RelayPlanThroughput.Totals?
+
+    /// Another reader of the load's source may be receiving beside the one
+    /// `upstreamBytesFetched` counts. An embedded subtitle the engine decodes
+    /// runs AetherEngine's forward subtitle prefetch, a second reader of the
+    /// same file on its own connection, whose bytes the engine does not
+    /// publish. Conservative: closed captions, which need no reader, and a
+    /// secondary subtitle from a sidecar count too.
+    var mayShareSourceLink: Bool {
+        let primaryEmbedded = engine.activeSubtitleTrackIndex.map { id in
+            engine.subtitleTracks.contains { $0.id == id && !$0.isExternal }
+        } ?? false
+        return primaryEmbedded || engine.isSecondarySubtitleActive
+    }
+
+    /// The native route's AVPlayer transport; nil on the software route or
+    /// without a player.
+    var nativeTransport: NativeTransport? {
+        observedPlayer.map {
+            NativeTransport(
+                status: $0.timeControlStatus,
+                waitingReason: $0.reasonForWaitingToPlay,
+                hasItem: $0.currentItem != nil,
+                loadedAheadSeconds: $0.currentItem.flatMap(Self.loadedAheadSeconds)
+            )
+        }
+    }
+
+    /// The end of the loaded range that holds the item's playhead, less the
+    /// playhead.
+    private static func loadedAheadSeconds(of item: AVPlayerItem) -> Double? {
+        let time = item.currentTime()
+        guard time.isNumeric else { return nil }
+        for value in item.loadedTimeRanges {
+            let range = value.timeRangeValue
+            guard range.containsTime(time) || range.end == time else { continue }
+            let ahead = (range.end - time).seconds
+            return ahead.isFinite ? max(0, ahead) : nil
+        }
+        return nil
     }
     /// Watch Party resumes only through a current room command.
     var requiresExplicitTransportResume = false
     private var audioInterrupted = false
+    /// An audio-session interruption (a call, Siri) stopped playback and it
+    /// has not resumed: from its start until it ends with a resume, or the
+    /// viewer plays.
+    private(set) var isAudioSessionInterrupted = false {
+        didSet { if isAudioSessionInterrupted != oldValue { publish(.transportIntentChanged) } }
+    }
     private var applicationBackgrounded = false
     var isTransportInterrupted: Bool { audioInterrupted || applicationBackgrounded }
     var permitsExternalPlayback = true {
@@ -153,8 +260,36 @@ final class AetherPlaybackController {
     /// again to fetch its file anew (see `reloadExternalSubtitleTrack`).
     private var externalSubtitleSources: [Int64: ExternalSubtitleSource] = [:]
     private var isRegisteringExternalSubtitle = false
+    /// The rendition row picked before its legible option was resolved.
+    /// Applied when the option appears; any later pick replaces it.
+    private var pendingHLSSubtitleRenditionAppTrackID: Int64?
+    /// The spec's renditions resolved to the engine ids of AVPlayer's legible
+    /// options. Empty until the item publishes its legible group.
+    private var hlsSubtitleRenditionEngineIDByAppID: [Int64: Int] = [:]
+    /// Reads the options' playlist `NAME`s, which refine the index match.
+    private var hlsSubtitleRenditionNameTask: Task<Void, Never>?
+    /// The current item's playlist `NAME`s once read, so a later option
+    /// publication resolves with them instead of falling back to the index.
+    private var hlsSubtitleRenditionPlaylistNames: PlaylistNames?
+    /// AVPlayer's automatic media selection, turned off while a stream's
+    /// renditions are deselected and put back when that stream goes.
+    private var automaticMediaSelectionHold = AutomaticMediaSelectionHold()
+    private struct PlaylistNames {
+        weak var item: AVPlayerItem?
+        let names: [String?]
+    }
+    /// Off on a stream whose renditions are all AUTOSELECT=YES: AVPlayer may
+    /// pick one by itself, so the deselect is explicit and repeated when the
+    /// options are published or the item changes.
+    private(set) var holdsHLSSubtitleRenditionsOff = false
+    /// Listed rows chosen as the secondary subtitle play on the overlay from
+    /// their inventory sidecar, registered apart from the rendition so the
+    /// primary path keeps selecting the rendition for the same row.
+    private var hlsRenditionSecondarySidecarIDByAppID: [Int64: Int] = [:]
     private var externalPlaybackObservation: NSKeyValueObservation?
-    private var observedExternalPlaybackPlayer: AVPlayer?
+    /// The native route's AVPlayer, observed for external playback and for
+    /// ``nativeTransport``.
+    private var observedPlayer: AVPlayer?
     private var externalPlaybackPolicyTask: Task<Void, Never>?
     private lazy var externalPlaybackPolicyGuard = ExternalPlaybackPolicyGuard { [weak self] player in
         self?.externalPlaybackPolicy(for: player)
@@ -221,6 +356,7 @@ final class AetherPlaybackController {
         let epoch = LoadEpoch(rawValue: generation)
         applyBackgroundPlaybackPreference()
         activeLoadEpoch = epoch
+        unlandedSeekID = nil
         hasCommittedActiveLoad = false
         activeSpec = spec
         appliedRequestHeaders = spec.options.httpHeaders
@@ -279,16 +415,36 @@ final class AetherPlaybackController {
         }
     }
 
+    /// Styles the subtitles AVPlayer draws on the current item and on every
+    /// item the engine installs after it. Only a server HLS stream's own
+    /// renditions are drawn there; the overlay draws the rest.
+    func setHLSRenditionTextStyleRules(_ rules: [AVTextStyleRule]?) {
+        hlsRenditionTextStyleRules = rules
+        applyHLSRenditionTextStyle(to: engine.currentAVPlayerItem)
+    }
+
+    private func applyHLSRenditionTextStyle(to item: AVPlayerItem?) {
+        guard let item, activeSpec?.options.nativeRemoteHLS == true else { return }
+        item.textStyleRules = hlsRenditionTextStyleRules
+    }
+
     func finishLoad(_ epoch: LoadEpoch) async throws {
         guard epoch == activeLoadEpoch, let spec = activeSpec else {
             throw CancellationError()
         }
-        // A server subtitle artifact may still be streaming its extraction.
-        // Declaring it in the native HLS master makes AVPlayer wait for the
-        // whole film's captions before becoming ready for the room barrier.
-        // Party playback uses the host overlay (PiP/AirPlay are disabled), so
-        // register these tracks after mounting the media instead.
-        let usesSubtitleOverlay = requiresExplicitTransportResume && spec.options.nativeRemoteHLS
+        // A subtitle declared at load joins the native HLS master as one
+        // whole-film rendition, and AVPlayer will not start the item until
+        // that rendition has loaded. Aether answers it only once the whole
+        // artifact has arrived, and the server's extract of an embedded track
+        // streams until it has demuxed the whole file: tens of seconds on a
+        // large remux, past the start deadline. Register those tracks after
+        // mounting the media instead, on the host overlay; the cues fill in
+        // while the video plays. Party playback does the same for every
+        // artifact so the room barrier never waits on captions (PiP and
+        // AirPlay are disabled there). The overlay does not reach PiP or
+        // AirPlay, which keep the rendition for sidecar files.
+        let usesSubtitleOverlay = spec.options.nativeRemoteHLS
+            && (requiresExplicitTransportResume || spec.declaresEmbeddedTrackExtract)
         var options = spec.options
         if usesSubtitleOverlay { options.externalSubtitles = [] }
         do {
@@ -304,6 +460,7 @@ final class AetherPlaybackController {
             activeSpec = nil
             replacementExternalPlaybackPolicy = nil
             aetherSubtitleIDByAppID = [:]
+            resetHLSSubtitleRenditions()
             appSubtitleIDByAetherID = [:]
             externalSubtitleSources = [:]
             configureExternalPlaybackPolicy()
@@ -317,6 +474,7 @@ final class AetherPlaybackController {
             activeSpec = nil
             replacementExternalPlaybackPolicy = nil
             aetherSubtitleIDByAppID = [:]
+            resetHLSSubtitleRenditions()
             appSubtitleIDByAetherID = [:]
             externalSubtitleSources = [:]
             configureExternalPlaybackPolicy()
@@ -356,6 +514,7 @@ final class AetherPlaybackController {
 
     func play() {
         shouldPlayWhenReady = true
+        isAudioSessionInterrupted = false
         // `beginLoad` installs spec/epoch before `engine.load` returns, and
         // that window looks identical to a background teardown: route `.none`,
         // session not ready. Reloading here would start a second `engine.load`
@@ -379,6 +538,8 @@ final class AetherPlaybackController {
                   let loadEpoch = self.activeLoadEpoch,
                   self.activeSpec != nil else { return }
             if self.hasCommittedActiveLoad, self.sessionRequiresRestore {
+                self.isRestoringTransport = true
+                defer { self.isRestoringTransport = false }
                 do {
                     try await self.engine.reloadAtCurrentPosition()
                 } catch is CancellationError {
@@ -415,6 +576,12 @@ final class AetherPlaybackController {
     /// changes but a session still exists — from being mistaken for teardown.
     private var sessionRequiresRestore: Bool {
         engine.videoRoute == .none && !engine.isSessionReady
+    }
+
+    /// Records a Play for the replacement load a replan is about to start,
+    /// without resuming the outgoing transport at its old position.
+    func playWhenReplacementLoads() {
+        shouldPlayWhenReady = true
     }
 
     func pause() {
@@ -492,16 +659,95 @@ final class AetherPlaybackController {
 
     func selectSubtitleTrack(id: Int64?) {
         cueHold.release(.primary)
+        pendingHLSSubtitleRenditionAppTrackID = nil
+        holdsHLSSubtitleRenditionsOff = false
+        if let id, isHLSSubtitleRendition(appTrackID: id), hlsSubtitleRenditionEngineIDByAppID[id] == nil {
+            // The legible group surfaces with the item, sometimes only after
+            // readiness. Clearing here would deselect the rendition AVPlayer
+            // may already show; select it once the option is published.
+            pendingHLSSubtitleRenditionAppTrackID = id
+            return
+        }
         if let id, refetchStaleExternalSubtitleTrack(appTrackID: id, primary: true) { return }
         if let id, let aetherID = aetherSubtitleID(forAppID: id) {
             engine.selectSubtitleTrack(index: aetherID)
+            // The overlay draws a sidecar; a rendition AVPlayer still shows
+            // would draw under it.
+            if !isHLSSubtitleRendition(appTrackID: id) { deselectHLSSubtitleRenditions() }
         } else {
             engine.clearSubtitle()
+            // The engine deselects only a rendition it knows is selected, and
+            // AVPlayer may have picked one itself.
+            if hasHLSSubtitleRenditions {
+                holdsHLSSubtitleRenditionsOff = true
+                deselectHLSSubtitleRenditions()
+            }
         }
+    }
+
+    /// Whether the active stream carries subtitle renditions AVPlayer draws.
+    var hasHLSSubtitleRenditions: Bool {
+        activeSpec?.hlsSubtitleRenditions.isEmpty == false
+    }
+
+    /// Takes down whatever legible option AVPlayer shows, unless a rendition
+    /// was picked since. Only for a stream with renditions: its plan declares
+    /// no sidecar, so the engine injected none whose option this could hit.
+    private func deselectHLSSubtitleRenditions(on newItem: AVPlayerItem? = nil) {
+        guard hasHLSSubtitleRenditions,
+              let player = engine.currentAVPlayer, let item = newItem ?? player.currentItem else { return }
+        automaticMediaSelectionHold.suspend(on: player)
+        Task { @MainActor [weak self] in
+            guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+                  let self, player.currentItem === item,
+                  !self.isShowingAnyHLSSubtitleRendition else { return }
+            item.select(nil, in: group)
+        }
+    }
+
+    private var isShowingAnyHLSSubtitleRendition: Bool {
+        pendingHLSSubtitleRenditionAppTrackID != nil
+            || engine.activeSubtitleTrackIndex.map { hlsSubtitleRenditionEngineIDByAppID.values.contains($0) } == true
+    }
+
+    /// Whether AVPlayer shows, or is about to show, this row's rendition.
+    func isShowingHLSSubtitleRendition(appTrackID: Int64) -> Bool {
+        guard isHLSSubtitleRendition(appTrackID: appTrackID) else { return false }
+        if pendingHLSSubtitleRenditionAppTrackID == appTrackID { return true }
+        guard let active = engine.activeSubtitleTrackIndex else { return false }
+        return hlsSubtitleRenditionEngineIDByAppID[appTrackID] == active
+    }
+
+    /// Registers a listed row's inventory sidecar for the secondary slot.
+    func registerHLSRenditionSecondarySidecar(_ track: ExternalSubtitleTrack, appTrackID: Int64,
+                                              fontRequest: URLRequest? = nil) {
+        guard isHLSSubtitleRendition(appTrackID: appTrackID),
+              hlsRenditionSecondarySidecarIDByAppID[appTrackID] == nil else { return }
+        isRegisteringExternalSubtitle = true
+        let registered = engine.addExternalSubtitleTrack(track)
+        hlsRenditionSecondarySidecarIDByAppID[appTrackID] = registered.id
+        appSubtitleIDByAetherID[registered.id] = appTrackID
+        if let fontRequest {
+            assSubtitles.registerFontRequest(fontRequest, trackID: registered.id,
+                                            authorization: activeSpec?.subtitleRequestAuthorization(for: fontRequest.url))
+        }
+        isRegisteringExternalSubtitle = false
+        publish(.inventoryChanged)
     }
 
     func selectSecondarySubtitleTrack(id: Int64?) {
         cueHold.release(.secondary)
+        if let id, isHLSSubtitleRendition(appTrackID: id) {
+            // AVPlayer renders a single legible option, the primary one. Any
+            // other listed row plays on the overlay from its sidecar.
+            if !isShowingHLSSubtitleRendition(appTrackID: id),
+               let sidecarID = hlsRenditionSecondarySidecarIDByAppID[id] {
+                engine.selectSecondarySubtitleTrack(index: sidecarID)
+            } else {
+                engine.clearSecondarySubtitle()
+            }
+            return
+        }
         if let id, refetchStaleExternalSubtitleTrack(appTrackID: id, primary: false) { return }
         if let id, let aetherID = aetherSubtitleID(forAppID: id) {
             engine.selectSecondarySubtitleTrack(index: aetherID)
@@ -511,13 +757,193 @@ final class AetherPlaybackController {
     }
 
     func appSubtitleID(forAetherID id: Int) -> Int64 {
-        appSubtitleIDByAetherID[id] ?? Int64(id)
+        if let appID = hlsSubtitleRenditionEngineIDByAppID.first(where: { $0.value == id })?.key {
+            return appID
+        }
+        return appSubtitleIDByAetherID[id] ?? Int64(id)
+    }
+
+    /// Whether a rendition pick waits for AVPlayer to publish its option.
+    /// Off still has to reach `selectSubtitleTrack` then, even though the
+    /// engine already reports no subtitle, or the option would be selected
+    /// when it appears.
+    var hasPendingHLSSubtitleRenditionSelection: Bool {
+        pendingHLSSubtitleRenditionAppTrackID != nil
+    }
+
+    /// Whether a picker row is one of the active plan's in-stream subtitle
+    /// renditions: the plan's selected one, or under
+    /// `hls_subtitle_renditions_all_v1` any listed row.
+    func isHLSSubtitleRendition(appTrackID: Int64) -> Bool {
+        activeSpec?.hlsSubtitleRenditions[appTrackID] != nil
+    }
+
+    private func resetHLSSubtitleRenditions() {
+        pendingHLSSubtitleRenditionAppTrackID = nil
+        hlsSubtitleRenditionEngineIDByAppID = [:]
+        hlsSubtitleRenditionNameTask?.cancel()
+        hlsSubtitleRenditionNameTask = nil
+        hlsSubtitleRenditionPlaylistNames = nil
+        holdsHLSSubtitleRenditionsOff = false
+        hlsRenditionSecondarySidecarIDByAppID = [:]
+        automaticMediaSelectionHold.release()
+    }
+
+    /// Turns a player's automatic media selection off and later puts back the
+    /// value it had. Aether keeps its native player across consecutive loads,
+    /// so without the release a later stream, renditions or not, would start
+    /// with automatic selection still off.
+    @MainActor
+    struct AutomaticMediaSelectionHold {
+        private weak var player: AVPlayer?
+        private var wasOn = true
+
+        mutating func suspend(on player: AVPlayer) {
+            if self.player !== player {
+                release()
+                self.player = player
+                wasOn = player.appliesMediaSelectionCriteriaAutomatically
+            }
+            player.appliesMediaSelectionCriteriaAutomatically = false
+        }
+
+        mutating func release() {
+            player?.appliesMediaSelectionCriteriaAutomatically = wasOn
+            player = nil
+        }
+    }
+
+    /// A replacement item starts on AVPlayer's own selection again. Called as
+    /// the engine publishes the item, before it is the player's current one.
+    private func reassertHLSSubtitleRenditionsOff(on item: AVPlayerItem?) {
+        guard let item, holdsHLSSubtitleRenditionsOff else { return }
+        deselectHLSSubtitleRenditions(on: item)
+    }
+
+    /// Maps the spec's renditions onto the stream's legible options as the
+    /// engine publishes them. The 1-based group index answers at once; the
+    /// options' playlist `NAME`s, read from the item, then confirm or correct
+    /// it, because AVFoundation does not promise to keep playlist order.
+    private func resolveHLSSubtitleRenditions(in tracks: [TrackInfo]) {
+        guard let spec = activeSpec, !spec.hlsSubtitleRenditions.isEmpty else { return }
+        let published = Self.legibleOptionTrackIDs(in: tracks)
+        guard !published.isEmpty else { return }
+        let item = engine.currentAVPlayer?.currentItem
+        // Names already read for this item keep answering: an index-only pass
+        // would move a row the names placed elsewhere.
+        let knownNames = hlsSubtitleRenditionPlaylistNames.flatMap { $0.item != nil && $0.item === item ? $0.names : nil }
+        adoptHLSSubtitleRenditionEngineIDs(Self.hlsSubtitleRenditionEngineIDs(
+            slots: spec.hlsSubtitleRenditions, playlistNames: knownNames, legibleOptionTrackIDs: published))
+        guard knownNames == nil, let item else { return }
+        hlsSubtitleRenditionNameTask?.cancel()
+        let epoch = activeLoadEpoch
+        hlsSubtitleRenditionNameTask = Task { @MainActor [weak self] in
+            guard let names = await Self.legiblePlaylistNames(of: item),
+                  let self, !Task.isCancelled, epoch == self.activeLoadEpoch,
+                  self.engine.currentAVPlayer?.currentItem === item,
+                  let spec = self.activeSpec else { return }
+            self.hlsSubtitleRenditionPlaylistNames = PlaylistNames(item: item, names: names)
+            self.adoptHLSSubtitleRenditionEngineIDs(Self.hlsSubtitleRenditionEngineIDs(
+                slots: spec.hlsSubtitleRenditions, playlistNames: names, legibleOptionTrackIDs: published))
+        }
+    }
+
+    /// Installs a resolution, keeps a showing rendition on its row when the
+    /// names moved it to another option, and applies a pick that waited.
+    private func adoptHLSSubtitleRenditionEngineIDs(_ resolved: [Int64: Int]) {
+        guard resolved != hlsSubtitleRenditionEngineIDByAppID else {
+            applyPendingHLSSubtitleRenditionSelection()
+            return
+        }
+        let showing = engine.activeSubtitleTrackIndex.flatMap { active in
+            hlsSubtitleRenditionEngineIDByAppID.first { $0.value == active }?.key
+        }
+        hlsSubtitleRenditionEngineIDByAppID = resolved
+        if pendingHLSSubtitleRenditionAppTrackID == nil, let showing, let engineID = resolved[showing],
+           engineID != engine.activeSubtitleTrackIndex {
+            engine.selectSubtitleTrack(index: engineID)
+        }
+        applyPendingHLSSubtitleRenditionSelection()
+        if holdsHLSSubtitleRenditionsOff { deselectHLSSubtitleRenditions() }
+        publish(.inventoryChanged)
+    }
+
+    /// Applies a rendition pick that arrived before its legible option.
+    private func applyPendingHLSSubtitleRenditionSelection() {
+        guard let appID = pendingHLSSubtitleRenditionAppTrackID,
+              let engineID = hlsSubtitleRenditionEngineIDByAppID[appID] else { return }
+        pendingHLSSubtitleRenditionAppTrackID = nil
+        engine.selectSubtitleTrack(index: engineID)
+    }
+
+    /// The engine ids of the stream's legible options, in group order: the
+    /// remote-HLS bypass publishes each option as a natively rendered,
+    /// non-external track numbered by its place in the group. Sidecars the
+    /// engine injects are external.
+    nonisolated static func legibleOptionTrackIDs(in tracks: [TrackInfo]) -> [Int] {
+        tracks.filter { $0.isNativelyRenderedSubtitle && !$0.isExternal }.map(\.id).sorted()
+    }
+
+    /// Which legible option each rendition row selects. A row matches the
+    /// option whose playlist `NAME` it carries, else the option at its group
+    /// index. `playlistNames` is in group order, nil when the item exposes
+    /// none; a list whose length differs from the published options cannot be
+    /// lined up with them and is ignored. Every NAME match is placed before
+    /// any index fallback, and the fallback never takes an option named for
+    /// a row. A row matching no option, or one another row already took, stays
+    /// unresolved rather than selecting the wrong track.
+    nonisolated static func hlsSubtitleRenditionEngineIDs(
+        slots: [Int64: HLSSubtitleRenditionSlot],
+        playlistNames: [String?]?,
+        legibleOptionTrackIDs: [Int]
+    ) -> [Int64: Int] {
+        let names = playlistNames?.count == legibleOptionTrackIDs.count ? playlistNames : nil
+        var resolved: [Int64: Int] = [:]
+        var taken = Set<Int>()
+        var unmatched: [(appID: Int64, slot: HLSSubtitleRenditionSlot)] = []
+        for (appID, slot) in slots.sorted(by: { $0.value.index < $1.value.index }) {
+            if let ordinal = names?.firstIndex(where: { $0 == slot.name }), taken.insert(ordinal).inserted {
+                resolved[appID] = legibleOptionTrackIDs[ordinal]
+            } else {
+                unmatched.append((appID, slot))
+            }
+        }
+        let slotNames = Set(slots.values.map(\.name))
+        for (appID, slot) in unmatched {
+            let ordinal = slot.index - 1
+            guard legibleOptionTrackIDs.indices.contains(ordinal),
+                  names?[ordinal].map(slotNames.contains) != true,
+                  taken.insert(ordinal).inserted else { continue }
+            resolved[appID] = legibleOptionTrackIDs[ordinal]
+        }
+        return resolved
+    }
+
+    /// The playlist `NAME` of each legible option, in group order.
+    /// `displayName` is AVFoundation's localized language name, so two English
+    /// renditions read the same there; the verbatim attribute survives only
+    /// in the option's metadata under `m3u8/NAME`.
+    private static func legiblePlaylistNames(of item: AVPlayerItem) async -> [String?]? {
+        guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible) else { return nil }
+        let identifier = AVMetadataIdentifier(rawValue: "m3u8/NAME")
+        var names: [String?] = []
+        for option in group.options {
+            var name: String?
+            for metadata in option.commonMetadata where metadata.identifier == identifier {
+                name = try? await metadata.load(.stringValue)
+            }
+            names.append(name)
+        }
+        return names
     }
 
     func subtitleUsesMovieTimeline(appTrackID: Int64?, slot: SubtitleSlot) -> Bool {
         let engineID: Int?
         if let appTrackID {
-            engineID = aetherSubtitleID(forAppID: appTrackID)
+            // A listed rendition row plays in the secondary slot from its
+            // sidecar, not from the rendition its primary id resolves to.
+            let secondarySidecar = slot == .secondary ? hlsRenditionSecondarySidecarIDByAppID[appTrackID] : nil
+            engineID = secondarySidecar ?? aetherSubtitleID(forAppID: appTrackID)
         } else {
             // Only the primary slot has an engine-published active identity.
             engineID = slot == .primary ? engine.activeSubtitleTrackIndex : nil
@@ -526,7 +952,11 @@ final class AetherPlaybackController {
     }
 
     func containsSubtitle(appTrackID: Int64) -> Bool {
-        aetherSubtitleIDByAppID[appTrackID] != nil
+        // The rendition belongs to the mounted stream even before AVPlayer
+        // publishes it. Reporting it absent would make the view model mount
+        // the inventory sidecar for the same track: the whole-file extraction
+        // the rendition exists to avoid.
+        aetherSubtitleIDByAppID[appTrackID] != nil || isHLSSubtitleRendition(appTrackID: appTrackID)
     }
 
     func containsEmbeddedSubtitleTrack(streamIndex: Int, codec: String) -> Bool {
@@ -692,17 +1122,19 @@ final class AetherPlaybackController {
         cueHold.releaseAll()
         assSubtitles.stop()
         replacementExternalPlaybackPolicy = preservingExternalPlaybackPolicy
-            ? observedExternalPlaybackPlayer?.allowsExternalPlayback
+            ? observedPlayer?.allowsExternalPlayback
             : nil
         generation &+= 1
         transportIntentGeneration &+= 1
         transportRestoreTask?.cancel()
         transportRestoreTask = nil
         activeLoadEpoch = nil
+        unlandedSeekID = nil
         hasCommittedActiveLoad = false
         activeSpec = nil
         configureExternalPlaybackPolicy()
         aetherSubtitleIDByAppID = [:]
+        resetHLSSubtitleRenditions()
         appSubtitleIDByAetherID = [:]
         externalSubtitleSources = [:]
         didPublishFirstFrame = false
@@ -724,6 +1156,7 @@ final class AetherPlaybackController {
         declaredTrackCount: Int
     ) {
         aetherSubtitleIDByAppID = [:]
+        resetHLSSubtitleRenditions()
         appSubtitleIDByAetherID = [:]
         guard appIDs.count == declaredTrackCount else {
             assertionFailure(
@@ -745,6 +1178,9 @@ final class AetherPlaybackController {
     func aetherSubtitleID(forAppID id: Int64) -> Int? {
         if let translated = aetherSubtitleIDByAppID[id] {
             return translated
+        }
+        if isHLSSubtitleRendition(appTrackID: id) {
+            return hlsSubtitleRenditionEngineIDByAppID[id]
         }
         // A Silo sidecar id is not an Aether id. Passing an unaliased value
         // through reaches Aether as an unknown external id and is silently
@@ -843,6 +1279,22 @@ final class AetherPlaybackController {
             .sink { [weak self] phase in self?.publish(.phase(phase)) }
             .store(in: &subscriptions)
 
+        engine.seekEvents
+            .sink { [weak self] event in
+                guard let self else { return }
+                switch event.outcome {
+                case .began:
+                    unlandedSeekID = event.id
+                case .landed:
+                    if unlandedSeekID == event.id { unlandedSeekID = nil }
+                case .stalled, .superseded, .rejected:
+                    // A stalled seek can still land later under its id; a
+                    // superseding one has already replaced it with `.began`.
+                    break
+                }
+            }
+            .store(in: &subscriptions)
+
         engine.clock.$currentTime
             .sink { [weak self] time in self?.publish(.playerTime(time)) }
             .store(in: &subscriptions)
@@ -896,6 +1348,16 @@ final class AetherPlaybackController {
         }
         .store(in: &subscriptions)
 
+        // `@Published` emits before the property changes, so the pending pick
+        // resolves against the emitted list rather than `engine.subtitleTracks`.
+        engine.$subtitleTracks
+            .sink { [weak self] tracks in self?.resolveHLSSubtitleRenditions(in: tracks) }
+            .store(in: &subscriptions)
+
+        engine.$currentAVPlayerItem
+            .sink { [weak self] item in self?.reassertHLSSubtitleRenditionsOff(on: item) }
+            .store(in: &subscriptions)
+
         // The audio pipeline the engine built, once it settles: TrueHD Atmos
         // rendered for its heights reads "… Atmos → APAC 7.1.4", the channel
         // bridge names its codec. Essential tier, like the decision line.
@@ -912,8 +1374,22 @@ final class AetherPlaybackController {
             }
             .store(in: &subscriptions)
 
+        // `@Published` sends before the engine stores the value, so the
+        // reader's total is taken from what it sends.
         engine.diagnostics.$liveTelemetry
-            .sink { [weak self] _ in self?.publish(.telemetryChanged) }
+            .sink { [weak self] telemetry in
+                guard let self else { return }
+                let serverHLS = activeSpec?.options.nativeRemoteHLS == true
+                let hasReader = !serverHLS && activeSpec?.options.audioOnly != true
+                upstreamBytesFetched = hasReader ? telemetry?.demuxerBytesFetched : nil
+                if serverHLS, let load = activeLoadEpoch, let bytes = telemetry?.relayMediaReceivedBytes,
+                   let receivingMs = telemetry?.relayMediaReceivingMs {
+                    relayMediaTransfer = .init(load: load.rawValue, bytes: bytes, receivingMs: receivingMs)
+                } else {
+                    relayMediaTransfer = nil
+                }
+                publish(.telemetryChanged)
+            }
             .store(in: &subscriptions)
 
         engine.systemCaptionRequest
@@ -927,6 +1403,7 @@ final class AetherPlaybackController {
             .sink { [weak self] player in
                 guard let self else { return }
                 bindExternalPlayback(to: player)
+                bindNativeTransport(to: player)
                 publishSystemMediaChanged()
             }
             .store(in: &subscriptions)
@@ -934,8 +1411,10 @@ final class AetherPlaybackController {
         // An Aether native host can keep the same AVPlayer while replacing
         // its item. Reassert the host policy and session binding at that seam.
         engine.$currentAVPlayerItem
-            .sink { [weak self] _ in
+            .sink { [weak self] item in
                 guard let self else { return }
+                bindItemStalls(to: item)
+                applyHLSRenditionTextStyle(to: item)
                 configureExternalPlaybackPolicy()
                 refreshExternalPlaybackState()
                 publishSystemMediaChanged()
@@ -966,8 +1445,16 @@ final class AetherPlaybackController {
             .store(in: &subscriptions)
         NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
             .sink { [weak self] notification in
-                guard let self, requiresExplicitTransportResume else { return }
+                guard let self else { return }
                 let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+                if raw == AVAudioSession.InterruptionType.began.rawValue {
+                    isAudioSessionInterrupted = true
+                } else if let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
+                          AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume) {
+                    // The engine resumes; without that the viewer plays again.
+                    isAudioSessionInterrupted = false
+                }
+                guard requiresExplicitTransportResume else { return }
                 let wasInterrupted = isTransportInterrupted
                 audioInterrupted = raw == AVAudioSession.InterruptionType.began.rawValue
                 // Aether handles this notification asynchronously. Clearing
@@ -1004,7 +1491,7 @@ final class AetherPlaybackController {
         externalPlaybackPolicyTask = nil
         externalPlaybackObservation?.invalidate()
         externalPlaybackObservation = nil
-        observedExternalPlaybackPlayer = player
+        observedPlayer = player
         externalPlaybackPolicyGuard.bind(to: player)
         configureExternalPlaybackPolicy()
 
@@ -1018,15 +1505,71 @@ final class AetherPlaybackController {
         ) { [weak self, weak player] _, _ in
             Task { @MainActor [weak self, weak player] in
                 guard let self, let player,
-                      self.observedExternalPlaybackPlayer === player,
+                      self.observedPlayer === player,
                       self.engine.currentAVPlayer === player else { return }
                 self.refreshExternalPlaybackState()
             }
         }
     }
 
+    /// Follows the native AVPlayer's transport for the buffering controller.
+    private func bindNativeTransport(to player: AVPlayer?) {
+        transportObservations.forEach { $0.invalidate() }
+        transportObservations = []
+        defer { publish(.nativeTransportChanged) }
+        guard let player else { return }
+        let changed: (AVPlayer) -> Void = { [weak self] player in
+            Task { @MainActor [weak self, weak player] in
+                guard let self, let player, self.observedPlayer === player else { return }
+                self.publish(.nativeTransportChanged)
+            }
+        }
+        transportObservations = [
+            player.observe(\.timeControlStatus, options: [.new]) { player, _ in changed(player) },
+            player.observe(\.reasonForWaitingToPlay, options: [.new]) { player, _ in changed(player) },
+            player.observe(\.currentItem, options: [.new]) { player, _ in changed(player) },
+        ]
+    }
+
+    private func bindItemStalls(to item: AVPlayerItem?) {
+        itemStallSubscription = item.map { item in
+            NotificationCenter.default.publisher(for: AVPlayerItem.playbackStalledNotification, object: item)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.publish(.itemStalled) }
+        }
+        // AVPlayer logs its failed playlist and segment requests here. Only
+        // on server HLS do they reach the origin: the engine's relay forwards
+        // each request and answers with what the origin sent or a failure.
+        // On direct play AVPlayer reads the engine's own server on
+        // 127.0.0.1, and its no-response timeouts there (-12889) only mean
+        // the reader behind it is slow; the reader reports the origin itself
+        // (``upstreamBytesFetched`` and the engine's `.stalled` phase).
+        // Subtitle renditions are not media: their failures start no outage.
+        itemErrorSubscription = item.map { item in
+            NotificationCenter.default.publisher(for: AVPlayerItem.newErrorLogEntryNotification, object: item)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self, weak item] _ in
+                    guard let self, activeSpec?.options.nativeRemoteHLS == true else { return }
+                    let uri = item?.errorLog()?.events.last?.uri
+                    guard !Self.isSubtitleRenditionRequest(uri: uri) else { return }
+                    publish(.itemMediaRequestFailed)
+                }
+        }
+    }
+
+    /// Whether a request AVPlayer logged is for a subtitle rendition: the
+    /// engine's `/subs_{N}.m3u8` and `/subs_{N}_{segment}.vtt`, or the
+    /// server's rendition playlist (`silo_rendition=subtitles`) and its
+    /// WebVTT segments. An unknown request counts as media.
+    nonisolated static func isSubtitleRenditionRequest(uri: String?) -> Bool {
+        guard let uri, let components = URLComponents(string: uri) else { return false }
+        let file = (components.path as NSString).lastPathComponent.lowercased()
+        if file.hasPrefix("subs_") || file.hasSuffix(".vtt") || file.hasSuffix(".webvtt") { return true }
+        return components.queryItems?.contains { $0.name == "silo_rendition" && $0.value == "subtitles" } ?? false
+    }
+
     private func configureExternalPlaybackPolicy() {
-        guard let player = observedExternalPlaybackPlayer,
+        guard let player = observedPlayer,
               engine.currentAVPlayer === player else { return }
         externalPlaybackPolicyGuard.apply()
 
@@ -1039,7 +1582,7 @@ final class AetherPlaybackController {
             await Task.yield()
             guard !Task.isCancelled,
                   let self, let player,
-                  self.observedExternalPlaybackPlayer === player,
+                  self.observedPlayer === player,
                   self.engine.currentAVPlayer === player else { return }
             self.externalPlaybackPolicyGuard.apply()
             self.refreshExternalPlaybackState()
@@ -1051,7 +1594,7 @@ final class AetherPlaybackController {
     /// when the controller does not own `player`: it is not both the observed
     /// player and the one the engine currently publishes.
     private func externalPlaybackPolicy(for player: AVPlayer) -> Bool? {
-        guard observedExternalPlaybackPlayer === player,
+        guard observedPlayer === player,
               engine.currentAVPlayer === player else { return nil }
         return permitsExternalPlayback && Self.externalPlaybackAllowed(
             activePolicy: externalPlaybackIsReceiverFetchable,

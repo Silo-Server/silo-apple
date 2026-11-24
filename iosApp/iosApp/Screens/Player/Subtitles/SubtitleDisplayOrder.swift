@@ -58,14 +58,17 @@ enum SubtitleDisplayOrder {
         let preferredKey = canonicalLanguageKey(preferredLanguage)
 
         // Distinct named language keys, ordered: preferred first, then by
-        // English display name (case-insensitive), then by key as a final
-        // tiebreaker so the order is fully deterministic.
-        let sortedNamedKeys = Array(Set(annotated.compactMap(\.key))).sorted { a, b in
+        // display name in the app's language (case-insensitive), then by key
+        // as a final tiebreaker so the order is fully deterministic.
+        let locale = AppLanguage.formattingLocale
+        let namedKeys = Set(annotated.compactMap(\.key))
+        let names = Dictionary(uniqueKeysWithValues: namedKeys.map { ($0, languageDisplayName($0, locale: locale)) })
+        let sortedNamedKeys = namedKeys.sorted { a, b in
             if let preferredKey {
                 if a == preferredKey, b != preferredKey { return true }
                 if b == preferredKey, a != preferredKey { return false }
             }
-            let cmp = languageDisplayName(a).localizedCaseInsensitiveCompare(languageDisplayName(b))
+            let cmp = names[a, default: a].compare(names[b, default: b], options: .caseInsensitive, locale: locale)
             if cmp != .orderedSame { return cmp == .orderedAscending }
             return a < b
         }
@@ -124,18 +127,17 @@ enum SubtitleDisplayOrder {
         return iso639Alias[primary] ?? primary
     }
 
-    /// English display name for a canonical key, used for alphabetical
-    /// group ordering. Falls back to the uppercased code.
-    static func languageDisplayName(_ key: String) -> String {
-        if let name = displayLocale.localizedString(forLanguageCode: key) {
-            return name.capitalized
+    /// Display name for a canonical key in the app's language ("German",
+    /// "Deutsch"), used for row labels and alphabetical group ordering.
+    /// Falls back to the uppercased code.
+    static func languageDisplayName(_ key: String, locale: Locale = AppLanguage.formattingLocale) -> String {
+        if let name = locale.localizedString(forLanguageCode: key) {
+            return LocaleFormat.capitalizedName(name, locale: locale)
         }
         return key.uppercased()
     }
 
     // MARK: - Private
-
-    private static let displayLocale = Locale(identifier: "en_US_POSIX")
 
     /// 3-letter ISO 639-2 (B and T) → 2-letter ISO 639-1, for the
     /// languages that realistically appear in subtitle metadata. The

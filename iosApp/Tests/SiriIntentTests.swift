@@ -26,6 +26,16 @@ final class SiriIntentTests: XCTestCase {
         XCTAssertNil(SiriSearchLink.term(from: try XCTUnwrap(URL(string: "https://search?q=Dune"))))
     }
 
+    /// App Store Connect rejects a build whose App Intents metadata contains
+    /// "siri" (ITMS-90626). The metadata stores catalog keys, not English, so
+    /// the keys must avoid the word too.
+    func testIntentMetadataNeverMentionsSiri() throws {
+        let url = Bundle.main.bundleURL.appendingPathComponent("Metadata.appintents/extract.actionsdata")
+        let metadata = try XCTUnwrap(String(data: Data(contentsOf: url), encoding: .utf8))
+        XCTAssertTrue(metadata.contains("SearchInSiloIntent"))
+        XCTAssertNil(metadata.range(of: "siri", options: .caseInsensitive))
+    }
+
     func testIntentHandsTermToDeepLinkInbox() async throws {
         let coordinator = SiloDeepLinkCoordinator.shared
         _ = coordinator.consumePendingURL()

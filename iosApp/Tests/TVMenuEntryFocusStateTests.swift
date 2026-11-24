@@ -43,3 +43,49 @@ final class TVMenuEntryFocusStateTests: XCTestCase {
         XCTAssertFalse(state.consume(0))
     }
 }
+
+#if os(tvOS)
+final class TVTopMenuRootsTests: XCTestCase {
+    private let movies = Library(id: 1, name: "Films", type: "movies", sortOrder: 0, posterUrl: nil)
+    private let series = Library(id: 2, name: "Shows", type: "series", sortOrder: 1, posterUrl: nil)
+    private let music = Library(id: 3, name: "Music", type: "music", sortOrder: 2, posterUrl: nil)
+    private let audiobooks = Library(id: 4, name: "Books", type: "audiobooks", sortOrder: 3, posterUrl: nil)
+
+    func testBarHasAFixedOrderWithATabPerAvailableLibraryType() {
+        // Libraries arrive in server order; the bar order never follows it.
+        XCTAssertEqual(
+            TVRootDestination.visibleRoots(
+                libraries: [audiobooks, music, series, movies],
+                showAudiobooks: true
+            ),
+            [
+                .home, .libraryType(.movies), .libraryType(.series), .libraryType(.music),
+                .libraryType(.audiobooks), .recommendations, .calendar,
+            ]
+        )
+    }
+
+    func testAudiobooksTabIsOptIn() {
+        XCTAssertEqual(
+            TVRootDestination.visibleRoots(
+                libraries: [movies, series, audiobooks],
+                showAudiobooks: false
+            ),
+            [.home, .libraryType(.movies), .libraryType(.series), .recommendations, .calendar]
+        )
+    }
+
+    func testTypeTabsNeedAMatchingLibrary() {
+        XCTAssertEqual(
+            TVRootDestination.visibleRoots(libraries: [], showAudiobooks: true),
+            [.home, .recommendations, .calendar]
+        )
+        let mixed = Library(id: 5, name: "Everything", type: "mixed", sortOrder: 0, posterUrl: nil)
+        XCTAssertEqual(
+            TVRootDestination.visibleRoots(libraries: [mixed], showAudiobooks: false),
+            [.home, .libraryType(.movies), .libraryType(.series), .recommendations, .calendar],
+            "a mixed library belongs under both video tabs"
+        )
+    }
+}
+#endif

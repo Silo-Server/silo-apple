@@ -2,8 +2,8 @@ import Foundation
 
 /// Cached holder for whether this viewer can search external subtitle
 /// providers (`GET /api/v2/subtitles/providers/status`), used to render the
-/// in-player "Search Subtitles…" entry point as *disabled with a reason*
-/// rather than letting it run a search that can only ever come back empty.
+/// in-player "Search Subtitles…" entry point, which is hidden rather than
+/// letting it run a search that can only ever come back empty.
 ///
 /// Without this probe, a server with no providers wired up answers a search
 /// with an empty result set — so the user picks a language, waits out the
@@ -32,18 +32,19 @@ import Foundation
 final class SubtitleProvidersStore {
     static let shared = SubtitleProvidersStore()
 
-    /// Whether the "Search Subtitles…" entry point should be *enabled*.
+    /// Whether the "Search Subtitles…" entry point should be shown.
     ///
     /// Starts `true` and only goes `false` on an answer that says search is
     /// unavailable — see the type doc.
     /// The optimistic default also means there is no visible flicker during
-    /// the startup probe: the row is enabled, and at worst it dims a moment
-    /// later on a server that really has no providers.
+    /// the startup probe: the row is shown, and at worst it disappears a
+    /// moment later on a server that really has no providers.
     private(set) var isAvailable = true
 
-    /// Bumped on every `reset()` so a probe that finishes after a sign-out
-    /// or profile switch discards its result instead of repopulating the
-    /// next account's flag.
+    /// Bumped on every `reset()` and `refresh()`, so a probe that finishes
+    /// after a sign-out, a profile switch, or a newer probe discards its
+    /// result instead of overwriting a newer answer or the next account's
+    /// flag.
     private var generation = 0
 
     private let api: SiloAI
@@ -53,6 +54,7 @@ final class SubtitleProvidersStore {
     }
 
     func refresh() async {
+        generation &+= 1
         let gen = generation
         let status = try? await api.subtitleProvidersStatus()
         guard gen == generation else { return }

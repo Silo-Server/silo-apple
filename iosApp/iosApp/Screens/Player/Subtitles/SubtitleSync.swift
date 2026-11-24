@@ -171,8 +171,8 @@ final class SubtitleSyncModel {
     /// Shown in place of the timing actions after the server refused them.
     var forbiddenMessage: String {
         usesSyncKeys
-            ? "This server doesn't allow changing subtitle timing."
-            : "Only the person who added this subtitle or an admin can change its timing."
+            ? AppLanguage.string(.playerSubtitleSyncForbiddenServer)
+            : AppLanguage.string(.playerSubtitleSyncForbiddenOwner)
     }
 
     func entry(for key: String?) -> Entry? {
@@ -337,7 +337,7 @@ final class SubtitleSyncModel {
             advanceFeedback()
         } catch {
             guard current == generation else { return }
-            handleActionError(error, key: key, fallback: "Couldn't sync this subtitle. Try again.")
+            handleActionError(error, key: key, fallback: AppLanguage.string(.playerSubtitleSyncSyncFailedRetry))
         }
     }
 
@@ -363,7 +363,7 @@ final class SubtitleSyncModel {
             advanceFeedback()
         } catch {
             guard current == generation else { return }
-            handleActionError(error, key: key, fallback: "Couldn't reset the timing. Try again.")
+            handleActionError(error, key: key, fallback: AppLanguage.string(.playerSubtitleSyncResetFailed))
         }
     }
 
@@ -543,9 +543,9 @@ final class SubtitleSyncModel {
                 entry.error = nil
             case 422:
                 entry.isUnsupported = true
-                entry.error = "This format can't be synced."
+                entry.error = AppLanguage.string(.playerSubtitleSyncFormatUnsupported)
             case 412:
-                entry.error = "The subtitle changed. Try again."
+                entry.error = AppLanguage.string(.playerSubtitleSyncSubtitleChanged)
             default:
                 entry.error = fallback
             }
@@ -751,7 +751,7 @@ struct SubtitleSyncFeedback {
         guard let applying else { return }
         self.applying = nil
         applied.insert(applying.jobId)
-        notice = SubtitleSyncNotice(id: applying.jobId, tone: .success, title: "Subtitles synced",
+        notice = SubtitleSyncNotice(id: applying.jobId, tone: .success, title: AppLanguage.string(.playerSubtitleSyncNoticeSynced),
                                     detail: applying.detail)
     }
 
@@ -772,7 +772,7 @@ struct SubtitleSyncFeedback {
             if !announced.contains(job.id) {
                 if job.isInProgress {
                     show(SubtitleSyncNotice(
-                        id: job.id, tone: .progress, title: "Syncing \(watched.name) subtitles",
+                        id: job.id, tone: .progress, title: AppLanguage.string(.playerSubtitleSyncNoticeSyncing(watched.name)),
                         detail: SubtitleSyncLabel.phase(job), percent: SubtitleSyncLabel.percent(job) ?? 0
                     ))
                 } else {
@@ -781,7 +781,7 @@ struct SubtitleSyncFeedback {
                         applying = Applying(key: watched.key, jobId: job.id,
                                             detail: SubtitleSyncLabel.describe(watched.timing),
                                             startRevision: startRevision[job.id] ?? watched.revision)
-                        show(SubtitleSyncNotice(id: job.id, tone: .progress, title: "Applying new timing…",
+                        show(SubtitleSyncNotice(id: job.id, tone: .progress, title: AppLanguage.string(.playerSubtitleSyncNoticeApplying),
                                                 percent: 100))
                     } else {
                         show(Self.outcome(of: watched))
@@ -815,7 +815,7 @@ struct SubtitleSyncFeedback {
                     self.foreign = nil
                     if !input.activeShowsAutomaticResult {
                         show(SubtitleSyncNotice(id: "timing:\(foreign.key):\(input.activeRevision)", tone: .info,
-                                                title: "Subtitle timing updated"))
+                                                title: AppLanguage.string(.playerSubtitleSyncNoticeTimingUpdated)))
                     }
                 } else {
                     self.foreign = foreign
@@ -837,15 +837,15 @@ struct SubtitleSyncFeedback {
         let name = watched.name
         switch job.status {
         case "synced":
-            return SubtitleSyncNotice(id: job.id, tone: .success, title: "\(name) subtitles synced",
+            return SubtitleSyncNotice(id: job.id, tone: .success, title: AppLanguage.string(.playerSubtitleSyncNoticeNamedSynced(name)),
                                       detail: SubtitleSyncLabel.describe(watched.timing))
         case "already_synced":
-            return SubtitleSyncNotice(id: job.id, tone: .info, title: "\(name) subtitles already match the audio")
+            return SubtitleSyncNotice(id: job.id, tone: .info, title: AppLanguage.string(.playerSubtitleSyncNoticeAlreadyMatches(name)))
         case "no_match":
-            return SubtitleSyncNotice(id: job.id, tone: .warning, title: "\(name) subtitles don't match the audio",
-                                      detail: "They're probably for another release. The timing wasn't changed.")
+            return SubtitleSyncNotice(id: job.id, tone: .warning, title: AppLanguage.string(.playerSubtitleSyncNoticeNoMatch(name)),
+                                      detail: AppLanguage.string(.playerSubtitleSyncNoticeNoMatchDetail))
         case "failed":
-            return SubtitleSyncNotice(id: job.id, tone: .warning, title: "Couldn't sync \(name) subtitles",
+            return SubtitleSyncNotice(id: job.id, tone: .warning, title: AppLanguage.string(.playerSubtitleSyncNoticeFailed(name)),
                                       detail: SubtitleSyncLabel.failure(job.failure))
         default:
             return nil
@@ -862,20 +862,22 @@ enum SubtitleSyncLabel {
         switch sync?.status ?? "" {
         case "pending", "running":
             let percent = sync.flatMap(percent) ?? 0
-            return percent > 0 ? "Syncing… \(percent)%" : "Syncing…"
+            return percent > 0
+                ? AppLanguage.string(.playerSubtitleSyncStatusSyncingPercent(LocaleFormat.integer(percent)))
+                : AppLanguage.string(.playerTracksSyncing)
         case "no_match":
-            return "Doesn't match this video"
+            return AppLanguage.string(.playerSubtitleSyncStatusNoMatch)
         case "failed":
-            return "Sync failed"
+            return AppLanguage.string(.playerSubtitleSyncStatusFailed)
         case "already_synced":
-            if timing.isIdentity { return "Already in sync" }
+            if timing.isIdentity { return AppLanguage.string(.playerSubtitleSyncStatusAlreadyInSync) }
         case "synced":
-            if timing.isIdentity { return "Original timing" }
-            if sync?.result == timing { return "Synced \(describe(timing))" }
+            if timing.isIdentity { return AppLanguage.string(.playerSubtitleSyncStatusOriginal) }
+            if sync?.result == timing { return AppLanguage.string(.playerSubtitleSyncStatusSynced(describe(timing))) }
         default:
             break
         }
-        return timing.isIdentity ? nil : "Timing adjusted \(describe(timing))"
+        return timing.isIdentity ? nil : AppLanguage.string(.playerSubtitleSyncStatusAdjusted(describe(timing)))
     }
 
     static func status(for subtitle: DownloadedSubtitle) -> String? {
@@ -892,19 +894,19 @@ enum SubtitleSyncLabel {
     static func phase(_ job: SubtitleSyncJob) -> String? {
         guard job.isInProgress else { return nil }
         switch job.phase {
-        case "matching": return "Matching lines to speech…"
-        case "analyzing": return "Listening to the audio…"
-        default: return "Waiting to start…"
+        case "matching": return AppLanguage.string(.playerSubtitleSyncPhaseMatching)
+        case "analyzing": return AppLanguage.string(.playerSubtitleSyncPhaseAnalyzing)
+        default: return AppLanguage.string(.playerSubtitleSyncPhaseWaiting)
         }
     }
 
     /// Why a failed job failed, in plain words.
     static func failure(_ failure: String?) -> String {
         switch failure {
-        case "subtitle_changed": return "The subtitle changed while it was syncing. Try again."
-        case "no_audio": return "This video has no audio Silo can read."
-        case "unavailable": return "The server is busy. Try again in a few minutes."
-        default: return "Sync failed. Try again."
+        case "subtitle_changed": return AppLanguage.string(.playerSubtitleSyncFailureSubtitleChanged)
+        case "no_audio": return AppLanguage.string(.playerSubtitleSyncFailureNoAudio)
+        case "unavailable": return AppLanguage.string(.playerSubtitleSyncFailureUnavailable)
+        default: return AppLanguage.string(.playerSubtitleSyncFailureGeneric)
         }
     }
 
@@ -918,11 +920,11 @@ enum SubtitleSyncLabel {
     static func result(timing: SubtitleTiming, sync: SubtitleSyncJob?) -> Result? {
         switch sync?.status {
         case "synced":
-            return timing.isIdentity ? nil : Result(text: "Synced to the audio: \(describe(timing))")
+            return timing.isIdentity ? nil : Result(text: AppLanguage.string(.playerSubtitleSyncResultSynced(describe(timing))))
         case "already_synced":
-            return Result(text: "Already matches the audio.")
+            return Result(text: AppLanguage.string(.playerSubtitleSyncResultAlreadyMatches))
         case "no_match":
-            return Result(text: "Doesn't match this video's audio; probably for another release.", isWarning: true)
+            return Result(text: AppLanguage.string(.playerSubtitleSyncResultNoMatch), isWarning: true)
         case "failed":
             return Result(text: failure(sync?.failure), isWarning: true)
         default:
@@ -932,8 +934,8 @@ enum SubtitleSyncLabel {
 
     static func actionNote(isExternal: Bool) -> String {
         isExternal
-            ? "Matches the timing to the audio for everyone. The file itself isn't changed."
-            : "Matches the timing to the audio for everyone watching."
+            ? AppLanguage.string(.playerSubtitleSyncActionNoteExternal)
+            : AppLanguage.string(.playerSubtitleSyncActionNote)
     }
 
     /// The subtitle's language ("English"), or its label.
@@ -941,14 +943,14 @@ enum SubtitleSyncLabel {
         if let key = SubtitleDisplayOrder.canonicalLanguageKey(state.language) {
             return SubtitleDisplayOrder.languageDisplayName(key)
         }
-        return state.label.isEmpty ? "Subtitle" : state.label
+        return state.label.isEmpty ? AppLanguage.string(.castSubtitlesUnnamed) : state.label
     }
 
     /// "+2.3 s" / "−0.4 s".
     static func offset(_ offsetMs: Int) -> String {
         // `magnitude` cannot overflow, unlike `abs(Int.min)`.
         let seconds = Double(offsetMs.magnitude) / 1000
-        return "\(offsetMs < 0 ? "\u{2212}" : "+")\(String(format: "%.1f", seconds)) s"
+        return "\(offsetMs < 0 ? "\u{2212}" : "+")\(LocaleFormat.decimal(seconds, fractionDigits: 1)) s"
     }
 
     private static let frameRates: [Double] = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60]
@@ -965,7 +967,7 @@ enum SubtitleSyncLabel {
             }
         }
         let rounded = (scale * 10_000).rounded() / 10_000
-        return "×\(rate(rounded)) speed"
+        return AppLanguage.string(.playerSubtitleSyncSpeedFactor(rate(rounded)))
     }
 
     /// "+2.3 s · 25→23.976 fps": a correction in a few characters.

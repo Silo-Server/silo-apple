@@ -13,27 +13,27 @@ struct TVDiagnosticsConsentScreen: View {
             SettingsBackdrop()
 
             VStack(alignment: .leading, spacing: 24) {
-                Text("Crash Reports")
+                Text(.diagnosticsRowCrashReports)
                     .font(.system(size: 48, weight: .bold))
-                Text("Choose what Silo should do when a crash, hang, or unclean shutdown report is available.")
+                Text(.diagnosticsConsentChooseDescription)
                     .font(.system(size: 24))
                     .foregroundStyle(Color.siloSecondaryText)
 
-                Button("Cancel", action: dismiss.callAsFunction)
+                Button(.commonCancel, action: dismiss.callAsFunction)
                     .buttonStyle(TVSettingsPaneRowStyle())
                     .focused($focusedAction, equals: .cancel)
 
-                Button("Ask") { select(.ask) }
+                Button(.diagnosticsCrashReportsAsk) { select(.ask) }
                     .buttonStyle(TVSettingsPaneRowStyle())
                     .focused($focusedAction, equals: .ask)
 
                 if model.allowsAlwaysSend {
-                    Button("Always") { proposedMode = .always }
+                    Button(.diagnosticsCrashReportsAlways) { proposedMode = .always }
                         .buttonStyle(TVSettingsPaneRowStyle())
                         .focused($focusedAction, equals: .always)
                 }
 
-                Button("Never") { proposedMode = .never }
+                Button(.diagnosticsCrashReportsNever) { proposedMode = .never }
                     .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
                     .focused($focusedAction, equals: .never)
             }
@@ -42,20 +42,20 @@ struct TVDiagnosticsConsentScreen: View {
 
             if proposedMode == .always {
                 TVSettingsConfirmationOverlay(
-                    title: "Always Send Crash Reports?",
-                    message: "Any pending reports and future crash reports for this server account will be sent automatically.",
-                    confirmTitle: "Always Send",
+                    title: .diagnosticsAlwaysSendConfirmTitle,
+                    message: .diagnosticsAlwaysSendSettingsMessageTv,
+                    confirmTitle: .diagnosticsAlwaysSendConfirm,
                     cancel: cancelConfirmation,
                     confirm: { confirm(.always) }
                 )
                 .zIndex(1)
             } else if proposedMode == .never {
                 TVSettingsConfirmationOverlay(
-                    title: "Turn Off Crash Reports?",
+                    title: .diagnosticsTurnOffTitle,
                     message: model.selectedDestination == .hosted
-                        ? "Pending local reports will be deleted. Reports already received by Silo Diagnostics will also be queued for deletion."
-                        : "Pending reports for this server account will be deleted.",
-                    confirmTitle: "Turn Off and Delete",
+                        ? LocalizedStringResource.diagnosticsTurnOffHostedMessageTv
+                        : .diagnosticsTurnOffSelfHostedMessageTv,
+                    confirmTitle: .diagnosticsTurnOffConfirm,
                     cancel: cancelConfirmation,
                     confirm: { confirm(.never) }
                 )

@@ -21,6 +21,8 @@ private struct PersistedControlTarget: Codable {
     let serverId: String
     let serverName: String?
     var serverIdentity: String? = nil
+    /// Nil for targets saved before Rokus could be controlled: all TLS.
+    var transport: SiloControlTransport? = nil
 }
 
 @MainActor
@@ -37,6 +39,13 @@ final class SiloControlClient {
     /// title on the TV.
     private(set) var pendingReplace: SiloControlPendingReplace?
     private var resumeTokens = SiloControlResumeTokens()
+    private let pairingKeys = SiloControlPairingKeys()
+    /// The connected TV can mute but not set a volume level (a Roku's
+    /// `volume_mute_only`), so the remote shows a mute toggle and leaves the
+    /// phone's volume buttons alone.
+    private(set) var volumeIsMuteOnly = false
+    /// False when the connected TV lists `no_playback_speed` (a Roku).
+    private(set) var supportsPlaybackSpeed = true
 
     let clock = RemotePlaybackClock()
 
@@ -87,6 +96,8 @@ final class SiloControlClient {
     /// next foreground so the attempt budget isn't burned against suspended
     /// sockets.
     private var pendingReconnectReason: String?
+    /// What the screen shows if the deferred reconnect gives up; nil shows the reason.
+    private var pendingReconnectDisplay: String?
     /// The current session was attached silently (auto-resume) and the user
     /// hasn't engaged with it yet. Such a session lets go quietly when the TV
     /// goes idle, so it never flips the TV into the standby takeover screen.
@@ -125,6 +136,9 @@ final class SiloControlClient {
     /// How long the offer waits for its display title; silo-android waits as long.
     private static let offerTitleWait: Duration = .milliseconds(300)
     private static let persistedTargetKey = "silocontrol.lastTarget"
+    /// Reconnect reason for a dropped connection. Stays English: it is
+    /// logged and compared; the remote shows `castRemoteErrorLostTv`.
+    private static let lostConnection = "Lost connection to the TV."
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "control.client"
@@ -144,6 +158,22 @@ final class SiloControlClient {
         (hasActiveSession && !isAutoResuming) || isReconnecting
     }
 
+    /// The engaged TV's name, kept through a reconnect.
+    var engagedTargetName: String? {
+        activeTarget?.name ?? lastTarget?.name
+    }
+
+    /// The TV is playing a title. A connected TV with nothing on still
+    /// publishes state, with no content id.
+    var hasRemotePlayback: Bool {
+        !(state?.contentId ?? "").isEmpty
+    }
+
+    /// Counts the times the user ended the session (`disconnect`,
+    /// `cancelReconnect`), so a Play waiting out a reconnect can tell their
+    /// choice from a reconnect that gave up.
+    @ObservationIgnored private var userEndedSessionCount = 0
+
     /// How long a Play tapped during a reconnect waits for the link before
     /// giving up and reporting the failure in the remote cover.
     private static let launchReconnectWait: Duration = .seconds(45)
@@ -160,13 +190,21 @@ final class SiloControlClient {
         guard remotePlaybackEngaged else { return false }
         if isReconnecting {
             isShowingRemoteControl = true
+            let endedByUser = userEndedSessionCount
             let deadline = ContinuousClock.now + Self.launchReconnectWait
             while isReconnecting, ContinuousClock.now < deadline, !Task.isCancelled {
                 await reconnectSettled.nextChange(before: deadline)
             }
+            // The user stopped the reconnect or turned control mode off
+            // while this Play waited. That closed the remote, so the Play
+            // goes with it: reopening the remote on a reconnect error would
+            // undo their choice, and a TV they connected since never asked
+            // for this title.
+            if userEndedSessionCount != endedByUser { return true }
             guard hasActiveSession else {
                 if errorMessage == nil {
-                    errorMessage = "Couldn't reconnect to \(lastTarget?.name ?? "the TV"). Choose a TV to keep playing there, or turn off control mode to play here."
+                    errorMessage = lastTarget.map { AppLanguage.string(.remoteErrorReconnectFailed($0.name)) }
+                        ?? AppLanguage.string(.remoteErrorReconnectFailedUnnamed)
                 }
                 isShowingRemoteControl = true
                 return true
@@ -183,12 +221,13 @@ final class SiloControlClient {
         allowCrossServer: Bool = false
     ) async -> Bool {
         guard ServerRegistry.shared.activeServer != nil else {
-            errorMessage = "Choose a server before controlling a TV."
+            errorMessage = AppLanguage.string(.castRemoteErrorChooseServer)
             return false
         }
+        let target = pairingKeys.pinned(target)
         let targetsActiveServer = target.targetsActiveServer
         guard targetsActiveServer || (allowCrossServer && target.protocolVersion >= 2) else {
-            errorMessage = "That TV is connected to a different server."
+            errorMessage = AppLanguage.string(.castRemoteErrorDifferentServer)
             return false
         }
 
@@ -198,6 +237,7 @@ final class SiloControlClient {
             reconnectTask = nil
             isReconnecting = false
             pendingReconnectReason = nil
+            pendingReconnectDisplay = nil
             cancelAutoResumeProbe()
             isAutoResuming = false
             sessionIsAutoResumed = false
@@ -214,17 +254,31 @@ final class SiloControlClient {
 
         await closeCurrentSession()
 
-        Self.logger.info("control: connecting origin=\(String(describing: origin), privacy: .public)")
+        Self.logger.info("control: connecting origin=\(String(describing: origin), privacy: .public) transport=\(target.transport.rawValue, privacy: .public)")
         isConnecting = true
         errorMessage = nil
         activeTarget = target
         lastTarget = target
         state = nil
+        volumeIsMuteOnly = false
+        supportsPlaybackSpeed = true
         // Connecting alone doesn't take over the screen — the mini-bar surfaces
         // the session. The full remote only auto-presents once content launches
         // (see `launch()`) or when the user taps the mini-bar.
 
-        let session = SiloControlSession(endpoint: target.endpoint)
+        let session: SiloControlSession
+        switch target.transport {
+        case .tls:
+            session = SiloControlSession(endpoint: target.endpoint)
+        case .plain:
+            session = SiloControlSession(rokuEndpoint: target.endpoint, sealing: nil)
+        case .sealed:
+            guard let key = pairingKeys.key(for: target) else {
+                fail(Self.pairingNeededMessage(for: target), connectionId: nil, quiet: origin != .user)
+                return false
+            }
+            session = SiloControlSession(rokuEndpoint: target.endpoint, sealing: SiloControlSealedChannel(key: key))
+        }
         let connectionId = UUID()
         self.session = session
         self.connectionId = connectionId
@@ -244,7 +298,7 @@ final class SiloControlClient {
             }
         } catch {
             let message = error is SiloControlConnectTimeout
-                ? "Couldn't reach \(target.name)."
+                ? Self.unreachableMessage(for: target)
                 : error.localizedDescription
             fail(message, connectionId: connectionId, quiet: origin != .user)
             await session.close()
@@ -259,6 +313,39 @@ final class SiloControlClient {
         return connected
     }
 
+    /// Connects to the Roku a scanned pairing link names, first keeping its
+    /// pairing key, or dropping the old one when the link says `plain`. The
+    /// remote opens to show how it went.
+    func connect(pairingLink link: SiloControlPairingLink) async {
+        if let key = link.key {
+            pairingKeys.store(key, forTV: link.deviceId)
+        } else {
+            pairingKeys.forget(tv: link.deviceId)
+        }
+        isShowingRemoteControl = true
+        await connect(to: link.target)
+    }
+
+    /// What the phone says when a Roku doesn't answer: the phone can't open
+    /// Silo there (Roku forbids phone apps its control protocol), so the
+    /// viewer has to.
+    nonisolated static func unreachableMessage(for target: SiloControlTarget) -> String {
+        target.transport.isRoku
+            ? AppLanguage.string(.remoteErrorUnreachableRoku(target.name))
+            : AppLanguage.string(.remoteErrorUnreachable(target.name))
+    }
+
+    nonisolated static func pairingNeededMessage(for target: SiloControlTarget) -> String {
+        AppLanguage.string(.remoteErrorRequiresPairing(target.name))
+    }
+
+    /// The last controlled TV when it was a Roku, for the TV picker to say
+    /// how to bring it back.
+    static var rememberedRoku: (id: String, name: String)? {
+        guard let persisted = loadPersistedTarget(), persisted.transport?.isRoku == true else { return nil }
+        return (persisted.id, persisted.name)
+    }
+
     func play(on target: SiloControlTarget, request: SiloControlPlaybackRequest) async {
         // Sending content to a TV always opens the remote — show it up front so
         // the connect handshake renders inside the cover, not behind a mini-bar.
@@ -271,11 +358,11 @@ final class SiloControlClient {
         guard let activeServer = ServerRegistry.shared.activeServer,
               let profileId = ServerRegistry.shared.activeProfileId,
               !profileId.isEmpty else {
-            errorMessage = "Choose a server before controlling a TV."
+            errorMessage = AppLanguage.string(.castRemoteErrorChooseServer)
             return
         }
         guard let session, activeTarget != nil else {
-            errorMessage = "Choose a TV from Home before playing."
+            errorMessage = AppLanguage.string(.remoteErrorChooseTvFirst)
             return
         }
         // De-dup a double-tap: a second launch while one is already in flight
@@ -294,7 +381,13 @@ final class SiloControlClient {
 
         let connectionId = self.connectionId
         let handshake = self.handshake
+        let isRoku = activeTarget?.transport.isRoku == true
         do {
+            let playback = isRoku
+                ? try await Self.rokuPlayback(request, ensureIdentity: {
+                    try self.ensureActiveIdentity(serverId: activeServer.id, profileId: profileId)
+                })
+                : request
             // Display name only; the shared store has it cached after launch.
             await CurrentProfileStore.shared.refresh()
             let profileName = CurrentProfileStore.shared.profile
@@ -313,7 +406,7 @@ final class SiloControlClient {
                 throw SiloControlHandoffError.invalidResponse
             }
             adoptEffectiveTarget(server: activeServer)
-            try await session.send(.launch(SiloControlLaunchRequest(serverId: activeServer.id, playback: request)))
+            try await session.send(.launch(SiloControlLaunchRequest(serverId: activeServer.id, playback: playback)))
             isConnecting = false
         } catch SiloControlHandoffError.replaceConfirmationRequired(let nowPlaying, let message) {
             // Nothing changed on the TV; the session stays up while the user
@@ -322,7 +415,7 @@ final class SiloControlClient {
             isConnecting = false
             pendingReplace = SiloControlPendingReplace(
                 request: request, nowPlaying: nowPlaying,
-                tvName: activeTarget?.name ?? "the TV", fallbackMessage: message
+                tvName: activeTarget?.name, fallbackMessage: message
             )
         } catch SiloControlHandoffError.cancelled(let message)
                     where handshake.tvSupports(SiloControlFeature.multiController) {
@@ -335,6 +428,28 @@ final class SiloControlClient {
         } catch {
             fail(error.localizedDescription, connectionId: connectionId)
         }
+    }
+
+    /// `request` as a Roku reads it (`SiloControlRokuLaunch`). Only a
+    /// subtitle pick needs the version's track list, from the cached detail
+    /// or one read. `ensureIdentity` runs after the read and throws when the
+    /// server or profile changed meanwhile, so the launch stops rather than
+    /// map the subtitle with another scope's track list.
+    static func rokuPlayback(
+        _ request: SiloControlPlaybackRequest,
+        fetchDetail: (String) async -> ItemDetail? = { try? await SiloAPI.shared.itemDetail(contentId: $0) },
+        ensureIdentity: () throws -> Void
+    ) async throws -> SiloControlPlaybackRequest {
+        var version: FileVersion?
+        if let fileId = request.fileId, let subtitle = request.subtitleTrackIndex, subtitle >= 0 {
+            var detail: ItemDetail? = ResponseCache.shared.get(CacheKey.itemDetail(request.contentId))
+            if detail == nil {
+                detail = await fetchDetail(request.contentId)
+                try ensureIdentity()
+            }
+            version = detail?.versions?.first { $0.fileId == fileId }
+        }
+        return SiloControlRokuLaunch.playback(request, version: version)
     }
 
     /// The user agreed to replace what the TV is playing.
@@ -525,7 +640,9 @@ final class SiloControlClient {
             serverName: server.displayName,
             protocolVersion: target.protocolVersion,
             isPlaying: true,
-            serverIdentity: server.verifiedServerId
+            serverIdentity: server.verifiedServerId,
+            transport: target.transport,
+            keyId: target.keyId
         )
         activeTarget = effective
         lastTarget = effective
@@ -585,7 +702,7 @@ final class SiloControlClient {
     /// down while muted is therefore a no-op — the TV is already silent, and the
     /// only thing a command could do there is destroy the stored level.
     func stepVolumeOptimistic(_ step: Int) {
-        guard let s = state, !(s.isMuted && step < 0) else { return }
+        guard !volumeIsMuteOnly, let s = state, !(s.isMuted && step < 0) else { return }
         if s.isMuted { setMuted(false) }
         setVolume(s.volume + Double(step) / 16)
     }
@@ -611,6 +728,7 @@ final class SiloControlClient {
     /// User-initiated disconnect: also forgets the persisted target so a
     /// future launch doesn't silently reattach to a TV the user let go of.
     func disconnect() {
+        userEndedSessionCount += 1
         forgetPersistedTarget()
         quietDisconnect()
     }
@@ -620,6 +738,7 @@ final class SiloControlClient {
     func cancelReconnect() {
         guard isReconnecting else { return }
         Self.logger.info("control: reconnect cancelled by user")
+        userEndedSessionCount += 1
         forgetPersistedTarget()
         clearSession()
     }
@@ -649,9 +768,11 @@ final class SiloControlClient {
         if let reason = pendingReconnectReason {
             // The session dropped while backgrounded; run the reconnect now
             // that sockets work again, with a fresh attempt budget.
+            let display = pendingReconnectDisplay
             pendingReconnectReason = nil
+            pendingReconnectDisplay = nil
             wasBackgroundedWithActiveSession = false
-            beginReconnect(reason: reason)
+            beginReconnect(reason: reason, display: display)
             return
         }
 
@@ -662,7 +783,7 @@ final class SiloControlClient {
         wasBackgroundedWithActiveSession = false
 
         if session == nil {
-            beginReconnect(reason: "Lost connection to the TV.")
+            beginReconnect(reason: Self.lostConnection)
         } else {
             session?.enqueue(.ping)
         }
@@ -744,10 +865,15 @@ final class SiloControlClient {
                     self?.handle(message, connectionId: connectionId)
                 }
                 guard let self, self.isLiveConnection(connectionId) else { return }
-                self.beginReconnect(reason: "Lost connection to the TV.")
+                self.beginReconnect(reason: Self.lostConnection)
             } catch {
                 guard let self, self.isLiveConnection(connectionId) else { return }
-                self.beginReconnect(reason: error.localizedDescription)
+                // The reason is logged, so English (D44); the screen shows
+                // the error in the app's language if reconnecting fails.
+                self.beginReconnect(
+                    reason: AppLanguage.inEnglish { error.localizedDescription },
+                    display: error.localizedDescription
+                )
             }
         }
     }
@@ -759,7 +885,11 @@ final class SiloControlClient {
         // path dead, send path alive) keeps the session pinned open. See the
         // matching note in TVControlReceiver.handle.
         switch message {
-        case .hello, .handoffChallenge, .handoffReady, .handoffCancel:
+        case .hello(let hello):
+            handshake.receive(message)
+            volumeIsMuteOnly = hello.supports(SiloControlFeature.volumeMuteOnly)
+            supportsPlaybackSpeed = !hello.supports(SiloControlFeature.noPlaybackSpeed)
+        case .handoffChallenge, .handoffReady, .handoffCancel:
             handshake.receive(message)
         case .state(let inbound):
             let state = reconcileOptimisticVolume(inbound)
@@ -797,7 +927,7 @@ final class SiloControlClient {
                 tvKeepsOtherControllers: handshake.tvSupports(SiloControlFeature.multiController)
             ) {
             case .reconnect:
-                beginReconnect(reason: "Lost connection to the TV.")
+                beginReconnect(reason: Self.lostConnection)
             case .letGo(let forgetTarget):
                 if forgetTarget { forgetPersistedTarget() }
                 // A TV that keeps the target (full, refused, unused profile)
@@ -828,7 +958,7 @@ final class SiloControlClient {
                 guard let self, self.isLiveConnection(connectionId) else { return }
                 self.missedHeartbeats += 1
                 if self.missedHeartbeats > Self.maxMissedHeartbeats {
-                    self.beginReconnect(reason: "Lost connection to the TV.")
+                    self.beginReconnect(reason: Self.lostConnection)
                     return
                 }
                 self.session?.enqueue(.ping)
@@ -842,7 +972,9 @@ final class SiloControlClient {
         connectionId == id && isHandshakeComplete
     }
 
-    private func beginReconnect(reason: String) {
+    /// `reason` is English: it is logged and compared. `display` is the text
+    /// the remote shows if every attempt fails; nil shows `reason`.
+    private func beginReconnect(reason: String, display: String? = nil) {
         guard let target = lastTarget else { clearSession(); return }
         // A reconnect attempt's own read loop / heartbeat reports the failed
         // connection through here too. Restarting would cancel the running
@@ -865,9 +997,11 @@ final class SiloControlClient {
         // attempt budget and wiping the session state.
         if UIApplication.shared.applicationState == .background {
             pendingReconnectReason = reason
+            pendingReconnectDisplay = display
             return
         }
         pendingReconnectReason = nil
+        pendingReconnectDisplay = nil
 
         reconnectTask?.cancel()
         reconnectTask = Task { @MainActor [weak self] in
@@ -893,7 +1027,17 @@ final class SiloControlClient {
             // foreground can still silently resume if the TV comes back.
             let keepCoverVisible = self.isShowingRemoteControl
             self.clearSession()
-            self.errorMessage = reason
+            // A Roku that stops answering has usually left Silo, which only
+            // the viewer can open again.
+            // `reason` is English when the phone itself lost the TV (it is
+            // compared and logged), so that one is shown from the catalog.
+            if reason == Self.lostConnection {
+                self.errorMessage = target.transport.isRoku
+                    ? AppLanguage.string(.castRemoteErrorLostRoku(target.name))
+                    : AppLanguage.string(.castRemoteErrorLostTv)
+            } else {
+                self.errorMessage = display ?? reason
+            }
             self.isShowingRemoteControl = keepCoverVisible
         }
     }
@@ -978,6 +1122,7 @@ final class SiloControlClient {
         isAutoResuming = false
         sessionIsAutoResumed = false
         pendingReconnectReason = nil
+        pendingReconnectDisplay = nil
         lastTarget = nil
         activeTarget = nil
         state = nil
@@ -1019,7 +1164,8 @@ final class SiloControlClient {
             name: target.name,
             serverId: target.serverId,
             serverName: target.serverName,
-            serverIdentity: target.serverIdentity
+            serverIdentity: target.serverIdentity,
+            transport: target.transport
         )
         guard let data = try? JSONEncoder().encode(value) else { return }
         UserDefaults.standard.set(data, forKey: Self.persistedTargetKey)
@@ -1059,13 +1205,13 @@ final class SiloControlClient {
 
         attachNowPlayingIfNeeded()
         nowPlaying.update(
-            title: state.title.isEmpty ? "Silo TV" : state.title,
+            title: state.title.isEmpty ? "Silo TV" : state.title, // i18n-ignore: product name on the lock screen
             duration: state.duration,
             position: clock.displayTime(),
             isPlaying: clock.isPlaying(),
             mediaKind: .video,
             artist: state.subtitle,
-            albumTitle: activeTarget.map { "Playing on \($0.name)" },
+            albumTitle: activeTarget.map { AppLanguage.string(.castPlayingOn($0.name)) },
             playbackRate: state.playbackSpeed
         )
         updateNowPlayingArtwork(contentId: contentId)

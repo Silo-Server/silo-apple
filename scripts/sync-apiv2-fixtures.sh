@@ -116,6 +116,13 @@ SELECTED=(
   sign_in_with_network_identity_off_overlay
   link_account_identity_with_network_ok
   refresh_session_provider_unavailable
+  # Local theme music: capability, the playback grant (original and converted
+  # delivery) and the refusals a detail page treats as "no theme".
+  theme_songs_capability
+  theme_songs_playback
+  theme_songs_playback_converted
+  theme_songs_playback_not_acceptable
+  theme_songs_playback_unauthorized
 )
 
 # Fixtures written by hand from the server OpenAPI document, for cases the

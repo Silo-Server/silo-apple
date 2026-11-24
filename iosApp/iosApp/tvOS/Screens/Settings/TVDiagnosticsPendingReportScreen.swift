@@ -15,7 +15,7 @@ struct TVDiagnosticsPendingReportScreen: View {
             SettingsBackdrop()
 
             VStack(alignment: .leading, spacing: 28) {
-                Text("Report Details")
+                Text(.diagnosticsReportDetailsTitle)
                     .font(.system(size: 48, weight: .bold))
 
                 if let summary {
@@ -23,17 +23,19 @@ struct TVDiagnosticsPendingReportScreen: View {
                         .font(.system(size: 23))
                         .foregroundStyle(Color.siloSecondaryText)
                 } else {
-                    ProgressView("Building report summary…")
+                    ProgressView {
+                        Text(.diagnosticsSummaryBuilding)
+                    }
                 }
 
                 Spacer()
 
                 HStack(spacing: 18) {
-                    Button("Cancel", action: dismiss.callAsFunction)
+                    Button(.commonCancel, action: dismiss.callAsFunction)
                         .buttonStyle(TVSettingsPaneRowStyle())
                         .focused($focusedAction, equals: .cancel)
 
-                    Button("Send Report") {
+                    Button(.diagnosticsCrashConfirm) {
                         Task {
                             await model.send(report)
                             dismiss()
@@ -43,7 +45,7 @@ struct TVDiagnosticsPendingReportScreen: View {
                     .disabled(!model.featureState.isUploadAvailable || model.isWorking)
                     .focused($focusedAction, equals: .send)
 
-                    Button("Delete Report") { showDeleteConfirmation = true }
+                    Button(.diagnosticsReportDelete) { showDeleteConfirmation = true }
                         .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
                         .disabled(model.isWorking)
                         .focused($focusedAction, equals: .delete)
@@ -54,9 +56,9 @@ struct TVDiagnosticsPendingReportScreen: View {
 
             if showDeleteConfirmation {
                 TVSettingsConfirmationOverlay(
-                    title: "Delete Report?",
-                    message: "This pending diagnostics report cannot be recovered.",
-                    confirmTitle: "Delete",
+                    title: .diagnosticsReportDeleteConfirmTitle,
+                    message: .diagnosticsReportDeleteConfirmMessage,
+                    confirmTitle: .diagnosticsEraseConfirm,
                     cancel: cancelDelete,
                     confirm: deleteReport
                 )

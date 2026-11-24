@@ -18,17 +18,17 @@ enum SiloControlHandoffError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .updateRequired:
-            return "Update Silo on the TV to play with your profile."
+            return AppLanguage.string(.remoteErrorUpdateTv)
         case .timedOut:
-            return "The TV took too long to prepare your profile."
+            return AppLanguage.string(.remoteErrorProfileSlow)
         case .cancelled(let message):
             return message
         case .identityChanged:
-            return "Your server or profile changed. Try playing again."
+            return AppLanguage.string(.remoteErrorIdentityChanged)
         case .invalidResponse:
-            return "The TV could not verify your playback profile."
+            return AppLanguage.string(.remoteErrorProfileUnverified)
         case .connectionClosed:
-            return "Lost connection to the TV."
+            return AppLanguage.string(.castRemoteErrorLostTv)
         case .replaceConfirmationRequired(_, let message):
             return message
         }
@@ -151,7 +151,7 @@ final class SiloControlHandshake {
 
     private func throwIfCancelled(_ requestId: String) throws {
         guard let cancellation, cancellation.requestId == requestId else { return }
-        let message = cancellation.message ?? "The TV cancelled profile setup."
+        let message = cancellation.message ?? AppLanguage.string(.castRemoteErrorSetupCancelled)
         if cancellation.reason == SiloControlHandoffCancelReason.replaceConfirmationRequired {
             throw SiloControlHandoffError.replaceConfirmationRequired(cancellation.nowPlaying, message: message)
         }

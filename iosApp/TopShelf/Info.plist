@@ -26,7 +26,7 @@
 	<string>$(SILO_USER_INDEPENDENT_KEYCHAIN)</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsLocalNetworking</key>
+		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
 	<key>NSExtension</key>

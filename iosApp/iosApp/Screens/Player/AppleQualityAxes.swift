@@ -56,8 +56,8 @@ struct AppleQualityAxes: Equatable {
         if normalized == ApplePlaybackQuality.ultraHDId {
             return AppleQualityAxes(resolution: "2160p", bitrateKbps: nil)
         }
-        guard let option = ApplePlaybackQuality.settingsOptions.first(where: { $0.id == normalized }),
-              !option.isAuto else {
+        // Auto is no rung, so it lands in the fallback.
+        guard let option = ApplePlaybackQuality.rungs.first(where: { $0.id == normalized }) else {
             return .auto
         }
         let resolution = resolutionMembers.contains(option.resolution) ? option.resolution : "480p"
@@ -101,7 +101,7 @@ struct AppleQualityAxes: Equatable {
         // for a stored 480p and round-trips instead of widening to the 480p
         // tier above it. Any member this build has never seen matches nothing,
         // which is the `auto` fallback.
-        let atResolution = ApplePlaybackQuality.tiers.filter {
+        let atResolution = ApplePlaybackQuality.rungs.filter {
             split($0.id).resolution == resolution
         }
         guard !atResolution.isEmpty else { return ApplePlaybackQuality.autoId }

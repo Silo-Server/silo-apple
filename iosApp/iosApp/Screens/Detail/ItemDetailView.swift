@@ -8,6 +8,8 @@ struct ItemDetailView: View {
     var tvSeed: TVItemDetailRouteSeed? = nil
     var onClose: (() -> Void)? = nil
     var resumeContext: SeriesDetailContext? = nil
+    /// Reports the season and episode chosen on a series page.
+    var onSeriesSelection: ((SeriesDetailContext) -> Void)? = nil
 
     @State private var resolvedSeries: SeriesDetailContext?
     @State private var resolvedSourceID: String?
@@ -36,7 +38,7 @@ struct ItemDetailView: View {
         #else
         ItemDetailPhoneContent(
             contentId: destinationID, libraryId: libraryId, onClose: onClose,
-            resumeContext: context, onResolveSeries: resolve
+            resumeContext: context, onResolveSeries: resolve, onSeriesSelection: onSeriesSelection
         )
         .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
         .environment(\.browseLibraryId, libraryId)
@@ -54,21 +56,47 @@ private struct ControlRequestBox: Identifiable {
     init(_ request: SiloControlPlaybackRequest) { self.request = request }
 }
 
+/// What the detail page's Remote button does when tapped.
+enum DetailRemoteControlAction: Equatable {
+    /// Cast the page's item to a TV.
+    case playOnTV
+    /// Open the remote for the TV already playing.
+    case showRemote
+    /// Pick a TV to control.
+    case pickTV
+
+    /// An engaged TV already takes the page's Play button, which asks
+    /// before replacing what the TV has on. Its Remote button therefore
+    /// opens the remote and never sends the page's item.
+    ///
+    /// With no TV engaged, a fetched movie or episode leaf casts itself; its
+    /// primary item maps to a single playback request. Series, season and
+    /// audiobook containers have no single item to cast. A card seed has no
+    /// files or tracks, so until the fetched detail replaces it the page
+    /// acts as if it had none.
+    static func forTap(detail: ItemDetail?, isProvisional: Bool, remotePlaybackEngaged: Bool) -> Self {
+        if remotePlaybackEngaged { return .showRemote }
+        if let detail, !isProvisional,
+           !detail.isAudiobook, detail.type != "season", detail.type != "series" {
+            return .playOnTV
+        }
+        return .pickTV
+    }
+}
+
 /// Scroll offsets (as folded by `phoneDetailScrollTracking`) over which the
-/// floating chrome's backing strip fades in, the per-button glass fades out
-/// onto that strip, and the compact title fades in. The strip keeps scrolled
-/// content, such as the season chips, from sliding under the floating
-/// buttons while still being tappable.
+/// floating chrome's soft top edge and the compact title fade in. The soft
+/// edge blurs and dims scrolled content, such as the season chips, as it
+/// nears the floating buttons and the status bar, so it never reads as
+/// tappable under them. The buttons keep their own glass throughout.
 struct PhoneDetailScrollGlassTiming: Equatable {
     var strip: ClosedRange<CGFloat>
-    var controlGlass: ClosedRange<CGFloat>
     var title: ClosedRange<CGFloat>
 
     /// Compact (phone-width) hero: tall artwork with the title on its lower
     /// edge, so the chrome waits until the artwork has mostly scrolled away.
     static let compact = PhoneDetailScrollGlassTiming(
         strip: 200...360,
-        controlGlass: 150...260,
         title: 400...480
     )
 
@@ -77,7 +105,6 @@ struct PhoneDetailScrollGlassTiming: Equatable {
     /// earliest offset the folded tracking reports.
     static let expanded = PhoneDetailScrollGlassTiming(
         strip: 150...250,
-        controlGlass: 150...250,
         title: 250...330
     )
 
@@ -91,7 +118,7 @@ struct PhoneDetailScrollGlassTiming: Equatable {
 /// Shared with the request detail card, which has no trailing control.
 struct PhoneDetailTopChrome: View {
     let title: String
-    /// False keeps the buttons on their own glass with no backing strip.
+    /// False leaves the buttons floating with no soft edge or title.
     let isScrollGlassEnabled: Bool
     let scrollState: PhoneDetailScrollState
     let leadingSystemName: String?
@@ -99,27 +126,46 @@ struct PhoneDetailTopChrome: View {
     let onLeadingTap: () -> Void
     let trailingSystemName: String?
     let onTrailingTap: (() -> Void)?
+    /// Set while a TV is engaged: the trailing button turns into a solid
+    /// disc that opens this menu instead of running `onTrailingTap`.
+    var trailingEngagedMenu: SiloControlEngagedMenuItems? = nil
+    /// Replaces the buttons' usual inset (18pt from the sides, 9pt from the
+    /// top) with one distance from both, to sit them in a split page's sidebar.
+    var cornerInset: CGFloat? = nil
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.locale) private var locale
     /// The chrome spans the detail page, so its width is the hero's width.
     @State private var pageWidth: CGFloat = 0
+    /// The status bar's height, which the soft edge covers above the buttons.
+    @State private var topSafeAreaInset: CGFloat = 0
+    @Environment(\.detailPageWidthHint) private var pageWidthHint
+    #if os(iOS)
+    @State private var statusColumn: StatusColumnLayout?
+    #endif
 
-    /// Follows the hero's own compact/expanded choice, so the strip and the
-    /// title arrive as that hero's title scrolls away.
+    /// Follows the hero's own compact/expanded choice, so the soft edge and
+    /// the title arrive as that hero's title scrolls away.
     private var scrollGlass: PhoneDetailScrollGlassTiming? {
-        guard isScrollGlassEnabled else { return nil }
+        guard isScrollGlassEnabled, !isBesideStatusColumn else { return nil }
         return .forHero(isExpanded: PhoneDetailHeroLayout.usesExpandedLayout(
-            availableWidth: pageWidth,
+            availableWidth: layoutWidth,
             horizontalSizeClass: horizontalSizeClass,
             verticalSizeClass: verticalSizeClass
         ))
+    }
+
+    /// The measured width, else the presenter's hint until it is measured.
+    private var layoutWidth: CGFloat {
+        pageWidth > 0 ? pageWidth : pageWidthHint
     }
 
     var body: some View {
         ZStack(alignment: .top) {
             PhoneDetailTopGlass(
                 timing: scrollGlass,
+                topSafeAreaInset: topSafeAreaInset,
                 scrollState: scrollState
             )
 
@@ -130,49 +176,116 @@ struct PhoneDetailTopChrome: View {
             )
 
             HStack {
-                if let leadingSystemName {
+                if let leadingSystemName, !usesStatusColumnNavigation {
                     Button(action: onLeadingTap) {
                         controlIcon(
                             systemName: leadingSystemName,
-                            size: leadingSystemName == "chevron.left" ? 17 : 16
+                            size: leadingSystemName == "chevron.backward" ? 17 : 16
                         )
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(leadingAccessibilityLabel ?? "Back")
+                    .accessibilityLabel(leadingAccessibilityLabel ?? AppLanguage.string(.commonBack, locale: locale))
                 }
 
                 Spacer(minLength: 20)
 
-                if let trailingSystemName, let onTrailingTap {
-                    Button(action: onTrailingTap) {
-                        controlIcon(systemName: trailingSystemName, size: 16)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Remote Control")
+                if !isBesideStatusColumn {
+                    trailingButton
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 9)
+            .padding(.horizontal, cornerInset ?? 18)
+            .padding(.top, cornerInset ?? 9)
         }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
-            guard abs(width - pageWidth) > 1 else { return }
+            // As in `PhoneDetailHero`: a width matching the hint the first
+            // layout used changes nothing.
+            guard abs(width - layoutWidth) > 1 else { return }
             pageWidth = width
         }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.safeAreaInsets.top
+        } action: { inset in
+            topSafeAreaInset = inset
+        }
+        #if os(iOS)
+        .onGeometryChange(for: StatusColumnLayout?.self) { proxy in
+            StatusColumnLayout(safeArea: proxy.safeAreaInsets)
+        } action: { column in
+            statusColumn = column
+        }
+        // The page hides the navigation bar so its artwork reaches the top.
+        // On the folded iPhone Duo the bar runs down the status column
+        // beside the artwork and carries Close or Back.
+        .toolbar(usesStatusColumnNavigation ? .visible : .hidden, for: .navigationBar)
+        .toolbar {
+            if usesStatusColumnNavigation, leadingSystemName == "xmark" {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(action: onLeadingTap) {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel(leadingAccessibilityLabel ?? AppLanguage.string(.rowPageClose, locale: locale))
+                }
+            }
+        }
+        #endif
         .zIndex(20)
     }
 
-    private func controlIcon(systemName: String, size: CGFloat) -> some View {
+    /// On the folded iPhone Duo, Close and Back go at the top of the status
+    /// column as system bar buttons, where Apple places a page's primary
+    /// navigation and where row pages and pushed pages already show theirs.
+    /// The system keeps them clear of the time and any Live Activity. The
+    /// open Duo's split page keeps its own button in the sidebar.
+    private var usesStatusColumnNavigation: Bool {
+        isBesideStatusColumn && horizontalSizeClass == .compact
+    }
+
+    /// Beside the iPhone Duo's status column no soft edge runs across the
+    /// top: it would end at the column in a hard edge.
+    private var isBesideStatusColumn: Bool {
+        #if os(iOS)
+        statusColumn != nil
+        #else
+        false
+        #endif
+    }
+
+    @ViewBuilder
+    private var trailingButton: some View {
+        if let trailingSystemName, let trailingEngagedMenu {
+            Menu {
+                trailingEngagedMenu
+            } label: {
+                controlIcon(systemName: trailingSystemName, size: 16, isActive: true)
+            }
+            .menuStyle(.borderlessButton)
+            .siloControlEngagedAccessibility(trailingEngagedMenu.controller)
+        } else if let trailingSystemName, let onTrailingTap {
+            Button(action: onTrailingTap) {
+                controlIcon(systemName: trailingSystemName, size: 16)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(.detailRemoteControl))
+        }
+    }
+
+    /// `isActive` swaps the glass for a solid disc with a dark glyph, the
+    /// same inverted look the top bar's Remote button takes while a TV is
+    /// engaged.
+    private func controlIcon(systemName: String, size: CGFloat, isActive: Bool = false) -> some View {
         ZStack {
-            PhoneDetailControlGlass(
-                timing: scrollGlass,
-                scrollState: scrollState
-            )
+            if isActive {
+                Circle().fill(Color.white)
+            } else {
+                PhoneDetailStaticControlGlass()
+                    .equatable()
+            }
 
             Image(systemName: systemName)
                 .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(isActive ? Color.black : Color.white)
         }
         .frame(
             width: SiloTheme.topBarIconHitSize,
@@ -186,6 +299,7 @@ struct PhoneDetailTopChrome: View {
 /// node is equatable and retained while only its compositor alpha changes.
 private struct PhoneDetailTopGlass: View {
     let timing: PhoneDetailScrollGlassTiming?
+    let topSafeAreaInset: CGFloat
     let scrollState: PhoneDetailScrollState
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -193,7 +307,10 @@ private struct PhoneDetailTopGlass: View {
     @ViewBuilder
     var body: some View {
         if let timing {
-            PhoneDetailStaticGlassStrip(reduceTransparency: reduceTransparency)
+            PhoneDetailStaticSoftEdge(
+                topSafeAreaInset: topSafeAreaInset,
+                reduceTransparency: reduceTransparency
+            )
                 .equatable()
                 .opacity(phoneDetailSmoothProgress(scrollState.offset, over: timing.strip))
                 .allowsHitTesting(false)
@@ -202,21 +319,47 @@ private struct PhoneDetailTopGlass: View {
     }
 }
 
-private struct PhoneDetailStaticGlassStrip: View, Equatable {
+/// The page blurred and dimmed from the top of the screen, through the status
+/// bar and the buttons' row, fading out below them with no edge of its own.
+private struct PhoneDetailStaticSoftEdge: View, Equatable {
+    /// The layer is drawn this far above the chrome, up to the screen's top.
+    let topSafeAreaInset: CGFloat
     let reduceTransparency: Bool
 
+    /// The buttons' row: their 9pt top inset, the buttons, and 9pt below.
+    private static let rowHeight: CGFloat = SiloTheme.topBarIconHitSize + 18
+    /// How far below the buttons' row the blur and dim reach before they
+    /// have faded out completely.
+    private static let fadeTail: CGFloat = 56
+    /// The fade starts this far into the buttons' row, so it has run a long
+    /// way by the row's lower edge and no line shows there.
+    private static let fadeStart: CGFloat = 14
+
+    private var height: CGFloat {
+        topSafeAreaInset + Self.rowHeight + Self.fadeTail
+    }
+
+    private var fade: LinearGradient {
+        LinearGradient(
+            stops: [
+                .init(color: .black, location: 0),
+                .init(color: .black, location: (topSafeAreaInset + Self.fadeStart) / height),
+                .init(color: .clear, location: 1),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
     var body: some View {
-        Group {
-            if reduceTransparency {
-                Color(white: 0.16).opacity(0.98)
-            } else {
-                Color.clear
-                    .siloGlass(in: Rectangle(), tint: Color.black.opacity(0.10))
-                    .overlay(Color.white.opacity(0.025))
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: SiloTheme.topBarIconHitSize + 18)
+        SiloSoftEdgeSurface(reduceTransparency: reduceTransparency)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .mask(fade)
+            // Fixed geometry, not `ignoresSafeArea`: that moved a fixed-height
+            // layer up without growing it, which cut the fade off in a line.
+            .offset(y: -topSafeAreaInset)
+            .frame(height: Self.rowHeight, alignment: .top)
     }
 }
 
@@ -245,20 +388,6 @@ private struct PhoneDetailScrollTitle: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(progress < 0.5)
         }
-    }
-}
-
-private struct PhoneDetailControlGlass: View {
-    let timing: PhoneDetailScrollGlassTiming?
-    let scrollState: PhoneDetailScrollState
-
-    var body: some View {
-        PhoneDetailStaticControlGlass()
-            .equatable()
-            .opacity(
-                timing.map { 1 - phoneDetailSmoothProgress(scrollState.offset, over: $0.controlGlass) }
-                    ?? 1
-            )
     }
 }
 
@@ -295,6 +424,7 @@ private struct OfflinePlayChoice: Identifiable {
     let downloadedLabel: String
     let contentId: String
     let fileId: Int?
+    let pinsVersion: Bool
     let audioTrackIndex: Int?
     let subtitleTrackIndex: Int?
     let startFromBeginning: Bool
@@ -308,6 +438,7 @@ private struct OfflinePlayChoice: Identifiable {
 private struct UnreachablePlayRequest: Identifiable {
     let contentId: String
     let fileId: Int?
+    let pinsVersion: Bool
     let audioTrackIndex: Int?
     let subtitleTrackIndex: Int?
     let startFromBeginning: Bool
@@ -322,34 +453,81 @@ private struct ItemDetailPhoneContent: View {
     var resumeContext: SeriesDetailContext? = nil
 
     let onResolveSeries: ((SeriesDetailContext) -> Void)?
+    let onSeriesSelection: ((SeriesDetailContext) -> Void)?
 
-    init(contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: SeriesDetailContext?, onResolveSeries: ((SeriesDetailContext) -> Void)?) {
+    init(
+        contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: SeriesDetailContext?,
+        onResolveSeries: ((SeriesDetailContext) -> Void)?, onSeriesSelection: ((SeriesDetailContext) -> Void)?
+    ) {
         self.contentId = contentId
         self.libraryId = libraryId
         self.onClose = onClose
         self.resumeContext = resumeContext
         self.onResolveSeries = onResolveSeries
+        self.onSeriesSelection = onSeriesSelection
         // Paint cached content on the first frame, so a warm visit pushes a
         // filled page rather than an empty one that fills in from `.task`.
         let viewModel = ItemDetailViewModel(libraryId: libraryId)
         viewModel.initialResumeSeasonNumber = resumeContext?.seasonNumber
         viewModel.hydrateFromCache(contentId: contentId)
+        #if DEBUG
+        DetailLoadTrace.mark(.viewInit)
+        #endif
         _viewModel = State(initialValue: viewModel)
         _selectedSeriesEpisodeId = State(initialValue: resumeContext?.episodeContentId)
+        // As `loadNextUpWatchDetail` will set it for the episode a cached
+        // series opens on, so the first frame draws what that load leaves
+        // and the page is not built twice before it appears.
+        _isLoadingNextUpWatchDetail = State(initialValue: Self.initialNextUpIsLoading(
+            viewModel: viewModel, episodeContentId: resumeContext?.episodeContentId, libraryId: libraryId
+        ))
+    }
+
+    /// Mirrors `playbackEpisode(for:)` and `loadNextUpWatchDetail(for:)`.
+    private static func initialNextUpIsLoading(
+        viewModel: ItemDetailViewModel,
+        episodeContentId: String?,
+        libraryId: Int?
+    ) -> Bool {
+        guard viewModel.detail?.type == "series" else { return false }
+        let episodes = viewModel.episodes
+        let episode = episodeContentId.flatMap { id in episodes.first { $0.contentId == id } }
+            ?? episodes.preferredResumeEpisode()
+        guard let episode else { return false }
+        let cached: WatchDetail? = ResponseCache.shared.get(
+            CacheKey.itemWatchDetail(episode.contentId, libraryId: libraryId)
+        )
+        return cached == nil
     }
 
     @State private var viewModel: ItemDetailViewModel
+    /// Season and episode routes resolve to their series, so this is the
+    /// page theme music looks up the selected season's own set on.
+    private var isSeriesPage: Bool { viewModel.detail.map { SiloMediaType.isSeries($0.type) } ?? false }
     @State private var preferredVersionFileId: Int?
+    /// The edition picked on this visit. Nil opens on the last-played one.
+    @State private var preferredEditionId: String?
     @State private var preferredAudioTrackIndex: Int?
     @State private var preferredSubtitleTrackIndex: Int?
     @State private var preferredSubtitleTrackWasManuallySelected = false
+    /// Set when the viewer picks Auto on this visit; the next load reads the
+    /// cleared preference from the server.
+    @State private var didClearSubtitleOverride = false
     /// The file a manual subtitle track pick was made on; its index means
-    /// nothing on another version.
+    /// nothing on another version. Nil once a Version or Edition pick has
+    /// moved the track to another file.
     @State private var preferredSubtitleTrackFileId: Int?
     @State private var preferredNextUpFileId: Int?
+    @State private var preferredNextUpEditionId: String?
     @State private var preferredNextUpAudioTrackIndex: Int?
     @State private var preferredNextUpSubtitleTrackIndex: Int?
+    /// Whether the viewer picked the selected episode's subtitle, as opposed
+    /// to the saved preference seeding it.
+    @State private var preferredNextUpSubtitleTrackWasManuallySelected = false
     @State private var nextUpWatchDetail: WatchDetail?
+    /// Set when the viewer picks Auto for the selected episode, until the
+    /// next episode load.
+    @State private var didClearNextUpSubtitleOverride = false
     /// Keeps the playback selector's footprint occupied while a newly focused
     /// episode is resolving its files and tracks. The series page renders a
     /// same-size skeleton from this state instead of collapsing the stack.
@@ -368,25 +546,51 @@ private struct ItemDetailPhoneContent: View {
     @State private var offlinePlayChoice: OfflinePlayChoice?
     @State private var unreachablePlayRequest: UnreachablePlayRequest?
     @State private var detailScrollState = PhoneDetailScrollState()
+    /// The movie or series rating control's open row, draft and Undo toast.
+    @State private var ratingController = PhoneRatingController()
     /// Whether a movie or series page lays out as a split; see `supportsScrollGlassChrome`.
     @State private var isSplitPage = false
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.locale) private var locale
     #if os(iOS)
+    /// The iPhone Duo's status column beside the page, where the TV remote
+    /// covers the window and the Remote button moves into the column.
+    @State private var statusColumn: StatusColumnLayout?
+    private var isBesideStatusColumn: Bool { statusColumn != nil }
     @Environment(SiloControlClient.self) private var siloControl
     @State private var controlRequestBox: ControlRequestBox?
     /// The cast button's in-flight watch-state read. A second tap replaces it.
     @State private var controlResumeLookupTask: Task<Void, Never>?
     @State private var isShowingControlPicker = false
-    @State private var isShowingRemoteControl = false
+
+    private var seriesSelection: SeriesDetailContext? {
+        guard viewModel.detail?.type == "series" else { return nil }
+        return SeriesDetailContext(
+            seriesContentId: contentId,
+            episodeContentId: selectedSeriesEpisodeId,
+            seasonNumber: viewModel.selectedSeason?.seasonNumber
+        )
+    }
+
+    /// The remote itself is presented by the detail's sheet or the root
+    /// view, whichever is on top (`ItemDetailRemotePlaybackPresentation`).
+    private var isShowingControl: Bool {
+        controlRequestBox != nil || isShowingControlPicker || siloControl.isShowingRemoteControl
+    }
     #endif
     @Environment(AppRouter.self) private var router
 
     var body: some View {
         Group {
-            if let detail = viewModel.detail {
-                content(for: detail)
-            } else if let error = viewModel.error {
+            // A card seed whose detail failed to load gives way to the error:
+            // nothing on it can play until the detail arrives.
+            if let error = viewModel.error, viewModel.detail == nil || viewModel.isDetailProvisional {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadDetail(contentId: contentId) } })
+            } else if let detail = viewModel.detail {
+                content(for: detail)
+                    #if DEBUG
+                    .onAppear { DetailLoadTrace.mark(.contentAppear) }
+                    #endif
             } else {
                 Color.clear
             }
@@ -408,12 +612,33 @@ private struct ItemDetailPhoneContent: View {
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
         .descriptionTranslation(viewModel)
+        .phoneRatingPage(ratingController, savedScore: RatingScore(server: viewModel.userRating)) { score in
+            Task { await viewModel.setRating(score) }
+        }
+        .onChange(of: viewModel.detail?.contentId) { _, _ in
+            // A draft belongs to the title it was started on.
+            ratingController.cancel()
+        }
+        .themeMusic(
+            viewModel.detail?.themes,
+            seasonContentId: isSeriesPage ? viewModel.selectedSeason?.contentId : nil,
+            // A series page waits for its seasons, so a season that owns a
+            // theme never opens on a burst of the series' one.
+            isLoading: viewModel.detail == nil || viewModel.isDetailProvisional
+                || (isSeriesPage && viewModel.seasons.isEmpty
+                    && viewModel.isLoadingSeriesHierarchy)
+        )
+        .onChange(of: PlaybackConnection.shared.tier) { previousTier, _ in
+            reconcileTracksAfterConnectionChange(previousTier: previousTier)
+        }
         .task(id: contentId) {
             // Returning from the player restarts this task. Keep the episode
             // and season the page was showing instead of the entry context.
             let isReturning = hasStartedDetailLoad
             hasStartedDetailLoad = true
+            didClearSubtitleOverride = false
             preferredVersionFileId = nil
+            preferredEditionId = nil
             preferredAudioTrackIndex = nil
             // A subtitle picked in the selector on this visit, Off included,
             // stays when the viewer returns from the player, as on tvOS.
@@ -456,6 +681,9 @@ private struct ItemDetailPhoneContent: View {
             reseedSubtitleOverride()
         }
         .onAppear {
+            #if DEBUG
+            DetailLoadTrace.mark(.pageAppear)
+            #endif
             isPageVisible = true
             // Coming back from the player (or an extra) resumes a poll that
             // `onDisappear` cancelled — without re-POSTing, since the server
@@ -500,7 +728,7 @@ private struct ItemDetailPhoneContent: View {
             Task { await applySeriesPlaybackReturn(playback) }
         }
         .alert(
-            "Downloaded on This Device",
+            Text(.detailOfflineChoiceTitle),
             isPresented: Binding(
                 get: { offlinePlayChoice != nil },
                 set: { if !$0 { offlinePlayChoice = nil } }
@@ -516,23 +744,24 @@ private struct ItemDetailPhoneContent: View {
                     resumePosition: choice.resumePosition
                 )
             }
-            Button("Stream from Server") {
+            Button(.detailOfflineChoiceStream) {
                 presentStreamingPlayer(
                     contentId: choice.contentId,
                     fileId: choice.fileId,
+                    pinsVersion: choice.pinsVersion,
                     audioTrackIndex: choice.audioTrackIndex,
                     subtitleTrackIndex: choice.subtitleTrackIndex,
                     startFromBeginning: choice.startFromBeginning,
                     resumePosition: choice.resumePosition
                 )
             }
-            Button("Cancel", role: .cancel) {}
+            Button(.commonCancel, role: .cancel) {}
         } message: { _ in
-            Text("Play the copy saved on this device, or stream from the server.")
+            Text(.detailOfflineChoiceBody)
         }
         .personalStateNoticeAlert($viewModel.personalStateNotice)
         .alert(
-            "Can't Reach Server",
+            Text(.detailUnreachableTitle),
             isPresented: Binding(
                 get: { unreachablePlayRequest != nil },
                 set: { if !$0 { unreachablePlayRequest = nil } }
@@ -541,27 +770,27 @@ private struct ItemDetailPhoneContent: View {
         ) { request in
             // Reachability state can be stale (e.g. the server just came
             // back), so always leave an escape hatch to attempt the stream.
-            Button("Try Anyway") {
+            Button(.detailUnreachableTryAnyway) {
                 Task { await ConnectionMonitor.shared.probeServer() }
                 presentStreamingPlayer(
                     contentId: request.contentId,
                     fileId: request.fileId,
+                    pinsVersion: request.pinsVersion,
                     audioTrackIndex: request.audioTrackIndex,
                     subtitleTrackIndex: request.subtitleTrackIndex,
                     startFromBeginning: request.startFromBeginning,
                     resumePosition: request.resumePosition
                 )
             }
-            Button("Cancel", role: .cancel) {}
+            Button(.commonCancel, role: .cancel) {}
         } message: { _ in
             Text(ConnectionMonitor.shared.isDeviceOnline
-                ? "Streaming needs a connection to your server, which isn't responding right now. Downloaded titles can still be played."
-                : "You're offline. Connect to a network to stream, or play a downloaded title.")
+                ? LocalizedStringResource.detailUnreachableServerDown
+                : .detailUnreachableOffline)
         }
         #if os(iOS)
-        // Hide the navigation bar so the artwork reaches the card's top edge;
-        // the card draws its own floating controls.
-        .toolbar(.hidden, for: .navigationBar)
+        // The card draws its own floating controls, which also decide when
+        // the navigation bar shows (see `PhoneDetailTopChrome`).
         .overlay(alignment: .top) {
             detailTopControls
         }
@@ -570,15 +799,28 @@ private struct ItemDetailPhoneContent: View {
         } action: { isSplit in
             isSplitPage = isSplit
         }
-        .sheet(item: $controlRequestBox) { box in
+        .onGeometryChange(for: StatusColumnLayout?.self) { proxy in
+            StatusColumnLayout(safeArea: proxy.safeAreaInsets)
+        } action: { column in
+            statusColumn = column
+        }
+        .overlay {
+            if let statusColumn {
+                statusColumnRemoteButton(statusColumn)
+            }
+        }
+        .sheet(item: $controlRequestBox, onDismiss: { router.refitItemDetail() }) { box in
             SiloControlTargetPickerView(request: box.request, controller: siloControl)
         }
-        .sheet(isPresented: $isShowingControlPicker) {
+        .sheet(isPresented: $isShowingControlPicker, onDismiss: { router.refitItemDetail() }) {
             SiloControlTargetPickerView(request: nil, controller: siloControl)
         }
-        .sheet(isPresented: $isShowingRemoteControl) {
-            SiloControlRemoteView(controller: siloControl)
-                .presentationDetents([.large])
+        // Refitting the detail would discard these, so it waits for them.
+        .onChange(of: isShowingControl) { _, showing in
+            router.itemDetailShowsControl = showing
+        }
+        .onChange(of: seriesSelection) { _, selection in
+            if let selection { onSeriesSelection?(selection) }
         }
         #endif
     }
@@ -592,8 +834,10 @@ private struct ItemDetailPhoneContent: View {
             title: scrollTitle,
             isScrollGlassEnabled: supportsScrollGlassChrome,
             scrollState: detailScrollState,
-            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
-            leadingAccessibilityLabel: showsClose ? "Close details" : (showsBack ? "Back" : nil),
+            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.backward" : nil),
+            leadingAccessibilityLabel: showsClose
+                ? AppLanguage.string(.detailCloseDetails, locale: locale)
+                : (showsBack ? AppLanguage.string(.commonBack, locale: locale) : nil),
             onLeadingTap: {
                 if let onClose {
                     onClose()
@@ -604,7 +848,20 @@ private struct ItemDetailPhoneContent: View {
             trailingSystemName: siloControl.remotePlaybackEngaged
                 ? "appletvremote.gen4.fill"
                 : "appletvremote.gen4",
-            onTrailingTap: handleRemoteControlTap
+            onTrailingTap: handleRemoteControlTap,
+            trailingEngagedMenu: engagedRemoteMenu,
+            cornerInset: isSplitPage ? PhoneDetailHeroLayout.splitCloseButtonInset : nil
+        )
+    }
+
+    /// The Remote button's menu while a TV is engaged; nil otherwise, and
+    /// the button then casts the page's item or opens the TV picker.
+    private var engagedRemoteMenu: SiloControlEngagedMenuItems? {
+        guard siloControl.remotePlaybackEngaged else { return nil }
+        return SiloControlEngagedMenuItems(
+            controller: siloControl,
+            onShowRemote: { siloControl.showRemoteControl() },
+            onChooseTarget: { isShowingControlPicker = true }
         )
     }
 
@@ -616,7 +873,7 @@ private struct ItemDetailPhoneContent: View {
         return AudiobookDetailFormatting.cleanTitle(detail.title, seriesName: detail.audiobook?.series?.name)
     }
 
-    /// Phone and iPad alike: without the strip, the season chips and other
+    /// Phone and iPad alike: without the soft edge, the season chips and other
     /// controls scroll under the floating Close button on an iPad sheet. A
     /// split movie or series page needs none: its content pane starts below
     /// the buttons, and the hero pane beside it never scrolls away.
@@ -628,42 +885,85 @@ private struct ItemDetailPhoneContent: View {
         return detail.isAudiobook
     }
 
-    /// Movie and episode leaves cast the visible item. Containers (series,
-    /// seasons, audiobooks) have no single file, so the button opens the
-    /// connected remote or the TV picker.
+    /// The Remote button in the status column, at the bottom where the tab
+    /// pages keep their actions. The top of the column belongs to the system
+    /// and grows when the Dynamic Island shows an activity.
+    private func statusColumnRemoteButton(_ layout: StatusColumnLayout) -> some View {
+        Group {
+            if let engagedRemoteMenu {
+                Menu {
+                    engagedRemoteMenu
+                } label: {
+                    Image(systemName: "appletvremote.gen4.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.black)
+                        .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
+                        .background(Circle().fill(Color.white))
+                        .contentShape(Circle())
+                }
+                .menuStyle(.borderlessButton)
+                .siloControlEngagedAccessibility(siloControl)
+            } else {
+                Button(action: handleRemoteControlTap) {
+                    Image(systemName: "appletvremote.gen4")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
+                        .siloGlass(in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(.detailRemoteControl))
+            }
+        }
+        .statusColumnCentered(layout)
+        .padding(.bottom, StatusColumnBar.bottomMargin)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: layout.edge == .leading ? .bottomLeading : .bottomTrailing)
+        .ignoresSafeArea(edges: [layout.edgeSet, .bottom])
+    }
+
+    /// With no TV engaged, movie and episode leaves cast the visible item,
+    /// and containers (series, seasons, audiobooks), which have no single
+    /// file, open the TV picker. An engaged TV's button is a menu and never
+    /// gets here, except for a tap that raced the TV engaging.
     private func handleRemoteControlTap() {
-        if let detail = viewModel.detail, isDirectlyPlayable(detail) {
+        let action = DetailRemoteControlAction.forTap(
+            detail: viewModel.detail,
+            isProvisional: viewModel.isDetailProvisional,
+            remotePlaybackEngaged: siloControl.remotePlaybackEngaged
+        )
+        switch action {
+        case .playOnTV:
+            guard let detail = viewModel.detail else { return }
             // The TV resumes from the request's explicit position, so read
-            // the server's current one rather than the page's snapshot.
-            let fileId = playbackFileId(for: detail)
-            let audioTrackIndex = preferredAudioTrackIndex
-            let subtitleTrackIndex = preferredSubtitleTrackIndex
+            // the server's current one rather than the page's snapshot, and
+            // resolve the file from the same state.
             controlResumeLookupTask?.cancel()
             controlResumeLookupTask = Task {
                 let state = await refreshedResumeState(contentId: contentId)
                 guard !Task.isCancelled else { return }
                 controlResumeLookupTask = nil
+                let start = playbackStart(
+                    for: detail,
+                    startFromBeginning: false,
+                    resumePosition: state.resumePosition(cached: detail.userData),
+                    watchState: state.userData(cached: detail.userData)
+                )
                 playOnTV(SiloControlPlaybackRequest(
                     contentId: contentId,
-                    fileId: fileId,
-                    audioTrackIndex: audioTrackIndex,
-                    subtitleTrackIndex: subtitleTrackIndex,
+                    fileId: start.fileId,
+                    audioTrackIndex: start.audioTrackIndex,
+                    subtitleTrackIndex: start.subtitleTrackIndex,
                     startFromBeginning: false,
-                    resumePosition: state.resumePosition(cached: detail.userData)
+                    resumePosition: start.resumePosition,
+                    pinsVersion: preferredVersionFileId != nil
                 ))
             }
-        } else if siloControl.remotePlaybackEngaged {
-            isShowingRemoteControl = true
-        } else {
+        case .showRemote:
+            siloControl.showRemoteControl()
+        case .pickTV:
             isShowingControlPicker = true
         }
-    }
-
-    /// True when the loaded detail is a movie or episode leaf, whose primary
-    /// item maps to a single playback request. Series, season, and audiobook
-    /// containers have no single "this item" to cast.
-    private func isDirectlyPlayable(_ detail: ItemDetail) -> Bool {
-        !detail.isAudiobook && detail.type != "season" && detail.type != "series"
     }
 
     private func playOnTV(_ request: SiloControlPlaybackRequest) {
@@ -676,6 +976,16 @@ private struct ItemDetailPhoneContent: View {
         }
     }
     #endif
+
+    /// The rating control for a loaded movie or series page.
+    private var ratingSlot: PhoneRatingSlot? {
+        guard viewModel.canRate else { return nil }
+        return PhoneRatingSlot(
+            score: RatingScore(server: viewModel.userRating),
+            isWatched: viewModel.isWatched,
+            controller: ratingController
+        )
+    }
 
     @ViewBuilder
     private func content(for detail: ItemDetail) -> some View {
@@ -690,8 +1000,10 @@ private struct ItemDetailPhoneContent: View {
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
                 onPersonTap: { openPerson($0) },
-                onNavigateToItem: { openItem($0) },
+                onNavigateToItem: { router.openRelatedTitle(contentId: $0) },
                 scrollState: detailScrollState,
+                isProvisional: viewModel.isDetailProvisional,
+                seedArtwork: viewModel.seedArtwork,
                 belowOverview: { translationView(for: detail) }
             )
         } else if detail.type == "season" || detail.type == "episode" {
@@ -713,29 +1025,39 @@ private struct ItemDetailPhoneContent: View {
                 hierarchyError: viewModel.seriesLoadErrorMessage,
                 onRetryHierarchy: { await viewModel.retrySeriesHierarchy() },
                 selectedNextUpFileId: preferredNextUpFileId,
+                selectedNextUpEditionId: preferredNextUpEditionId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                 nextUpWatchDetail: nextUpWatchDetail,
+                nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
                 isLoadingSelectedEpisodePlayback: isLoadingNextUpWatchDetail,
                 selectedEpisodeContentId: playbackEpisode(for: detail)?.contentId,
                 onSelectSeason: { season in
                     selectedSeriesEpisodeId = nil
                     Task { await viewModel.selectSeason(season) }
                 },
-                onPlayEpisode: { id, fileId, startFromBeginning, resumePosition in
+                onPlayEpisode: { id, fileId, startFromBeginning, resumePosition, watchState in
                     awaitsPlaybackReturn = true
                     SeriesPlaybackReturnInbox.discardPending()
                     let usesSelectedEpisodeControls = id == playbackEpisode(for: detail)?.contentId
+                    let resumePosition = startFromBeginning ? nil : resumePosition
+                    let start = usesSelectedEpisodeControls
+                        ? nextUpPlaybackStart(
+                            pinnedFileId: fileId,
+                            contentId: id,
+                            startFromBeginning: startFromBeginning,
+                            resumePosition: resumePosition,
+                            watchState: watchState
+                        ) : nil
                     presentPlayerFromDetail(
                         contentId: id,
-                        fileId: usesSelectedEpisodeControls
-                            ? nextUpPlaybackFileId(resolvedFileId: fileId) : nil,
-                        audioTrackIndex: usesSelectedEpisodeControls
-                            ? preferredNextUpAudioTrackIndex : nil,
-                        subtitleTrackIndex: usesSelectedEpisodeControls
-                            ? preferredNextUpSubtitleTrackIndex : nil,
+                        fileId: start?.fileId,
+                        // `fileId` is set only by a version picked for this episode.
+                        pinsVersion: usesSelectedEpisodeControls && fileId != nil,
+                        audioTrackIndex: start?.audioTrackIndex,
+                        subtitleTrackIndex: start?.subtitleTrackIndex,
                         startFromBeginning: startFromBeginning,
-                        resumePosition: startFromBeginning ? nil : resumePosition
+                        resumePosition: start.map(\.resumePosition) ?? resumePosition
                     )
                 },
                 refreshResumeState: { id in await refreshedResumeState(contentId: id) },
@@ -746,19 +1068,8 @@ private struct ItemDetailPhoneContent: View {
                     // detail stack from participating in the selection change.
                     selectedSeriesEpisodeId = id
                 },
-                onSelectNextUpVersion: { fileId in
-                    preferredNextUpFileId = fileId
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpWatchDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpAudioTrackIndex
-                    )
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpWatchDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpSubtitleTrackIndex
-                    )
-                },
+                onSelectNextUpVersion: { selectNextUpVersion($0) },
+                onSelectNextUpEdition: { selectNextUpEdition($0) },
                 onSelectNextUpAudioTrack: { index in
                     preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: nextUpWatchDetail,
@@ -773,6 +1084,8 @@ private struct ItemDetailPhoneContent: View {
                     )
                 },
                 onSelectNextUpSubtitleTrack: { index in
+                    didClearNextUpSubtitleOverride = (index == nil)
+                    preferredNextUpSubtitleTrackWasManuallySelected = true
                     preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: nextUpWatchDetail,
                         versionFileId: preferredNextUpFileId,
@@ -782,13 +1095,14 @@ private struct ItemDetailPhoneContent: View {
                         prefKey: prefKey(for: nextUpWatchDetail),
                         version: effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId),
                         requested: index,
-                        sanitized: preferredNextUpSubtitleTrackIndex,
-                        showForced: nextUpWatchDetail?.effectiveShowForcedSubtitles
+                        sanitized: preferredNextUpSubtitleTrackIndex
                     )
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
+                isNotInterested: viewModel.isNotInterested,
+                onToggleNotInterested: { Task { await viewModel.toggleNotInterested() } },
                 onSetSeasonWatched: { season, played in
                     await viewModel.setSeasonWatched(season, played: played)
                 },
@@ -806,13 +1120,16 @@ private struct ItemDetailPhoneContent: View {
                     await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
                 },
                 onPersonTap: { openPerson($0) },
-                onNavigateToItem: { openItem($0) },
+                onNavigateToItem: { router.openRelatedTitle(contentId: $0) },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
                 isFindingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 scrollState: detailScrollState,
+                isProvisional: viewModel.isDetailProvisional,
+                seedArtwork: viewModel.seedArtwork,
+                ratingSlot: ratingSlot,
                 belowOverview: { translationView(for: detail) }
             )
             .task(id: playbackEpisode(for: detail)?.contentId) {
@@ -824,36 +1141,33 @@ private struct ItemDetailPhoneContent: View {
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
+                boxSet: viewModel.boxSet,
                 selectedVersionFileId: preferredVersionFileId,
+                selectedEditionId: preferredEditionId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
-                onPlay: { startFromBeginning, resumePosition in
-                    // Track picks only travel with a resolved file.
-                    let fileId = playbackFileId(for: detail)
+                subtitleOverrideCleared: didClearSubtitleOverride,
+                onPlay: { startFromBeginning, resumePosition, watchState in
+                    // Track picks only travel with the file they were made on.
+                    let start = playbackStart(
+                        for: detail,
+                        startFromBeginning: startFromBeginning,
+                        resumePosition: startFromBeginning ? nil : resumePosition,
+                        watchState: watchState
+                    )
                     presentPlayerFromDetail(
                         contentId: contentId,
-                        fileId: fileId,
-                        audioTrackIndex: fileId == nil ? nil : preferredAudioTrackIndex,
-                        subtitleTrackIndex: fileId == nil ? nil : preferredSubtitleTrackIndex,
+                        fileId: start.fileId,
+                        pinsVersion: preferredVersionFileId != nil,
+                        audioTrackIndex: start.audioTrackIndex,
+                        subtitleTrackIndex: start.subtitleTrackIndex,
                         startFromBeginning: startFromBeginning,
-                        resumePosition: startFromBeginning ? nil : resumePosition
+                        resumePosition: start.resumePosition
                     )
                 },
                 refreshResumeState: { await refreshedResumeState(contentId: contentId) },
-                onSelectVersion: { fileId in
-                    preferredVersionFileId = fileId
-                    preferredAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: detail,
-                        versionFileId: fileId,
-                        candidate: preferredAudioTrackIndex
-                    )
-                    preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: detail,
-                        versionFileId: fileId,
-                        candidate: preferredSubtitleTrackIndex
-                    )
-                    preferredSubtitleTrackFileId = effectiveVersion(for: detail, versionFileId: fileId)?.fileId
-                },
+                onSelectVersion: { selectVersion($0, in: detail) },
+                onSelectEdition: { selectEdition($0, in: detail) },
                 onSelectAudioTrack: { index in
                     preferredAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: detail,
@@ -868,6 +1182,7 @@ private struct ItemDetailPhoneContent: View {
                     )
                 },
                 onSelectSubtitleTrack: { index in
+                    didClearSubtitleOverride = (index == nil)
                     preferredSubtitleTrackWasManuallySelected = true
                     preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: detail,
@@ -882,21 +1197,25 @@ private struct ItemDetailPhoneContent: View {
                         prefKey: prefKey(for: detail),
                         version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
                         requested: index,
-                        sanitized: preferredSubtitleTrackIndex,
-                        showForced: nil
+                        sanitized: preferredSubtitleTrackIndex
                     )
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
+                isNotInterested: viewModel.isNotInterested,
+                onToggleNotInterested: { Task { await viewModel.toggleNotInterested() } },
                 onPersonTap: { openPerson($0) },
-                onNavigateToItem: { openItem($0) },
+                onNavigateToItem: { router.openRelatedTitle(contentId: $0) },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
                 isFindingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
                 scrollState: detailScrollState,
+                isProvisional: viewModel.isDetailProvisional,
+                seedArtwork: viewModel.seedArtwork,
+                ratingSlot: ratingSlot,
                 belowOverview: { translationView(for: detail) }
             )
         }
@@ -907,27 +1226,154 @@ private struct ItemDetailPhoneContent: View {
         presentPlayerFromDetail(contentId: contentId, startFromBeginning: true, resumePosition: nil)
     }
 
-    private func playbackFileId(for detail: ItemDetail) -> Int? {
-        if let preferredVersionFileId {
-            return preferredVersionFileId
-        }
-        if preferredAudioTrackIndex != nil || preferredSubtitleTrackIndex != nil {
-            return effectiveVersion(for: detail, versionFileId: preferredVersionFileId)?.fileId
-        }
-        return nil
+    /// The file and track picks Play sends: the file the page shows, for
+    /// the watch state the resume position came from (`watchState`). Only a
+    /// Version pick pins it (`pinsVersion`); otherwise the server may fall
+    /// back to another file of the same edition.
+    private func playbackStart(
+        for detail: ItemDetail,
+        startFromBeginning: Bool,
+        resumePosition: Double?,
+        watchState: LeafItemUserData?
+    ) -> DetailVersionSelection.PageStart {
+        DetailVersionSelection.pageStart(
+            versions: detail.versions ?? [],
+            pinnedFileId: preferredVersionFileId,
+            editionId: preferredEditionId,
+            shownWith: detail.userData,
+            startsWith: watchState,
+            resumePosition: resumePosition,
+            preferredQualityId: detailQuality(for: nil),
+            startFromBeginning: startFromBeginning,
+            audioTrackIndex: preferredAudioTrackIndex,
+            subtitleTrackIndex: preferredSubtitleTrackIndex,
+            variants: detail.playbackVariants
+        )
     }
 
-    private func nextUpPlaybackFileId(resolvedFileId: Int?) -> Int? {
-        if let resolvedFileId {
-            return resolvedFileId
+    /// The selected episode's start. No file while its files are still
+    /// loading, so a quick Play never sends the previous episode's file.
+    /// `pinnedFileId` is a version picked for this episode.
+    private func nextUpPlaybackStart(
+        pinnedFileId: Int?,
+        contentId: String,
+        startFromBeginning: Bool,
+        resumePosition: Double?,
+        watchState: LeafItemUserData?
+    ) -> DetailVersionSelection.PageStart {
+        guard let nextUpWatchDetail, nextUpWatchDetail.contentId == contentId else {
+            return .unresolved(resumePosition: resumePosition)
         }
-        if preferredNextUpAudioTrackIndex != nil || preferredNextUpSubtitleTrackIndex != nil {
-            return effectiveVersion(
-                for: nextUpWatchDetail,
-                versionFileId: preferredNextUpFileId
-            )?.fileId
+        return DetailVersionSelection.pageStart(
+            versions: nextUpWatchDetail.versions,
+            pinnedFileId: pinnedFileId ?? preferredNextUpFileId,
+            editionId: preferredNextUpEditionId,
+            shownWith: nextUpWatchDetail.userData,
+            startsWith: watchState,
+            resumePosition: resumePosition,
+            preferredQualityId: detailQuality(for: nil),
+            startFromBeginning: startFromBeginning,
+            audioTrackIndex: preferredNextUpAudioTrackIndex,
+            subtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
+            variants: nextUpWatchDetail.playbackVariants
+        )
+    }
+
+    private func selectVersion(_ fileId: Int?, in detail: ItemDetail) {
+        let previous = effectiveVersion(for: detail, versionFileId: preferredVersionFileId)
+        // A pin records its cut, so Auto stays there once the pin is cleared.
+        if let fileId {
+            preferredEditionId = PlaybackEditions.edition(forFileId: fileId, in: detail.versions ?? [])?.id
         }
-        return nil
+        preferredVersionFileId = fileId
+        preferredAudioTrackIndex = sanitizedAudioTrackIndex(
+            for: detail,
+            versionFileId: fileId,
+            candidate: preferredAudioTrackIndex
+        )
+        carrySubtitle(in: detail, from: previous)
+    }
+
+    /// An Edition pick: Version returns to Auto in that edition. When that
+    /// changes the file, the audio pick named a stream of the old file, so it
+    /// goes, and the subtitle moves to the new file's matching track.
+    private func selectEdition(_ id: String, in detail: ItemDetail) {
+        let previous = effectiveVersion(for: detail, versionFileId: preferredVersionFileId)
+        preferredEditionId = id
+        preferredVersionFileId = nil
+        guard effectiveVersion(for: detail, versionFileId: nil)?.fileId != previous?.fileId else { return }
+        preferredAudioTrackIndex = nil
+        carrySubtitle(in: detail, from: previous)
+    }
+
+    /// After a Version or Edition pick moved the page off `previous`: a
+    /// subtitle index names a stream of that file, so it becomes the shown
+    /// file's matching track. The moved track no longer belongs to the file
+    /// it was picked on, so a reload reseeds it from the saved preference.
+    private func carrySubtitle(in detail: ItemDetail, from previous: FileVersion?) {
+        preferredSubtitleTrackFileId = DetailPlaybackFormatting.subtitlePickFileAfterVersionPick(
+            preferredSubtitleTrackFileId,
+            index: preferredSubtitleTrackIndex,
+            movingFrom: previous,
+            to: effectiveVersion(for: detail, versionFileId: preferredVersionFileId)
+        )
+        preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+            for: detail,
+            versionFileId: preferredVersionFileId,
+            candidate: DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
+                preferredSubtitleTrackIndex,
+                movingFrom: previous,
+                to: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
+                isManualPick: preferredSubtitleTrackWasManuallySelected,
+                signature: detail.effectiveSubtitleTrackSignature,
+                mode: detail.effectiveSubtitleMode,
+                showForced: detail.showsForcedSubtitles,
+                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+            )
+        )
+    }
+
+    /// `selectEdition` for the selected episode.
+    private func selectNextUpEdition(_ id: String) {
+        let previous = effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId)
+        preferredNextUpEditionId = id
+        preferredNextUpFileId = nil
+        guard nextUpWatchDetail != nil,
+              effectiveVersion(for: nextUpWatchDetail, versionFileId: nil)?.fileId != previous?.fileId else { return }
+        preferredNextUpAudioTrackIndex = nil
+        carryNextUpSubtitle(from: previous)
+    }
+
+    private func selectNextUpVersion(_ fileId: Int?) {
+        let previous = effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId)
+        if let fileId {
+            preferredNextUpEditionId = PlaybackEditions.edition(forFileId: fileId, in: nextUpWatchDetail?.versions ?? [])?.id
+        }
+        preferredNextUpFileId = fileId
+        preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
+            for: nextUpWatchDetail,
+            versionFileId: fileId,
+            candidate: preferredNextUpAudioTrackIndex
+        )
+        carryNextUpSubtitle(from: previous)
+    }
+
+    /// `carrySubtitle` for the selected episode.
+    private func carryNextUpSubtitle(from previous: FileVersion?) {
+        preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+            for: nextUpWatchDetail,
+            versionFileId: preferredNextUpFileId,
+            candidate: DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
+                preferredNextUpSubtitleTrackIndex,
+                movingFrom: previous,
+                to: effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId),
+                isManualPick: preferredNextUpSubtitleTrackWasManuallySelected,
+                signature: nextUpWatchDetail?.effectiveSubtitleTrackSignature,
+                mode: nextUpWatchDetail?.effectiveSubtitleMode,
+                showForced: nextUpWatchDetail?.showsForcedSubtitles ?? true,
+                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+            )
+        )
     }
 
     /// The server's current watch state for a Play tap. Skipped when the
@@ -941,22 +1387,77 @@ private struct ItemDetailPhoneContent: View {
         }
     }
 
-    private func effectiveVersion(for detail: ItemDetail, versionFileId: Int?) -> FileVersion? {
+    /// The connection changed tier, which can change Auto's file under the
+    /// open page. Track picks made on the old file name streams of that file,
+    /// so they're dropped and reseeded as on a reload.
+    private func reconcileTracksAfterConnectionChange(previousTier: PlaybackNetworkTier) {
+        if preferredVersionFileId == nil, let detail = viewModel.detail,
+           let before = effectiveVersion(for: detail, versionFileId: nil, networkTier: previousTier) {
+            // The connection never changes the cut: keep the one shown.
+            if preferredEditionId == nil {
+                preferredEditionId = PlaybackEditions.edition(forFileId: before.fileId, in: detail.versions ?? [])?.id
+            }
+            if before.fileId != effectiveVersion(for: detail, versionFileId: nil)?.fileId {
+                preferredAudioTrackIndex = nil
+                reseedSubtitleOverride()
+            }
+        }
+        if preferredNextUpFileId == nil, let nextUpWatchDetail,
+           let before = effectiveVersion(for: nextUpWatchDetail, versionFileId: nil, networkTier: previousTier) {
+            if preferredNextUpEditionId == nil {
+                preferredNextUpEditionId = PlaybackEditions.edition(forFileId: before.fileId, in: nextUpWatchDetail.versions)?.id
+            }
+            if before.fileId != effectiveVersion(for: nextUpWatchDetail, versionFileId: nil)?.fileId {
+                preferredNextUpAudioTrackIndex = nil
+                preferredNextUpSubtitleTrackWasManuallySelected = false
+                preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.subtitleIndexAfterFileChange(
+                    preferredNextUpSubtitleTrackIndex
+                ) { launchSubtitleIndex(for: nextUpWatchDetail) }
+            }
+        }
+    }
+
+    /// The quality Auto ranks with: the current connection's, or the one
+    /// for `networkTier` when asking what it was before a change.
+    private func detailQuality(for networkTier: PlaybackNetworkTier?) -> String {
+        networkTier.map { PlayerSettings.shared.preferredQuality(for: $0) }
+            ?? PlayerSettings.shared.connectionPreferredQuality
+    }
+
+    /// The movie's file, in the edition picked on this visit.
+    private func effectiveVersion(
+        for detail: ItemDetail,
+        versionFileId: Int?,
+        networkTier: PlaybackNetworkTier? = nil
+    ) -> FileVersion? {
         DetailVersionSelection.displayVersion(
             versions: detail.versions ?? [],
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            lastFileInProgress: detail.userData?.hasResumePoint ?? false,
+            preferredQualityId: detailQuality(for: networkTier),
+            editionId: preferredEditionId,
+            lastEditionKey: detail.userData?.lastEditionKey,
+            variants: detail.playbackVariants
         )
     }
 
-    private func effectiveVersion(for detail: WatchDetail?, versionFileId: Int?) -> FileVersion? {
+    /// The selected episode's file, in the edition picked for it.
+    private func effectiveVersion(
+        for detail: WatchDetail?,
+        versionFileId: Int?,
+        networkTier: PlaybackNetworkTier? = nil
+    ) -> FileVersion? {
         guard let detail else { return nil }
         return DetailVersionSelection.displayVersion(
             versions: detail.versions,
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            lastFileInProgress: detail.userData?.hasResumePoint ?? false,
+            preferredQualityId: detailQuality(for: networkTier),
+            editionId: preferredNextUpEditionId,
+            lastEditionKey: detail.userData?.lastEditionKey,
+            variants: detail.playbackVariants
         )
     }
 
@@ -996,7 +1497,9 @@ private struct ItemDetailPhoneContent: View {
         guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
             return nil
         }
-        let available = version.subtitleTracks?.compactMap(\.selectionIndex) ?? []
+        // A remembered pick of a track the server can't deliver falls back
+        // to Auto: starting on it would be refused.
+        let available = version.subtitleTracks?.filter { !$0.hasUnsupportedFormat }.compactMap(\.selectionIndex) ?? []
         return available.contains(candidate) ? candidate : nil
     }
 
@@ -1010,7 +1513,9 @@ private struct ItemDetailPhoneContent: View {
         guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
             return nil
         }
-        let available = version.subtitleTracks?.compactMap(\.selectionIndex) ?? []
+        // A remembered pick of a track the server can't deliver falls back
+        // to Auto: starting on it would be refused.
+        let available = version.subtitleTracks?.filter { !$0.hasUnsupportedFormat }.compactMap(\.selectionIndex) ?? []
         return available.contains(candidate) ? candidate : nil
     }
 
@@ -1100,8 +1605,7 @@ private struct ItemDetailPhoneContent: View {
         prefKey: String?,
         version: FileVersion?,
         requested: Int?,
-        sanitized: Int?,
-        showForced: Bool?
+        sanitized: Int?
     ) {
         guard let prefKey else { return }
         guard let requested else {
@@ -1109,11 +1613,7 @@ private struct ItemDetailPhoneContent: View {
             return
         }
         guard requested == sanitized, let version,
-              let request = TrackSelectionPersistence.subtitleRequest(
-                  version: version,
-                  ffIndex: requested,
-                  showForced: showForced
-              )
+              let request = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: requested)
         else { return }
         TrackSelectionPersistence.saveSubtitle(prefKey: prefKey, request: request)
     }
@@ -1152,10 +1652,13 @@ private struct ItemDetailPhoneContent: View {
     }
 
     private func loadNextUpWatchDetail(for detail: ItemDetail) async {
+        didClearNextUpSubtitleOverride = false
+        preferredNextUpSubtitleTrackWasManuallySelected = false
         guard let nextUp = playbackEpisode(for: detail) else {
             nextUpWatchDetail = nil
             isLoadingNextUpWatchDetail = false
             preferredNextUpFileId = nil
+            preferredNextUpEditionId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
             return
@@ -1165,6 +1668,7 @@ private struct ItemDetailPhoneContent: View {
         let cacheKey = CacheKey.itemWatchDetail(requestedContentId, libraryId: libraryId)
         let cached: WatchDetail? = ResponseCache.shared.get(cacheKey)
         preferredNextUpFileId = nil
+        preferredNextUpEditionId = nil
         preferredNextUpAudioTrackIndex = nil
         // A cached episode paints its selectors at once; only a miss shows
         // the skeleton while the request runs.
@@ -1194,8 +1698,10 @@ private struct ItemDetailPhoneContent: View {
             ResponseCache.shared.set(watchDetail, for: cacheKey, fetchedAt: writeToken)
             // Keep any pick made on the cached selectors while this ran.
             let isUntouched = preferredNextUpFileId == nil
+                && preferredNextUpEditionId == nil
                 && preferredNextUpAudioTrackIndex == nil
                 && preferredNextUpSubtitleTrackIndex == seededSubtitleIndex
+                && !preferredNextUpSubtitleTrackWasManuallySelected
             nextUpWatchDetail = watchDetail
             if isUntouched {
                 preferredNextUpSubtitleTrackIndex = launchSubtitleIndex(for: watchDetail)
@@ -1224,10 +1730,6 @@ private struct ItemDetailPhoneContent: View {
         }
     }
 
-    private func openItem(_ contentId: String) {
-        router.navigate(to: .itemDetail(contentId: contentId))
-    }
-
     private func translationView(for detail: ItemDetail) -> DescriptionTranslationView {
         DescriptionTranslationView(viewModel: viewModel)
     }
@@ -1235,11 +1737,14 @@ private struct ItemDetailPhoneContent: View {
     private func presentPlayerFromDetail(
         contentId: String,
         fileId: Int? = nil,
+        pinsVersion: Bool = false,
         audioTrackIndex: Int? = nil,
         subtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool,
         resumePosition: Double?
     ) {
+        // Starting playback saves an open rating row, as Done does.
+        ratingController.commit()
         #if os(iOS)
         // An engaged TV takes the request through the router's interceptor
         // (see `AppRouter.presentPlayer`). Skipping the local-copy choice and
@@ -1249,6 +1754,7 @@ private struct ItemDetailPhoneContent: View {
             presentStreamingPlayer(
                 contentId: contentId,
                 fileId: fileId,
+                pinsVersion: pinsVersion,
                 audioTrackIndex: audioTrackIndex,
                 subtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
@@ -1279,9 +1785,10 @@ private struct ItemDetailPhoneContent: View {
             offlinePlayChoice = OfflinePlayChoice(
                 downloadId: record.id,
                 leafContentId: record.leafMediaItemId,
-                downloadedLabel: Self.downloadedOptionLabel(for: record),
+                downloadedLabel: Self.downloadedOptionLabel(for: record, locale: locale),
                 contentId: contentId,
                 fileId: fileId,
+                pinsVersion: pinsVersion,
                 audioTrackIndex: audioTrackIndex,
                 subtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
@@ -1296,6 +1803,7 @@ private struct ItemDetailPhoneContent: View {
             unreachablePlayRequest = UnreachablePlayRequest(
                 contentId: contentId,
                 fileId: fileId,
+                pinsVersion: pinsVersion,
                 audioTrackIndex: audioTrackIndex,
                 subtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
@@ -1307,6 +1815,7 @@ private struct ItemDetailPhoneContent: View {
         presentStreamingPlayer(
             contentId: contentId,
             fileId: fileId,
+            pinsVersion: pinsVersion,
             audioTrackIndex: audioTrackIndex,
             subtitleTrackIndex: subtitleTrackIndex,
             startFromBeginning: startFromBeginning,
@@ -1317,6 +1826,7 @@ private struct ItemDetailPhoneContent: View {
     private func presentStreamingPlayer(
         contentId: String,
         fileId: Int?,
+        pinsVersion: Bool,
         audioTrackIndex: Int?,
         subtitleTrackIndex: Int?,
         startFromBeginning: Bool,
@@ -1333,6 +1843,7 @@ private struct ItemDetailPhoneContent: View {
             contentId: contentId,
             libraryId: libraryId,
             fileId: fileId,
+            pinsVersion: pinsVersion,
             audioTrackIndex: audioTrackIndex,
             subtitleTrackIndex: subtitleTrackIndex,
             startFromBeginning: startFromBeginning,
@@ -1344,18 +1855,21 @@ private struct ItemDetailPhoneContent: View {
 
     /// Dialog label for the local copy, annotated with its stored quality
     /// and size so the choice against the stream is an informed one.
-    private static func downloadedOptionLabel(for record: DownloadRecord) -> String {
+    private static func downloadedOptionLabel(for record: DownloadRecord, locale: Locale) -> String {
         var parts: [String] = []
         let quality = record.effectiveQuality ?? record.format
         if !quality.isEmpty {
             parts.append(DownloadFormat(rawValue: quality)?.displayName ?? quality.capitalized)
         }
         if record.fileSize > 0 {
-            parts.append(ByteCountFormatter.string(fromByteCount: record.fileSize, countStyle: .file))
+            parts.append(LocaleFormat.bytes(record.fileSize, locale: locale))
         }
-        return parts.isEmpty
-            ? "Play Downloaded"
-            : "Play Downloaded (\(parts.joined(separator: " · ")))"
+        return AppLanguage.string(
+            parts.isEmpty
+                ? .detailPlayDownloaded
+                : .detailPlayDownloadedDetails(parts.joined(separator: " · ")),
+            locale: locale
+        )
     }
 }
 #endif

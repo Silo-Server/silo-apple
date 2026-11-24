@@ -3,12 +3,15 @@ import SwiftUI
 /// Shows the items within a specific collection.
 struct CollectionDetailView: View {
     let collectionId: String
+    /// The collection's name, when the page that opened it knows it.
+    var title: String? = nil
 
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
     @State private var error: ErrorState?
     @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Group {
@@ -21,13 +24,13 @@ struct CollectionDetailView: View {
             } else {
                 EmptyStateView(
                     icon: "square.stack",
-                    title: "Collection is empty",
-                    subtitle: "Add items from their detail pages"
+                    title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
+                    subtitle: AppLanguage.string(.collectionsEmptyItemsHint, locale: locale)
                 )
             }
         }
         .siloPageBackground()
-        .navigationTitle("Collection")
+        .navigationTitle(title.map { Text($0) } ?? Text(.collectionsCollection))
         .siloNavigationTitleDisplayMode(.large)
         .task {
             await loadItems()

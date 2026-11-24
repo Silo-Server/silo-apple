@@ -7,6 +7,22 @@ class ProfileSelectionViewModel {
     var isLoading: Bool = false
     var isRefreshing: Bool = false
     var error: ErrorState?
+    /// The account holds a temporary password: the server refuses profiles
+    /// until it is replaced, so the picker hands over to the password change.
+    private(set) var requiresPasswordChange = false
+
+    /// Whether `error` hands the picker over to the password change. Apple TV
+    /// has no password change, since three passwords are a lot to type with a
+    /// remote: its picker shows the error, which sends the person to the
+    /// mobile app or the web. Changing the password there ends this session,
+    /// so Retry then lands on sign-in.
+    nonisolated static func handsOffToPasswordChange(_ error: Error) -> Bool {
+        #if os(tvOS)
+        false
+        #else
+        PasswordChangeModel.isRequired(by: error)
+        #endif
+    }
     private(set) var isUsingTemporaryManagementContext: Bool = false
     private(set) var isClearingTemporaryManagementContext: Bool = false
     private var temporaryManagementProfileID: String?
@@ -20,12 +36,18 @@ class ProfileSelectionViewModel {
     private let launchPreferences = ProfileLaunchPreferences.shared
 
     init() {
+        let account = AuthService.shared.activeAccount
         if let cached: [UserProfile] = ResponseCache.shared.get(CacheKey.profiles) {
             profiles = cached
+        } else if let account {
+            // The list cached on the account, so the picker draws offline.
+            profiles = account.cachedProfiles.map(UserProfile.init)
         }
+        accountName = account?.username
     }
 
-    /// Fetch the user's profiles from the server.
+    /// Fetch the open account's profiles from the server. When it can't be
+    /// reached, the account's cached list stays on screen.
     func loadProfiles() async {
         if profiles.isEmpty {
             isLoading = true
@@ -42,18 +64,22 @@ class ProfileSelectionViewModel {
             let fresh = try await StartupContentPrefetcher.fetchProfiles()
             profiles = fresh
         } catch {
-            if profiles.isEmpty {
+            if Self.handsOffToPasswordChange(error) {
+                requiresPasswordChange = true
+            } else if profiles.isEmpty {
                 self.error = ErrorState(error)
             }
         }
     }
 
-    /// The signed-in account's username, shown under the title. Nil until
-    /// `loadAccount` finishes, or when the read fails.
+    /// The signed-in account's username, shown under the title: the saved
+    /// one until `loadAccount` reads it from the server.
     private(set) var accountName: String?
 
     func loadAccount() async {
-        accountName = try? await SiloAPI.shared.currentUser().username
+        if let username = try? await SiloAPI.shared.currentUser().username {
+            accountName = username
+        }
     }
 
     var primaryProfile: UserProfile? {
@@ -66,7 +92,11 @@ class ProfileSelectionViewModel {
         do {
             try await select(profile, pin: nil, router: router)
         } catch {
-            self.error = ErrorState(error)
+            if Self.handsOffToPasswordChange(error) {
+                requiresPasswordChange = true
+            } else {
+                self.error = ErrorState(error)
+            }
         }
     }
 
@@ -165,9 +195,9 @@ private enum ProfileManagementError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .primaryProfileUnavailable:
-            return "Couldn't find the primary profile needed to manage household profiles."
+            return AppLanguage.string(.profilesErrorNoPrimaryManage)
         case .temporaryContextCleanupFailed:
-            return "Silo couldn't finish creating the profile. Please try selecting it again."
+            return AppLanguage.string(.profilesErrorCreateUnfinished)
         }
     }
 }

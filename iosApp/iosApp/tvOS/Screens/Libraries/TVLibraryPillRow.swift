@@ -9,17 +9,19 @@ import SwiftUI
 /// cascade dropdown (§5.3); `TVLibraryTypeTabView` renders the selected
 /// one, with `.recommended` as the landing default.
 enum TVLibraryPill: String, Hashable, CaseIterable {
+    // Case order is the order the cascade lists them in.
     /// The server-driven landing feed (recommendations + sections).
     case recommended
-    case collections
     /// The full library, browsable as an A–Z grid.
     case browse
+    case collections
 
+    /// Resolved in the app language; `TVCascadeSelector` takes a `String`.
     var title: String {
         switch self {
-        case .recommended: return "Recommended"
-        case .collections: return "Collections"
-        case .browse: return "Browse"
+        case .recommended: return AppLanguage.string(.libraryRecommended)
+        case .collections: return AppLanguage.string(.libraryCollections)
+        case .browse: return AppLanguage.string(.libraryBrowse)
         }
     }
 
@@ -34,36 +36,3 @@ enum TVLibraryPill: String, Hashable, CaseIterable {
 
 }
 
-enum TVLibraryMenuRootKind {
-    case category
-    case directShortcut
-    case staticRoot
-
-    var hasSectionCascade: Bool {
-        switch self {
-        case .category, .directShortcut: return true
-        case .staticRoot: return false
-        }
-    }
-}
-
-func tvCustomizationMutationIsEnabled(
-    allowsEditing: Bool,
-    usesDeviceMenuOverride: Bool,
-    changesFamilyMenu: Bool
-) -> Bool {
-    allowsEditing && (!changesFamilyMenu || !usesDeviceMenuOverride)
-}
-
-/// Direct-library roots own a separate sub-destination value, so changing a
-/// Movies/Series cascade cannot alter a pinned library's landing. The direct
-/// value defaults to Recommended but remains writable by its one-library
-/// cascade. Keeping this policy pure makes the isolation contract testable by
-/// the cross-platform unit-test target.
-func resolvedLibraryRootPill(
-    categorySelection: TVLibraryPill,
-    directSelection: TVLibraryPill?,
-    isDirectLibraryShortcut: Bool
-) -> TVLibraryPill {
-    isDirectLibraryShortcut ? (directSelection ?? .recommended) : categorySelection
-}

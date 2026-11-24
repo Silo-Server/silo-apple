@@ -26,7 +26,7 @@ struct ASSSubtitleLayer: View {
             if let message = session.failureMessage {
                 status(message)
             } else if session.isLoadingFonts {
-                status("Loading subtitle fonts…")
+                status(.playerSubtitlesLoadingFonts)
             }
         }
         .onAppear { session.overlayWillAppear() }
@@ -42,7 +42,7 @@ struct ASSSubtitleLayer: View {
         }
     }
 
-    private func status(_ message: String) -> some View {
+    private func status(_ message: LocalizedStringResource) -> some View {
         Text(message)
             .font(.callout)
             .foregroundStyle(.white)

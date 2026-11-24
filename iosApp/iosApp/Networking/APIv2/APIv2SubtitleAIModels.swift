@@ -124,9 +124,9 @@ enum SubtitleCreationError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .unresolved:
-            return "An earlier request for these subtitles may still be running, so Silo didn't send it again."
+            return AppLanguage.string(.errorsAppleSubtitlesJobUnresolved)
         case .outcomeUnknown:
-            return "Silo couldn't confirm that the subtitle job started. If it did, the subtitles will appear in the subtitle list when it finishes."
+            return AppLanguage.string(.errorsAppleSubtitlesJobOutcomeUnknown)
         }
     }
 

@@ -19,7 +19,9 @@ enum LibraryVideoScope: String, Hashable {
     func section(_ original: ResolvedSection, items: [SectionItem]) -> ResolvedSection {
         ResolvedSection(id: original.id, sectionType: original.sectionType, title: original.title,
                         featured: original.featured, itemLimit: original.itemLimit, totalCount: nil,
-                        isCustom: original.isCustom, customized: original.customized, items: items)
+                        isCustom: original.isCustom, customized: original.customized, items: items,
+                        titleKey: original.titleKey, titleArgs: original.titleArgs,
+                        collections: original.collections)
     }
 
     /// Overlap at most three shelves, preserving layout order and each shelf's cursor chain.
@@ -57,6 +59,9 @@ enum LibraryVideoScope: String, Hashable {
         _ original: ResolvedSection,
         loadPage: (Cursor?) async throws -> LibraryScopedPage<Cursor>
     ) async throws -> (section: ResolvedSection, incomplete: Bool) {
+        // A row of collections has no titles to narrow or page; it shows the
+        // collections the server listed for this library.
+        if original.holdsCollections { return (original, false) }
         let initial = original.items.filter { contains($0.type) }
         let target = min(100, original.itemLimit.flatMap { $0 > 0 ? $0 : nil } ?? max(20, original.items.count))
         func result(_ items: [SectionItem], incomplete: Bool = false) -> (ResolvedSection, Bool) {

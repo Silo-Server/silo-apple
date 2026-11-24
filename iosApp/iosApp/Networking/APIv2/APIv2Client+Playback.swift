@@ -35,9 +35,12 @@ extension APIv2Client {
     /// `POST /api/v2/playback/route-events`, answered with 202 and a receipt
     /// that must echo this event's id. Route events are diagnostics and
     /// `non_retryable`: the caller never sends one again, and a 429 drops it.
+    /// The exception is a `plan_summary` kept on the device and sent again
+    /// after the app ended (``PlanSummaryJournal``): it keeps its `eventID`,
+    /// and the server takes it once.
     func reportPlaybackRouteEvent(_ event: PlaybackV3RouteEvent, installationID: String,
+                                  eventID: String = UUID().uuidString.lowercased(),
                                   auth: CapturedOrdinaryRequestAuth) async throws {
-        let eventID = UUID().uuidString.lowercased()
         let body = try Self.playbackBody(APIv2PlaybackRouteEventBody(installationID: installationID,
             eventID: eventID, event: event))
         let raw = try await playbackRequest(method: "POST", suffix: "/route-events", body: body, auth: auth)
@@ -83,6 +86,32 @@ extension APIv2Client {
             throw PlaybackSequencedError.invalidResponse
         }
         return mutation
+    }
+
+    /// `GET /api/v2/playback/connection`, answered with 200: this device's
+    /// learned limit on the connection it is using now. The server keys it by
+    /// the `X-Silo-Device-Id` every request carries. Served only by a server
+    /// that advertises `buffering_quality_v1`.
+    func playbackConnection(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PlaybackConnection {
+        let raw = try await playbackRequest(method: "GET", suffix: "/connection", auth: auth)
+        guard raw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackConnection.self, from: raw.data)
+    }
+
+    /// `DELETE /api/v2/playback/connection/learned-limit`, answered with 204:
+    /// forgets this device's learned limit on the current connection.
+    func resetPlaybackLearnedLimit(auth: CapturedOrdinaryRequestAuth) async throws {
+        let raw = try await playbackRequest(method: "DELETE", suffix: "/connection/learned-limit", auth: auth)
+        guard raw.statusCode == 204 else { throw PlaybackSequencedError.invalidResponse }
+    }
+
+    /// `POST /api/v2/playback/bandwidth-probe/results`, answered with 204.
+    /// Served by a server that advertises `connection_speed_v1`.
+    func reportPlaybackBandwidthProbe(_ result: APIv2PlaybackBandwidthProbeResult,
+                                      auth: CapturedOrdinaryRequestAuth) async throws {
+        let raw = try await playbackRequest(method: "POST", suffix: "/bandwidth-probe/results",
+            body: try Self.playbackBody(result), auth: auth)
+        guard raw.statusCode == 204 else { throw PlaybackSequencedError.invalidResponse }
     }
 
     /// Mints a control ticket and builds the socket upgrade for it. Checks

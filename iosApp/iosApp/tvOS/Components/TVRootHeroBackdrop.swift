@@ -54,46 +54,69 @@ struct TVBackdropArtworkFadeMask: View {
     }
 }
 
-/// Page wash sampled from the backdrop, shared by the root landings and
-/// item details so both pages carry the same colors. The base tint is
-/// richest in the top-right behind the art and carried dimmed down to the
-/// bottom-left; the art's accent glows up from the bottom edge under the
-/// right half of the rows, stopping below where the art ends so it never
-/// tints the artwork, and its shadow tone pools in the bottom-left corner.
-/// The page keeps the art's colors without washing out the metadata or row
-/// captions.
+/// Item details' wash around the art: the accent glows up from the bottom
+/// edge under the right half of the rows, stopping below where the art ends
+/// so it never tints the artwork, and the shadow tone pools in the
+/// bottom-left corner.
 struct TVBackdropTintWash: View {
     let tints: HeroBackdropPalette.Tints
-    var isVisible: Bool = true
-    /// The base gradient sits behind the art and shows through its fade.
-    /// Item details turn it off to keep their own dimmer tint behind the art.
-    var includesBase: Bool = true
 
     var body: some View {
         ZStack {
-            if includesBase {
-                LinearGradient(
-                    stops: [
-                        .init(color: tints.base, location: 0.0),
-                        .init(color: tints.base.opacity(isVisible ? 0.5 : 0.0), location: 0.45),
-                        .init(color: tints.base.opacity(isVisible ? 0.18 : 0.0), location: 1.0),
-                    ],
-                    startPoint: .topTrailing,
-                    endPoint: .bottomLeading
-                )
-            }
-
             EllipticalGradient(
-                colors: [tints.accent.opacity(isVisible ? 0.3 : 0.0), tints.accent.opacity(0)],
+                colors: [tints.accent.opacity(0.3), tints.accent.opacity(0)],
                 center: UnitPoint(x: 0.7, y: 1.0),
                 endRadiusFraction: 0.3
             )
 
             EllipticalGradient(
-                colors: [tints.shadow.opacity(isVisible ? 0.55 : 0.0), tints.shadow.opacity(0)],
+                colors: [tints.shadow.opacity(0.55), tints.shadow.opacity(0)],
                 center: .bottomLeading,
                 endRadiusFraction: 0.42
             )
+        }
+    }
+}
+
+/// Home and library page wash: each screen corner glows with the color
+/// sampled from the same quarter of the art, fading over black, and the
+/// four overlap so the colors blend into each other across the page.
+/// Corners are drawn bottom-trailing, bottom-leading, top-trailing, then
+/// top-leading, which is the darkest and sits behind the marquee's title.
+struct TVBackdropCornerWash: View {
+    let corners: HeroBackdropPalette.Corners
+    let includesTopTrailing: Bool
+    var isVisible: Bool = true
+
+    /// How far each corner's color reaches before it is fully faded, as a
+    /// fraction of the screen's width and height.
+    nonisolated static let reach: CGFloat = 4.0 / 3.0
+
+    /// Bottom to top, with each corner's position on the screen.
+    nonisolated static func layers(
+        _ corners: HeroBackdropPalette.Corners,
+        includesTopTrailing: Bool
+    ) -> [(color: Color, center: UnitPoint)] {
+        var layers: [(color: Color, center: UnitPoint)] = [
+            (corners.bottomTrailing, .bottomTrailing),
+            (corners.bottomLeading, .bottomLeading),
+        ]
+        if includesTopTrailing {
+            layers.append((corners.topTrailing, .topTrailing))
+        }
+        layers.append((corners.topLeading, .topLeading))
+        return layers
+    }
+
+    var body: some View {
+        ZStack {
+            ForEach(Self.layers(corners, includesTopTrailing: includesTopTrailing), id: \.center) { layer in
+                EllipticalGradient(
+                    colors: [layer.color.opacity(isVisible ? 1 : 0), layer.color.opacity(0)],
+                    center: layer.center,
+                    endRadiusFraction: Self.reach
+                )
+            }
         }
     }
 }
@@ -104,19 +127,22 @@ struct TVBackdropTintWash: View {
 /// gives the custom top menu, marquee, and rows one shared visual plane.
 /// On Home and the library Browse landings the artwork tracks the
 /// marquee's focused item (Skyline §5.4): a crisp image is anchored in the
-/// top-right corner and fades out toward the leading edge and the bottom
-/// into colors sampled from the art itself, which are carried (dimmed)
-/// across the rest of the page so the metadata and rows below sit on the
-/// same tint. Calendar passes nil artwork with flat `.siloBackground` tints
-/// and renders flat.
+/// top-right corner and fades into the sampled wash from the other three
+/// corners. Framed covers use all four corner colors and a glow.
 struct TVRootHeroBackdrop: View {
     let tints: HeroBackdropPalette.Tints
     let artworkURL: String?
     let artworkThumbhash: String?
+    /// Set when the artwork is a cover standing in for a missing backdrop:
+    /// the hero draws it framed at this shape over a glow of itself instead
+    /// of stretching it across the backdrop area.
+    var artworkCoverAspect: MediaCardAspect? = nil
     var isVisible: Bool = true
-    /// Artwork/tint crossfade duration. Focus-marquee hosts pass the §4.2
+    /// Artwork crossfade duration. Focus-marquee hosts pass the §4.2
     /// 240 ms swap; other surfaces keep the slower ambient default.
     var crossfadeDuration: Double = 0.55
+    /// Crossfade of the sampled-color wash and a framed cover's glow.
+    var washCrossfadeDuration: Double = 0.55
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -129,6 +155,25 @@ struct TVRootHeroBackdrop: View {
     /// bright artwork.
     private let topScrimHeight: CGFloat = 190
 
+    /// A framed cover's height. It sits in the top-right corner between the
+    /// top menu and the row band, so it never reaches the rows.
+    private static let coverHeight: CGFloat = 380
+    private static let coverTopInset: CGFloat = 170
+    private static let coverTrailingInset: CGFloat = 150
+    static let coverCornerRadius: CGFloat = 14
+
+    /// Where a framed cover sits on a `canvas`-sized screen. The ambient wash
+    /// draws its glow and shadow around this frame.
+    static func coverFrame(for aspect: MediaCardAspect, canvas: CGSize) -> CGRect {
+        let size = coverSize(for: aspect)
+        return CGRect(
+            x: canvas.width - coverTrailingInset - size.width,
+            y: coverTopInset,
+            width: size.width,
+            height: size.height
+        )
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             Color.siloBackground
@@ -137,6 +182,7 @@ struct TVRootHeroBackdrop: View {
 
             if isVisible {
                 backdropImage
+                coverImage
                 topChromeScrim
             }
         }
@@ -147,23 +193,25 @@ struct TVRootHeroBackdrop: View {
         }
     }
 
-    /// Sampled-color wash; when the caller passes flat `.siloBackground`
-    /// tints (Calendar) every stop collapses to the app background, so the
-    /// wash renders flat.
+    /// The wash skips the top-right color beneath wide artwork. A framed
+    /// cover keeps the full wash, glow, and shadow.
     private var tintBackground: some View {
-        TVBackdropTintWash(tints: tints, isVisible: isVisible)
+        let cover = displayedCover
+        return TVHeroAmbientWash(
+            tints: tints,
+            isVisible: isVisible,
+            includesTopTrailing: cover != nil,
+            cover: cover,
             // The first tint (cold-entry seed with a prefetch-warmed sample)
             // snaps in with the artwork; only tint→tint changes crossfade.
-            .animation(
-                reduceMotion || !hasDisplayedArtwork
-                    ? nil
-                    : .easeInOut(duration: crossfadeDuration),
-                value: tints
-            )
-            .animation(
-                reduceMotion || !hasDisplayedArtwork ? nil : .easeInOut(duration: 0.24),
-                value: isVisible
-            )
+            animatesChanges: !reduceMotion && hasDisplayedArtwork,
+            crossfadeDuration: washCrossfadeDuration
+        )
+    }
+
+    private var displayedCover: TVHeroAmbientWash.Cover? {
+        guard isVisible, let artworkURL, !artworkURL.isEmpty, let artworkCoverAspect else { return nil }
+        return TVHeroAmbientWash.Cover(url: artworkURL, aspect: artworkCoverAspect)
     }
 
     @ViewBuilder
@@ -177,7 +225,7 @@ struct TVRootHeroBackdrop: View {
             // a swap renders one masked offscreen pass instead of two
             // full-resolution ones while both artworks are on screen.
             ZStack {
-                if let artworkURL, !artworkURL.isEmpty {
+                if let artworkURL, !artworkURL.isEmpty, artworkCoverAspect == nil {
                     AsyncImageView(
                         url: artworkURL,
                         thumbhash: artworkThumbhash,
@@ -185,11 +233,7 @@ struct TVRootHeroBackdrop: View {
                         contentMode: .fill
                     )
                     .id(artworkURL)
-                    .transition(
-                        reduceMotion || !hasDisplayedArtwork
-                            ? .identity
-                            : .opacity.animation(.easeInOut(duration: crossfadeDuration))
-                    )
+                    .transition(artworkTransition)
                 }
             }
             .frame(width: artworkSize.width, height: artworkSize.height)
@@ -205,6 +249,47 @@ struct TVRootHeroBackdrop: View {
             )
         }
         .ignoresSafeArea()
+    }
+
+    /// The first artwork paints without a fade; every later swap
+    /// crossfades. The removal fade is set for the first artwork too: a view
+    /// inserted with `.identity` kept it when it was removed, so the first
+    /// swap on a page blinked the old art out before the new one faded in.
+    private var artworkTransition: AnyTransition {
+        guard !reduceMotion else { return .identity }
+        let fade = AnyTransition.opacity.animation(.easeInOut(duration: crossfadeDuration))
+        return .asymmetric(insertion: hasDisplayedArtwork ? fade : .identity, removal: fade)
+    }
+
+    /// A cover standing in for a missing backdrop, drawn whole and sharp at
+    /// a size its artwork can carry. Its glow and shadow are part of the
+    /// ambient wash. Its own layer, so a backdrop-to-cover swap still
+    /// crossfades.
+    private var coverImage: some View {
+        ZStack {
+            if let artworkURL, !artworkURL.isEmpty, let aspect = artworkCoverAspect {
+                framedCover(url: artworkURL, size: Self.coverSize(for: aspect))
+                    .id(artworkURL)
+                    .transition(artworkTransition)
+            }
+        }
+        .padding(.top, Self.coverTopInset)
+        .padding(.trailing, Self.coverTrailingInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        .ignoresSafeArea()
+    }
+
+    private func framedCover(url: String, size: CGSize) -> some View {
+        AsyncImageView(url: url, thumbhash: artworkThumbhash, targetSize: size, contentMode: .fill)
+            .frame(width: size.width, height: size.height)
+            .clipShape(RoundedRectangle(cornerRadius: Self.coverCornerRadius, style: .continuous))
+    }
+
+    private static func coverSize(for aspect: MediaCardAspect) -> CGSize {
+        switch aspect {
+        case .square: CGSize(width: coverHeight, height: coverHeight)
+        case .poster: CGSize(width: coverHeight * 2 / 3, height: coverHeight)
+        }
     }
 
     /// Black ramp pinned to the top so the wordmark, tabs, and avatar stay

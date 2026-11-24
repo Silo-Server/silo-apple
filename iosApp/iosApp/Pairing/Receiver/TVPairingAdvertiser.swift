@@ -87,7 +87,9 @@ final class TVPairingAdvertiser {
             PairingProtocol.TXTKey.name: device.name,
             PairingProtocol.TXTKey.deviceId: device.id,
             PairingProtocol.TXTKey.sessionNonce: UUID().uuidString,
-            PairingProtocol.TXTKey.state: receiverState.rawValue
+            PairingProtocol.TXTKey.state: receiverState.rawValue,
+            // Keeps several accounts per server (see `TXTKey.acceptsAccounts`).
+            PairingProtocol.TXTKey.acceptsAccounts: "1"
         ]
         if let serverIdentity { fields[PairingProtocol.TXTKey.serverIdentity] = serverIdentity }
         let txt = NWTXTRecord(fields)

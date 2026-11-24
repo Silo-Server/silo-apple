@@ -10,6 +10,15 @@ struct TVActionPopoverItem: Identifiable, Equatable {
     var systemImage: String? = nil
     var isSelected = false
     var isEnabled = true
+    /// Draws a subtle divider above this row when it is not the first row.
+    var startsSection = false
+    /// Non-empty children turn this row into an in-place submenu trigger.
+    var children: [TVActionPopoverItem]? = nil
+
+    var hasSubmenu: Bool {
+        guard let children else { return false }
+        return !children.isEmpty
+    }
 }
 
 /// Anchored popover that replaces the system `Menu` on the detail action
@@ -24,22 +33,76 @@ struct TVActionPopoverItem: Identifiable, Equatable {
 struct TVActionPopoverMenu: View {
     let title: String
     let items: [TVActionPopoverItem]
+    var maxHeight: CGFloat? = nil
     let onSelect: (TVActionPopoverItem) -> Void
     let onClose: () -> Void
 
     @FocusState private var highlightedId: String?
     @Namespace private var optionFocusScope
+    /// Stack of entered parent item IDs. Submenu rows are resolved live from
+    /// `items` so dynamic state updates (e.g. `isEnabled`) stay fresh while open.
+    @State private var submenuPath: [String] = []
+    /// Target row for the next focus resolution (e.g. returning to the submenu
+    /// trigger when popping a submenu) so tvOS lands on it on the first frame
+    /// instead of flashing on the top row first.
+    @State private var preferredFocusId: String?
+    @State private var focusTask: Task<Void, Never>?
+    @State private var measuredListHeight: CGFloat = 0
 
     static let width: CGFloat = 560
-    private static let maxRows = 7
+    private static let maxRows = 8
     private static let shape = RoundedRectangle(
         cornerRadius: SiloTheme.Skyline.dropdownCornerRadius,
         style: .continuous
     )
 
+    private var currentItems: [TVActionPopoverItem] {
+        var list = items
+        for parentId in submenuPath {
+            guard let parent = list.first(where: { $0.id == parentId }),
+                  let children = parent.children, !children.isEmpty else {
+                break
+            }
+            list = children
+        }
+        return list
+    }
+
+    private var currentSubmenuTitle: String? {
+        guard !submenuPath.isEmpty else { return nil }
+        var list = items
+        var title: String?
+        for parentId in submenuPath {
+            guard let parent = list.first(where: { $0.id == parentId }),
+                  let children = parent.children, !children.isEmpty else {
+                break
+            }
+            title = parent.title
+            list = children
+        }
+        return title
+    }
+
+    private var isInSubmenu: Bool {
+        !submenuPath.isEmpty
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
+            if let submenuTitle = currentSubmenuTitle {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(submenuTitle)
+                        .font(.system(size: 18, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Color.white.opacity(0.55))
+                .padding(.horizontal, SiloTheme.Skyline.cascadeRowPaddingHorizontal)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
+                .accessibilityAddTraits(.isHeader)
+            }
             rows
         }
         .padding(SiloTheme.Skyline.dropdownPadding)
@@ -54,12 +117,24 @@ struct TVActionPopoverMenu: View {
         .focusScope(optionFocusScope)
         .defaultFocus($highlightedId, initialOptionId, priority: .userInitiated)
         .onMoveCommand { direction in
-            if direction == .left || direction == .right { onClose() }
+            switch direction {
+            case .left:
+                if isInSubmenu {
+                    handleExit()
+                }
+            case .right:
+                if let current = currentItems.first(where: { $0.id == highlightedId }),
+                   current.hasSubmenu, current.isEnabled {
+                    enterSubmenu(current)
+                }
+            default:
+                break
+            }
         }
-        .onExitCommand(perform: onClose)
+        .onExitCommand(perform: handleExit)
         // A Menu press that races a focus move would otherwise pop the page.
         .background(
-            TVWindowMenuPressCatcher(onExit: onClose)
+            TVWindowMenuPressCatcher(onExit: handleExit)
                 .frame(width: 0, height: 0)
         )
         .task {
@@ -67,24 +142,79 @@ struct TVActionPopoverMenu: View {
             guard !Task.isCancelled, highlightedId == nil else { return }
             highlightedId = initialOptionId
         }
-        .accessibilityAction(.escape, onClose)
+        .onChange(of: currentItems) { _, _ in
+            measuredListHeight = 0
+        }
+        .onDisappear {
+            focusTask?.cancel()
+            focusTask = nil
+        }
+        .accessibilityAction(.escape, handleExit)
     }
 
     private var initialOptionId: String? {
-        items.first(where: { $0.isSelected && $0.isEnabled })?.id
-            ?? items.first(where: \.isEnabled)?.id
+        if let preferredFocusId,
+           currentItems.contains(where: { $0.id == preferredFocusId && $0.isEnabled }) {
+            return preferredFocusId
+        }
+        return firstOptionId(in: currentItems)
     }
 
-    private var header: some View {
-        TVSkylinePanelHeader(text: title.uppercased())
-            .accessibilityAddTraits(.isHeader)
+    private func firstOptionId(in list: [TVActionPopoverItem]) -> String? {
+        list.first(where: { $0.isSelected && $0.isEnabled })?.id
+            ?? list.first(where: \.isEnabled)?.id
+    }
+
+    private func handleRowAction(_ item: TVActionPopoverItem) {
+        if item.hasSubmenu {
+            enterSubmenu(item)
+        } else {
+            onSelect(item)
+        }
+    }
+
+    private func enterSubmenu(_ item: TVActionPopoverItem) {
+        guard let children = item.children,
+              let targetId = firstOptionId(in: children) else { return }
+        focusTask?.cancel()
+        preferredFocusId = targetId
+        submenuPath.append(item.id)
+        highlightedId = targetId
+        focusTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled, highlightedId == nil else { return }
+            highlightedId = targetId
+        }
+    }
+
+    private func handleExit() {
+        focusTask?.cancel()
+        focusTask = nil
+        if let returnId = submenuPath.popLast() {
+            preferredFocusId = returnId
+            highlightedId = returnId
+            focusTask = Task { @MainActor in
+                await Task.yield()
+                guard !Task.isCancelled, highlightedId == nil else { return }
+                highlightedId = returnId
+            }
+        } else {
+            onClose()
+        }
     }
 
     @ViewBuilder
     private var rows: some View {
         let list = VStack(alignment: .leading, spacing: 2) {
-            ForEach(items) { item in
-                Button { onSelect(item) } label: {
+            ForEach(Array(currentItems.enumerated()), id: \.element.id) { index, item in
+                if index > 0 && item.startsSection {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.10))
+                        .frame(height: 1)
+                        .padding(.horizontal, SiloTheme.Skyline.cascadeRowPaddingHorizontal)
+                        .padding(.vertical, 6)
+                }
+                Button { handleRowAction(item) } label: {
                     TVActionPopoverRow(
                         item: item,
                         isHighlighted: item.id == highlightedId
@@ -92,6 +222,7 @@ struct TVActionPopoverMenu: View {
                 }
                 .buttonStyle(TVActionPopoverButtonStyle())
                 .focused($highlightedId, equals: item.id)
+                .prefersDefaultFocus(item.id == initialOptionId, in: optionFocusScope)
                 .disabled(!item.isEnabled)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel([item.title, item.detail].compactMap { $0 }.joined(separator: ", "))
@@ -99,12 +230,20 @@ struct TVActionPopoverMenu: View {
                 .id(item.id)
             }
         }
-        if items.count > Self.maxRows {
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height
+        } action: { height in
+            measuredListHeight = height
+        }
+        let maxListHeight = effectiveMaxListHeight
+        let needsScroll = currentItems.count > Self.maxRows
+            || (maxHeight != nil && max(estimatedListHeight, measuredListHeight) > maxAvailableListHeight)
+        if needsScroll {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     list
                 }
-                .frame(maxHeight: Self.rowHeightEstimate * CGFloat(Self.maxRows))
+                .frame(height: min(measuredListHeight > 0 ? measuredListHeight : estimatedListHeight, maxListHeight))
                 .onAppear {
                     if let initialOptionId {
                         proxy.scrollTo(initialOptionId, anchor: .center)
@@ -114,6 +253,31 @@ struct TVActionPopoverMenu: View {
         } else {
             list
         }
+    }
+
+    private var maxAvailableListHeight: CGFloat {
+        guard let maxHeight else { return .infinity }
+        return max(0, maxHeight - SiloTheme.Skyline.dropdownPadding * 2)
+    }
+
+    private var effectiveMaxListHeight: CGFloat {
+        let rowCap = Self.rowHeightEstimate * CGFloat(Self.maxRows)
+        return min(rowCap, maxAvailableListHeight)
+    }
+
+    private var estimatedListHeight: CGFloat {
+        var total: CGFloat = 0
+        for (index, item) in currentItems.enumerated() {
+            if index > 0 {
+                total += 2
+                if item.startsSection {
+                    total += 15
+                }
+            }
+            let hasDetail = !(item.detail?.isEmpty ?? true)
+            total += hasDetail ? 78 : 56
+        }
+        return total
     }
 
     private static let rowHeightEstimate: CGFloat = 72
@@ -155,6 +319,12 @@ private struct TVActionPopoverRow: View {
             }
 
             Spacer(minLength: 0)
+
+            if item.hasSubmenu {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(foreground.opacity(0.55))
+            }
         }
         .foregroundStyle(foreground)
         .opacity(item.isEnabled ? 1 : 0.4)
@@ -223,39 +393,49 @@ private struct TVActionPopoverHostModifier: ViewModifier {
     /// short list and re-evaluates once the real height is known.
     @State private var panelHeight: CGFloat = 0
 
-    private static let anchorGap: CGFloat = 14
+    private static let anchorGap: CGFloat = 16
     private static let screenInset: CGFloat = 48
 
     private struct Placement {
         let x: CGFloat
         let y: CGFloat
-        let opensUpward: Bool
+        let maxHeight: CGFloat
+        let opensLeft: Bool
     }
 
-    /// Below the anchor when it fits, otherwise above it; if neither side
-    /// has room, pinned to the bottom inset so the last row is on screen.
-    /// Horizontal position tracks the anchor's leading edge and is clamped
-    /// to the screen inset.
+    /// Beside the trigger on its trailing side when there is room (falling
+    /// back to the leading side near the right edge). Vertically top-aligned
+    /// with the trigger and nudged upward only as much as needed so the bottom
+    /// clears the screen inset — keeping the top actions right beside the
+    /// button and the menu extending toward the bottom without scrolling.
     private static func placement(
         anchor: CGRect,
         panelHeight: CGFloat,
         in size: CGSize
     ) -> Placement {
-        let x = min(
-            anchor.minX,
-            max(screenInset, size.width - screenInset - TVActionPopoverMenu.width)
-        )
-        let below = anchor.maxY + anchorGap
-        let fitsBelow = below + panelHeight <= size.height - screenInset
-        if fitsBelow || panelHeight == 0 {
-            return Placement(x: x, y: below, opensUpward: false)
+        let rightX = anchor.maxX + anchorGap
+        let fitsRight = rightX + TVActionPopoverMenu.width <= size.width - screenInset
+        let x: CGFloat
+        let opensLeft: Bool
+        if fitsRight {
+            x = rightX
+            opensLeft = false
+        } else {
+            let leftX = anchor.minX - anchorGap - TVActionPopoverMenu.width
+            if leftX >= screenInset {
+                x = leftX
+                opensLeft = true
+            } else {
+                x = max(screenInset, size.width - screenInset - TVActionPopoverMenu.width)
+                opensLeft = false
+            }
         }
-        let above = anchor.minY - anchorGap - panelHeight
-        if above >= screenInset {
-            return Placement(x: x, y: above, opensUpward: true)
-        }
-        let pinned = max(screenInset, size.height - screenInset - panelHeight)
-        return Placement(x: x, y: pinned, opensUpward: false)
+
+        let maxHeight = max(0, size.height - screenInset * 2)
+        let effectiveHeight = panelHeight > 0 ? min(panelHeight, maxHeight) : 0
+        let maxY = size.height - screenInset - effectiveHeight
+        let y = max(screenInset, min(anchor.minY, maxY))
+        return Placement(x: x, y: y, maxHeight: maxHeight, opensLeft: opensLeft)
     }
 
     func body(content: Content) -> some View {
@@ -282,6 +462,7 @@ private struct TVActionPopoverHostModifier: ViewModifier {
                             TVActionPopoverMenu(
                                 title: request.title,
                                 items: request.items,
+                                maxHeight: placement.maxHeight,
                                 onSelect: request.onSelect,
                                 onClose: request.onClose
                             )
@@ -300,7 +481,7 @@ private struct TVActionPopoverHostModifier: ViewModifier {
                                     : .opacity.combined(
                                         with: .scale(
                                             scale: 0.96,
-                                            anchor: placement.opensUpward ? .bottom : .top
+                                            anchor: placement.opensLeft ? .topTrailing : .topLeading
                                         )
                                     )
                             )

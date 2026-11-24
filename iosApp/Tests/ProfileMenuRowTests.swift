@@ -1,0 +1,149 @@
+import XCTest
+@testable import Silo
+
+final class ProfileMenuRowTests: XCTestCase {
+    /// The avatar menu's profile row by the open account's profile count and
+    /// profile limit.
+    func testRowFollowsProfileCountAndLimit() {
+        typealias Row = (profiles: Int, limit: Int?, handoff: Bool, expected: ProfileMenuRow?)
+        let rows: [Row] = [
+            // Several profiles: there is someone to switch to, even at the limit.
+            (2, 5, false, .switchProfile),
+            (2, 2, false, .switchProfile),
+            (5, nil, false, .switchProfile),
+            // One profile and room for another.
+            (1, 5, false, .addProfile),
+            (1, 2, false, .addProfile),
+            // One profile and a server that didn't send the limit: creating
+            // a profile stays the server's check.
+            (1, nil, false, .addProfile),
+            // One profile and no room: nothing to switch to or add.
+            (1, 1, false, nil),
+            (1, 0, false, nil),
+            // No profile list read yet: the picker, as before.
+            (0, nil, false, .switchProfile),
+            (0, 1, false, .switchProfile),
+            // A remote-playback handoff can neither switch nor add.
+            (1, nil, true, nil),
+            (2, 5, true, nil),
+        ]
+
+        for row in rows {
+            XCTAssertEqual(
+                ProfileMenuRow.row(profileCount: row.profiles, profileLimit: row.limit, isHandoffSession: row.handoff),
+                row.expected,
+                "\(row.profiles) profiles, limit \(row.limit.map(String.init) ?? "unknown"), handoff \(row.handoff)"
+            )
+        }
+    }
+
+    /// Add Profile opens its form only for the open profile, so it can never
+    /// change who is watching.
+    func testAddProfileStartsOnlyForTheOpenProfile() {
+        let open = UserProfile(id: "p-open", name: "Open", avatarEmoji: nil, hasPin: true, isChild: false)
+        let other = UserProfile(id: "p-other", name: "Other", avatarEmoji: nil, hasPin: false, isChild: false)
+
+        XCTAssertEqual(AddProfileRequest.start(profiles: [open], openProfileID: "p-open"), .form(primary: open))
+        // The row was drawn from an older list: several profiles means the
+        // picker, as Switch Profile opens it.
+        XCTAssertEqual(AddProfileRequest.start(profiles: [open, other], openProfileID: "p-open"), .picker)
+        // The only listed profile isn't the open one, or nothing is open.
+        XCTAssertEqual(AddProfileRequest.start(profiles: [other], openProfileID: "p-open"), .unavailable)
+        XCTAssertEqual(AddProfileRequest.start(profiles: [open], openProfileID: nil), .unavailable)
+        // No list could be read.
+        XCTAssertEqual(AddProfileRequest.start(profiles: [], openProfileID: "p-open"), .unavailable)
+    }
+
+    /// The PIN prompt and the form belong to the profile that was open when
+    /// Add Profile was chosen. A route change closes them, including Home
+    /// committed again under another account or profile.
+    @MainActor
+    func testAddProfileFormClosesOnAnyRouteChange() {
+        let open = UserProfile(id: "p-open", name: "Open", avatarEmoji: nil, hasPin: true, isChild: false)
+        let router = AppRouter()
+        router.sessionOwner = { nil }
+        router.setAuthState(.authenticated, reason: "test")
+
+        router.addProfileRequest = AddProfileRequest(primary: open, session: nil)
+        router.setAuthState(.authenticated, reason: "test")
+        XCTAssertNil(router.addProfileRequest)
+
+        router.addProfileRequest = AddProfileRequest(primary: open, session: nil)
+        router.setAuthState(.needsLogin, reason: "test")
+        XCTAssertNil(router.addProfileRequest)
+    }
+
+    /// A PIN check can finish after its prompt was closed and Add Profile
+    /// was chosen again for the same profile. Its result belongs to the
+    /// request that started it: it must not close the newer prompt, unlock
+    /// it, or report an error for the request the person already left.
+    @MainActor
+    func testALatePINCheckBelongsToTheRequestThatStartedIt() {
+        let open = UserProfile(id: "p-open", name: "Open", avatarEmoji: nil, hasPin: true, isChild: false)
+        let router = AppRouter()
+        let first = AddProfileRequest(primary: open, session: nil)
+        router.addProfileRequest = first
+        XCTAssertTrue(router.isPresenting(first))
+
+        // The prompt is closed while the server checks the PIN, then the
+        // row is chosen again.
+        router.addProfileRequest = nil
+        let second = AddProfileRequest(primary: open, session: nil)
+        router.addProfileRequest = second
+
+        // The first check's late answer, whatever it is.
+        XCTAssertFalse(router.isPresenting(first))
+        router.closeAddProfile(first, reporting: "late failure")
+        XCTAssertEqual(router.addProfileRequest, second)
+        XCTAssertNil(router.accountActionError)
+
+        // The request on screen still closes, with its own error.
+        router.closeAddProfile(second, reporting: "failure")
+        XCTAssertNil(router.addProfileRequest)
+        XCTAssertEqual(router.accountActionError, "failure")
+    }
+
+    /// Add Profile waits on the server twice with nothing on screen: before
+    /// the form opens and after it closes. The account or profile can change
+    /// in that time, and Add Profile can be chosen again. What follows (the
+    /// form, an alert, the picker) belongs to the session the row was chosen
+    /// under, and never lands on a newer request.
+    func testAStepThatWaitedActsOnlyInTheSessionItStartedIn() {
+        let started = AccountScope(serverId: "server", localAccountId: "account-a", profileId: "p-1")
+        let open = UserProfile(id: "p-1", name: "Open", avatarEmoji: nil, hasPin: false, isChild: false)
+        let newer = AddProfileRequest(primary: open, session: started)
+        typealias Row = (now: AccountScope?, onScreen: AddProfileRequest?, expected: Bool, what: String)
+        let rows: [Row] = [
+            (started, nil, true, "nothing changed"),
+            (AccountScope(serverId: "server", localAccountId: "account-a", profileId: "p-2"), nil, false, "another profile"),
+            (AccountScope(serverId: "server", localAccountId: "account-a", profileId: nil), nil, false, "no profile open"),
+            // Profile IDs repeat across accounts on one server.
+            (AccountScope(serverId: "server", localAccountId: "account-b", profileId: "p-1"), nil, false, "another account"),
+            (AccountScope(serverId: "other", localAccountId: "account-a", profileId: "p-1"), nil, false, "another server"),
+            (nil, nil, false, "no account selected"),
+            // Add Profile was chosen again while the step waited.
+            (started, newer, false, "a newer request on screen"),
+        ]
+        for row in rows {
+            XCTAssertEqual(
+                AddProfileRequest.mayProceed(startedIn: started, now: row.now, onScreen: row.onScreen),
+                row.expected, row.what
+            )
+        }
+
+        // Nothing was open to begin with.
+        let noProfile = AccountScope(serverId: "server", localAccountId: "account-a", profileId: nil)
+        XCTAssertFalse(AddProfileRequest.mayProceed(startedIn: noProfile, now: noProfile, onScreen: nil))
+        XCTAssertFalse(AddProfileRequest.mayProceed(startedIn: nil, now: nil, onScreen: nil))
+    }
+
+    /// After a create, the picker shows unless a fresh list positively shows
+    /// that nothing was added.
+    func testPickerShowsAfterACreateUnlessAFreshListHoldsOneProfile() {
+        XCTAssertTrue(AddProfileRequest.showsPicker(afterCreateWith: 2))
+        XCTAssertTrue(AddProfileRequest.showsPicker(afterCreateWith: 5))
+        // The list could not be read: the profile was, or may have been, created.
+        XCTAssertTrue(AddProfileRequest.showsPicker(afterCreateWith: nil))
+        XCTAssertFalse(AddProfileRequest.showsPicker(afterCreateWith: 1))
+    }
+}

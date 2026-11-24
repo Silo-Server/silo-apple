@@ -137,10 +137,16 @@ implement and review changes through our own workflow, and pull request volume
 has outgrown what we can review carefully, so a good issue usually helps us
 more than a pull request.
 
+Feature ideas go in
+[Discussions → Ideas](https://github.com/Silo-Server/silo-apple/discussions/categories/ideas),
+not issues.
+
 Pull requests are still welcome from contributors who've had one merged in a
-Silo repository, or when a maintainer asks for one. We close other pull
-requests without review. [CONTRIBUTING.md](CONTRIBUTING.md) explains what makes
-an issue useful.
+Silo repository, or when a maintainer asks for one; a feature pull request also
+needs an issue in this repository that a maintainer has labeled `accepted`.
+Other pull requests are closed automatically without review; when a maintainer
+asked for one, they reopen it. [CONTRIBUTING.md](CONTRIBUTING.md) explains what
+makes an issue useful.
 
 ## License & Trademarks
 
@@ -148,7 +154,9 @@ Silo Apple is licensed under `AGPL-3.0-or-later` with an additional
 permission under AGPL section 7 allowing distribution through the Apple App
 Store and TestFlight despite those platforms' signing, DRM, and
 redistribution terms. See [LICENSE](LICENSE) and
-[APPSTORE-EXCEPTION.md](APPSTORE-EXCEPTION.md).
+[APPSTORE-EXCEPTION.md](APPSTORE-EXCEPTION.md). A second additional
+permission allows combining it with platform SDKs; see
+[PLATFORM-EXCEPTION.md](PLATFORM-EXCEPTION.md).
 
 The **Silo name, logo, and wordmark are trademarks of Silo Media L.L.C.** and
 are **not** covered by the AGPL. You're free to fork and redistribute the code,

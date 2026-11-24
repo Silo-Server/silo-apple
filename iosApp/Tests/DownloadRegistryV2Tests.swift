@@ -29,9 +29,10 @@ final class DownloadRegistryV2Tests: XCTestCase {
     }
 
     private func entry(_ id: String, content: String = "movie-1", episode: String? = nil, file: String = "42",
-                       quality: String = "original", revision: Int = 1, device: String? = nil) -> String {
+                       quality: String = "original", revision: Int = 1, device: String? = nil,
+                       status: String = "ready") -> String {
         let episodeField = episode.map { #""episode_id":"\#($0)","# } ?? ""
-        return #"{"id":"\#(id)","content_id":"\#(content)",\#(episodeField)"device_id":"\#(device ?? self.device)","media_file_id":"\#(file)","file_size":1000,"bytes_sent":0,"kind":"queued","status":"ready","quality":"\#(quality)","effective_quality":"\#(quality)","delivery_format":"original","target_bitrate_kbps":0,"revision":\#(revision),"created_at":"2026-09-23T10:00:00.000Z"}"#
+        return #"{"id":"\#(id)","content_id":"\#(content)",\#(episodeField)"device_id":"\#(device ?? self.device)","media_file_id":"\#(file)","file_size":1000,"bytes_sent":0,"kind":"queued","status":"\#(status)","quality":"\#(quality)","effective_quality":"\#(quality)","delivery_format":"original","target_bitrate_kbps":0,"revision":\#(revision),"created_at":"2026-09-23T10:00:00.000Z"}"#
     }
 
     private func page(_ entries: [String], next: String? = nil) -> String {
@@ -76,6 +77,7 @@ final class DownloadRegistryV2Tests: XCTestCase {
         XCTAssertTrue(capability.seasonDownload)
         XCTAssertFalse(capability.bulkQuality, "a server without the flag batches originals only")
         XCTAssertFalse(capability.monitorQuality)
+        XCTAssertFalse(capability.batchVersion, "a server without the flag rejects a batch that names a file")
         let request = try XCTUnwrap(stub.requests.first)
         XCTAssertEqual(request.method, "GET")
         XCTAssertEqual(request.path, "/api/v2/capabilities/downloads")
@@ -107,13 +109,24 @@ final class DownloadRegistryV2Tests: XCTestCase {
 
         // The quality flags survive the on-disk capability cache, and a copy
         // cached before them reads as original-only.
-        stub.reply(200, #"{"state":"available","allowed":true,"revision":"r1","enabled":true,"download_allowed":true,"quality_presets":["original","5mbps"],"transcode_enabled":true,"transcode_user_allowed":true,"season_download":true,"series_monitoring":true,"monitoring_modes":["all"],"bulk_quality":true,"monitor_quality":true}"#)
+        stub.reply(200, #"{"state":"available","allowed":true,"revision":"r1","enabled":true,"download_allowed":true,"quality_presets":["original","5mbps"],"transcode_enabled":true,"transcode_user_allowed":true,"season_download":true,"series_monitoring":true,"monitoring_modes":["all"],"bulk_quality":true,"monitor_quality":true,"batch_version":true}"#)
         let flagged = try await api.downloadCapability(auth: auth)
         XCTAssertTrue(flagged.bulkQuality)
         XCTAssertTrue(flagged.monitorQuality)
         let cachedFlags = try JSONDecoder().decode(DownloadCapability.self, from: JSONEncoder().encode(flagged))
         XCTAssertTrue(cachedFlags.bulkQuality)
         XCTAssertTrue(cachedFlags.monitorQuality)
+        XCTAssertTrue(cachedFlags.batchVersion)
+        XCTAssertFalse(flagged.revokedRemovesLocal, "a server without the flag keeps revoked files on the device")
+        XCTAssertFalse(cachedFlags.revokedRemovesLocal)
+
+        // An administrator revocation removes local copies only when the
+        // server says so, and the cached capability remembers it offline.
+        stub.reply(200, #"{"state":"available","allowed":true,"enabled":true,"download_allowed":true,"quality_presets":["original"],"transcode_enabled":false,"transcode_user_allowed":false,"season_download":false,"series_monitoring":false,"monitoring_modes":[],"revoked_removes_local":true}"#)
+        let removing = try await api.downloadCapability(auth: auth)
+        XCTAssertTrue(removing.revokedRemovesLocal)
+        let cachedRemoving = try JSONDecoder().decode(DownloadCapability.self, from: JSONEncoder().encode(removing))
+        XCTAssertTrue(cachedRemoving.revokedRemovesLocal)
 
         // The ceiling survives the on-disk capability cache.
         let cached = try JSONDecoder().decode(DownloadCapability.self, from: JSONEncoder().encode(capability))
@@ -286,6 +299,12 @@ final class DownloadRegistryV2Tests: XCTestCase {
             JSONSerialization.jsonObject(with: JSONEncoder().encode(preset)) as? [String: Any])
         XCTAssertEqual(presetBody["quality"] as? String, "5mbps")
         XCTAssertNil(presetBody["season_number"])
+        // The version every episode should match rides on each page.
+        let versioned = APIv2DownloadCreateRequest.seriesPage(seriesId: "series-1", seasonNumber: 1, batchId: "batch-3",
+            caps: .current(), mediaFileId: "42")
+        let versionedBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(versioned)) as? [String: Any])
+        XCTAssertEqual(versionedBody["media_file_id"] as? String, "42")
 
         stub.reset()
         stub.reply(202, created([entry("d1", content: "series-1", episode: "ep-1")], batch: "another-batch"))
@@ -302,6 +321,7 @@ final class DownloadRegistryV2Tests: XCTestCase {
             // A cursor belongs to a series request only.
             (.single(contentId: "m", episodeId: nil, mediaFileId: nil, quality: "original", caps: .current(), expected: .absent), "c1"),
             (.seriesPage(seriesId: "s", seasonNumber: nil, batchId: "", caps: .current()), nil),
+            (.seriesPage(seriesId: "s", seasonNumber: nil, batchId: "b", caps: .current(), mediaFileId: ""), nil),
         ]
         for (request, cursor) in invalid {
             let outcome = await failure { _ = try await api.createDownloads(request, cursor: cursor, auth: auth) }
@@ -392,6 +412,17 @@ final class DownloadRegistryV2Tests: XCTestCase {
         stub.reply(503, problem(503, "service_unavailable"))
         let outcome = await failure { try await api.deleteDownload(id: "d1", auth: auth) }
         XCTAssertEqual(outcome, .notApplied)
+    }
+
+    // MARK: Revocation
+
+    func testRevokedEntriesAreRemovedOnlyWhenTheServerRemovesLocalCopies() throws {
+        let rows = try HTTPClient.makeJSONDecoder().decode([APIv2DownloadEntry].self, from: Data("""
+            [\(entry("d1", status: "revoked")),\(entry("d2", status: "ready")),\(entry("d3", status: "failed")),\(entry("d4", status: "revoked"))]
+            """.utf8))
+        XCTAssertEqual(DownloadManager.revokedEntryIds(in: rows, removesLocal: true), ["d1", "d4"])
+        XCTAssertEqual(DownloadManager.revokedEntryIds(in: rows, removesLocal: false), [],
+            "without revoked_removes_local the files stay playable")
     }
 
     // MARK: Store

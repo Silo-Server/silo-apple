@@ -41,7 +41,7 @@ struct DescriptionTranslationView: View {
     private var translateLabel: some View {
         HStack(spacing: 6) {
             Image(systemName: MachineTranslation.symbol)
-            Text("Translate")
+            Text(.detailTranslationTranslate)
         }
         .font(.subheadline.weight(.semibold))
         .foregroundStyle(Color.siloPrimary)

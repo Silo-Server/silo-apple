@@ -838,7 +838,7 @@ final class ExternalSignInTests: XCTestCase {
         let api = APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false })
         let auth = AuthService(serverIdentityResolver: ServerIdentityResolver(httpClient: http), serverRegistry: registry,
             launchPreferences: preferences, contractProbe: APIv2Probe(httpClient: http), apiV2Client: api,
-            httpClient: http, tokenStore: tokens, sessionPersistence: AccountSessionPersistence(keychain: keychain),
+            httpClient: http, tokenStore: tokens, defaults: defaults, accounts: AccountStore(keychain: keychain, defaults: defaults),
             purgeDiagnostics: { _ in true })
         return AppHarness(tokens: tokens, registry: registry, auth: auth, api: api)
     }
@@ -1215,7 +1215,10 @@ final class ExternalSignInTests: XCTestCase {
         XCTAssertNil(model.busyID)
     }
 
-    func testIdentityDisconnectIsAnAccountScopedDelete() async throws {
+    /// Listing and disconnecting identities act as the active profile, since
+    /// the server lets only the household manager disconnect. The other
+    /// account calls still send the bearer alone.
+    func testIdentityListAndDisconnectSendTheActiveProfile() async throws {
         let runner = FakeRunner { _ in throw ExternalSignInError.canceled }
         let (_, _, tokens) = try await makeService(runner: runner, signedIn: true)
         let api = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens,
@@ -1223,16 +1226,27 @@ final class ExternalSignInTests: XCTestCase {
         let identity = await tokens.refreshAccountIdentity()
         let account = try XCTUnwrap(identity)
         stub.reply(path: "/api/v2/account/identities/4", 204, "")
-        try await api.deleteAccountIdentity(id: "4", expectedAccount: account)
         stub.reply(path: APIv2Client.accountIdentitiesPath, 200,
             Support.text(named: "list_account_identities_ok", bundleClass: Self.self))
+        stub.reply(path: APIv2Client.identityLinkCompletePath, 204, "")
+
+        // Before a profile is chosen the list is still readable.
         let listed = try await api.accountIdentities(expectedAccount: account)
         XCTAssertEqual(listed.items.map(\.id), ["4"])
         XCTAssertEqual(listed.canUnlink, false)
-        XCTAssertEqual(stub.methods, ["DELETE", "GET"])
+
+        await tokens.setProfileId("profile")
+        let savedProof = await tokens.setProfileToken("proof")
+        XCTAssertTrue(savedProof)
+        _ = try await api.accountIdentities(expectedAccount: account)
+        try await api.deleteAccountIdentity(id: "4", expectedAccount: account)
+        try await api.completeIdentityLink(code: "code", codeVerifier: "verifier", expectedAccount: account)
+
+        XCTAssertEqual(stub.methods, ["GET", "GET", "DELETE", "POST"])
+        let profiles = stub.requests.map { [$0.header("x-profile-id"), $0.header("x-profile-token")] }
+        XCTAssertEqual(profiles, [[nil, nil], ["profile", "proof"], ["profile", "proof"], [nil, nil]])
         for request in stub.requests {
             XCTAssertEqual(request.header("authorization"), "Bearer acc")
-            XCTAssertNil(request.header("x-profile-id"))
         }
     }
 

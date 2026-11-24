@@ -2,10 +2,8 @@
 import SwiftUI
 
 private enum EpisodeHomeHoverMetrics {
-    static let scale: CGFloat = 1.08
-
     static func leadingInset(for cardWidth: CGFloat) -> CGFloat {
-        cardWidth * (scale - 1) / 2 + 2
+        cardWidth * (TVCardOutlineButtonStyle.scale - 1) / 2 + 2
     }
 }
 
@@ -59,6 +57,10 @@ struct TVEpisodeRail: View {
     private final class ScrollViewport: NSObject {
         weak var scrollView: UIScrollView?
         private var intendedOffset: CGFloat?
+        /// The anchored card's own position, before clamping. A card pinned
+        /// against a short window's end returns to the leading slot once more
+        /// pages load.
+        private var anchorOffset: CGFloat?
         private var maximumOffset: CGFloat = 0
         private var motion: SeriesSeasonScroll?
         private var displayLink: CADisplayLink?
@@ -69,8 +71,10 @@ struct TVEpisodeRail: View {
             if let intendedOffset { setOffset(intendedOffset) }
         }
 
-        func move(to offset: CGFloat, maximumOffset: CGFloat, timing: SeriesSeasonScroll.Timing?) {
+        func move(to anchor: CGFloat, maximumOffset: CGFloat, timing: SeriesSeasonScroll.Timing?) {
             self.maximumOffset = maximumOffset
+            anchorOffset = anchor
+            let offset = SeriesSeasonScroll.clampedOffset(anchor, maximumOffset: maximumOffset)
             stopScroll()
             guard let scrollView else { setOffset(offset); return }
             guard let timing else { setOffset(offset); return }
@@ -89,8 +93,19 @@ struct TVEpisodeRail: View {
         /// without starting another animation or changing its completion time.
         func rebase(by shift: CGFloat, maximumOffset: CGFloat) {
             self.maximumOffset = maximumOffset
+            anchorOffset = anchorOffset.map { $0 + shift }
             motion?.rebase(by: shift)
-            if let offset = intendedOffset ?? scrollView?.contentOffset.x {
+            if let anchorOffset, let current = motion {
+                // A page that lets a clamped move reach its card redirects
+                // the move instead of jumping to the card when it ends.
+                let target = SeriesSeasonScroll.clampedOffset(anchorOffset, maximumOffset: maximumOffset)
+                if abs(target - current.targetOffset) > 0.5 {
+                    motion?.retarget(to: target, at: CACurrentMediaTime())
+                }
+            }
+            if motion == nil, let anchorOffset {
+                setOffset(anchorOffset)
+            } else if let offset = intendedOffset ?? scrollView?.contentOffset.x {
                 setOffset(offset + shift)
             }
         }
@@ -121,13 +136,17 @@ struct TVEpisodeRail: View {
         func finishScroll() {
             guard let motion else { return }
             stopScroll()
-            setOffset(motion.targetOffset)
+            setOffset(anchorOffset ?? motion.targetOffset)
         }
 
         @objc private func advanceScroll(_ link: CADisplayLink) {
             guard let motion, scrollView != nil else { stopScroll(); return }
             setOffset(motion.offset(at: link.timestamp))
-            if motion.isComplete(at: link.timestamp) { stopScroll() }
+            if motion.isComplete(at: link.timestamp) {
+                stopScroll()
+                // Pages that loaded mid-move may have made room for the anchor.
+                if let anchorOffset { setOffset(anchorOffset) }
+            }
         }
 
         func stopScroll() {
@@ -441,8 +460,10 @@ struct TVEpisodeRail: View {
         viewportWidth: CGFloat,
         timing: SeriesSeasonScroll.Timing?
     ) {
+        // Pass the card's own position; the viewport clamps it to the row's
+        // current end and returns to it when more pages load.
         scrollViewport.move(
-            to: anchoredContentOffset(for: index, viewportWidth: viewportWidth),
+            to: CGFloat(index) * (anchoredCardWidth + cardSpacing),
             maximumOffset: anchoredContentOffset(for: episodes.count - 1, viewportWidth: viewportWidth),
             timing: reduceMotion ? nil : timing
         )
@@ -472,58 +493,17 @@ private extension View {
         }
     }
 
-    /// Reproduce Home's artwork-only lift for the anchored episode buttons.
-    /// Plain rails use `TVCardFocusButtonStyle`.
+    /// Home's artwork-only lift for the anchored episode buttons. Plain
+    /// rails use `TVCardFocusButtonStyle`.
     @ViewBuilder
     func episodeHomeHoverEffect(
         enabled: Bool,
         isFocused: Bool,
-        reduceMotion: Bool,
-        cornerRadius: CGFloat
+        reduceMotion: Bool
     ) -> some View {
         if enabled {
             self
-                .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.10),
-                                    Color.clear,
-                                    Color.black.opacity(0.04)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .opacity(isFocused ? 1 : 0)
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(isFocused ? 0.45 : 0),
-                                    Color.white.opacity(isFocused ? 0.10 : 0)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: isFocused ? 1.5 : 0
-                        )
-                }
-                .scaleEffect(
-                    isFocused && !reduceMotion ? EpisodeHomeHoverMetrics.scale : 1,
-                    // Grow evenly around the artwork instead of adding all of
-                    // the focused width on its trailing side.
-                    anchor: .center
-                )
-                .brightness(isFocused ? 0.035 : 0)
-                .shadow(
-                    color: .black.opacity(isFocused ? 0.62 : 0.2),
-                    radius: isFocused ? 26 : 8,
-                    y: isFocused ? 14 : 4
-                )
+                .tvCardLift(isFocused: isFocused)
                 .animation(
                     reduceMotion ? nil : .smooth(duration: 0.30, extraBounce: 0),
                     value: isFocused
@@ -535,6 +515,7 @@ private extension View {
 }
 
 struct TVEpisodeCard: View {
+    @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     var isCurrent: Bool = false
     var baseCardWidth: CGFloat = 480
@@ -548,8 +529,8 @@ struct TVEpisodeCard: View {
 
     var initialInWatchlist = false
     var cardHeightRatio: CGFloat = 9 / 16
-    /// The Series carousel's look: compact caption, Home's artwork-only
-    /// lift, and no focus or current outline.
+    /// The Series carousel's look: compact caption and Home's artwork-only
+    /// lift.
     var usesAnchoredStyle = false
 
     @State private var actionFeedback = MediaActionFeedback()
@@ -580,12 +561,16 @@ struct TVEpisodeCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
 
+        let hasContextMenu = onSetWatched != nil || onSetFavorite != nil || onSetWatchlist != nil
         Group {
-            if onPlay != nil || onSetWatched != nil || onSetFavorite != nil || onSetWatchlist != nil {
+            if hasContextMenu {
                 button.contextMenu { contextActions }
             } else {
                 button
             }
+        }
+        .onPlayPauseCommand {
+            onPlay?(episode.contentId)
         }
         .mediaActionFeedback(actionFeedback)
         .onChange(of: episode.userData?.played) { _, refreshedValue in
@@ -621,73 +606,90 @@ struct TVEpisodeCard: View {
             title: episode.title,
             metadata: EpisodeCardCaption.railMetadata(for: episode),
             isCurrent: isCurrent,
-            isPlayed: isPlayed
+            isPlayed: isPlayed,
+            locale: locale
         )
     }
 
     @ViewBuilder
     private var contextActions: some View {
-        WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode")
-        if let onPlay {
-            Button {
-                onPlay(episode.contentId)
-            } label: {
-                // Verbatim so year-numbered seasons don't render as "S2,021".
-                Label {
-                    Text(verbatim: "Play S\(episode.seasonNumber):E\(episode.episodeNumber)")
-                } icon: {
-                    Image(systemName: "play.fill")
-                }
-            }
-        }
-
-        MediaStateMenuItems(
-            isWatched: isPlayed,
-            isFavorite: isFavorite,
-            inWatchlist: inWatchlist,
-            watchedSubject: "Episode",
-            isUpdating: actionFeedback.isUpdating,
-            onToggleWatched: onSetWatched.map { update in
-                {
+        // Section 1: Watch state (consistent with the detail More menu).
+        if let onSetWatched {
+            Section {
+                Button {
                     let value = !isPlayed
                     let previous = playedOverride
                     actionFeedback.perform {
                         playedOverride = value
-                        let outcome = await update(episode.contentId, value)
+                        let outcome = await onSetWatched(episode.contentId, value)
                         if outcome != .applied { playedOverride = previous }
                         return outcome
                     }
+                } label: {
+                    Label(
+                        AppLanguage.string(
+                            isPlayed ? .detailMoreMarkEpisodeUnwatched : .detailMoreMarkEpisodeWatched,
+                            locale: locale
+                        ),
+                        systemImage: isPlayed ? "checkmark.circle.fill" : "checkmark.circle"
+                    )
                 }
-            },
-            onToggleFavorite: onSetFavorite.map { update in
-                {
-                    let value = !isFavorite
-                    let previous = favoriteOverride
-                    actionFeedback.perform {
-                        favoriteOverride = value
-                        let outcome = await update(episode.contentId, value)
-                        if outcome != .applied { favoriteOverride = previous }
-                        return outcome
+                .disabled(actionFeedback.isUpdating)
+            }
+        }
+
+        // Section 2: Personal lists.
+        if onSetFavorite != nil || onSetWatchlist != nil {
+            Section {
+                if let onSetFavorite {
+                    Button {
+                        let value = !isFavorite
+                        let previous = favoriteOverride
+                        actionFeedback.perform {
+                            favoriteOverride = value
+                            let outcome = await onSetFavorite(episode.contentId, value)
+                            if outcome != .applied { favoriteOverride = previous }
+                            return outcome
+                        }
+                    } label: {
+                        Label(
+                            AppLanguage.string(
+                                isFavorite ? .detailMoreRemoveFavorite : .detailMoreAddFavorite,
+                                locale: locale
+                            ),
+                            systemImage: isFavorite ? "heart.fill" : "heart"
+                        )
                     }
+                    .disabled(actionFeedback.isUpdating)
                 }
-            },
-            onToggleWatchlist: onSetWatchlist.map { update in
-                {
-                    let value = !inWatchlist
-                    let previous = watchlistOverride
-                    actionFeedback.perform {
-                        watchlistOverride = value
-                        let outcome = await update(episode.contentId, value)
-                        if outcome != .applied { watchlistOverride = previous }
-                        return outcome
+                if let onSetWatchlist {
+                    Button {
+                        let value = !inWatchlist
+                        let previous = watchlistOverride
+                        actionFeedback.perform {
+                            watchlistOverride = value
+                            let outcome = await onSetWatchlist(episode.contentId, value)
+                            if outcome != .applied { watchlistOverride = previous }
+                            return outcome
+                        }
+                    } label: {
+                        Label(
+                            AppLanguage.string(
+                                inWatchlist ? .detailWatchlistRemove : .detailWatchlistAdd,
+                                locale: locale
+                            ),
+                            systemImage: inWatchlist ? "bookmark.fill" : "bookmark"
+                        )
                     }
+                    .disabled(actionFeedback.isUpdating)
                 }
             }
-        )
+        }
     }
 }
 
 private struct EpisodeCardLabel: View {
+    @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     let isPlayed: Bool
     /// Spoiler protection: blur the still of an episode the profile has not
@@ -697,14 +699,12 @@ private struct EpisodeCardLabel: View {
     let cardWidth: CGFloat
     let stillHeight: CGFloat
     let stillCornerRadius: CGFloat
-    /// The Series carousel's look: compact caption, Home's artwork-only lift,
-    /// and no focus or current outline.
+    /// The Series carousel's look: compact caption and Home's artwork-only
+    /// lift.
     let usesAnchoredStyle: Bool
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var showsOutlines: Bool { !usesAnchoredStyle }
 
     var body: some View {
         VStack(alignment: .leading, spacing: TVEpisodeCardCaptionMetrics.gap) {
@@ -713,31 +713,34 @@ private struct EpisodeCardLabel: View {
             // episode's synopsis is already in the hero above the rail.
             VStack(alignment: .leading, spacing: TVEpisodeCardCaptionMetrics.lineSpacing) {
                 captionLine(
-                    EpisodeCardCaption.railTitle(for: episode),
+                    EpisodeCardCaption.railTitle(for: episode, locale: locale),
                     font: .system(size: usesAnchoredStyle ? 20 : 24, weight: .semibold),
-                    color: titleColor,
                     height: usesAnchoredStyle
                         ? TVEpisodeCardCaptionMetrics.anchoredTitleHeight
                         : TVEpisodeCardCaptionMetrics.titleHeight
                 )
+                .tvCardTitleFocus(isFocused: isHighlighted)
                 if let metadata = EpisodeCardCaption.railMetadata(for: episode) {
                     captionLine(
                         metadata,
                         font: .system(size: usesAnchoredStyle ? 17 : 18, weight: .medium),
-                        color: .siloSecondaryText,
                         height: TVEpisodeCardCaptionMetrics.metadataHeight
                     )
+                    .tvCardSubtitleFocus(isFocused: isHighlighted)
                 }
             }
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .tvCardCaptionFocus(
+                isFocused: isHighlighted,
+                posterOverhang: captionOverhang,
+                spacing: TVEpisodeCardCaptionMetrics.gap
+            )
         }
         .frame(width: cardWidth, alignment: .leading)
     }
 
-    private func captionLine(_ text: String, font: Font, color: Color, height: CGFloat) -> some View {
+    private func captionLine(_ text: String, font: Font, height: CGFloat) -> some View {
         Text(text)
             .font(font)
-            .foregroundStyle(color)
             .lineLimit(1)
             .truncationMode(.tail)
             .frame(width: cardWidth, height: height, alignment: .topLeading)
@@ -751,9 +754,14 @@ private struct EpisodeCardLabel: View {
             }
     }
 
-    private var titleColor: Color {
-        if isCurrent { return .siloOnSurface }
-        return isFocused ? .siloOnSurface : Color.siloOnSurface.opacity(0.92)
+    /// The focused card, or the episode Play acts on while focus is
+    /// elsewhere, gets the outline and the bright caption.
+    private var isHighlighted: Bool { isFocused || isCurrent }
+
+    /// How far the lifted still extends below its frame. Only the anchored
+    /// style lifts the still alone; the plain style lifts the whole card.
+    private var captionOverhang: CGFloat {
+        usesAnchoredStyle ? TVCardOutlineButtonStyle.focusedOverhang(forHeight: stillHeight) : 0
     }
 
     private var still: some View {
@@ -787,21 +795,16 @@ private struct EpisodeCardLabel: View {
             }
 
             if let progress = progressFraction {
-                progressBar(fraction: progress)
+                ProgressBar(value: progress)
             }
         }
         .frame(width: cardWidth, height: stillHeight)
         .clipShape(RoundedRectangle(cornerRadius: stillCornerRadius))
+        // Also outline the episode the Play button acts on while focus is
+        // elsewhere, such as on Play itself after opening it from Up Next.
         .tvFocusRing(
-            isFocused: showsOutlines && isFocused,
+            isFocused: isHighlighted,
             cornerRadius: stillCornerRadius
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: stillCornerRadius)
-                .stroke(
-                    Color.white.opacity(showsOutlines && isCurrent && !isFocused ? 0.7 : 0),
-                    lineWidth: showsOutlines && isCurrent && !isFocused ? 2 : 0
-                )
         )
         // Home lifts only the artwork button, not its caption. Doing the same
         // here keeps caption geometry and carousel offsets perfectly stable.
@@ -810,8 +813,7 @@ private struct EpisodeCardLabel: View {
         .episodeHomeHoverEffect(
             enabled: usesAnchoredStyle,
             isFocused: isFocused,
-            reduceMotion: reduceMotion,
-            cornerRadius: stillCornerRadius
+            reduceMotion: reduceMotion
         )
     }
 
@@ -825,17 +827,6 @@ private struct EpisodeCardLabel: View {
                 .font(.system(size: 18, weight: .bold))
                 .foregroundColor(.black)
         }
-    }
-
-    private func progressBar(fraction: Double) -> some View {
-        ZStack(alignment: .leading) {
-            Rectangle()
-                .fill(Color.black.opacity(0.6))
-            Rectangle()
-                .fill(Color.white)
-                .frame(width: cardWidth * CGFloat(fraction))
-        }
-        .frame(width: cardWidth, height: 5)
     }
 
     private var progressFraction: Double? {

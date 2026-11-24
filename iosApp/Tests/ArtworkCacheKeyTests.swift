@@ -17,6 +17,21 @@ final class ArtworkCacheKeyTests: XCTestCase {
         )
     }
 
+    func testUnsignedIdentityMatchesOnlyTheSameObject() throws {
+        // A re-signed upload compares equal; another object or host does not.
+        let avatar = "https://bucket.test/profile-avatars/1/p1/w256.webp"
+        let today = try url(avatar + "?X-Amz-Date=20261106T0100Z&X-Amz-Signature=abc&x-id=GetObject")
+        let later = try url(avatar + "?x-id=GetObject&X-Amz-Date=20261106T0200Z&X-Amz-Signature=def")
+        XCTAssertEqual(ArtworkCacheKey.unsignedIdentity(for: today), avatar + "?x-id=GetObject")
+        XCTAssertEqual(ArtworkCacheKey.unsignedIdentity(for: today), ArtworkCacheKey.unsignedIdentity(for: later))
+        for other in [
+            "https://bucket.test/profile-avatars/1/p2/w256.webp?X-Amz-Signature=abc&x-id=GetObject",
+            "https://cdn.test/profile-avatars/1/p1/w256.webp?X-Amz-Signature=abc&x-id=GetObject",
+        ] {
+            XCTAssertNotEqual(ArtworkCacheKey.unsignedIdentity(for: try url(other)), ArtworkCacheKey.unsignedIdentity(for: today))
+        }
+    }
+
     func testMutableArtworkKeepsItsFullURL() throws {
         // Replaced in place on the server, so a new signature may mean new bytes.
         let signed = try url(mutable + "?exp=1800000000&sig=abc")

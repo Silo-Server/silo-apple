@@ -656,6 +656,7 @@ class QRLoginViewModel: NearbySignInCodeSource {
                     accessToken: tokens.accessToken,
                     refreshToken: tokens.refreshToken,
                     accountID: tokens.user.id,
+                    username: tokens.user.username,
                     expectedAccount: account
                 )
                 return .approved(.approved(account: ServerIdentity.usable(tokens.user.username)))
@@ -727,5 +728,5 @@ class QRLoginViewModel: NearbySignInCodeSource {
 
     // MARK: - Messages
 
-    nonisolated static let serverChangedMessage = "The active server changed during sign-in. Please try again."
+    nonisolated static var serverChangedMessage: String { AppLanguage.string(.tvSignInErrorServerChanged) }
 }

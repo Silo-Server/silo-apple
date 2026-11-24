@@ -7,21 +7,23 @@ import SwiftUI
 /// device-override reset below them.
 struct SeekIntervalSettingsSections: View {
     @State private var store = SeekIntervalPreferences.shared
+    /// The app language, so a switch re-renders the footers.
+    @Environment(\.locale) private var locale
 
     /// The Mac has no touch gestures or remote, so its footer names only
     /// the inputs it has.
-    private static var videoFooter: String {
+    private static var videoFooter: LocalizedStringResource {
         #if os(macOS)
-        "Used by the on-screen skip buttons and the arrow keys."
+        .settingsSkipIntervalsFooterVideoMac
         #else
-        "Used by the on-screen skip buttons, double-tap, arrow keys, and remote clicks."
+        .settingsSkipIntervalsFooterVideoApple
         #endif
     }
 
     var body: some View {
         Group {
             section(
-                title: "Video",
+                title: .settingsSectionVideo,
                 media: .video,
                 surface: .videoPlayer,
                 footer: Self.videoFooter
@@ -30,35 +32,35 @@ struct SeekIntervalSettingsSections: View {
             // every child, which would refresh once per section.
             .task { await store.refresh() }
             section(
-                title: "Audiobooks",
+                title: .settingsSeekIntervalsAudiobooks,
                 media: .audiobook,
                 surface: .audiobook,
-                footer: "Used by the audiobook player's skip buttons."
+                footer: .settingsSkipIntervalsFooterAudiobook
             )
         }
     }
 
     private func section(
-        title: String,
+        title: LocalizedStringResource,
         media: SeekMedia,
         surface: SeekIntervalSurface,
-        footer: String
+        footer: LocalizedStringResource
     ) -> some View {
         Section {
-            picker("Skip Back", media: media, direction: .backward, surface: surface)
-            picker("Skip Forward", media: media, direction: .forward, surface: surface)
+            picker(.settingsControlSkipBack, media: media, direction: .backward, surface: surface)
+            picker(.settingsControlSkipForward, media: media, direction: .forward, surface: surface)
         } header: {
             Text(title)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
-            Text(footerText(footer, media: media))
+            Text(verbatim: footerText(footer, media: media))
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
     }
 
     private func picker(
-        _ label: String,
+        _ label: LocalizedStringResource,
         media: SeekMedia,
         direction: SeekDirection,
         surface: SeekIntervalSurface
@@ -78,8 +80,8 @@ struct SeekIntervalSettingsSections: View {
 
     /// The usage note, then whatever keeps the pickers from saving, then any
     /// failed save for this group, one line per direction.
-    private func footerText(_ usage: String, media: SeekMedia) -> String {
-        var lines = [usage + " Applies to every device signed in to this profile."]
+    private func footerText(_ usage: LocalizedStringResource, media: SeekMedia) -> String {
+        var lines = [AppLanguage.string(usage, locale: locale)]
         if let status = store.statusMessage {
             lines.append(status)
         }

@@ -93,6 +93,7 @@ extension AppRouter.PlayerPresentation {
             libraryId: libraryId,
             contentId: contentId,
             fileId: fileId,
+            pinsVersion: pinsVersion,
             audioTrackIndex: audioTrackIndex,
             subtitleTrackIndex: subtitleTrackIndex,
             startFromBeginning: startFromBeginning,

@@ -11,11 +11,11 @@ enum CalendarFilter: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var displayLabel: String {
+    var displayLabel: LocalizedStringResource {
         switch self {
-        case .following: return "Following"
-        case .trending: return "Trending"
-        case .everything: return "All"
+        case .following: return .calendarFilterFollowing
+        case .trending: return .calendarFilterTrending
+        case .everything: return .calendarFilterAll
         }
     }
 
@@ -85,14 +85,14 @@ struct CalendarEvent: Codable, Identifiable {
     var isWatched: Bool { watched == true }
 
     /// "S5 · E14" for episodes, "Season 2" for season premieres.
-    var episodeSubtitle: String? {
+    func episodeSubtitle(locale: Locale) -> String? {
         switch type {
         case "episode":
             guard let season = seasonNumber, let episode = episodeNumber else { return nil }
-            return "S\(season) · E\(episode)"
+            return AppLanguage.string(.catalogEpisodeCaption(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)), locale: locale)
         case "season_premiere":
             guard let season = seasonNumber else { return nil }
-            return "Season \(season)"
+            return AppLanguage.string(.calendarSeason(LocaleFormat.integer(season, locale: locale)), locale: locale)
         default:
             return nil
         }
@@ -116,17 +116,23 @@ struct CalendarEvent: Codable, Identifiable {
     }
 }
 
-/// Editorial badges the server attaches to calendar events.
+/// Editorial badges the server attaches to calendar events. A movie is
+/// listed once, on its first home release, and carries `digital` or
+/// `physical` to name that release (`/api/v2` only).
 enum CalendarBadge: String {
     case seriesPremiere = "series_premiere"
     case seasonPremiere = "season_premiere"
     case finale
+    case digital
+    case physical
 
-    var label: String {
+    var label: LocalizedStringResource {
         switch self {
-        case .seriesPremiere: return "SERIES PREMIERE"
-        case .seasonPremiere: return "NEW SEASON"
-        case .finale: return "FINALE"
+        case .seriesPremiere: return .calendarBadgeSeriesPremiere
+        case .seasonPremiere: return .calendarBadgeSeasonPremiere
+        case .finale: return .calendarBadgeFinale
+        case .digital: return .calendarBadgeDigital
+        case .physical: return .calendarBadgePhysical
         }
     }
 }

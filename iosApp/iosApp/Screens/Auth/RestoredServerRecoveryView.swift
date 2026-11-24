@@ -42,7 +42,7 @@ final class RestoredServerRecoveryCoordinator {
                 let destination = await resolveDestination()
                 router.resetAfterServerResolution(to: destination)
             } else {
-                error = "Silo couldn't forget this server. Try again."
+                error = AppLanguage.string(.setupRecoveryErrorForgetFailed)
             }
             isForgetting = false
             forgetTask = nil
@@ -65,6 +65,7 @@ struct RestoredServerRecoveryView: View {
     @State private var error: String?
     @State private var retryTask: Task<Void, Never>?
     @State private var showForgetConfirmation = false
+    @Environment(\.locale) private var locale
     #if os(tvOS)
     @FocusState private var focusedAction: RecoveryAction?
 
@@ -107,16 +108,16 @@ struct RestoredServerRecoveryView: View {
 
                 HStack(spacing: 22) {
                     Button(action: retry) {
-                        Label(isChecking ? "Checking…" : "Try again", systemImage: "arrow.clockwise")
+                        Label(isChecking ? LocalizedStringResource.notReadyChecking : .commonTryAgain, systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(.marquee(.primary, fullWidth: false, isLoading: isChecking))
                     .focused($focusedAction, equals: .retry)
 
-                    Button("Manage servers", action: manageServers)
+                    Button(.setupRecoveryManageServers, action: manageServers)
                         .buttonStyle(.marquee(.glass, fullWidth: false))
                         .focused($focusedAction, equals: .manageServers)
 
-                    Button("Forget this server", action: requestForget)
+                    Button(.setupRecoveryForget, action: requestForget)
                         .buttonStyle(.marquee(.plain, fullWidth: false))
                         .focused($focusedAction, equals: .forget)
                 }
@@ -132,9 +133,9 @@ struct RestoredServerRecoveryView: View {
 
             if showForgetConfirmation {
                 TVSettingsConfirmationOverlay(
-                    title: "Forget this server?",
-                    message: forgetMessage,
-                    confirmTitle: "Forget Server",
+                    title: .setupRecoveryForgetTitle,
+                    message: .verbatim(forgetMessage),
+                    confirmTitle: .setupRecoveryForgetConfirm,
                     cancel: cancelForget,
                     confirm: confirmForget
                 )
@@ -171,14 +172,14 @@ struct RestoredServerRecoveryView: View {
 
             VStack(spacing: 10) {
                 Button(action: retry) {
-                    Text(isChecking ? "Checking…" : "Try again")
+                    Text(isChecking ? LocalizedStringResource.notReadyChecking : .commonTryAgain)
                 }
                 .buttonStyle(.marquee(.primary, isLoading: isChecking))
 
-                Button("Manage servers", action: manageServers)
+                Button(.setupRecoveryManageServers, action: manageServers)
                     .buttonStyle(.marqueeGlass)
 
-                Button("Forget this server", role: .destructive, action: requestForget)
+                Button(.setupRecoveryForget, role: .destructive, action: requestForget)
                     .buttonStyle(.marqueePlain)
             }
             .disabled(isChecking || coordinator.isForgetting)
@@ -188,9 +189,9 @@ struct RestoredServerRecoveryView: View {
         .onAppear { MarqueeScene.shared.showActiveServer() }
         .navigationBarBackButtonHidden()
         .marqueeTransparentNavigation()
-        .alert("Forget this server?", isPresented: $showForgetConfirmation) {
-            Button("Forget Server", role: .destructive, action: confirmForget)
-            Button("Cancel", role: .cancel) {}
+        .alert(.setupRecoveryForgetTitle, isPresented: $showForgetConfirmation) {
+            Button(.setupRecoveryForgetConfirm, role: .destructive, action: confirmForget)
+            Button(.commonCancel, role: .cancel) {}
         } message: {
             Text(forgetMessage)
         }
@@ -200,19 +201,19 @@ struct RestoredServerRecoveryView: View {
 
     private var serverCard: some View {
         MarqueeServerCard(
-            name: activeServer?.displayName ?? "Your server",
+            name: activeServer?.displayName ?? AppLanguage.string(.setupRecoveryServerFallback),
             address: activeServer.map { ServerBranding.hostLabel($0.url) } ?? "",
             markURL: activeServer.flatMap { ServerBrandingCache.branding(for: $0.url)?.markURL },
             badge: .init(text: badgeText, systemImage: "exclamationmark.triangle", tone: .warning)
         )
-        .accessibilityLabel("Server address: \(activeServer?.url ?? "")")
+        .accessibilityLabel(.setupRecoveryServerAddress(activeServer?.url ?? ""))
     }
 
     private var badgeText: String {
         switch reason {
-        case .needsSetup: return "Setup needed"
-        case .serverNotRecognized: return "Not recognized"
-        case .serverUpdateRequired, .appUpdateRequired: return "Update needed"
+        case .needsSetup: return AppLanguage.string(.notReadyBadge)
+        case .serverNotRecognized: return AppLanguage.string(.setupRecoveryBadgeNotRecognized)
+        case .serverUpdateRequired, .appUpdateRequired: return AppLanguage.string(.firstRunBadgeUpdate)
         }
     }
 
@@ -222,30 +223,29 @@ struct RestoredServerRecoveryView: View {
 
     private var title: String {
         switch reason {
-        case .needsSetup: return "This server isn't ready"
-        case .serverNotRecognized: return "Can't open this server"
-        case .serverUpdateRequired: return "Server update required"
-        case .appUpdateRequired: return "Update Silo"
+        case .needsSetup: return AppLanguage.string(.setupNotReadyTitle)
+        case .serverNotRecognized: return AppLanguage.string(.setupRecoveryTitleNotRecognized)
+        case .serverUpdateRequired: return AppLanguage.string(.updateHeadline)
+        case .appUpdateRequired: return AppLanguage.string(.setupRecoveryTitleAppUpdate)
         }
     }
 
     private var message: String {
-        let keptSignIn = "Your saved sign-in information has not been removed."
         switch reason {
         case .needsSetup:
-            return "Ask the server administrator to finish setup, then try again. \(keptSignIn)"
+            return AppLanguage.string(.setupRecoveryLeadNeedsSetup)
         case .serverNotRecognized:
-            return "The server may have moved, been reset, or this address may no longer point to Silo. \(keptSignIn)"
+            return AppLanguage.string(.setupRecoveryLeadNotRecognized)
         case .serverUpdateRequired:
-            return "\(UpdateRequirement.serverMessage) \(keptSignIn)"
+            return AppLanguage.string(.setupRecoveryLeadUpdate(UpdateRequirement.serverMessage))
         case .appUpdateRequired:
-            return "\(UpdateRequirement.appMessage) \(keptSignIn)"
+            return AppLanguage.string(.setupRecoveryLeadUpdate(UpdateRequirement.appMessage))
         }
     }
 
     private var forgetMessage: String {
-        let name = activeServer?.displayName ?? "this server"
-        return "This removes the saved connection and sign-in credentials for \(name) from this device. This can't be undone."
+        guard let name = activeServer?.displayName else { return AppLanguage.string(.setupRecoveryForgetBodyUnnamed) }
+        return AppLanguage.string(.setupRecoveryForgetBody(name))
     }
 
     private func retry() {
@@ -291,17 +291,17 @@ struct RestoredServerRecoveryView: View {
     private func retryMessage(for validation: RestoredSessionValidationResult) -> String {
         switch validation {
         case .serverRecovery(.needsSetup):
-            return "This server still needs administrator setup."
+            return AppLanguage.string(.notReadyStill)
         case .serverRecovery(.serverNotRecognized):
-            return "This address still doesn't look like a Silo server."
+            return AppLanguage.string(.setupRecoveryStillNotRecognized)
         case .serverRecovery(.serverUpdateRequired):
-            return "This server still needs to be updated."
+            return AppLanguage.string(.setupRecoveryStillServerUpdate)
         case .serverRecovery(.appUpdateRequired):
-            return "This server still requires a newer version of Silo."
+            return AppLanguage.string(.setupRecoveryStillAppUpdate)
         case .indeterminate:
-            return "We still can't reach this server. Your saved sign-in information is unchanged."
+            return AppLanguage.string(.setupRecoveryStillUnreachable)
         case .valid, .needsLogin, .identityChanged:
-            return "The server changed while it was being checked. Try again."
+            return AppLanguage.string(.setupRecoveryServerChanged)
         }
     }
 

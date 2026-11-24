@@ -49,6 +49,25 @@ final class WatchPartyEndOfFileTests: XCTestCase {
         XCTAssertTrue(player.hasReachedEndOfFile)
     }
 
+    /// The end of the stream closes a solo scrub, which could no longer seek.
+    /// A member's scrub is a request to the room, so it stays open.
+    func testScrubOpenAcrossEndOfFileStillReachesTheRoom() {
+        let (player, adapter) = partyPlayer()
+        defer { adapter.stop() }
+        adapter.canSeek = true
+        var requests: [WatchPartyPlaybackAction] = []
+        adapter.onUserTransport = { action, _, _ in requests.append(action); return true }
+        player.duration = 1_200
+        player.currentTime = 1_195
+        player.beginScrub(fraction: 0.5)
+
+        player.handleEndOfFile()
+        XCTAssertTrue(player.isScrubbing)
+        player.endScrub()
+
+        XCTAssertEqual(requests, [.seek(600)])
+    }
+
     func testPlayFromTheEndIsNotSentToTheRoom() {
         let (player, adapter) = partyPlayer()
         defer { adapter.stop() }

@@ -26,9 +26,9 @@ enum IntroSkipMode: String, CaseIterable, Identifiable, Sendable {
     /// The contract's option labels, shared with web and Android.
     var label: String {
         switch self {
-        case .never: return "Never"
-        case .ask: return "Ask to skip"
-        case .always: return "Skip automatically"
+        case .never: return AppLanguage.string(.settingsIntroSkipNever)
+        case .ask: return AppLanguage.string(.settingsIntroSkipAsk)
+        case .always: return AppLanguage.string(.settingsIntroSkipAlways)
         }
     }
 
@@ -47,47 +47,6 @@ enum IntroSkipMode: String, CaseIterable, Identifiable, Sendable {
 
     /// The deprecated boolean this mode projects onto.
     var legacyAutoSkip: Bool { self == .always }
-}
-
-/// Timers for ``IntroSkipPrompt``. Injected so tests can drive the wall clock.
-@MainActor
-protocol IntroSkipPromptClock: AnyObject {
-    var now: Date { get }
-    /// Runs `action` once after `delay` seconds unless the returned handle is
-    /// cancelled first.
-    func schedule(
-        after delay: TimeInterval,
-        _ action: @escaping @MainActor () -> Void
-    ) -> IntroSkipPromptTimer
-}
-
-@MainActor
-protocol IntroSkipPromptTimer: AnyObject {
-    func cancel()
-}
-
-/// The production clock: wall-clock time and main-actor tasks.
-@MainActor
-final class LiveIntroSkipPromptClock: IntroSkipPromptClock {
-    private final class TaskTimer: IntroSkipPromptTimer {
-        var task: Task<Void, Never>?
-        func cancel() { task?.cancel() }
-    }
-
-    var now: Date { Date() }
-
-    func schedule(
-        after delay: TimeInterval,
-        _ action: @escaping @MainActor () -> Void
-    ) -> IntroSkipPromptTimer {
-        let timer = TaskTimer()
-        timer.task = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            action()
-        }
-        return timer
-    }
 }
 
 /// The intro-skip pill's state machine, shared by the iOS, tvOS and macOS
@@ -144,14 +103,6 @@ final class IntroSkipPrompt {
         let remaining: TimeInterval
         /// Where a fresh timer starts, for drawing progress against it.
         let total: TimeInterval
-
-        /// How far the fill has crept, 0 when the pill appears and 1 when the
-        /// timer runs out.
-        func progress(at now: Date) -> Double {
-            guard total > 0 else { return 1 }
-            let left = deadline.map { $0.timeIntervalSince(now) } ?? remaining
-            return min(max(1 - left / total, 0), 1)
-        }
     }
 
     struct Inputs: Equatable {
@@ -169,7 +120,7 @@ final class IntroSkipPrompt {
 
     var isVisible: Bool { pill != nil }
 
-    @ObservationIgnored private let clock: IntroSkipPromptClock
+    @ObservationIgnored private let clock: PlayerPromptClock
     @ObservationIgnored private let duration: TimeInterval
 
     /// Intros the viewer has decided in this playback. A resolved intro never
@@ -184,14 +135,14 @@ final class IntroSkipPrompt {
     @ObservationIgnored private var activity: Activity = .paused
     /// Time left when a stall began, while its grace window runs.
     @ObservationIgnored private var remainingAtStall: TimeInterval?
-    @ObservationIgnored private var expiryTimer: IntroSkipPromptTimer?
-    @ObservationIgnored private var graceTimer: IntroSkipPromptTimer?
+    @ObservationIgnored private var expiryTimer: PlayerPromptTimer?
+    @ObservationIgnored private var graceTimer: PlayerPromptTimer?
 
     init(
-        clock: IntroSkipPromptClock? = nil,
+        clock: PlayerPromptClock? = nil,
         duration: TimeInterval = IntroSkipPrompt.promptSeconds
     ) {
-        self.clock = clock ?? LiveIntroSkipPromptClock()
+        self.clock = clock ?? LivePlayerPromptClock()
         self.duration = duration
     }
 

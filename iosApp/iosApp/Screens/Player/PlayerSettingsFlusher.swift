@@ -65,6 +65,34 @@ protocol PlayerSettingsTransport: AnyObject, Sendable {
         profileId: String?
     ) async throws
     func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?) async throws
+    /// The same writes for an operation queued under `scopeIdentifier`
+    /// (`PlayerSettings.currentScopeIdentifier`).
+    func putValue(
+        key: SettingKey,
+        scope: PlayerSettingWriteScope,
+        value: SettingJSONValue,
+        profileId: String?,
+        scopeIdentifier: String?
+    ) async throws
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?,
+                     scopeIdentifier: String?) async throws
+}
+
+extension PlayerSettingsTransport {
+    func putValue(
+        key: SettingKey,
+        scope: PlayerSettingWriteScope,
+        value: SettingJSONValue,
+        profileId: String?,
+        scopeIdentifier: String?
+    ) async throws {
+        try await putValue(key: key, scope: scope, value: value, profileId: profileId)
+    }
+
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?,
+                     scopeIdentifier: String?) async throws {
+        try await deleteValue(key: key, scope: scope, profileId: profileId)
+    }
 }
 
 /// The production transport: the canonical endpoints on ``SiloAPI``.
@@ -85,11 +113,45 @@ final class SiloPlayerSettingsTransport: PlayerSettingsTransport {
         value: SettingJSONValue,
         profileId: String?
     ) async throws {
-        try await api.putValue(key: key, scope: scope.identity, value: value, profileId: profileId)
+        try await putValue(key: key, scope: scope, value: value, profileId: profileId, scopeIdentifier: nil)
     }
 
     func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?) async throws {
-        try await api.deleteValue(key: key, scope: scope.identity, profileId: profileId)
+        try await deleteValue(key: key, scope: scope, profileId: profileId, scopeIdentifier: nil)
+    }
+
+    func putValue(
+        key: SettingKey,
+        scope: PlayerSettingWriteScope,
+        value: SettingJSONValue,
+        profileId: String?,
+        scopeIdentifier: String?
+    ) async throws {
+        try await api.putValue(key: key, scope: scope.identity, value: value, profileId: profileId,
+                               requestIdentity: Self.pinnedIdentity(profileId: profileId, scopeIdentifier: scopeIdentifier))
+    }
+
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?,
+                     scopeIdentifier: String?) async throws {
+        try await api.deleteValue(key: key, scope: scope.identity, profileId: profileId,
+                                  requestIdentity: Self.pinnedIdentity(profileId: profileId, scopeIdentifier: scopeIdentifier))
+    }
+
+    /// The active account and profile, pinned to the request. Profile IDs
+    /// repeat across accounts, so the request is refused if another account
+    /// is selected before it is sent. A write queued under
+    /// `scopeIdentifier` goes only as that scope's account and profile:
+    /// when another one is active, it is cancelled, and the flusher leaves
+    /// it to that scope's journal.
+    private static func pinnedIdentity(profileId: String?, scopeIdentifier: String?) throws -> HTTPRequestIdentity? {
+        guard let identity = HTTPRequestIdentity.activeProfile() else { return nil }
+        if let owner = scopeIdentifier.flatMap(PlayerSettings.scopeOwner(of:)) {
+            guard owner.localAccountId == identity.localAccountId, owner.profileId == identity.profileId else {
+                throw CancellationError()
+            }
+        }
+        guard profileId == nil || identity.profileId == profileId else { return nil }
+        return identity
     }
 }
 
@@ -224,6 +286,33 @@ struct PendingSettingWrite: Equatable, Codable {
             onlyWhereProfileScoped: onlyWhereProfileScoped,
             fallbackDeviceValue: fallbackDeviceValue,
             storedProfileValue: storedProfileValue,
+            scopeIdentifier: scopeIdentifier,
+            profileId: profileId,
+            failedAttempts: failedAttempts,
+            isHeld: isHeld
+        )
+    }
+
+    /// This write, the later one for its key, keeping what `older` still
+    /// owes, as a later edit does in `PlayerSettingsFlusher.enqueue` and
+    /// `enqueueDelete`: a clear of this device's value, a profile value not
+    /// yet stored, the device value a clear replaced, and the profile value
+    /// an owed clear exposes unless this write owes a newer one.
+    func superseding(_ older: PendingSettingWrite) -> PendingSettingWrite {
+        let owesClear = (older.scope == .profile && older.clearsDeviceValue)
+            || (older.operation == .delete && older.scope == .profileDevice)
+        var olderProfileValue = older.owedProfileValue
+        if older.scope == .profile, case .set(let value) = older.operation { olderProfileValue = value }
+        var olderDeviceValue = older.fallbackDeviceValue
+        if older.scope == .profileDevice, case .set(let value) = older.operation { olderDeviceValue = value }
+        return PendingSettingWrite(
+            operation: operation,
+            scope: scope,
+            clearsDeviceValue: clearsDeviceValue || owesClear,
+            onlyWhereProfileScoped: onlyWhereProfileScoped,
+            fallbackDeviceValue: fallbackDeviceValue ?? olderDeviceValue,
+            owedProfileValue: owedProfileValue ?? olderProfileValue,
+            storedProfileValue: storedProfileValue ?? (owedProfileValue == nil ? older.storedProfileValue : nil),
             scopeIdentifier: scopeIdentifier,
             profileId: profileId,
             failedAttempts: failedAttempts,
@@ -541,6 +630,11 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// Bumped by ``forgetManifestRevision()`` so a read that was already in
     /// flight for the previous server cannot record that server's revision.
     private var manifestRevisionGeneration: UInt64 = 0
+    /// Keys whose latest read since ``forgetManifestRevision()`` came back
+    /// with a row: the server serves them whatever its revision, so their
+    /// writes can go. A later read without the row, or one refused for the
+    /// key, takes it out again.
+    private var keysWithRows: Set<SettingKey> = []
 
     init(
         transport: PlayerSettingsTransport,
@@ -650,10 +744,20 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// may carry.
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
         let generation = lock.withLock { manifestRevisionGeneration }
-        let response = try await transport.effectiveValues(keys: keys)
+        let response: EffectiveSettingValuesResponse
+        do {
+            response = try await transport.effectiveValues(keys: keys)
+        } catch let error as SettingsAPIError where error.isUnknownKeyAnswer {
+            lock.withLock {
+                if manifestRevisionGeneration == generation { keysWithRows.subtract(keys) }
+            }
+            throw error
+        }
         lock.withLock {
             if manifestRevisionGeneration == generation {
                 manifestRevision = response.revision
+                keysWithRows.subtract(keys)
+                keysWithRows.formUnion(response.byKey.keys)
             }
         }
         return response
@@ -672,6 +776,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     func forgetManifestRevision() {
         lock.withLock {
             manifestRevision = nil
+            keysWithRows = []
             manifestRevisionGeneration &+= 1
         }
     }
@@ -1363,7 +1468,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 log(key, "server manifest revision not known yet", kept: true)
                 return .retryOnNextTrigger
             }
-            guard key.isServed(atRevision: revision) else {
+            guard key.isServed(atRevision: revision) || lock.withLock({ keysWithRows.contains(key) }) else {
                 // Nothing can be stored for the key there, so a clear is
                 // already true. A value stays owed on this device, which keeps
                 // using it, and goes once the server serves the key.
@@ -1388,7 +1493,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 }
                 if let profileValue {
                     do {
-                        try await transport.putValue(key: key, scope: .profile, value: profileValue, profileId: write.profileId)
+                        try await transport.putValue(key: key, scope: .profile, value: profileValue, profileId: write.profileId,
+                                                     scopeIdentifier: write.scopeIdentifier)
                     } catch let error as SettingsAPIError {
                         guard case .release = error.writeFailure else { throw error }
                         // Refused for the profile, and sending it again would
@@ -1434,7 +1540,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                     key: key,
                     scope: scope,
                     value: wireValue,
-                    profileId: write.profileId
+                    profileId: write.profileId,
+                    scopeIdentifier: write.scopeIdentifier
                 )
                 if scope == .profile {
                     // With a clear to follow, from here the clear is the only
@@ -1454,7 +1561,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                         try await transport.deleteValue(
                             key: key,
                             scope: .profileDevice,
-                            profileId: write.profileId
+                            profileId: write.profileId,
+                            scopeIdentifier: write.scopeIdentifier
                         )
                     } catch SettingsAPIError.noValueAtScope {
                         // No device value, so the profile value already shows.
@@ -1474,13 +1582,15 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                                 key: key,
                                 scope: .profileDevice,
                                 value: key.wireValue(fallback, forServerRevision: revision),
-                                profileId: write.profileId
+                                profileId: write.profileId,
+                                scopeIdentifier: write.scopeIdentifier
                             )
                         }
                         return .settled
                     }
                 }
-                try await transport.deleteValue(key: key, scope: write.scope, profileId: write.profileId)
+                try await transport.deleteValue(key: key, scope: write.scope, profileId: write.profileId,
+                                                scopeIdentifier: write.scopeIdentifier)
             }
             return .settled
         } catch let error as SettingsAPIError {

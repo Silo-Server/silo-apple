@@ -96,6 +96,12 @@ final class RequestDetailCache {
         }
     }
 
+    /// The user removed their request: it no longer seeds the title's page.
+    func forgetOwnRecord(_ record: MediaRequest) {
+        let key = Key(mediaType: record.mediaType, tmdbId: record.tmdbId)
+        if ownRecords[key]?.id == record.id { ownRecords.removeValue(forKey: key) }
+    }
+
     /// A follow toggle: the next first frame of the title, from the cached
     /// detail or a card's seed, shows the new state.
     func applyTitleState(_ update: RequestTitleStateUpdate) {

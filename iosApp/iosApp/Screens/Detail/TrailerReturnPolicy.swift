@@ -10,12 +10,14 @@ import Foundation
 struct TrailerReturnRecord: Codable, Equatable {
     let contentId: String
     var libraryId: Int? = nil
-    /// Identity at handoff time. A record from another server or profile is
-    /// never honored — restoring it would surface one profile's browsing to
-    /// another on a shared living-room device.
+    /// Identity at handoff time. A record from another server, account, or
+    /// profile is never honored — restoring it would surface one profile's
+    /// browsing to another on a shared living-room device. Profile IDs repeat
+    /// across accounts, so the account is part of it.
     let serverId: String
     let profileId: String
     let savedAt: Date
+    var localAccountId: String? = nil
 }
 
 /// Pure decision rule for honoring a persisted handoff record, kept free of
@@ -41,9 +43,11 @@ enum TrailerReturnPolicy {
         record: TrailerReturnRecord,
         now: Date,
         activeServerId: String?,
-        activeProfileId: String?
+        activeProfileId: String?,
+        activeLocalAccountId: String? = nil
     ) -> Bool {
         guard record.serverId == activeServerId,
+              record.localAccountId == activeLocalAccountId,
               record.profileId == activeProfileId else {
             return false
         }

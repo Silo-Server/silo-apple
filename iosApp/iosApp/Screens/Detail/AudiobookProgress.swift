@@ -27,6 +27,14 @@ enum AudiobookProgress {
         PlaybackResumePoint.position(position, duration: totalDuration)
     }
 
+    /// Where the player opens a book saved at `position`: there, unless that
+    /// is within 5 s of the (known, positive) end, which starts it over.
+    static func playerStartPosition(_ position: Double, totalDuration: Double) -> Double {
+        guard position.isFinite, position > 0 else { return 0 }
+        if totalDuration > 0, position >= totalDuration - 5 { return 0 }
+        return position
+    }
+
     /// Whether the book is effectively finished — the played flag, or a
     /// position within 5s of the (known, positive) end.
     static func isFinished(played: Bool, position: Double, totalDuration: Double) -> Bool {

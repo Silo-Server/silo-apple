@@ -44,7 +44,7 @@ struct TVDetailPageSurface<Content: View>: View {
         ZStack {
             Color.black
             sampledTints.base.opacity(0.42)
-            TVBackdropTintWash(tints: sampledTints, includesBase: false)
+            TVBackdropTintWash(tints: sampledTints)
             content()
         }
         .ignoresSafeArea()
@@ -95,6 +95,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// before the genre labels. The row stays on one line: entries that
     /// don't fit drop from the end.
     var ratings: [DisplayRating] = []
+    /// The viewer's own rating, shown after the external ratings and before
+    /// the genres. It is in every candidate row, so the genres and then the
+    /// external ratings give way before it does. On a series page it is the
+    /// series' rating even while the line shows an episode's facts.
+    var personalRating: TVHeroPersonalRating? = nil
     /// Optional credit line ("Starring …" / "Directed by …") under the synopsis.
     let starringText: String?
     /// Non-interactive playback readout shown directly below the credits. It
@@ -367,7 +372,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
 
     @ViewBuilder
     private var factsRow: some View {
-        if !factsLine.isEmpty || !ratings.isEmpty || !sourceTokens.isEmpty || !ratingChips.isEmpty {
+        if !factsLine.isEmpty || !ratings.isEmpty || personalRating != nil
+            || !sourceTokens.isEmpty || !ratingChips.isEmpty {
             HStack(spacing: 14) {
                 if hasLeadingFacts {
                     // The row never wraps. When the ratings don't all fit,
@@ -381,7 +387,9 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 }
 
                 ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
-                    if !factsLine.isEmpty || !ratings.isEmpty || index > 0 { metadataDivider }
+                    if !factsLine.isEmpty || !ratings.isEmpty || personalRating != nil || index > 0 {
+                        metadataDivider
+                    }
                     Text(token)
                         .font(.system(size: 24, weight: .medium))
                         .foregroundColor(Color.white.opacity(0.90))
@@ -395,7 +403,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     }
 
     private var hasLeadingFacts: Bool {
-        !ratingChips.isEmpty || !factsLine.isEmpty || !ratings.isEmpty
+        !ratingChips.isEmpty || !factsLine.isEmpty || !ratings.isEmpty || personalRating != nil
     }
 
     /// Every rating first, then one fewer at a time. A single empty row
@@ -421,6 +429,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 if !factsLine.isEmpty || index > 0 { metadataDivider }
                 RatingEntryView(rating: rating, size: 24)
                     .foregroundColor(.white)
+            }
+
+            if let personalRating {
+                if !factsLine.isEmpty || !shown.isEmpty { metadataDivider }
+                TVHeroPersonalRatingEntry(rating: personalRating, size: 24)
             }
         }
     }
@@ -469,6 +482,55 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             .font(.system(size: 23, weight: .regular))
             .foregroundColor(Color.white.opacity(0.70))
             .lineLimit(1)
+    }
+}
+
+// MARK: - Personal rating entry
+
+/// The viewer's rating on the hero's metadata line.
+struct TVHeroPersonalRating: Equatable {
+    /// 1 to 10.
+    let score: Int
+    let isSeries: Bool
+
+    /// Nil when unrated, so the line has no entry.
+    init?(score: Int?, isSeries: Bool) {
+        guard let score, score > 0 else { return nil }
+        self.score = score
+        self.isSeries = isSeries
+    }
+}
+
+/// "You ★ 4.5", or "Your series rating ★ 4.5", styled like an external
+/// score: the label dimmed, the value bold, the star in the rating accent.
+private struct TVHeroPersonalRatingEntry: View {
+    let rating: TVHeroPersonalRating
+    let size: CGFloat
+
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        let score = RatingScore(rating.score)
+        let value = score.display(locale: locale)
+        HStack(alignment: .firstTextBaseline, spacing: (size * 0.35).rounded()) {
+            Text(rating.isSeries ? .detailRatingYourSeriesRating : .detailRatingYou)
+                .font(.system(size: (size * 0.87).rounded(), weight: .semibold))
+                .opacity(0.72)
+            HStack(alignment: .firstTextBaseline, spacing: (size * 0.25).rounded()) {
+                RatingStarView(fill: .full, size: (size * 0.8).rounded(), outline: .siloRatingStar)
+                    // Sit the star on the baseline, as tall as the digits.
+                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] - size * 0.06 }
+                Text(value)
+                    .font(.system(size: size, weight: .bold).monospacedDigit())
+            }
+        }
+        .foregroundColor(.white)
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(
+            rating.isSeries ? .detailRatingA11YYoursSeries(value) : .detailRatingA11YYours(value)
+        ))
     }
 }
 
@@ -641,9 +703,12 @@ enum TVHeroFactToken: Hashable {
 enum TVHeroMetadata {
     // Source row (type · genres)
 
-    static func movieSourceTokens(from detail: ItemDetail) -> [String] {
+    static func movieSourceTokens(
+        from detail: ItemDetail,
+        locale: Locale = AppLanguage.displayedLocale
+    ) -> [String] {
         if detail.type == "episode" {
-            if let label = episodeNumberLabel(from: detail) {
+            if let label = episodeNumberLabel(from: detail, locale: locale) {
                 return [label]
             }
             return []
@@ -656,19 +721,22 @@ enum TVHeroMetadata {
 
     /// "Season 3 · Episode 8" (or "Specials · Episode 5" / "Episode 5")
     /// for an episode `ItemDetail`.
-    private static func episodeNumberLabel(from detail: ItemDetail) -> String? {
+    private static func episodeNumberLabel(from detail: ItemDetail, locale: Locale) -> String? {
         let seasonPart: String?
         if let season = detail.seasonNumber {
-            seasonPart = season == 0 ? "Specials" : "Season \(season)"
+            seasonPart = AppLanguage.string(
+                season == 0 ? .detailSpecials : .detailSeason(LocaleFormat.integer(season)),
+                locale: locale
+            )
         } else {
             seasonPart = nil
         }
-        let episodePart = detail.episodeNumber.flatMap { n in n > 0 ? "Episode \(n)" : nil }
+        let episode = detail.episodeNumber.flatMap { n in n > 0 ? n : nil }
 
-        switch (seasonPart, episodePart) {
-        case let (.some(s), .some(e)): return "\(s) \u{00B7} \(e)"
+        switch (seasonPart, episode) {
+        case let (.some(s), .some(e)): return AppLanguage.string(.detailEpisodeEyebrow(s, LocaleFormat.integer(e, locale: locale)), locale: locale)
         case let (.some(s), .none):    return s
-        case let (.none, .some(e)):    return e
+        case let (.none, .some(e)):    return AppLanguage.string(.detailEpisode(LocaleFormat.integer(e, locale: locale)), locale: locale)
         case (.none, .none):           return nil
         }
     }
@@ -695,7 +763,7 @@ enum TVHeroMetadata {
            let airDate = DetailDateFormatting.abbreviatedDate(detail.airDate) {
             tokens.append(.text(airDate))
         } else if let year = detail.year, year > 0 {
-            tokens.append(.text(String(year)))
+            tokens.append(.text(LocaleFormat.integer(year)))
         }
         let runtime = SelectedMediaRuntime.minutes(detail: detail, selectedVersion: selectedVersion)
         if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) {
@@ -706,14 +774,18 @@ enum TVHeroMetadata {
 
     /// `seasons` is the season list the page loaded from the library; the
     /// count stays off the line until it arrives.
-    static func seriesFactsLine(from detail: ItemDetail, seasons: [Season]) -> [TVHeroFactToken] {
+    static func seriesFactsLine(
+        from detail: ItemDetail,
+        seasons: [Season],
+        locale: Locale = AppLanguage.displayedLocale
+    ) -> [TVHeroFactToken] {
         var tokens: [TVHeroFactToken] = []
         if let year = detail.year, year > 0 {
-            tokens.append(.text(String(year)))
+            tokens.append(.text(LocaleFormat.integer(year, locale: locale)))
         }
         let count = seasons.librarySeasonCount
         if count > 0 {
-            tokens.append(.text("\(count) Season\(count == 1 ? "" : "s")"))
+            tokens.append(.text(AppLanguage.string(.catalogSeasons(count), locale: locale)))
         }
         return tokens
     }
@@ -738,18 +810,24 @@ enum TVHeroMetadata {
 
     // Starring (first 3 cast names)
 
-    static func starringText(from detail: ItemDetail) -> String? {
+    static func starringText(
+        from detail: ItemDetail,
+        locale: Locale = AppLanguage.displayedLocale
+    ) -> String? {
         if detail.type == "movie" {
             let directors = detail.crew?
                 .filter { $0.job?.caseInsensitiveCompare("Director") == .orderedSame }
                 .map(\.name) ?? []
             guard !directors.isEmpty else { return nil }
-            return "Directed by " + directors.prefix(2).joined(separator: ", ")
+            return AppLanguage.string(
+                .detailDirectedBy(directors.prefix(2).joined(separator: ", ")),
+                locale: locale
+            )
         }
         guard let cast = detail.cast, !cast.isEmpty else { return nil }
         let names = cast.prefix(3).map(\.name)
         guard !names.isEmpty else { return nil }
-        return "Starring " + names.joined(separator: ", ")
+        return AppLanguage.string(.detailStarring(names.joined(separator: ", ")), locale: locale)
     }
 }
 
@@ -759,22 +837,27 @@ enum TVHeroMetadata {
 private struct TVPlaybackSelectionSummaryView: View {
     let summary: TVPlaybackSelectionSummary
 
+    @Environment(\.locale) private var locale
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             summaryItem(
-                label: "VERSION",
+                label: .detailReadoutVersion,
+                spoken: { .detailVersionSpoken($0) },
                 value: summary.version,
                 slotWidth: 313,
                 placeholderWidth: 128
             )
             summaryItem(
-                label: "AUDIO",
+                label: .detailReadoutAudio,
+                spoken: { .detailAudioSpoken($0) },
                 value: summary.audio,
                 slotWidth: 364,
                 placeholderWidth: 166
             )
             summaryItem(
-                label: "SUBTITLES",
+                label: .detailReadoutSubtitles,
+                spoken: { .detailSubtitlesSpoken($0) },
                 value: summary.subtitles,
                 slotWidth: 338,
                 placeholderWidth: 77
@@ -787,7 +870,8 @@ private struct TVPlaybackSelectionSummaryView: View {
     }
 
     private func summaryItem(
-        label: String,
+        label: LocalizedStringResource,
+        spoken: (String) -> LocalizedStringResource,
         value: String?,
         slotWidth: CGFloat,
         placeholderWidth: CGFloat
@@ -819,7 +903,7 @@ private struct TVPlaybackSelectionSummaryView: View {
         }
         .frame(width: slotWidth, height: 44, alignment: .topLeading)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(label.capitalized), \(value ?? "loading")")
+        .accessibilityLabel(Text(spoken(value ?? AppLanguage.string(.detailReadoutLoading, locale: locale))))
     }
 }
 #endif

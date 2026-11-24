@@ -80,10 +80,10 @@ final class CredentialIdentityTests: XCTestCase {
         let keychain = SharedKeychain(service: name, accessGroup: nil)
         addTeardownBlock {
             for key in [
-                TokenStore.accessTokenKey(for: "server-a"),
-                TokenStore.refreshTokenKey(for: "server-a"),
-                TokenStore.profileTokenKey(for: "server-a"),
-                TokenStore.accountEpochKey(for: "server-a"),
+                SharedStorage.accessTokenAccount(for: "server-a"),
+                SharedStorage.refreshTokenAccount(for: "server-a"),
+                SharedStorage.profileTokenAccount(for: "server-a"),
+                SharedStorage.accountEpochAccount(for: "server-a"),
                 AccountSessionPersistence.recordKey("server-a"),
                 AccountSessionPersistence.markerKey("server-a"),
                 SharedStorage.mirroredAccessTokenAccount,

@@ -96,11 +96,12 @@ enum APIv2MutationCatalog {
         .init("DELETE", "/api/v2/subtitle-prefs/{series_id}", .naturalIdempotent),
         // Settings values
         .init("PUT", "/api/v2/settings/values/{key}", .naturalIdempotent),
-        .init("PUT", "/api/v2/settings/values/nav.shortcuts/item", .naturalIdempotent),
         .init("DELETE", "/api/v2/settings/values/{key}", .naturalIdempotent),
         // Catalog and home
         .init("POST", "/api/v2/catalog/query", .naturalIdempotent),
         .init("PUT", "/api/v2/home/dismissals/{surface}/{item_id}", .naturalIdempotent),
+        // A replayed theme grant only issues another short-lived URL.
+        .init("POST", "/api/v2/catalog/items/{id}/themes/{theme_id}/playback", .naturalIdempotent),
         // Playback
         .init("POST", "/api/v2/playback/start", .domainIdentity),
         .init("POST", "/api/v2/playback/{session_id}/progress", .domainIdentity),
@@ -147,6 +148,9 @@ enum APIv2MutationCatalog {
         // repeat leaves the same state.
         .init("PUT", "/api/v2/requests/follows/{media_type}/{tmdb_id}", .naturalIdempotent),
         .init("DELETE", "/api/v2/requests/follows/{media_type}/{tmdb_id}", .naturalIdempotent),
+        // Apple push: a repeated reset leaves an installation already bound
+        // to the sent key alone.
+        .init("POST", "/api/v2/devices/push/apple/reset", .domainIdentity),
     ]
 
     /// `non_retryable` operations the client sends. They would be sent once
@@ -164,12 +168,18 @@ enum APIv2MutationCatalog {
         // Media requests
         .init("POST", "/api/v2/requests", .nonRetryable),
         .init("POST", "/api/v2/requests/{id}/cancel", .nonRetryable),
+        .init("DELETE", "/api/v2/requests/{id}", .nonRetryable),
         // Watch together
         .init("POST", "/api/v2/watch-together/rooms/{room_id}/playback/start", .nonRetryable),
         .init("PUT", "/api/v2/watch-together/rooms/{room_id}/selection", .nonRetryable),
         .init("POST", "/api/v2/watch-together/rooms/{room_id}/suggestions/promote", .nonRetryable),
         // Playback
         .init("POST", "/api/v2/playback/route-events", .nonRetryable),
+        .init("POST", "/api/v2/playback/bandwidth-probe/results", .nonRetryable),
+        // Clearing is idempotent, but the contract marks the reset
+        // non_retryable; Settings shows the failure and the viewer resets
+        // again.
+        .init("DELETE", "/api/v2/playback/connection/learned-limit", .nonRetryable),
         // Shuffle: a resent create would start a second shuffle.
         .init("POST", "/api/v2/shuffles", .nonRetryable),
         // Subtitles
@@ -182,6 +192,10 @@ enum APIv2MutationCatalog {
         .init("DELETE", "/api/v2/favorites/{item_id}", .nonRetryable),
         .init("POST", "/api/v2/watched/{id}", .nonRetryable),
         .init("DELETE", "/api/v2/watched/{id}", .nonRetryable),
+        // Ratings: a replay repeats the rating timestamp and the
+        // recommendation refresh.
+        .init("PUT", "/api/v2/ratings/{item_id}", .nonRetryable),
+        .init("DELETE", "/api/v2/ratings/{item_id}", .nonRetryable),
         // Downloads
         .init("POST", "/api/v2/downloads", .nonRetryable),
         .init("POST", "/api/v2/downloads/subscriptions", .nonRetryable),

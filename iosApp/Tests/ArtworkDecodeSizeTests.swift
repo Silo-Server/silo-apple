@@ -4,7 +4,7 @@ import Nuke
 
 final class ArtworkDecodeSizeTests: XCTestCase {
     func testCardsAFewPointsApartShareOneDecode() throws {
-        // iPhone grid cards are 115 or 120 pt wide depending on screen width.
+        // iPhone grid cards are a few points narrower than standard on smaller screens.
         let narrow = try XCTUnwrap(PosterImageCache.decodePixelSize(forPointSize: CGSize(width: 115, height: 189.75), scale: 3))
         let wide = try XCTUnwrap(PosterImageCache.decodePixelSize(forPointSize: CGSize(width: 120, height: 198), scale: 3))
         XCTAssertEqual(narrow, wide)

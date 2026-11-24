@@ -447,8 +447,8 @@ final class IntroSkipPromptTests: XCTestCase {
 
 /// A clock the test advances by hand. Due timers fire in deadline order.
 @MainActor
-final class ManualIntroSkipClock: IntroSkipPromptClock {
-    private final class Timer: IntroSkipPromptTimer {
+final class ManualIntroSkipClock: PlayerPromptClock {
+    private final class Timer: PlayerPromptTimer {
         let fireAt: Date
         let action: @MainActor () -> Void
         var cancelled = false
@@ -462,12 +462,13 @@ final class ManualIntroSkipClock: IntroSkipPromptClock {
     }
 
     private(set) var now = Date(timeIntervalSinceReferenceDate: 0)
+    var elapsedMs: Int { Int((now.timeIntervalSinceReferenceDate * 1000).rounded()) }
     private var timers: [Timer] = []
 
     func schedule(
         after delay: TimeInterval,
         _ action: @escaping @MainActor () -> Void
-    ) -> IntroSkipPromptTimer {
+    ) -> PlayerPromptTimer {
         let timer = Timer(fireAt: now.addingTimeInterval(max(0, delay)), action: action)
         timers.append(timer)
         return timer

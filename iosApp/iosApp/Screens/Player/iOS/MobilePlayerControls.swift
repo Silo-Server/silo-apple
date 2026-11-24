@@ -18,9 +18,14 @@ import SwiftUI
 /// swipes) live in `MobilePlayerGestureLayer` underneath this overlay.
 struct MobilePlayerControls: View {
     let viewModel: PlayerViewModel
+    /// The player's loading spinner is up; it takes the play/pause button's
+    /// place while the controls show.
+    let showsLoadingSpinner: Bool
     let onDismiss: () -> Void
 
     @State private var activeSheet: PlayerSheet?
+    @State private var tracksDetent: PresentationDetent = .medium
+    @State private var tracksNestedSheetCovers = false
     /// Trailing time label mode: remaining ("−12:34") when true, total
     /// duration otherwise. Tap the label to flip — the native player idiom.
     @State private var showsRemainingTime = true
@@ -33,6 +38,7 @@ struct MobilePlayerControls: View {
     @Environment(\.playerTabletopLayout) private var tabletopLayout
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.locale) private var locale
 
     var body: some View {
         // NOTE: the .sheet modifier MUST live outside the `showControls` gate.
@@ -55,7 +61,7 @@ struct MobilePlayerControls: View {
                     let paneTop = tabletopControlsTop(in: proxy)
                     let pane = CGSize(width: proxy.size.width, height: proxy.size.height - paneTop)
                     ZStack {
-                        Color.black.opacity(viewModel.isScrubbing ? 0.55 : 0.4)
+                        Color.black.opacity(viewModel.showsScrubPreview ? 0.55 : 0.4)
                             .ignoresSafeArea()
                             .onTapGesture { viewModel.toggleControls() }
 
@@ -85,7 +91,7 @@ struct MobilePlayerControls: View {
                         .frame(width: pane.width, height: pane.height)
                     }
                     .padding(.top, paneTop)
-                    .animation(.easeOut(duration: 0.18), value: viewModel.isScrubbing)
+                    .animation(.easeOut(duration: 0.18), value: viewModel.showsScrubPreview)
                 }
                 .transition(.opacity)
             }
@@ -108,8 +114,10 @@ struct MobilePlayerControls: View {
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .tracks:
-                TrackSelectionSheet(viewModel: viewModel) { activeSheet = nil }
-                    .presentationDetents([.medium, .large])
+                TrackSelectionSheet(viewModel: viewModel, nestedSheetCoversPlayer: $tracksNestedSheetCovers) {
+                    activeSheet = nil
+                }
+                    .presentationDetents([.medium, .large], selection: $tracksDetent)
                     .presentationDragIndicator(.visible)
             case .settings:
                 PlayerSettingsSheet(
@@ -135,14 +143,22 @@ struct MobilePlayerControls: View {
                 viewModel.pinControlsVisible()
             } else {
                 viewModel.resumeAutoHide()
+                tracksDetent = .medium
+                tracksNestedSheetCovers = false
             }
+        }
+        // Initial too: controls that mount again say whether their sheet
+        // came back with them.
+        .onChange(of: sheetCoversPlayer, initial: true) { _, covers in
+            viewModel.playerSheetCoversPlayer(covers)
         }
     }
 
     /// Top strip, center cluster and action row fade out of the way while
-    /// the user is scrubbing so the preview bubble owns the screen.
+    /// the user is scrubbing so the preview bubble owns the screen. A skip
+    /// tap isn't a scrub and leaves them be.
     private var recedingOpacity: Double {
-        viewModel.isScrubbing ? 0.12 : 1
+        viewModel.showsScrubPreview ? 0.12 : 1
     }
 
     // MARK: - Top strip
@@ -174,7 +190,7 @@ struct MobilePlayerControls: View {
                 .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
         }
         .buttonStyle(MobilePlayerGlassButtonStyle())
-        .accessibilityLabel("Close Player")
+        .accessibilityLabel(Text(.playerControlsClosePlayer))
         .accessibilityIdentifier("player.close")
     }
 
@@ -189,11 +205,11 @@ struct MobilePlayerControls: View {
             // AVKit can report `possible == false` during the final active
             // transition; the user must still be able to stop PiP.
             .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
-            .accessibilityLabel(
+            .accessibilityLabel(Text(
                 pictureInPicture.isActive
-                    ? "Stop Picture in Picture"
-                    : "Start Picture in Picture"
-            )
+                    ? LocalizedStringResource.playerControlsStopPictureInPicture
+                    : .playerControlsStartPictureInPicture
+            ))
         }
 
         if !viewModel.isWatchPartyPlayback, viewModel.supportsExternalPlayback {
@@ -234,8 +250,8 @@ struct MobilePlayerControls: View {
                 orientationCoordinator.togglePlayerOrientation()
                 viewModel.resumeAutoHide()
             }
-            .accessibilityLabel("Rotate to \(orientationCoordinator.nextPlayerOrientation.title)")
-            .accessibilityHint("Rotates the screen without interrupting playback")
+            .accessibilityLabel(Text(orientationCoordinator.nextPlayerOrientation.rotateToLabel))
+            .accessibilityHint(Text(.playerOrientationRotateHint))
             .accessibilityIdentifier("player.rotate")
 
             // The open and closed glyphs differ only in the padlock's shackle,
@@ -247,11 +263,15 @@ struct MobilePlayerControls: View {
                 orientationCoordinator.toggleRotationLock()
                 viewModel.resumeAutoHide()
             }
-            .accessibilityLabel(orientationCoordinator.isRotationLocked ? "Unlock screen rotation" : "Lock screen rotation")
-            .accessibilityValue(orientationCoordinator.isRotationLocked ? "Locked" : "Unlocked")
-            .accessibilityHint(orientationCoordinator.isRotationLocked
-                ? "Allows video to follow phone orientation"
-                : "Stops phone movement rotating video. The rotate button still works")
+            .accessibilityLabel(Text(orientationCoordinator.isRotationLocked
+                ? LocalizedStringResource.playerOrientationUnlock
+                : .playerOrientationLock))
+            .accessibilityValue(Text(orientationCoordinator.isRotationLocked
+                ? LocalizedStringResource.playerOrientationLocked
+                : .playerOrientationUnlocked))
+            .accessibilityHint(Text(orientationCoordinator.isRotationLocked
+                ? LocalizedStringResource.playerOrientationUnlockHint
+                : .playerOrientationLockHint))
             .accessibilityIdentifier("player.rotation-lock")
         }
     }
@@ -277,21 +297,23 @@ struct MobilePlayerControls: View {
 
     /// "SEVERANCE · S2:E4"-style context line. Series title + episode tag
     /// for episodes, release year for movies, nothing when metadata hasn't
-    /// resolved yet.
+    /// resolved yet. The series title is server data and uppercases without
+    /// a locale; the episode tag comes from the catalog and uppercases in
+    /// the app's language.
     private var titleEyebrow: String? {
         let metadata = viewModel.metadata
         var parts: [String] = []
         if let series = metadata.seriesTitle, !series.isEmpty {
-            parts.append(series)
+            parts.append(series.uppercased())
         }
         if let tag = metadata.episodeTag, !tag.isEmpty {
-            parts.append(tag)
+            parts.append(tag.uppercased(with: locale))
         }
         if parts.isEmpty, let year = metadata.year {
-            parts.append(String(year))
+            parts.append(LocaleFormat.integer(year, locale: locale))
         }
         guard !parts.isEmpty else { return nil }
-        return parts.joined(separator: " · ").uppercased()
+        return parts.joined(separator: " · ")
     }
 
     private var heroTitle: String {
@@ -317,19 +339,32 @@ struct MobilePlayerControls: View {
             .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward))
             .disabled(!viewModel.canRequestSeek)
 
+            // Still play/pause while it shows the spinner.
             Button {
                 viewModel.togglePlayPause()
             } label: {
-                Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(.black.opacity(0.85))
-                    // play.fill reads left-heavy inside a circle;
-                    // nudge it toward the optical center.
-                    .offset(x: viewModel.isPlaying ? 0 : 2)
-                    .frame(width: Self.playButtonSize, height: Self.playButtonSize)
+                Group {
+                    if showsLoadingSpinner {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(.black.opacity(0.85))
+                            .scaleEffect(1.4)
+                    } else {
+                        Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundStyle(.black.opacity(0.85))
+                            // play.fill reads left-heavy inside a circle;
+                            // nudge it toward the optical center.
+                            .offset(x: viewModel.isPlaying ? 0 : 2)
+                    }
+                }
+                .frame(width: Self.playButtonSize, height: Self.playButtonSize)
             }
             .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9), size: Self.playButtonSize))
-            .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(Text(viewModel.isPlaying
+                ? LocalizedStringResource.playerControlsPause
+                : .playerControlsPlay))
+            .accessibilityValue(showsLoadingSpinner ? Text(.commonLoading) : Text(verbatim: ""))
             .disabled(!viewModel.canRequestPlayPause)
 
             Button {
@@ -344,6 +379,7 @@ struct MobilePlayerControls: View {
             .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward))
             .disabled(!viewModel.canRequestSeek)
         }
+        .mediaLayoutDirection()
     }
 
     static let playButtonSize: CGFloat = 64
@@ -385,17 +421,31 @@ struct MobilePlayerControls: View {
             actionRowContent(style: .icons)
         }
         .frame(maxWidth: .infinity)
+        // A track-less file on a server last seen without a provider leaves
+        // the pill inert, so the sheet's own provider refresh cannot run.
+        // Ask again each time the controls show, so a provider added
+        // meanwhile makes search reachable.
+        .onAppear {
+            if trackPickerIsEmpty, viewModel.subtitleSearchVisible, !viewModel.subtitleSearchEnabled {
+                viewModel.refreshSubtitleProviders()
+            }
+        }
+    }
+
+    /// The Audio & Subtitles picker would have nothing in it apart from
+    /// subtitle search.
+    private var trackPickerIsEmpty: Bool {
+        viewModel.audioTracks.isEmpty
+            && viewModel.subtitleTracks.isEmpty
+            && !aiSubtitlesAvailable
     }
 
     private func actionRowContent(style: ActionRowStyle) -> some View {
         // The Audio & Subtitles pill is only inert when the picker would have
         // nothing at all in it. A track-less file can still offer subtitle
-        // search (and the explanation when search isn't configured), so those
-        // entry points keep the sheet reachable.
-        let noTracks = viewModel.audioTracks.isEmpty
-            && viewModel.subtitleTracks.isEmpty
-            && !viewModel.subtitleSearchVisible
-            && !aiSubtitlesAvailable
+        // search when the server has a provider, so that entry point keeps
+        // the sheet reachable.
+        let noTracks = trackPickerIsEmpty && !viewModel.subtitleSearchEnabled
         return HStack(spacing: 8) {
             if viewModel.hasQualityChoice {
                 qualityMenu(compact: style != .full)
@@ -404,17 +454,17 @@ struct MobilePlayerControls: View {
             trackSelectionButton(style: style)
                 .disabled(noTracks)
                 .opacity(noTracks ? 0.4 : 1)
-                .accessibilityLabel("Audio & Subtitles")
+                .accessibilityLabel(Text(.playerTracksTitle))
 
             if !viewModel.chapters.isEmpty {
                 chaptersMenu(style: style)
-                    .accessibilityLabel("Chapters")
+                    .accessibilityLabel(Text(.optionsChapters))
             }
 
             controlButton(systemName: "ellipsis") {
                 activeSheet = .settings
             }
-            .accessibilityLabel("Playback Settings")
+            .accessibilityLabel(Text(.playerSettingsSheetTitle))
         }
     }
 
@@ -454,7 +504,7 @@ struct MobilePlayerControls: View {
                     Text(qualityValueText)
                         .font(.system(size: 12, weight: .semibold))
                 } else {
-                    Text("Quality")
+                    Text(.optionsQuality)
                         .font(.system(size: 12, weight: .semibold))
                     Text(qualityValueText)
                         .font(.system(size: 11, weight: .medium))
@@ -473,7 +523,7 @@ struct MobilePlayerControls: View {
         .buttonStyle(MobilePlayerGlassButtonStyle(
             tint: viewModel.activeQualityId == ApplePlaybackQuality.autoId ? nil : Color.white.opacity(0.22)
         ))
-        .accessibilityLabel("Playback Quality")
+        .accessibilityLabel(Text(.playerControlsPlaybackQuality))
         .accessibilityValue(qualityValueText)
     }
 
@@ -482,7 +532,9 @@ struct MobilePlayerControls: View {
     /// resolution the menu has no row for still reads as that resolution.
     private var qualityValueText: String {
         if let active = viewModel.activeQualityOption {
-            return active.isAuto || active.resolution.isEmpty ? "Auto" : active.resolution
+            return active.isAuto || active.resolution.isEmpty
+                ? AppLanguage.string(.optionsAuto, locale: locale)
+                : active.resolution
         }
         return SiloQualityPresets.resolutionLabel(AppleQualityAxes.split(viewModel.activeQualityId).resolution)
     }
@@ -507,7 +559,7 @@ struct MobilePlayerControls: View {
             } else {
                 actionPill(
                     systemImage: "captions.bubble",
-                    title: style == .compact ? "Audio & Subs" : "Audio & Subtitles"
+                    title: style == .compact ? .playerTracksTitleShort : .playerTracksTitle
                 ) {
                     activeSheet = .tracks
                 }
@@ -525,7 +577,7 @@ struct MobilePlayerControls: View {
         } label: {
             menuPillLabel(
                 systemImage: "list.bullet",
-                title: style == .icons ? nil : "Chapters"
+                title: style == .icons ? nil : LocalizedStringResource.optionsChapters
             )
         }
         .menuStyle(.button)
@@ -537,7 +589,7 @@ struct MobilePlayerControls: View {
     /// Menu label matching the `actionPill` (titled) / `controlButton`
     /// (icon circle) appearance so menus and buttons read as one family.
     @ViewBuilder
-    private func menuPillLabel(systemImage: String, title: String?) -> some View {
+    private func menuPillLabel(systemImage: String, title: LocalizedStringResource?) -> some View {
         if let title {
             HStack(spacing: 5) {
                 Image(systemName: systemImage)
@@ -558,7 +610,7 @@ struct MobilePlayerControls: View {
 
     private func actionPill(
         systemImage: String,
-        title: String,
+        title: LocalizedStringResource,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -606,7 +658,7 @@ struct MobilePlayerControls: View {
                     .padding(.horizontal, 16)
                     .frame(height: SiloTheme.topBarIconHitSize)
                 }
-                .buttonStyle(MobileIntroSkipPillButtonStyle(pill: pill))
+                .buttonStyle(MobilePlayerPillButtonStyle(pill: pill))
                 .accessibilityLabel(pill.kind.accessibilityLabel)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -660,6 +712,18 @@ struct MobilePlayerControls: View {
 
     // MARK: - Sheet identifier
 
+    /// A full-height sheet covers the top of the player, where the buffering
+    /// pill and notices show; the tracks sheet at half height does not. In
+    /// a compact height every sheet is full height, and a sheet the tracks
+    /// sheet opens can cover the player on its own.
+    private var sheetCoversPlayer: Bool {
+        switch activeSheet {
+        case .settings: true
+        case .tracks: tracksDetent == .large || verticalSizeClass == .compact || tracksNestedSheetCovers
+        case nil: false
+        }
+    }
+
     private enum PlayerSheet: Identifiable {
         case tracks, settings
         var id: Self { self }
@@ -671,15 +735,25 @@ struct MobilePlayerControls: View {
 private struct MobilePlayerTimeline: View {
     let viewModel: PlayerViewModel
     @Binding var showsRemainingTime: Bool
-    /// True only while a finger drags the scrub bar. Skip buttons and
-    /// hold-seek also set `isScrubbing`, but they shouldn't play chapter ticks.
-    @GestureState private var isDraggingScrubBar = false
+    /// Set only while a finger drags the scrub bar. Skip buttons and
+    /// hold-seek also set `isScrubbing`, but they shouldn't play chapter ticks
+    /// or change scrub speed.
+    @GestureState private var scrubDrag: MobileScrubDrag?
+    @Environment(\.locale) private var locale
+
+    /// Space between the scrub bubble's bottom edge and the top of the bar's
+    /// 20pt touch strip, 4pt above the visible bar while scrubbing. The
+    /// bubble grows upward from here when it adds a line.
+    private static let scrubBubbleGap: CGFloat = 16
+    /// Taller than the bubble ever gets; the bubble sits at its bottom.
+    private static let scrubBubbleBoxHeight: CGFloat = 240
 
     var body: some View {
         VStack(spacing: 10) {
             timeRow
             progressSlider
         }
+        .mediaLayoutDirection()
     }
 
     private var timeRow: some View {
@@ -700,25 +774,40 @@ private struct MobilePlayerTimeline: View {
 
             Spacer()
 
-            Button {
-                showsRemainingTime.toggle()
-            } label: {
-                Text(trailingTimeText)
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .monospacedDigit()
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                // Date(), not the schedule date: the position redraws this
+                // between ticks, and a stale clock would flicker the minute.
+                let text = trailingTimeText(now: Date())
+                Button {
+                    showsRemainingTime.toggle()
+                } label: {
+                    Text(text)
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .monospacedDigit()
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(showsRemainingTime
+                    ? LocalizedStringResource.playerProgressTimeRemaining
+                    : .playerProgressDuration))
+                .accessibilityValue(text)
+                .accessibilityHint(Text(.playerProgressToggleTimeHint))
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(showsRemainingTime ? "Time Remaining" : "Duration")
-            .accessibilityHint("Switches between time remaining and total duration")
         }
     }
 
-    private var trailingTimeText: String {
-        if showsRemainingTime {
-            return "−" + PlayerTimeFormatter.formatHMS(max(viewModel.duration - displayTime, 0))
-        }
-        return PlayerTimeFormatter.formatHMS(viewModel.duration)
+    private func trailingTimeText(now: Date) -> String {
+        let remaining = max(viewModel.duration - displayTime, 0)
+        let time = showsRemainingTime
+            ? "−" + PlayerTimeFormatter.formatHMS(remaining)
+            : PlayerTimeFormatter.formatHMS(viewModel.duration)
+        return PlayerEndTime.appending(
+            to: time,
+            now: now,
+            remaining: remaining,
+            speed: viewModel.nominalPlaybackSpeed,
+            locale: locale
+        )
     }
 
     private func statusChip(systemImage: String, text: String) -> some View {
@@ -748,7 +837,10 @@ private struct MobilePlayerTimeline: View {
             let progress = viewModel.duration > 0
                 ? min(max(displayTime / viewModel.duration, 0), 1)
                 : 0
-            let barHeight: CGFloat = viewModel.isScrubbing ? 12 : 6
+            // The playhead follows `isScrubbing`, so a skip moves it at once;
+            // the taller bar and the bubble wait for a scrub the viewer drives.
+            let showsPreview = viewModel.showsScrubPreview
+            let barHeight: CGFloat = showsPreview ? 12 : 6
 
             ZStack(alignment: .leading) {
                 // Base track
@@ -763,8 +855,6 @@ private struct MobilePlayerTimeline: View {
                         .fill(Color.white.opacity(0.22))
                         .frame(width: max(width * buffered, barHeight), height: barHeight)
                 }
-
-                introMarker(width: width, height: barHeight)
 
                 // Chapter ticks. Rendered behind the fill so they're visible
                 // in unplayed territory; the fill covers them over played
@@ -783,20 +873,34 @@ private struct MobilePlayerTimeline: View {
                 Capsule()
                     .fill(Color.white)
                     .frame(width: max(width * progress, barHeight), height: barHeight)
-                    .shadow(color: .white.opacity(viewModel.isScrubbing ? 0.35 : 0), radius: 8)
+                    .shadow(color: .white.opacity(showsPreview ? 0.35 : 0), radius: 8)
+
+                PlayerMarkerBands(
+                    timeline: viewModel.markerTimeline,
+                    duration: viewModel.duration,
+                    width: width,
+                    height: barHeight,
+                    opacity: 0.45
+                )
             }
             .frame(height: 20, alignment: .center)
-            .animation(.snappy(duration: 0.22), value: viewModel.isScrubbing)
+            .animation(.snappy(duration: 0.22), value: showsPreview)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .updating($isDraggingScrubBar) { _, dragging, _ in dragging = true }
-                    .onChanged { value in
-                        let fraction = min(max(value.location.x / width, 0), 1)
-                        if viewModel.isScrubbing {
-                            viewModel.updateScrub(fraction: fraction)
+                    .updating($scrubDrag) { value, drag, _ in
+                        guard width > 0 else { return }
+                        let startsDrag = drag == nil
+                        var next = drag ?? MobileScrubDrag(startX: value.startLocation.x, width: width)
+                        next.move(toX: value.location.x, heightAboveBar: -value.translation.height, width: width)
+                        drag = next
+                        // A new drag begins its own scrub even when a skip's
+                        // seek is still pending: `beginScrub` cancels that
+                        // seek so it can't land under the finger.
+                        if startsDrag || !viewModel.isScrubbing {
+                            viewModel.beginScrub(fraction: next.fraction)
                         } else {
-                            viewModel.beginScrub(fraction: fraction)
+                            viewModel.updateScrub(fraction: next.fraction)
                         }
                     }
                     .onEnded { _ in
@@ -805,18 +909,24 @@ private struct MobilePlayerTimeline: View {
             )
             .scrubTickFeedback(
                 tickTimes: viewModel.chapters.map(\.time),
-                scrubTime: isDraggingScrubBar ? viewModel.scrubPreviewTime : nil
+                scrubTime: scrubDrag != nil ? viewModel.scrubPreviewTime : nil
             )
+            .sensoryFeedback(trigger: scrubDrag?.speed) { old, new in
+                old != nil && new != nil ? .impact(weight: .light) : nil
+            }
             .overlay(alignment: .topLeading) {
-                if viewModel.isScrubbing {
+                if showsPreview {
                     let previewInset: CGFloat = viewModel.scrubPreviewImage == nil ? 80 : 102
+                    // Pin the bubble's bottom above the bar so a speed label
+                    // grows it upward instead of over the bar.
                     scrubPreviewBubble
+                        .frame(height: Self.scrubBubbleBoxHeight, alignment: .bottom)
                         .position(
                             x: min(
                                 max(width * progress, previewInset),
                                 max(width - previewInset, previewInset)
                             ),
-                            y: viewModel.scrubPreviewImage == nil ? -36 : -92
+                            y: -Self.scrubBubbleGap - Self.scrubBubbleBoxHeight / 2
                         )
                         .transition(.opacity)
                         .allowsHitTesting(false)
@@ -825,10 +935,11 @@ private struct MobilePlayerTimeline: View {
             // The custom scrubber is drag-only; expose it to VoiceOver as an
             // adjustable element that seeks through the same skip path.
             .accessibilityElement()
-            .accessibilityLabel("Playback Position")
-            .accessibilityValue(
-                "\(PlayerTimeFormatter.formatHMS(displayTime)) of \(PlayerTimeFormatter.formatHMS(viewModel.duration))"
-            )
+            .accessibilityLabel(Text(.playerProgressPlaybackPosition))
+            .accessibilityValue(Text(.playerProgressPositionState(
+                PlayerTimeFormatter.formatHMS(displayTime),
+                PlayerTimeFormatter.formatHMS(viewModel.duration)
+            )))
             .accessibilityAdjustableAction { direction in
                 switch direction {
                 case .increment: viewModel.skipForward()
@@ -867,6 +978,11 @@ private struct MobilePlayerTimeline: View {
                     .foregroundStyle(.white.opacity(0.65))
                     .lineLimit(1)
             }
+            if let speedLabel = scrubDrag?.speed.label {
+                Text(speedLabel)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+            }
         }
         .padding(7)
         .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -875,21 +991,8 @@ private struct MobilePlayerTimeline: View {
 
     private func chapterTitle(at time: Double) -> String? {
         guard let chapter = viewModel.chapters.last(where: { $0.time <= time }) else { return nil }
-        return chapter.title ?? "Chapter \(chapter.index + 1)"
-    }
-
-    @ViewBuilder
-    private func introMarker(width: CGFloat, height: CGFloat) -> some View {
-        if let introRange = viewModel.introRange, viewModel.duration > 0 {
-            let start = min(max(introRange.start / viewModel.duration, 0), 1)
-            let end = min(max(introRange.end / viewModel.duration, 0), 1)
-            if end > start {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.cyan.opacity(0.4))
-                    .frame(width: width * (end - start), height: height)
-                    .offset(x: width * start)
-            }
-        }
+        return chapter.title
+            ?? AppLanguage.string(.optionsChapterNumbered(LocaleFormat.integer(chapter.index + 1, locale: locale)), locale: locale)
     }
 }
 
@@ -897,12 +1000,13 @@ private struct MobilePlayerTimeline: View {
 /// the controls' own body.
 private struct MobileChapterMenuItems: View {
     let viewModel: PlayerViewModel
+    @Environment(\.locale) private var locale
 
     var body: some View {
         let currentChapterIndex = viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
         ForEach(viewModel.chapters) { chapter in
             Button {
-                viewModel.seekTo(seconds: chapter.time)
+                viewModel.jumpToChapter(at: chapter.time)
             } label: {
                 if currentChapterIndex == chapter.index {
                     Label {
@@ -920,14 +1024,19 @@ private struct MobileChapterMenuItems: View {
     }
 
     private func chapterMenuTitle(_ chapter: PlayerChapterInfo) -> String {
-        "\(chapter.index + 1).  \(chapter.title ?? "Chapter \(chapter.index + 1)")"
+        let number = LocaleFormat.integer(chapter.index + 1, locale: locale)
+        let title = chapter.title.map { AppLanguage.isolated($0) }
+            ?? AppLanguage.string(.optionsChapterNumbered(number), locale: locale)
+        return "\(number).  \(title)"
     }
 }
 
-/// The intro pill's capsule: a dark scrim with the timer's fill creeping
-/// behind the label, brighter while pressed.
-private struct MobileIntroSkipPillButtonStyle: ButtonStyle {
-    let pill: IntroSkipPrompt.Pill
+/// The player pills' capsule, shared by the intro-skip and buffering-quality
+/// pills: a dark scrim with the timer's fill creeping behind the label,
+/// brighter while pressed. A button without a timer, such as **Keep quality**,
+/// gets the same capsule with no fill.
+struct MobilePlayerPillButtonStyle: ButtonStyle {
+    let pill: (any PlayerTimedPill)?
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -935,10 +1044,14 @@ private struct MobileIntroSkipPillButtonStyle: ButtonStyle {
             .background {
                 ZStack {
                     Capsule().fill(Color.black.opacity(0.65))
-                    IntroSkipPillProgress(
-                        pill: pill,
-                        color: .white.opacity(configuration.isPressed ? 0.4 : 0.22)
-                    )
+                    if let pill {
+                        PlayerPillProgress(
+                            pill: pill,
+                            color: .white.opacity(configuration.isPressed ? 0.4 : 0.22)
+                        )
+                    } else if configuration.isPressed {
+                        Capsule().fill(Color.white.opacity(0.22))
+                    }
                 }
                 .clipShape(Capsule())
             }

@@ -40,7 +40,7 @@ final class CatalogActionsAPITests: XCTestCase {
         let event = try XCTUnwrap(response.events.first?.items.first)
         XCTAssertEqual(response.events.map(\.date), ["2026-09-21"])
         XCTAssertEqual(event.contentId, "episode:severance-2-1")
-        XCTAssertEqual(event.episodeSubtitle, "S2 · E1")
+        XCTAssertEqual(event.episodeSubtitle(locale: Locale(identifier: "en")), "S2 · E1")
         XCTAssertEqual(event.displayBadges, [.seasonPremiere])
     }
 

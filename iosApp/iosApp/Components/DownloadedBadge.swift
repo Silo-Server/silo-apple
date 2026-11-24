@@ -5,8 +5,8 @@ import SwiftUI
 /// Completed downloads only — in-flight state lives on the detail screens,
 /// so cards never re-render on transfer progress. Green to match the
 /// download button's completed state; the arrow glyph (Downloads tab
-/// iconography) keeps it distinct from the white watched check that owns
-/// the opposite corner.
+/// iconography) and the bottom corner keep it distinct from the watched
+/// check in the top-right corner.
 struct DownloadedBadge: View {
     var size: CGFloat = 18
 
@@ -26,11 +26,14 @@ struct DownloadedBadge: View {
 struct DownloadedBadgeOverlay: View {
     let contentId: String?
     let padding: CGFloat
+    /// Set when the card draws a progress bar, so the badge sits above it.
+    var clearsProgressBar = false
 
     var body: some View {
         if let contentId, DownloadManager.shared.isDownloaded(contentId: contentId) {
             DownloadedBadge()
                 .padding(padding)
+                .padding(.bottom, clearsProgressBar ? max(ProgressBar.badgeClearance - padding, 0) : 0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         }
     }

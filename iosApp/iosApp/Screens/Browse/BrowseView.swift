@@ -3,21 +3,39 @@ import SwiftUI
 /// Browse/catalog screen with grid display and filters — Plezy style.
 struct BrowseView: View {
     let libraryId: Int?
-    var title: String? = "Browse"
+    var title: LocalizedStringResource? = .libraryBrowse
     var showsSearchShortcut = true
     var libraryType: String? = nil
     var mediaScope: LibraryVideoScope? = nil
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
+    @Environment(\.libraryPageReloadRequest) private var reloadRequest
     @State private var shuffleLauncher = ShuffleLauncher()
+    #if os(iOS)
+    /// Scrolls the grid to a letter's first title.
+    @State private var gridCommands = BrowseGridCommands()
+    /// The jump waiting for its titles; a later jump replaces it.
+    @State private var pendingJump: Task<Void, Never>?
+    @Environment(\.libraryPageScrollToTopRequest) private var scrollToTopRequest
+    #else
+    /// Letter-jump scroll state, kept off this view so scrolling doesn't
+    /// redraw the grid.
+    @State private var letterJump = LetterJumpState()
+    #endif
+    /// Read by the letter index only, so marking a letter doesn't redraw
+    /// the grid.
+    @State private var jumpedLetter = JumpedLetter()
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
+    @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
+    @Environment(\.libraryPageFilteredCount) private var reportFilteredCount
 
     @ViewBuilder
     var body: some View {
         if let title {
             rootContent
-                .navigationTitle(title)
+                .navigationTitle(Text(title))
                 .siloNavigationTitleDisplayMode(.large)
         } else {
             rootContent
@@ -36,6 +54,29 @@ struct BrowseView: View {
                 scrollContent
             }
         }
+        .overlay(alignment: .trailing) {
+            #if !os(tvOS)
+            // Outside the scroll view, so it stays put while the grid scrolls.
+            if showsLetterIndex, let index = viewModel.letterIndex {
+                BrowseLetterIndex(
+                    available: Set(index.letters.map(\.letter)),
+                    jumped: jumpedLetter,
+                    onEngage: engageLetterIndex,
+                    onPreview: { letter in
+                        // Only the iPhone and iPad grid reads by page; the
+                        // Mac's jump reads its own window.
+                        #if os(iOS)
+                        viewModel.prepareJump(to: letter)
+                        #endif
+                    },
+                    onJump: jump(to:)
+                )
+                .transition(.opacity)
+            }
+            #endif
+        }
+        // A new list (sort, filters, refresh) has no jump in it yet.
+        .onChange(of: viewModel.letterIndex) { jumpedLetter.letter = nil }
         .siloPageBackground()
         .overlay(alignment: .top) {
             // Grid is painted from cache but the server can't be reached —
@@ -50,13 +91,23 @@ struct BrowseView: View {
         .sheet(isPresented: $showFilters) {
             FilterView(viewModel: viewModel)
         }
+        .shuffleFailureAlert(shuffleLauncher)
         .task(id: BrowseConfigurationID(libraryId: libraryId, libraryType: libraryType, mediaScope: mediaScope)) {
             guard await viewModel.configure(libraryId: libraryId, libraryType: libraryType, mediaScope: mediaScope) else { return }
-            await viewModel.loadItems(reset: true)
+            await viewModel.loadFromTop()
             await viewModel.loadFacetsIfNeeded()
         }
         .refreshable {
-            await viewModel.loadItems(reset: true)
+            await viewModel.refresh()
+            pageDidRefresh?()
+        }
+        // The iPhone Libraries tab keeps this page alive under its others
+        // and asks for a reload when it comes back after a title changed.
+        .onChange(of: reloadRequest) {
+            Task { await viewModel.refresh() }
+        }
+        .onChange(of: viewModel.filteredTotal, initial: true) {
+            reportFilteredCount?(viewModel.filteredTotal)
         }
     }
 
@@ -82,6 +133,7 @@ struct BrowseView: View {
             .frame(maxWidth: .infinity)
         }
         .reportsPageChromeScroll()
+        .scrollsToTopOnLibraryDockRequest()
         .environment(\.browseLibraryId, libraryId)
     }
 
@@ -91,16 +143,16 @@ struct BrowseView: View {
         case .libraryEmpty:
             EmptyStateView(
                 icon: emptyLibraryIcon,
-                title: "This library is empty",
-                subtitle: "There is nothing in this library yet."
+                title: AppLanguage.string(.libraryEmpty, locale: locale),
+                subtitle: AppLanguage.string(.libraryEmptyBody, locale: locale)
             )
         case .noFilterMatches:
             VStack(spacing: SiloTheme.padding) {
                 EmptyStateView(
                     icon: "line.3.horizontal.decrease.circle",
-                    title: "No items match your current filters"
+                    title: AppLanguage.string(.libraryNoItemsMatchFilters, locale: locale)
                 )
-                Button("Clear filters") {
+                Button(.libraryClearFilters) {
                     Task { await viewModel.clearFilters() }
                 }
                 .siloPrimaryButton()
@@ -117,6 +169,56 @@ struct BrowseView: View {
         }
     }
 
+    #if os(iOS)
+    /// The whole page in one collection view: the controls, then the grid.
+    private var scrollContent: some View {
+        BrowseCollectionGrid(
+            items: viewModel.items,
+            pager: viewModel.pager,
+            isLoading: viewModel.isLoading || !viewModel.hasLoaded,
+            hasMore: viewModel.hasMore,
+            listIdentity: viewModel.listIdentity,
+            forcesThreeColumnsOnPhone: libraryId != nil,
+            usesSquareArtwork: viewModel.items.first?.isAudiobook ?? (viewModel.mediaType == .audiobook),
+            trailingPadding: gridTrailingPadding,
+            commands: gridCommands,
+            header: { AnyView(gridHeader) },
+            onItemTap: { router.navigate(to: .itemDetail(browseItem: $0, libraryId: libraryId)) },
+            onLoadMore: {
+                Task { await viewModel.loadItems() }
+            },
+            onRefresh: {
+                await viewModel.refresh()
+                pageDidRefresh?()
+            },
+            onUserScroll: { [jumpedLetter] in jumpedLetter.letter = nil }
+        )
+        .reportsLibraryPageScrollView()
+        .environment(\.browseLibraryId, libraryId)
+        .onChange(of: scrollToTopRequest) {
+            // A letter jump still waiting for its titles would move the page
+            // away from the top once they arrive.
+            pendingJump?.cancel()
+            pendingJump = nil
+            gridCommands.scrollToTop()
+        }
+    }
+
+    private var gridHeader: some View {
+        VStack(spacing: SiloTheme.padding) {
+            if showsSearchShortcut {
+                searchBar
+            }
+
+            controlBar
+
+            if hasActiveFilters {
+                activeFilterChips
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+    #else
     private var scrollContent: some View {
         ScrollView {
             VStack(spacing: SiloTheme.padding) {
@@ -138,13 +240,40 @@ struct BrowseView: View {
                     onItemTap: { router.navigate(to: .itemDetail(browseItem: $0, libraryId: libraryId)) },
                     onLoadMore: {
                         Task { await viewModel.loadItems() }
-                    }
+                    },
+                    hasEarlier: viewModel.hasEarlier,
+                    onLoadEarlier: { columns in
+                        Task { await viewModel.loadEarlier(columns: columns) }
+                    },
+                    tracksScrollPosition: letterJump.isEngaged,
+                    onColumnCount: { [letterJump] in letterJump.columnCount = $0 }
                 )
-                .padding(.horizontal, SiloTheme.padding)
+                .padding(.leading, SiloTheme.padding)
+                .padding(.trailing, gridTrailingPadding)
             }
+        }
+        // Once the letter index is in use, the scroll view follows the card
+        // at the top: a jump sets it, and titles loading above it leave it
+        // where it is.
+        .scrollPosition(id: Bindable(letterJump).cardID, anchor: .top)
+        .onScrollPhaseChange { _, phase in
+            if phase == .interacting { jumpedLetter.letter = nil }
         }
         .reportsPageChromeScroll()
         .environment(\.browseLibraryId, libraryId)
+    }
+    #endif
+
+    /// Leaves the letter index its own column beside the posters wherever it
+    /// can appear, so the posters don't shift when it does.
+    private var gridTrailingPadding: CGFloat {
+        #if os(tvOS)
+        SiloTheme.padding
+        #else
+        viewModel.filterState.sort == .title && viewModel.offersLetterIndex
+            ? BrowseLetterIndex.reservedWidth
+            : SiloTheme.padding
+        #endif
     }
 
     // MARK: - Search Bar
@@ -156,7 +285,7 @@ struct BrowseView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.siloSecondaryText)
-                Text("Search...")
+                Text(.librarySearchShortcut)
                     .foregroundColor(.siloSecondaryText)
                 Spacer()
             }
@@ -179,23 +308,8 @@ struct BrowseView: View {
     // MARK: - Control bar (Sort + Filter + Shuffle)
 
     private var controlBar: some View {
-        // At accessibility text sizes the chips no longer fit side by
-        // side and SwiftUI broke their labels mid-word; stack them instead.
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 9) {
-                sortMenu
-                filterButton
-                shuffleButton
-                Spacer(minLength: 0)
-            }
-            VStack(alignment: .leading, spacing: 9) {
-                sortMenu
-                filterButton
-                shuffleButton
-            }
-        }
-        .padding(.horizontal, SiloTheme.padding)
-        .shuffleFailureAlert(shuffleLauncher)
+        BrowseControlBarLayout(sort: sortMenu, filter: filterButton, shuffle: shuffleButton)
+            .padding(.horizontal, SiloTheme.padding)
     }
 
     /// The library a Shuffle chip plays from; nil where Shuffle isn't offered.
@@ -212,7 +326,7 @@ struct BrowseView: View {
         Button { showFilters = true } label: {
             controlChip(
                 icon: "line.3.horizontal.decrease",
-                text: "Filter",
+                text: .libraryFilterPill,
                 badge: viewModel.filterState.activeFacetCount
             )
         }
@@ -225,7 +339,7 @@ struct BrowseView: View {
             Button {
                 shuffleLauncher.start(ShuffleScopeRequest(kind: .library, id: String(shuffleLibraryId)), router: router)
             } label: {
-                controlChip(icon: "shuffle", text: "Shuffle")
+                controlChip(icon: "shuffle", text: .libraryShufflePill)
             }
             .buttonStyle(.plain)
             .disabled(shuffleLauncher.isStarting)
@@ -235,15 +349,23 @@ struct BrowseView: View {
 
     private var sortMenu: some View {
         Menu {
-            ForEach(CatalogSortKey.available(for: viewModel.mediaType), id: \.self) { key in
+            ForEach(
+                CatalogSortKey.available(
+                    for: CatalogSortKey.sortMediaType(viewModel.mediaType, filter: viewModel.filterState),
+                    shownRatingSources: RatingSourcesStore.shared.shown,
+                    current: viewModel.filterState.sort
+                ),
+                id: \.self
+            ) { key in
                 Button {
                     Task { await viewModel.setSort(key) }
                 } label: {
                     if viewModel.filterState.sort == key {
-                        Label(
-                            key.label,
-                            systemImage: viewModel.filterState.effectiveOrder == .asc ? "arrow.up" : "arrow.down"
-                        )
+                        Label {
+                            Text(key.label)
+                        } icon: {
+                            Image(systemName: viewModel.filterState.effectiveOrder == .asc ? "arrow.up" : "arrow.down")
+                        }
                     } else {
                         Text(key.label)
                     }
@@ -258,19 +380,24 @@ struct BrowseView: View {
         }
     }
 
-    private func controlChip(icon: String, text: String, trailing: String? = nil, badge: Int? = nil) -> some View {
+    private func controlChip(icon: String, text: LocalizedStringResource, trailing: LocalizedStringResource? = nil, badge: Int? = nil) -> some View {
         HStack(spacing: 6) {
             Image(systemName: icon)
                 .font(.system(size: 13, weight: .semibold))
             Text(text)
                 .font(.siloBody)
+                .lineLimit(1)
+                .truncationMode(.tail)
             if let trailing {
                 Text(trailing)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
+                    .lineLimit(1)
+                    .fixedSize()
             }
             if let badge, badge > 0 {
                 Text("\(badge)")
+                    .fixedSize()
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.siloBackground)
                     .padding(.horizontal, 5)
@@ -284,6 +411,48 @@ struct BrowseView: View {
         .siloGlass(in: .capsule)
     }
 
+    // MARK: - Letter jump
+
+    /// The index jumps by list position, which only title order has.
+    private var showsLetterIndex: Bool {
+        viewModel.filterState.sort == .title && !viewModel.items.isEmpty
+            && (viewModel.letterIndex?.total ?? 0) > 0
+    }
+
+    #if os(iOS)
+    private func engageLetterIndex() {}
+
+    /// The grid already has a place for every title, so a jump is one
+    /// scroll, made once the letter's titles are read or a moment has passed.
+    private func jump(to letter: String) {
+        pendingJump?.cancel()
+        let commands = gridCommands
+        let list = viewModel.listIdentity
+        pendingJump = Task {
+            guard let position = await viewModel.position(forJumpTo: letter), !Task.isCancelled,
+                  // A sort, filter or library change while the jump waited
+                  // put a different list in the grid.
+                  viewModel.listIdentity == list else { return }
+            commands.scroll(toPosition: position)
+        }
+    }
+    #else
+    private func engageLetterIndex() {
+        letterJump.isEngaged = true
+    }
+
+    private func jump(to letter: String) {
+        letterJump.isEngaged = true
+        let state = letterJump
+        Task {
+            guard let card = await viewModel.jump(to: letter, columns: state.columnCount) else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { state.cardID = card }
+        }
+    }
+    #endif
+
     // MARK: - Active Filters
 
     private var hasActiveFilters: Bool { viewModel.hasActiveFilters }
@@ -291,13 +460,14 @@ struct BrowseView: View {
     private var activeFilterChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(viewModel.filterState.activeChips()) { chip in
+                ForEach(viewModel.filterState.activeChips(locale: locale)) { chip in
                     filterChip(label: chip.label) {
                         Task { await viewModel.removeChip(chip) }
                     }
                 }
             }
             .padding(.horizontal, SiloTheme.padding)
+            .mouseDragScrolling()
         }
     }
 
@@ -318,6 +488,29 @@ struct BrowseView: View {
     }
 }
 
+#if !os(iOS)
+/// Scroll state of the letter index. The scroll view writes `cardID` on
+/// every scroll, and nothing draws from it, so scrolling redraws nothing.
+@Observable
+@MainActor
+final class LetterJumpState {
+    /// The card at the top of the grid, bound to the scroll position.
+    var cardID: String?
+    /// Set on the first touch of the letter index; turns on scroll-position
+    /// tracking, which plain browsing doesn't pay for.
+    var isEngaged = false
+    @ObservationIgnored var columnCount = 1
+}
+#endif
+
+/// The letter the index last jumped to, marked on the index until the grid
+/// is scrolled by hand or shows another list.
+@Observable
+@MainActor
+final class JumpedLetter {
+    var letter: String?
+}
+
 private struct BrowseConfigurationID: Hashable {
     let libraryId: Int?
     let libraryType: String?
@@ -331,14 +524,14 @@ enum LibraryPageTab: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
         case .recommended:
-            return "Recommended"
+            return .libraryRecommended
         case .library:
-            return "Library"
+            return .libraryLibraryTab
         case .collections:
-            return "Collections"
+            return .libraryCollections
         }
     }
 }
@@ -348,33 +541,43 @@ enum LibraryPageTab: String, CaseIterable, Identifiable {
 /// shared top-chrome `safeAreaInset` overlay.
 struct LibraryPageTabSelector: View {
     @Binding var selectedTab: LibraryPageTab
+    /// Off when the caller has already made sure every chip fits.
+    var scrolls = true
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(LibraryPageTab.allCases) { tab in
-                    Button {
-                        withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
-                            selectedTab = tab
-                        }
-                    } label: {
-                        Text(tab.title)
-                            .font(.siloCaption)
-                            .fontWeight(selectedTab == tab ? .semibold : .regular)
-                            .foregroundColor(selectedTab == tab ? Color.siloBackground : .siloSecondaryText)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .background(
-                                Capsule()
-                                    .fill(selectedTab == tab ? Color.siloOnSurface : Color.siloSurfaceElevated)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
+        if scrolls {
+            ScrollView(.horizontal, showsIndicators: false) {
+                chips.mouseDragScrolling()
             }
-            .padding(.horizontal, SiloTheme.padding)
-            .padding(.vertical, SiloTheme.smallPadding)
+        } else {
+            chips
         }
+    }
+
+    private var chips: some View {
+        HStack(spacing: 8) {
+            ForEach(LibraryPageTab.allCases) { tab in
+                Button {
+                    withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
+                        selectedTab = tab
+                    }
+                } label: {
+                    Text(tab.title)
+                        .font(.siloCaption)
+                        .fontWeight(selectedTab == tab ? .semibold : .regular)
+                        .foregroundColor(selectedTab == tab ? Color.siloBackground : .siloSecondaryText)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule()
+                                .fill(selectedTab == tab ? Color.siloOnSurface : Color.siloSurfaceElevated)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, SiloTheme.padding)
+        .padding(.vertical, SiloTheme.smallPadding)
     }
 }
 
@@ -444,7 +647,7 @@ private class LibraryRecommendedViewModel {
             }
             guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
             guard run == generation, !Task.isCancelled else { return }
-            sections = loaded.filter { !$0.items.isEmpty }
+            sections = loaded.filter(\.hasCards)
             scopeIncomplete = incomplete
             if mediaScope != nil {
                 ResponseCache.shared.set((sections: sections, incomplete: incomplete), for: key, fetchedAt: writeToken)
@@ -461,7 +664,7 @@ private class LibraryRecommendedViewModel {
     }
 
     private static func displayed(_ sections: [ResolvedSection]) -> [ResolvedSection] {
-        sections.filter { !$0.isFeatured && !$0.items.isEmpty }
+        sections.filter { !$0.isFeatured && $0.hasCards }
     }
 }
 
@@ -471,6 +674,8 @@ struct LibraryRecommendedView: View {
 
     @State private var viewModel = LibraryRecommendedViewModel()
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
+    @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -487,8 +692,8 @@ struct LibraryRecommendedView: View {
                 } else {
                     EmptyStateView(
                         icon: "rectangle.stack.fill",
-                        title: "No recommendations yet",
-                        subtitle: "This library does not have any recommended rows right now."
+                        title: AppLanguage.string(.libraryNoRecommendations, locale: locale),
+                        subtitle: AppLanguage.string(.libraryNoRecommendedRowsBody, locale: locale)
                     )
                 }
             }
@@ -507,6 +712,13 @@ struct LibraryRecommendedView: View {
         }
         .refreshable {
             await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
+            pageDidRefresh?()
+        }
+        // The Libraries tab keeps this page alive under its others, so a
+        // title marked watched elsewhere would otherwise keep its old card
+        // in Continue Watching and Next Up. Home reloads on the same signal.
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+            Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) }
         }
     }
 
@@ -525,6 +737,11 @@ struct LibraryRecommendedView: View {
                                     libraryId: libraryId
                                 )
                             )
+                        },
+                        onExploreAll: {
+                            router.navigate(to: .sectionCatalog(SectionCatalogTarget(
+                                section, scope: .library(libraryId), mediaScope: mediaScope
+                            )))
                         }
                     )
                 }
@@ -533,16 +750,66 @@ struct LibraryRecommendedView: View {
         }
         .siloScrollEdgeEffect()
         .reportsPageChromeScroll()
+        .scrollsToTopOnLibraryDockRequest()
         .environment(\.browseLibraryId, libraryId)
+        .environment(\.browseMediaScope, mediaScope)
     }
 
     private var scopeNotice: some View {
         VStack(spacing: SiloTheme.smallPadding) {
-            Text("Some shelves could not be fully loaded. Retry or open Library to browse all titles.")
+            Text(.libraryErrorSomeShelves)
                 .font(.siloCaption)
                 .foregroundStyle(Color.siloSecondaryText)
-            Button("Retry") { Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) } }
+            Button(.commonRetry) { Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) } }
         }
         .padding(SiloTheme.padding)
+    }
+}
+
+/// Lays out the library's Sort, Filter and Shuffle chips. It reads the text
+/// size itself: on iPhone the row sits in the grid's collection-view header,
+/// which isn't rebuilt with `BrowseView`, so a text-size change made while the
+/// page is open has to reach the layout here.
+private struct BrowseControlBarLayout<Sort: View, Filter: View, Shuffle: View>: View {
+    let sort: Sort
+    let filter: Filter
+    let shuffle: Shuffle
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            // At accessibility text sizes the chips no longer fit side by
+            // side and SwiftUI broke their labels mid-word (#625); stack them
+            // along the page's leading edge instead.
+            VStack(alignment: .leading, spacing: 9) {
+                sort
+                filter
+                shuffle
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            // One row when the chips fit. A long sort name ("Latest Episode
+            // Air Date") or a longer translation takes its own line, with
+            // Filter and Shuffle wrapped below it along the leading edge
+            // (#899). Only a name too long for a line of its own ends in an
+            // ellipsis.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 9) {
+                    sort
+                    filter
+                    shuffle
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: 9) {
+                    sort
+                    HStack(spacing: 9) {
+                        filter
+                        shuffle
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
     }
 }

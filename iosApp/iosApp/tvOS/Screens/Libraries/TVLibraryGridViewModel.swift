@@ -44,16 +44,27 @@ final class TVLibraryGridViewModel {
     private let sendsType: Bool
     private static let pageSize = 100
 
+    private let api: SiloAPI
     /// Where the next page starts; `nil` before the live page 1 arrives and
     /// after the last page. A cached page 1 has no continuation.
     private var continuation: APIv2CatalogContinuation?
+    /// A non-empty `items` is a cached page 1 that no live page has replaced
+    /// yet. Not kept up to date while `items` is empty.
+    private var showsCachedFirstPage = false
     /// Warm-ups in flight by poster URL, kept with the size they were
     /// started at so stopping one targets the same request.
     @ObservationIgnored private var prefetchedPosters: [String: CardArtwork] = [:]
     @ObservationIgnored private var visiblePosterRows: [Int: Range<Int>] = [:]
     private var generation: Int = 0
 
-    init(libraryId: Int, libraryType: String, mediaScope: LibraryVideoScope? = nil, initialFilter: CatalogFilterState = .none) {
+    init(
+        libraryId: Int,
+        libraryType: String,
+        mediaScope: LibraryVideoScope? = nil,
+        initialFilter: CatalogFilterState = .none,
+        api: SiloAPI = .shared
+    ) {
+        self.api = api
         self.libraryId = libraryId
         self.mediaScope = mediaScope
         self.mediaType = BrowseMediaType.from(libraryType: mediaScope?.rawValue ?? libraryType)
@@ -104,12 +115,24 @@ final class TVLibraryGridViewModel {
         }
         items = cached.items
         hasMore = cached.hasMore ?? false
+        showsCachedFirstPage = true
     }
 
     // MARK: - Public API
 
+    /// Loads page 1 when the grid comes on screen. An empty grid loads, and
+    /// a cached page is refetched behind what is showing. A grid that
+    /// already holds a live page is left alone, so coming back from a title
+    /// page never cuts a paged list back to page 1.
     func loadInitial() async {
-        await reload()
+        if items.isEmpty {
+            await reload()
+        } else if showsCachedFirstPage {
+            // Not `reload()`: it empties the grid when the cache entry has
+            // been invalidated since this page was shown.
+            generation += 1
+            await fetchPage(reset: true)
+        }
     }
 
     func loadMoreIfNeeded() async {
@@ -259,9 +282,9 @@ final class TVLibraryGridViewModel {
         do {
             let page: CatalogListPage
             if let nextPage {
-                page = try await SiloAPI.shared.nextCatalogPage(nextPage)
+                page = try await api.nextCatalogPage(nextPage)
             } else {
-                page = try await SiloAPI.shared.catalogPage(CatalogQueryBuilder.build(
+                page = try await api.catalogPage(CatalogQueryBuilder.build(
                     filter,
                     libraryId: libraryId,
                     mediaType: mediaType,
@@ -272,23 +295,27 @@ final class TVLibraryGridViewModel {
             }
 
             // Discard if another reload superseded us while we awaited.
-            guard await SiloAPI.shared.isCurrentOwner(page.auth) else { throw HTTPError.requestIdentityChanged }
+            guard await api.isCurrentOwner(page.auth) else { throw HTTPError.requestIdentityChanged }
             guard myGeneration == generation, !Task.isCancelled else { return }
 
             if startsOver || page.startsOver {
-                items = page.response.items
-                ResponseCache.shared.set(page.response, for: currentCacheKey, fetchedAt: writeToken)
-                if items.isEmpty {
+                // Settled before an empty page replaces what is showing:
+                // the view shows the empty state once `items` is empty and
+                // no load is running.
+                if page.response.items.isEmpty {
                     var probe = CatalogQueryBuilder.libraryProbe(libraryId: libraryId)
                     // A Movies/Series view of a mixed library is empty when that
                     // type is, even if the other type has titles.
                     probe.type = mediaScope?.rawValue
                     let reason = await BrowseEmptyReason.classify(filter: filter) {
-                        try await !SiloAPI.shared.catalogPage(probe).response.items.isEmpty
+                        try await !api.catalogPage(probe).response.items.isEmpty
                     }
                     guard myGeneration == generation else { return }
                     emptyReason = reason
                 }
+                items = page.response.items
+                showsCachedFirstPage = false
+                ResponseCache.shared.set(page.response, for: currentCacheKey, fetchedAt: writeToken)
             } else {
                 items.append(contentsOf: page.response.items)
             }

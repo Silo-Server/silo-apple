@@ -7,7 +7,9 @@ struct UserCollectionSection: Identifiable {
     /// Stable identity — the group id for named sections, `nil` only for
     /// Ungrouped.
     let groupId: String?
-    let name: String
+    /// The group's name as the user typed it; nil for Ungrouped, which the
+    /// view labels in the app language.
+    let name: String?
     let collections: [UserCollection]
 
     var id: String { groupId ?? "__ungrouped__" }
@@ -158,7 +160,7 @@ class CollectionsViewModel {
             switch groupSupport {
             case .available, .unavailable: break
             case .checking, .unknown:
-                groupSupport = .unknown("Collection groups couldn't be checked.")
+                groupSupport = .unknown(AppLanguage.string(.collectionsErrorGroupsCheckFailed))
             }
         }
     }
@@ -195,7 +197,7 @@ class CollectionsViewModel {
         }
         let ungrouped = (byGroup[nil] ?? []).sorted { ($0.sortOrder ?? 0) < ($1.sortOrder ?? 0) }
         if !ungrouped.isEmpty || groups.isEmpty {
-            result.append(UserCollectionSection(groupId: nil, name: "Ungrouped", collections: ungrouped))
+            result.append(UserCollectionSection(groupId: nil, name: nil, collections: ungrouped))
         }
         sections = result
     }
@@ -212,7 +214,7 @@ class CollectionsViewModel {
             showCreateSheet = false
             await loadCollections()
         } catch let err {
-            createError = createFailureMessage(err, fallback: "Failed to create collection")
+            createError = createFailureMessage(err, fallback: AppLanguage.string(.collectionsErrorCreate))
             // A lost answer may still have created it; show the list as it is.
             if Self.outcomeIsUncertain(err) { await loadCollections() }
         }
@@ -253,7 +255,7 @@ class CollectionsViewModel {
                 return
             }
             editorNeedsReload = true
-            groupError = groupErrorMessage(err, fallback: "Failed to load the current version")
+            groupError = groupErrorMessage(err, fallback: AppLanguage.string(.collectionsErrorLoadVersion))
         }
         isLoadingEditor = false
     }
@@ -268,7 +270,7 @@ class CollectionsViewModel {
             writeBackCache()
             closeSheet(edit.sheet)
         } catch let err {
-            await handleEditFailure(err, fallback: "Failed to delete collection", sheet: edit.sheet)
+            await handleEditFailure(err, fallback: AppLanguage.string(.collectionsErrorDeleteCollection), sheet: edit.sheet)
         }
     }
 
@@ -277,7 +279,7 @@ class CollectionsViewModel {
     func createGroup(name: String) async {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
-            groupError = "Name is required"
+            groupError = AppLanguage.string(.collectionsErrorNameRequired)
             return
         }
         guard !isSaving else { return }
@@ -293,7 +295,7 @@ class CollectionsViewModel {
         } catch let err {
             if markGroupsUnsupported(err, sheet: sheet) { return }
             if sheet == sheetGeneration {
-                groupError = createFailureMessage(err, fallback: "Failed to add group")
+                groupError = createFailureMessage(err, fallback: AppLanguage.string(.collectionsErrorAddGroup))
             }
             if Self.outcomeIsUncertain(err) { await loadCollections() }
         }
@@ -302,7 +304,7 @@ class CollectionsViewModel {
     func renameGroup(name: String) async {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
-            groupError = "Name is required"
+            groupError = AppLanguage.string(.collectionsErrorNameRequired)
             return
         }
         guard let edit = beginEdit() else { return }
@@ -313,7 +315,7 @@ class CollectionsViewModel {
             writeBackCache()
             closeSheet(edit.sheet)
         } catch let err {
-            await handleEditFailure(err, fallback: "Failed to rename group", sheet: edit.sheet)
+            await handleEditFailure(err, fallback: AppLanguage.string(.collectionsErrorRenameGroup), sheet: edit.sheet)
         }
     }
 
@@ -344,7 +346,7 @@ class CollectionsViewModel {
             writeBackCache()
             closeSheet(edit.sheet)
         } catch let err {
-            await handleEditFailure(err, fallback: "Failed to delete group", sheet: edit.sheet)
+            await handleEditFailure(err, fallback: AppLanguage.string(.collectionsErrorDeleteGroup), sheet: edit.sheet)
         }
     }
 
@@ -357,7 +359,7 @@ class CollectionsViewModel {
             writeBackCache()
             closeSheet(edit.sheet)
         } catch let err {
-            await handleEditFailure(err, fallback: "Failed to move collection", sheet: edit.sheet)
+            await handleEditFailure(err, fallback: AppLanguage.string(.collectionsErrorMove), sheet: edit.sheet)
         }
     }
 
@@ -397,16 +399,16 @@ class CollectionsViewModel {
         switch status {
         case 412:
             editorNeedsReload = true
-            groupError = "This changed on another device. Reload to see the current version; your edits are kept."
+            groupError = AppLanguage.string(.collectionsErrorChangedElsewhere)
         case 428:
             Self.logger.error("Collection edit sent without a precondition: \(String(describing: err), privacy: .public)")
             editorNeedsReload = true
-            groupError = "Reload the current version before trying again."
+            groupError = AppLanguage.string(.collectionsErrorReloadFirst)
         default:
             if Self.outcomeIsUncertain(err) {
                 Self.logger.warning("Collection edit outcome unknown: \(String(describing: err), privacy: .public)")
                 editorNeedsReload = true
-                groupError = "Silo couldn't confirm this change. Reload to check whether it was saved before trying again."
+                groupError = AppLanguage.string(.collectionsErrorUnconfirmedChange)
             } else {
                 groupError = groupErrorMessage(err, fallback: fallback)
             }
@@ -419,7 +421,9 @@ class CollectionsViewModel {
         guard let problem = Self.problem(err), problem.status == 501 else { return false }
         groupSupport = .unavailable
         if sheet == sheetGeneration {
-            groupError = problem.detail.isEmpty ? "Collection groups aren't available on this server." : problem.detail
+            groupError = problem.detail.isEmpty
+                ? AppLanguage.string(.collectionsErrorGroupsUnavailable)
+                : problem.localized(problem.detail)
         }
         return true
     }
@@ -427,7 +431,7 @@ class CollectionsViewModel {
     private func createFailureMessage(_ err: Error, fallback: String) -> String {
         if Self.outcomeIsUncertain(err) {
             Self.logger.warning("Collection create outcome unknown: \(String(describing: err), privacy: .public)")
-            return "Silo couldn't confirm this was created. Check the list before trying again."
+            return AppLanguage.string(.collectionsErrorUnconfirmedCreate)
         }
         return groupErrorMessage(err, fallback: fallback)
     }

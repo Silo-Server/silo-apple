@@ -26,6 +26,8 @@ final class APIv2SubtitleTests: XCTestCase {
             defaults: SharedDefaults(suite: suite, standard: suite))
         await tokens.switchActiveServer(serverId: "server")
         await tokens.setServerUrl("https://subtitles.example")
+        // A profile proof belongs to a signed-in account.
+        _ = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
         await tokens.setProfileId(profile)
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)
@@ -914,6 +916,27 @@ final class APIv2SubtitleTests: XCTestCase {
         XCTAssertFalse(store.isAvailable)
         stub.reply(200, #"{"schema_version":1,"enabled":true,"providers":["subdl"],"revision":"s","state":"available","allowed":true}"#)
         await store.refresh()
+        XCTAssertTrue(store.isAvailable)
+    }
+
+    /// Overlapping probes (the subtitle panel closed and reopened while one
+    /// was pending): an older answer that lands last must not overwrite the
+    /// newer one.
+    @MainActor
+    func testProviderStoreKeepsTheNewestAnswerWhenProbesOverlap() async throws {
+        let (api, _) = try await client()
+        let store = SubtitleProvidersStore(api: SiloAI(v2: api))
+        stub.sequence([
+            .json(200, #"{"schema_version":1,"enabled":false,"providers":[],"revision":"r","state":"not_configured","allowed":true}"#),
+            .json(200, #"{"schema_version":1,"enabled":true,"providers":["subdl"],"revision":"s","state":"available","allowed":true}"#),
+        ])
+        stub.hold()
+        let older = Task { await store.refresh() }
+        await stub.waitUntilHeld()
+        await store.refresh()
+        XCTAssertTrue(store.isAvailable)
+        stub.release()
+        await older.value
         XCTAssertTrue(store.isAvailable)
     }
 

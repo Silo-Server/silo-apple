@@ -15,24 +15,22 @@ struct MacSidebarSection: Identifiable, Equatable {
     let items: [MainTabDestination]
 
     /// Home sits above the groups without a heading.
-    var title: String? {
+    var title: LocalizedStringResource? {
         switch id {
         case .home: return nil
-        case .libraries: return "Libraries"
-        case .discover: return "Discover"
-        case .yourStuff: return "Your Stuff"
+        case .libraries: return .shellSidebarSectionLibraries
+        case .discover: return .shellSidebarSectionDiscover
+        case .yourStuff: return .shellSidebarSectionYourStuff
         }
     }
 }
 
-/// Builds the Mac sidebar from the shell's projected destinations and the
-/// profile's libraries.
+/// Builds the Mac sidebar from the shell's destinations and the profile's
+/// libraries.
 ///
 /// The Libraries group lists every library the profile can open, in server
-/// order, whatever the synced Primary Menu pins. The Primary Menu still decides
-/// whether For You and Calendar show and in which order. Media-type roots and
-/// pinned libraries from the menu are dropped: the Libraries group covers them.
-/// Requests follows For You, as on the web, while the server has it enabled.
+/// order. Discover holds Search, For You, Requests (while the server has it
+/// enabled, after For You as on the web) and Calendar.
 func macSidebarSections(
     destinations: [MainTabDestination],
     libraries: [Library],
@@ -79,10 +77,7 @@ func macSidebarIcon(for library: Library) -> (icon: String, selectedIcon: String
     if library.isMixedLibrary {
         return (library.navigationIcon, library.selectedNavigationIcon)
     }
-    let categories: [PrimaryMenuBuiltin] = [.movies, .series, .audiobooks]
-    if let category = categories.first(where: {
-        libraryMatchesPrimaryMenuCategory(library, category: $0)
-    }) {
+    if let category = LibraryMediaCategory.allCases.first(where: { $0.matches(library) }) {
         return (category.navigationIcon, category.navigationIcon)
     }
     return (library.navigationIcon, library.selectedNavigationIcon)
@@ -99,7 +94,7 @@ func macSidebarHighlight(
 ) -> MainTabDestinationID? {
     for route in pushedRoutes.reversed() {
         switch route {
-        case .settings, .serverList:
+        case .settings, .serverList, .accounts, .changeAccount:
             return nil
         case .requestsHub, .myRequests, .requestDetail:
             return .app(.requests)

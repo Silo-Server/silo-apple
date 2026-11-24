@@ -71,7 +71,7 @@ struct CalendarWeek: Equatable, Hashable {
     /// shows the month that owns most of its days.
     var monthLabel: String {
         let anchor = isoCalendar.date(byAdding: .day, value: 3, to: startDate) ?? startDate
-        return anchor.formatted(.dateTime.month(.wide).year())
+        return anchor.formatted(.dateTime.month(.wide).year().locale(AppLanguage.formattingLocale))
     }
 
     func containsToday(_ today: Date = Date()) -> Bool {

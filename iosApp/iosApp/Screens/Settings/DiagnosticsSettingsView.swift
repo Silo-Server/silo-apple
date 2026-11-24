@@ -9,6 +9,7 @@ struct DiagnosticsSettingsView: View {
     @State private var selectedDestination: DiagnosticsDestinationChoice = .hosted
     @State private var showAlwaysConfirmation = false
     @State private var showNeverConfirmation = false
+    @Environment(\.locale) private var locale
 
     var body: some View {
         List {
@@ -19,7 +20,7 @@ struct DiagnosticsSettingsView: View {
             sentHistorySection
         }
         .settingsListChrome()
-        .navigationTitle("Diagnostics")
+        .navigationTitle(Text(.settingsDiagnostics))
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
         .task {
@@ -37,13 +38,23 @@ struct DiagnosticsSettingsView: View {
 
     private var availabilitySection: some View {
         Section {
-            LabeledContent("Status", value: model.featureState.title)
-            LabeledContent("Destination", value: model.destinationServerName)
+            LabeledContent {
+                Text(model.featureState.title)
+            } label: {
+                Text(.diagnosticsRowStatus)
+            }
+            .accessibilityElement(children: .combine)
+            LabeledContent {
+                Text(model.destinationServerName)
+            } label: {
+                Text(.diagnosticsRowDestination)
+            }
+            .accessibilityElement(children: .combine)
         } header: {
-            Text("Feature State")
+            Text(.diagnosticsSectionFeatureState)
         } footer: {
             if model.featureState == .offline {
-                Text("Showing the last known diagnostics state. Reports stay on this device while the server is offline.")
+                Text(.diagnosticsAvailabilityOfflineDetail)
             }
         }
         .listRowBackground(Color.siloGroupedCell)
@@ -51,24 +62,24 @@ struct DiagnosticsSettingsView: View {
 
     private var preferencesSection: some View {
         Section {
-            Picker("Send Reports To", selection: $selectedDestination) {
-                Text("Silo Diagnostics").tag(DiagnosticsDestinationChoice.hosted)
-                Text("My Silo Server").tag(DiagnosticsDestinationChoice.selfHosted)
+            Picker(.diagnosticsRowSendReportsTo, selection: $selectedDestination) {
+                Text(.diagnosticsDestinationHosted).tag(DiagnosticsDestinationChoice.hosted)
+                Text(.diagnosticsDestinationMyServer).tag(DiagnosticsDestinationChoice.selfHosted)
             }
             .onChange(of: selectedDestination) { oldValue, newValue in
                 guard oldValue != newValue, newValue != model.selectedDestination else { return }
                 Task { await model.setDestination(newValue) }
             }
 
-            Toggle("Debug Logging", isOn: $model.debugLoggingEnabled)
+            Toggle(.diagnosticsRowDebugLogging, isOn: $model.debugLoggingEnabled)
                 .tint(.siloSwitchOn)
 
-            Picker("Crash Reports", selection: $selectedMode) {
-                Text("Ask").tag(DiagnosticsConsentChoice.ask)
+            Picker(.diagnosticsRowCrashReports, selection: $selectedMode) {
+                Text(.diagnosticsCrashReportsAsk).tag(DiagnosticsConsentChoice.ask)
                 if model.allowsAlwaysSend {
-                    Text("Always").tag(DiagnosticsConsentChoice.always)
+                    Text(.diagnosticsCrashReportsAlways).tag(DiagnosticsConsentChoice.always)
                 }
-                Text("Never").tag(DiagnosticsConsentChoice.never)
+                Text(.diagnosticsCrashReportsNever).tag(DiagnosticsConsentChoice.never)
             }
             .disabled(!model.canChangeConsent)
             .onChange(of: selectedMode) { oldValue, newValue in
@@ -76,36 +87,36 @@ struct DiagnosticsSettingsView: View {
                 requestModeChange(newValue)
             }
             .confirmationDialog(
-                "Always Send Crash Reports?",
+                Text(.diagnosticsAlwaysSendConfirmTitle),
                 isPresented: $showAlwaysConfirmation,
                 titleVisibility: .visible
             ) {
-                Button("Always Send") {
+                Button(.diagnosticsAlwaysSendConfirm) {
                     Task { await model.setConsentMode(.always) }
                 }
-                Button("Cancel", role: .cancel, action: cancelModeChange)
+                Button(.commonCancel, role: .cancel, action: cancelModeChange)
             } message: {
-                Text("Any pending reports and future crash or hang reports for this server account will be sent automatically. You can change this at any time.")
+                Text(.diagnosticsAlwaysSendSettingsMessage)
             }
-            .alert("Turn Off Crash Reports?", isPresented: $showNeverConfirmation) {
-                Button("Turn Off and Delete", role: .destructive) {
+            .alert(Text(.diagnosticsTurnOffTitle), isPresented: $showNeverConfirmation) {
+                Button(.diagnosticsTurnOffConfirm, role: .destructive) {
                     Task { await model.setConsentMode(.never) }
                 }
-                Button("Cancel", role: .cancel, action: cancelModeChange)
+                Button(.commonCancel, role: .cancel, action: cancelModeChange)
             } message: {
                 if model.selectedDestination == .hosted {
-                    Text("Pending local reports will be deleted. Reports already received by Silo Diagnostics will also be queued for deletion. The in-memory basic log will continue running and is never sent without an explicit action.")
+                    Text(.diagnosticsTurnOffHostedMessage)
                 } else {
-                    Text("Pending reports for this server account will be deleted. The in-memory basic log will continue running and is never sent without an explicit action.")
+                    Text(.diagnosticsTurnOffSelfHostedMessage)
                 }
             }
         } header: {
-            Text("Capture")
+            Text(.diagnosticsSectionCapture)
         } footer: {
             if model.selectedDestination == .hosted {
                 Text(model.hostedPrivacyDisclosure)
             } else {
-                Text("Crash report consent is tied to this server account. Debug logging is a setting for this device.")
+                Text(.diagnosticsCaptureSelfHostedFooter)
             }
         }
         .listRowBackground(Color.siloGroupedCell)
@@ -114,7 +125,7 @@ struct DiagnosticsSettingsView: View {
     private var pendingSection: some View {
         Section {
             if model.pendingReports.isEmpty {
-                Text("No pending reports")
+                Text(.diagnosticsPendingNone)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(model.pendingReports) { report in
@@ -124,28 +135,28 @@ struct DiagnosticsSettingsView: View {
                         DiagnosticsPendingReportRow(report: report)
                     }
                     .swipeActions {
-                        Button("Delete", role: .destructive) {
+                        Button(.diagnosticsEraseConfirm, role: .destructive) {
                             Task { await model.delete(report) }
                         }
                     }
                 }
             }
         } header: {
-            Text("Pending Reports (\(model.pendingReports.count))")
+            Text(.diagnosticsSectionPending(model.pendingReports.count))
         }
         .listRowBackground(Color.siloGroupedCell)
     }
 
     private var manualSection: some View {
         Section {
-            Button("Send Diagnostics Now", systemImage: "paperplane.fill") {
+            Button(.settingsDiagnosticsSend, systemImage: "paperplane.fill") {
                 Task { await model.createAndSendManualReport() }
             }
             .disabled(!model.featureState.isUploadAvailable || model.isWorking)
 
             if !model.debugLoggingEnabled {
                 Label(
-                    "Debug logging is off. This report contains only the last few minutes of basic logs.",
+                    .diagnosticsSendDebugOffFooterTv,
                     systemImage: "exclamationmark.triangle.fill"
                 )
                 .font(.footnote)
@@ -153,29 +164,31 @@ struct DiagnosticsSettingsView: View {
             }
 
             if model.isWorking {
-                ProgressView("Preparing diagnostics…")
+                ProgressView {
+                    Text(.diagnosticsPreparing)
+                }
             }
 
             if let notice = model.notice {
-                Text(notice.message)
+                Text(verbatim: notice.text(in: locale))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
         } footer: {
             if model.selectedDestination == .hosted {
-                Text("A hosted report includes device capability details and recent redacted diagnostic logs. It omits account, profile, server address, and playback session identifiers.")
+                Text(.diagnosticsManualHostedFooter)
             } else {
-                Text("A manual report includes device capability details, recent playback session identifiers, and recent diagnostic logs for this server.")
+                Text(.diagnosticsManualSelfHostedFooter)
             }
         }
         .listRowBackground(Color.siloGroupedCell)
     }
 
     private var sentHistorySection: some View {
-        Section("Sent History") {
+        Section {
             if model.sentHistory.isEmpty {
-                Text("No reports sent yet")
+                Text(.diagnosticsSentHistoryNone)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(model.sentHistory) { item in
@@ -183,16 +196,18 @@ struct DiagnosticsSettingsView: View {
                         Text(item.sentAtDate ?? .distantPast, format: .dateTime.month().day().hour().minute())
                             .foregroundStyle(.secondary)
                     } label: {
-                        Text(item.shortID)
+                        Text(verbatim: item.shortID)
                             .textSelection(.enabled)
                     }
                     .contextMenu {
-                        Button("Copy ID", systemImage: "doc.on.doc") {
+                        Button(.diagnosticsCopyId, systemImage: "doc.on.doc") {
                             UIPasteboard.general.string = item.shortID
                         }
                     }
                 }
             }
+        } header: {
+            Text(.diagnosticsSectionSentHistory)
         }
         .listRowBackground(Color.siloGroupedCell)
     }

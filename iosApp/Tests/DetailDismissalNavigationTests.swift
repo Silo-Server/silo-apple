@@ -41,6 +41,122 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertNotNil(router.presentedItemDetail)
     }
 
+    func testUnfoldingRefitsTheDetailOnlyOnceNothingCoversIt() throws {
+        let router = AppRouter()
+        router.presentItemDetail(contentId: "movie", libraryId: 4)
+        let opened = try XCTUnwrap(router.presentedItemDetail)
+        XCTAssertFalse(opened.fillsWindow)
+
+        // The window grows while a player is up, then while the TV remote is.
+        router.presentPlayer(contentId: "movie")
+        router.presentsItemDetailFullWindow = true
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail, opened)
+        router.dismissPlayerPresentation(id: try XCTUnwrap(router.presentedPlayer).id)
+        router.itemDetailShowsControl = true
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail, opened)
+
+        router.itemDetailShowsControl = false
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail?.id, opened.id)
+        XCTAssertEqual(router.presentedItemDetail?.fillsWindow, true)
+
+        // A refit reopens a series on the season and episode chosen in it.
+        let chosen = SeriesDetailContext(seriesContentId: "series", episodeContentId: "s2e3", seasonNumber: 2)
+        router.itemDetailSeriesSelectionDidChange(chosen)
+        router.presentsItemDetailFullWindow = false
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail?.id, opened.id)
+        XCTAssertEqual(router.presentedItemDetail?.contentId, "series")
+        XCTAssertEqual(router.presentedItemDetail?.resumeContext, chosen)
+
+        // Closing the detail can't leave the next one waiting.
+        router.itemDetailShowsControl = true
+        router.presentedItemDetail = nil
+        router.itemDetailPresentationDidDismiss()
+        XCTAssertFalse(router.itemDetailShowsControl)
+
+        // Nor can a closed detail's selection carry into the next one.
+        router.presentItemDetail(contentId: "movie", libraryId: 4)
+        router.presentsItemDetailFullWindow = true
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail?.contentId, "movie")
+        XCTAssertNil(router.presentedItemDetail?.resumeContext)
+    }
+
+    func testRowPageOpensInTheDetailCardAndTitlesPushInsideIt() throws {
+        let router = AppRouter()
+        let target = SectionCatalogTarget(scope: .library(4), sectionId: "recent", title: "Recently Added")
+        router.presentsItemDetailFullWindow = true
+        router.navigate(to: .sectionCatalog(target))
+
+        let card = try XCTUnwrap(router.presentedItemDetail)
+        XCTAssertEqual(card.section, target)
+        // Fills the open iPhone Duo instead of a capped centered card.
+        XCTAssertTrue(card.fillsWindow)
+        XCTAssertTrue(router.path.isEmpty)
+
+        router.presentItemDetail(contentId: "movie", libraryId: 4)
+        XCTAssertEqual(router.presentedItemDetail?.id, card.id)
+        XCTAssertEqual(router.visibleItemDetailRoutes, [
+            .sectionCatalog(target),
+            .itemDetail(contentId: "movie", libraryId: 4, seriesContext: nil),
+        ])
+        XCTAssertTrue(router.path.isEmpty)
+    }
+
+    func testRequestDetailStaysASheetWhenTheWindowWouldSplit() throws {
+        let router = AppRouter()
+        router.presentsItemDetailFullWindow = true
+        router.navigate(to: .requestDetail(mediaType: .movie, tmdbId: 603))
+        XCTAssertFalse(try XCTUnwrap(router.presentedItemDetail).fillsWindow)
+    }
+
+    func testMoreLikeThisHopsReplaceEachOtherSoBackLeavesInTwoSteps() {
+        let router = AppRouter()
+        router.presentItemDetail(contentId: "a")
+        for contentId in ["b", "c", "d"] {
+            router.openRelatedTitle(contentId: contentId)
+        }
+        XCTAssertEqual(router.visibleItemDetailRoutes, [.itemDetail(contentId: "a"), .itemDetail(contentId: "d")])
+
+        // A second tap on the card just opened opens nothing.
+        router.openRelatedTitle(contentId: "d")
+        XCTAssertEqual(router.visibleItemDetailRoutes, [.itemDetail(contentId: "a"), .itemDetail(contentId: "d")])
+
+        // Picking the title the chain started from goes back to it, and a
+        // second tap there opens no copy.
+        router.openRelatedTitle(contentId: "a")
+        router.openRelatedTitle(contentId: "a")
+        XCTAssertEqual(router.visibleItemDetailRoutes, [.itemDetail(contentId: "a")])
+    }
+
+    func testTitlesOpenedAnotherWayKeepTheirPageUnderMoreLikeThis() {
+        let router = AppRouter()
+        router.presentItemDetail(contentId: "a")
+        router.navigate(to: .personDetail(personId: "p"))
+        // A title from the person's filmography, or from a link, is where
+        // the viewer chose to go; the first recommendation pushes over it.
+        router.presentItemDetail(contentId: "b")
+        router.openRelatedTitle(contentId: "c")
+        router.openRelatedTitle(contentId: "d")
+        XCTAssertEqual(router.visibleItemDetailRoutes, [
+            .itemDetail(contentId: "a"),
+            .personDetail(personId: "p"),
+            .itemDetail(contentId: "b"),
+            .itemDetail(contentId: "d"),
+        ])
+
+        // Back from a person page reached from a recommendation returns to
+        // that recommendation, which the next hop still replaces.
+        router.navigate(to: .personDetail(personId: "q"))
+        router.itemDetailPath.removeLast()
+        router.openRelatedTitle(contentId: "e")
+        XCTAssertEqual(router.visibleItemDetailRoutes.last, .itemDetail(contentId: "e"))
+        XCTAssertEqual(router.visibleItemDetailRoutes.count, 4)
+    }
+
     func testPartyWaitsForPickerDismissalAndCannotReopenAfterTermination() {
         let router = AppRouter()
         let context = WatchPartyPlaybackContext(roomId: "room", selectionRevision: 1,
@@ -90,6 +206,8 @@ final class DetailDismissalNavigationTests: XCTestCase {
     func testCloseButtonWaitsForTapInEveryPhase() async throws {
         let model = PlayerViewModel()
         defer { model.cleanup() }
+        // Each phase taps twice in a row and expects the second tap to hide.
+        model.controlsTapGrace = .zero
         for phase in ["loading", "playing", "next-up", "error"] {
             model.isLoading = phase == "loading"
             model.showNextUpScreen = phase == "next-up"
@@ -615,6 +733,15 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertEqual(reopened.resumePosition, original.resumePosition)
     }
 
+    func testDetailRemembersTheCardThatOpenedItAndPushedPagesDoNotReplaceIt() throws {
+        let router = AppRouter()
+        let card = UUID()
+        router.presentItemDetail(contentId: "series", zoomSourceID: card)
+        router.presentItemDetail(contentId: "episode", zoomSourceID: UUID())
+        XCTAssertEqual(router.presentedItemDetail?.zoomSourceID, card)
+        XCTAssertEqual(router.itemDetailPath.count, 1)
+    }
+
     func testActorPullGoesBackOnePageWithoutClosingTheSheet() throws {
         let router = AppRouter()
         router.presentItemDetail(contentId: "series")
@@ -674,4 +801,21 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertFalse(DetailDismissalPolicy.shouldCompleteBack(translation: .init(x: 0, y: -10), velocity: .zero))
         XCTAssertFalse(DetailDismissalPolicy.shouldCompleteBack(translation: .init(x: 120, y: 110), velocity: .zero))
     }
+
+    #if os(iOS)
+    /// Back is a swipe to the right, or to the left in right-to-left layouts.
+    func testSwipeBackStartsOnlyOnAMostlySidewaysSwipeTowardBack() {
+        XCTAssertTrue(DetailSwipeBackPolicy.canBegin(velocity: .init(x: 500, y: 100), direction: 1))
+        XCTAssertTrue(DetailSwipeBackPolicy.canBegin(velocity: .init(x: -500, y: 100), direction: -1))
+        XCTAssertFalse(DetailSwipeBackPolicy.canBegin(velocity: .init(x: -500, y: 0), direction: 1))
+        XCTAssertFalse(DetailSwipeBackPolicy.canBegin(velocity: .init(x: 200, y: 400), direction: 1))
+    }
+
+    func testSwipeBackNeedsADistanceOrAFlickAndAllowsCancel() {
+        XCTAssertTrue(DetailSwipeBackPolicy.shouldComplete(translation: 170, velocity: 0, width: 466))
+        XCTAssertTrue(DetailSwipeBackPolicy.shouldComplete(translation: 45, velocity: 900, width: 466))
+        XCTAssertFalse(DetailSwipeBackPolicy.shouldComplete(translation: 120, velocity: 100, width: 466))
+        XCTAssertFalse(DetailSwipeBackPolicy.shouldComplete(translation: 20, velocity: 1200, width: 466))
+    }
+    #endif
 }

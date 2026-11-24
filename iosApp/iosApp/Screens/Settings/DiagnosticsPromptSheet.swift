@@ -19,11 +19,13 @@ struct DiagnosticsPromptSheet: View {
                 }
 
                 Section {
-                    NavigationLink("View Report") {
+                    NavigationLink {
                         DiagnosticsPromptReviewView(prompt: prompt, model: model)
+                    } label: {
+                        Text(.diagnosticsPromptViewReport)
                     }
 
-                    Button("Send", systemImage: "paperplane.fill") {
+                    Button(.diagnosticsConsentConfirm, systemImage: "paperplane.fill") {
                         Task { await model.sendPrompt(always: false) }
                     }
                     .disabled(model.isWorking)
@@ -33,20 +35,22 @@ struct DiagnosticsPromptSheet: View {
                     if model.allowsAlwaysSend {
                         DiagnosticsAlwaysSendButton(
                             model: model,
-                            message: "This report and future crash reports for this server account will be sent automatically."
+                            message: .diagnosticsAlwaysSendPromptMessageOne
                         )
                     }
 
-                    Button("Don't Send", role: .cancel, action: model.declinePrompt)
+                    Button(.diagnosticsPromptDontSendButton, role: .cancel, action: model.declinePrompt)
                         .disabled(model.isWorking)
                 }
 
                 if model.isWorking {
-                    ProgressView("Sending diagnostics…")
+                    ProgressView {
+                        Text(.diagnosticsPromptSending)
+                    }
                 }
             }
             .siloGroupedListStyle()
-            .navigationTitle(prompt.title)
+            .navigationTitle(Text(prompt.title))
         }
     }
 }
@@ -55,24 +59,24 @@ struct DiagnosticsPromptSheet: View {
 /// report review.
 struct DiagnosticsAlwaysSendButton: View {
     let model: DiagnosticsViewModel
-    let message: String
+    let message: LocalizedStringResource
 
     @State private var isConfirming = false
 
     var body: some View {
-        Button("Always Send", systemImage: "checkmark.shield.fill") {
+        Button(.diagnosticsAlwaysSendConfirm, systemImage: "checkmark.shield.fill") {
             isConfirming = true
         }
         .disabled(model.isWorking)
         .confirmationDialog(
-            "Always Send Crash Reports?",
+            Text(.diagnosticsAlwaysSendConfirmTitle),
             isPresented: $isConfirming,
             titleVisibility: .visible
         ) {
-            Button("Always Send") {
+            Button(.diagnosticsAlwaysSendConfirm) {
                 Task { await model.sendPrompt(always: true) }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(.commonCancel, role: .cancel) {}
         } message: {
             Text(message)
         }

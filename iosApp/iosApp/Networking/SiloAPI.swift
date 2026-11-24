@@ -22,18 +22,27 @@ actor SiloAPI {
     /// Test seam for artwork sizing; production reads
     /// `ImageSizeCapability.shared`, which itself probes through `SiloAPI.shared`.
     private let imageSizeCapability: ImageSizeCapability?
+    /// Test seam for row sizes; production reads `SectionItemLimitSupport.shared`.
+    private let sectionItemLimitSupport: SectionItemLimitSupport?
+    /// Servers (`RefreshAccountIdentity.serverId`) that advertised
+    /// `box_sets`, so movie pages do not reread the search capabilities on
+    /// every visit. Only a yes is kept: a server upgraded to box sets while
+    /// the app runs shows its rows on the next movie page.
+    private var boxSetServerIds: Set<String> = []
 
     init(
         http: HTTPClient = .shared,
         tokenStore: TokenStore = .shared,
         ownerRecheckBarrier: (@Sendable () async -> Void)? = nil,
-        imageSizeCapability: ImageSizeCapability? = nil
+        imageSizeCapability: ImageSizeCapability? = nil,
+        sectionItemLimitSupport: SectionItemLimitSupport? = nil
     ) {
         self.http = http
         self.tokenStore = tokenStore
         self.apiV2Client = APIv2Client(http: http, tokenStore: tokenStore)
         self.ownerRecheckBarrier = ownerRecheckBarrier
         self.imageSizeCapability = imageSizeCapability
+        self.sectionItemLimitSupport = sectionItemLimitSupport
     }
 
     // MARK: - Session state accessors
@@ -96,7 +105,11 @@ actor SiloAPI {
     /// fetched for so a caller can refuse to apply it after a switch.
     func homeSections() async throws -> APIv2HomeSectionsRead {
         let auth = try await detailReadAuth()
-        return try await apiV2Client.homeSections(artwork: await artworkQuery(.home), auth: auth)
+        let artwork = await artworkQuery(.home)
+        let read = try await withSectionItemLimit(auth) { itemLimit in
+            try await apiV2Client.homeSections(artwork: artwork, itemLimit: itemLimit, auth: auth)
+        }
+        return APIv2HomeSectionsRead(auth: read.auth, response: SectionRowLimit.capped(read.response))
     }
 
     /// The acting profile's own Home layout: its rows as it sees them and
@@ -144,9 +157,47 @@ actor SiloAPI {
     /// to cache or show it after a switch.
     func librarySections(libraryId: Int) async throws -> APIv2LibrarySectionsRead {
         let auth = try await detailReadAuth()
-        return try await apiV2Client.librarySections(
-            id: libraryId, artwork: await artworkQuery(.shelves), auth: auth
+        let artwork = await artworkQuery(.shelves)
+        let read = try await withSectionItemLimit(auth) { itemLimit in
+            try await apiV2Client.librarySections(id: libraryId, artwork: artwork, itemLimit: itemLimit, auth: auth)
+        }
+        return APIv2LibrarySectionsRead(
+            libraryId: read.libraryId, auth: read.auth, response: SectionRowLimit.capped(read.response)
         )
+    }
+
+    /// Runs a section read with the `item_limit` the server accepts. A server
+    /// that refuses the parameter is remembered as not offering it and read
+    /// again without it.
+    private func withSectionItemLimit<Read>(
+        _ auth: CapturedOrdinaryRequestAuth,
+        _ read: (Int?) async throws -> Read
+    ) async throws -> Read {
+        let support = sectionItemLimitSupport ?? .shared
+        let serverID = auth.account.serverId
+        guard let itemLimit = support.itemLimit(serverID: serverID) else { return try await read(nil) }
+        do {
+            return try await read(itemLimit)
+        } catch where SectionRowLimit.isUnsupportedItemLimit(error) {
+            support.record(nil, serverID: serverID)
+            return try await read(nil)
+        }
+    }
+
+    /// The server's `section_item_limit_max`, nil when it offers none. A
+    /// server without the Home capabilities read offers none.
+    func homeSectionItemLimitMax() async throws -> (serverID: String, max: Int?) {
+        let auth = try await detailReadAuth()
+        do {
+            let capabilities = try await apiV2Client.homeCapabilities(auth: auth)
+            return (auth.account.serverId, capabilities.sectionItemLimitMax)
+        } catch let error as APIv2Error {
+            switch error {
+            case .serverUpdateRequired, .httpStatus(404): return (auth.account.serverId, nil)
+            case .problem(let problem) where problem.status == 404: return (auth.account.serverId, nil)
+            default: throw error
+            }
+        }
     }
 
     /// Cards the recommendation engine considers similar to `contentId`,
@@ -173,7 +224,9 @@ actor SiloAPI {
                 totalCount: row.items.count,
                 isCustom: false,
                 customized: false,
-                items: row.items
+                items: row.items,
+                titleKey: row.titleKey,
+                titleArgs: row.titleArgs
             )
         }
         let response = SectionsResponse(sections: resolved)
@@ -237,6 +290,25 @@ actor SiloAPI {
         }
         try await requireCurrentOwner(continuation.auth)
         return page
+    }
+
+    /// The letter index of the title-ordered list `query` pages, or nil from
+    /// a server that has none (it answers the route with 404, or 501 when its
+    /// store cannot count by letter).
+    func catalogLetters(_ query: APIv2CatalogQuery) async throws -> APIv2CatalogLetters? {
+        let auth = try await detailReadAuth()
+        let letters: APIv2CatalogLetters
+        do {
+            letters = try await apiV2Client.catalogLetters(APIv2CatalogLettersQuery(query), auth: auth)
+        } catch let error as APIv2Error {
+            switch error {
+            case .serverUpdateRequired, .httpStatus(404), .httpStatus(405), .httpStatus(501): return nil
+            case .problem(let problem) where [404, 405, 501].contains(problem.status): return nil
+            default: throw error
+            }
+        }
+        try await requireCurrentOwner(auth)
+        return letters
     }
 
     func itemDetail(contentId: String, libraryId: Int? = nil) async throws -> ItemDetail {
@@ -314,12 +386,21 @@ actor SiloAPI {
         return response
     }
 
+    /// The watch detail with this owner's track picks for its series (or
+    /// movie) applied. A pick or "Auto" the viewer just made may still be on
+    /// its way to the server: the read waits briefly for it and reads again
+    /// once it is stored, and a pick that is still unsaved after the wait, or
+    /// recently failed, is folded in rather than lost. Detail selectors and
+    /// every playback start, including Next Up, read through here.
     func watchDetail(contentId: String, libraryId: Int? = nil) async throws -> WatchDetail {
         let auth = try await detailReadAuth()
-        let detail = try await apiV2Client.watchDetail(
-            id: contentId, libraryId: libraryId.map(String.init),
-            artwork: await artworkQuery(.watch), auth: auth
-        )
+        let artwork = await artworkQuery(.watch)
+        let read = { [apiV2Client] in
+            try await apiV2Client.watchDetail(
+                id: contentId, libraryId: libraryId.map(String.init), artwork: artwork, auth: auth
+            )
+        }
+        let detail = try await TrackSelectionPersistence.settledRead(owner: auth, read: read)
         try await requireCurrentOwner(auth)
         return detail
     }
@@ -344,7 +425,10 @@ actor SiloAPI {
     /// offers none. Any other failure throws: a server that timed out or
     /// refused the credentials has not said what it supports.
     func catalogSearchFeatures() async throws -> CatalogSearchFeatures {
-        let auth = try await detailReadAuth()
+        try await catalogSearchFeatures(auth: detailReadAuth())
+    }
+
+    private func catalogSearchFeatures(auth: CapturedOrdinaryRequestAuth) async throws -> CatalogSearchFeatures {
         do {
             return CatalogSearchFeatures(try await apiV2Client.catalogSearchCapabilities(auth: auth))
         } catch let error as APIv2Error {
@@ -362,6 +446,62 @@ actor SiloAPI {
         let people = try await apiV2Client.searchPeople(query: query, limit: limit, mediaScope: mediaScope, auth: auth)
         guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
         return try people.map { try Person(catalog: $0) }
+    }
+
+    /// A movie box set with its movies in `libraryId`, in release order.
+    func boxSet(id: String, libraryId: Int) async throws -> CatalogBoxSetDetail {
+        let auth = try await detailReadAuth()
+        let detail = try await apiV2Client.catalogBoxSet(
+            id: id, libraryId: String(libraryId),
+            artwork: await artworkQuery(.detail), auth: auth
+        )
+        try await requireCurrentOwner(auth)
+        return detail
+    }
+
+    /// The box set the movie `contentId` belongs to for the acting profile,
+    /// opened from `libraryId` when known. Nil when it is in none the viewer
+    /// sees, and without a request when the server does not advertise
+    /// `box_sets`.
+    func itemBoxSet(contentId: String, libraryId: Int?) async throws -> CatalogBoxSetDetail? {
+        let auth = try await detailReadAuth()
+        guard try await serverHasBoxSets(auth) else { return nil }
+        let detail: CatalogBoxSetDetail?
+        do {
+            detail = try await apiV2Client.catalogItemBoxSet(
+                id: contentId, libraryId: libraryId.map(String.init),
+                artwork: await artworkQuery(.detail), auth: auth
+            )
+        } catch let error as APIv2Error {
+            // A server with box sets from before this read.
+            switch error {
+            case .serverUpdateRequired, .httpStatus(404): detail = nil
+            case .problem(let problem) where problem.status == 404: detail = nil
+            default: throw error
+            }
+        }
+        try await requireCurrentOwner(auth)
+        return detail
+    }
+
+    /// The `box_sets` search capability of `auth`'s server, read with that
+    /// same auth so a server switch mid-read cannot file one server's answer
+    /// under another. Kept once the server says yes.
+    private func serverHasBoxSets(_ auth: CapturedOrdinaryRequestAuth) async throws -> Bool {
+        let serverId = auth.account.serverId
+        if boxSetServerIds.contains(serverId) { return true }
+        let supported = try await catalogSearchFeatures(auth: auth).boxSets
+        try await requireCurrentOwner(auth)
+        if supported { boxSetServerIds.insert(serverId) }
+        return supported
+    }
+
+    /// Box sets matching `query` for the acting profile, best match first.
+    func searchBoxSets(query: String, limit: Int) async throws -> [CatalogBoxSet] {
+        let auth = try await detailReadAuth()
+        let boxSets = try await apiV2Client.searchCatalogBoxSets(query: query, limit: limit, auth: auth)
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        return boxSets
     }
 
     /// Queue a provider refresh of the person. `non_retryable`: one dispatch,
@@ -486,10 +626,52 @@ actor SiloAPI {
         try await apiV2Client.moveCollection(version, toGroupId: groupId)
     }
 
+    // --- Theme music ---
+
+    func themeSongsCapability() async throws -> APIv2ThemeSongsCapability {
+        let auth = try await detailReadAuth()
+        let capability = try await apiV2Client.themeSongsCapability(auth: auth)
+        try await requireCurrentOwner(auth)
+        return capability
+    }
+
+    /// A fresh grant for one theme, listing what AVFoundation decodes so the
+    /// server converts the rest. A relative URL is this server's own audio
+    /// route; an absolute one is a proxy's origin and is used as given.
+    func themePlayback(ownerId: String, themeId: String) async throws -> ThemeMusicGrant {
+        let auth = try await detailReadAuth()
+        let formats = AppleDecodeCapabilities.themeAudioFormats.map {
+            APIv2ThemeAudioFormat(container: $0.container, audioCodec: $0.codec)
+        }
+        let wire = try await apiV2Client.themePlayback(ownerId: ownerId, themeId: themeId, accepting: formats, auth: auth)
+        try await requireCurrentOwner(auth)
+        guard let url = Self.themeAudioURL(wire.url, serverURL: await currentServerUrl()) else {
+            throw APIv2Error.unsupportedCatalogReadValue
+        }
+        return ThemeMusicGrant(url: url, isConverted: wire.delivery == "converted")
+    }
+
+    static func themeAudioURL(_ raw: String, serverURL: String) -> URL? {
+        if raw.hasPrefix("/") {
+            var base = serverURL
+            while base.hasSuffix("/") { base.removeLast() }
+            return URL(string: base + raw)
+        }
+        guard let url = URL(string: raw), let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http", url.host != nil else { return nil }
+        return url
+    }
+
     // --- Shuffle ---
 
     func shuffleCapability() async throws -> APIv2ShuffleCapability {
         try await apiV2Client.shuffleCapability(auth: try await detailReadAuth())
+    }
+
+    // --- Ratings ---
+
+    func shownRatingSources() async throws -> Set<String> {
+        try await apiV2Client.shownRatingSources(auth: try await detailReadAuth())
     }
 
     /// `non_retryable`: dispatched once. A lost answer leaves an unused
@@ -567,6 +749,12 @@ actor SiloAPI {
         try await apiV2Client.householdProfiles()
     }
 
+    /// The profile list with the optional members this server accepts; the
+    /// new-profile form reads `requestsAllowedSupported` from it.
+    func householdProfileList() async throws -> HouseholdProfileList {
+        try await apiV2Client.householdProfileList()
+    }
+
     /// Verifies a protected profile without mutating process-wide identity.
     /// `AuthService` uses this to finish the network round trip first, then
     /// commit profile ID and proof together behind HTTPClient's transition
@@ -595,7 +783,8 @@ actor SiloAPI {
         isChild: Bool,
         maxContentRating: String? = nil,
         libraryRestrictionsEnabled: Bool = false,
-        allowedLibraryIds: [Int] = []
+        allowedLibraryIds: [Int] = [],
+        requestsAllowed: Bool? = nil
     ) async throws -> UserProfile {
         try await apiV2Client.createHouseholdProfile(
             CreateProfileRequestBody(
@@ -605,7 +794,8 @@ actor SiloAPI {
                 isChild: isChild,
                 maxContentRating: maxContentRating,
                 libraryRestrictionsEnabled: libraryRestrictionsEnabled,
-                allowedLibraryIds: allowedLibraryIds
+                allowedLibraryIds: allowedLibraryIds,
+                requestsAllowed: requestsAllowed
             )
         )
     }
@@ -628,7 +818,7 @@ enum APIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .httpError(let code):
-            return "Server returned status \(code)"
+            return AppLanguage.string(.errorsAppleHttpStatus("\(code)"))
         case .unsupportedMedia(let message):
             return message
         }

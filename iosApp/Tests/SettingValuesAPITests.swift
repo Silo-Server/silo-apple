@@ -412,7 +412,6 @@ final class SettingValuesAPITests: XCTestCase {
             return XCTFail("a current server must report capabilities")
         }
         XCTAssertEqual(capabilities.manifestRevision, SettingKey.revision)
-        XCTAssertTrue(capabilities.supportsAtomicShortcuts)
         let recorded = try XCTUnwrap(stub.requests.last)
         XCTAssertEqual(recorded.method, "GET")
         XCTAssertEqual(recorded.path, "/api/v2/settings/contract/capabilities")

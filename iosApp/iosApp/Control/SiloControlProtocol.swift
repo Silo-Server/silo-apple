@@ -4,6 +4,9 @@ enum SiloControlProtocol {
     static let version = 2
     static let supportedVersions = [1, 2]
     static let serviceType = "_silocast._tcp"
+    /// The Roku receiver's own advertisement. A separate type, because a
+    /// Roku can't speak TLS and phones that only do aren't to list it.
+    static let rokuServiceType = "_silocast-roku._tcp"
 
     static func negotiatedVersion(with peer: [Int]) -> Int? {
         supportedVersions.filter(peer.contains).max()
@@ -29,6 +32,12 @@ enum SiloControlFeature {
     /// The receiver accepts `presence`, so a controller can change its
     /// `passive` flag without reconnecting.
     static let presence = "presence"
+    /// The receiver can only mute, not set a level (Roku), so the
+    /// controller offers a mute toggle instead of a volume slider.
+    static let volumeMuteOnly = "volume_mute_only"
+    /// The receiver can't change playback speed (Roku), so the controller
+    /// hides its speed menu.
+    static let noPlaybackSpeed = "no_playback_speed"
 
     static let receiverFeatures = [multiController, closeReason, resumeToken, replaceConfirmation, presence]
     static let phoneFeatures = [closeReason, resumeToken, replaceConfirmation]
@@ -95,6 +104,9 @@ struct SiloControlPlaybackRequest: Codable, Equatable, Sendable {
     let subtitleTrackIndex: Int?
     let startFromBeginning: Bool
     let resumePosition: Double?
+    /// The viewer picked `fileId` in a version picker: the TV keeps that
+    /// version. Older phones, and Android phones, omit it.
+    var pinsVersion: Bool? = nil
 }
 
 struct SiloControlLaunchRequest: Codable, Equatable, Sendable {
@@ -258,6 +270,13 @@ struct SiloControlPlaybackState: Codable, Equatable, Sendable {
     let hasNextEpisode: Bool
     let nextEpisodeTitle: String?
     let error: String?
+    /// Absolute, signed poster URL for the playing title (the series poster
+    /// for an episode), so an integration can fetch artwork without its own
+    /// Silo sign-in. The TV re-signs it before it expires. Omitted when
+    /// unknown; older peers ignore it.
+    var posterUrl: String? = nil
+    /// Synopsis of the playing title. Omitted when unknown.
+    var overview: String? = nil
 }
 
 /// Thrown by `SiloControlCommand.init(from:)` for a command name this build

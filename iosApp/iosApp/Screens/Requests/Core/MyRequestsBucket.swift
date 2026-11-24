@@ -10,11 +10,11 @@ enum MyRequestsBucket: CaseIterable {
     case needsAttention
     case landed
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .inMotion: "In progress"
-        case .needsAttention: "Needs you"
-        case .landed: "Available"
+        case .inMotion: .requestsBucketInProgress
+        case .needsAttention: .requestsBucketNeedsYou
+        case .landed: .requestsBucketAvailable
         }
     }
 

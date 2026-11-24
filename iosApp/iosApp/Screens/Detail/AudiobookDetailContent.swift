@@ -1,11 +1,12 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Phone, iPad, and Mac audiobook detail, built on the same scaffold as
-/// `MovieDetailContent`: the artwork page surface, `PhoneDetailHero`, the
-/// named action row, and the shared section headers, rails, and Details
-/// list. Book-specific pieces are the cover-forward hero, the listening
-/// controls (progress-aware Resume, speed, start over), chapters and parts,
+/// Phone, iPad, and Mac audiobook detail, drawn on the same `PhoneDetailPage`
+/// as movies and series, with `PhoneDetailHero`, the named action row, and
+/// the shared section headers, rails, and Details list. Opened from a card,
+/// it draws the card's seed until the fetched detail replaces it, as they
+/// do. Book-specific pieces are the cover-forward hero, the listening
+/// controls (progress-aware Resume, start over), chapters and parts,
 /// the author/narrator rail, and the series rails. Format wording and cover
 /// shape come from `BookDetailKind`.
 ///
@@ -24,12 +25,18 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     /// Reference-backed scroll state observed only by the small parallax and
     /// pinned-chrome views, keeping the native ScrollView's body stable.
     let scrollState: PhoneDetailScrollState
+    /// `detail` is the tapped card's seed: it has no parts, listening
+    /// progress or credits yet, so Play and the actions wait in their
+    /// loading form.
+    var isProvisional = false
+    /// The artwork the seed drew, kept on screen while `detail`'s loads.
+    var seedArtwork: DetailSeedArtwork? = nil
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(AudioPlaybackStore.self) private var audioStore
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.locale) private var locale
     @State private var showAllChapters = false
 
     private let kind = BookDetailKind.audiobook
@@ -39,27 +46,28 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     }
 
     var body: some View {
-        PhoneDetailPageSurface(
+        // Without a backdrop the cover washes the page.
+        PhoneDetailPage(
             backdropURL: hasBackdrop ? detail.backdropUrl : detail.posterUrl,
             backdropThumbhash: hasBackdrop ? detail.backdropThumbhash : detail.posterThumbhash,
-            enablesArtworkGlass: true
-        ) {
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: heroToContentSpacing) {
-                    hero
-                    belowFold
-                }
-                .padding(.bottom, 40)
-            }
-            .ignoresSafeArea(edges: .top)
-            .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
-            .detailScrollDismissal()
-            .phoneDetailScrollTracking(scrollState)
+            enablesArtworkGlass: true,
+            fallbackBackdropURL: hasBackdrop ? seedArtwork?.backdrop : seedArtwork?.poster,
+            scrollState: scrollState
+        ) { pane in
+            hero(pane: pane)
+        } sidebarExtras: {
+            EmptyView()
+        } belowOverview: {
+            belowOverview()
+        } belowFold: {
+            belowFold
         }
-    }
-
-    private var heroToContentSpacing: CGFloat {
-        horizontalSizeClass == .regular ? 16 : 32
+        // A downloaded book imported from the registry has no author on its
+        // row until a detail names one.
+        .task(id: "\(detail.contentId)|\(isProvisional)") {
+            guard !isProvisional else { return }
+            DownloadManager.shared.noteAudiobookAuthor(contentId: detail.contentId, author: presentation.playerSubtitle)
+        }
     }
 
     private var hasBackdrop: Bool {
@@ -68,7 +76,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 
     // MARK: - Hero
 
-    private var hero: some View {
+    private func hero(pane: PhoneDetailHeroPane?) -> some View {
         let presentation = presentation
         return PhoneDetailHero(
             title: presentation.title,
@@ -77,7 +85,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             posterThumbhash: detail.posterThumbhash,
             backdropUrl: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
-            eyebrow: kind.eyebrow,
+            eyebrow: AppLanguage.string(kind.eyebrow, locale: locale),
             sourceTokens: presentation.sourceTokens,
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
@@ -88,19 +96,23 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             artworkStyle: hasBackdrop
                 ? .backdrop
                 : .cover(aspectRatio: kind.coverAspectRatio, placeholderSymbol: kind.placeholderSymbol),
+            pane: pane,
+            fallbackArtworkUrl: seedArtwork?.hero,
+            fallbackPosterUrl: seedArtwork?.poster,
             actions: { actionStack(presentation) },
             belowOverview: { belowOverview() }
         )
     }
 
     /// Resume, then the same named action row movies use, with the watch
-    /// wording swapped for book wording and listening controls in place of
-    /// download.
+    /// wording swapped for book wording and Download for a book stored as
+    /// one file. Playback speed lives in the player.
     private func actionStack(_ presentation: BookDetailPresentation) -> some View {
         VStack(spacing: 14) {
             AudiobookPrimaryButton(
                 contentId: detail.contentId,
                 presentation: presentation,
+                isProvisional: isProvisional,
                 startPlayback: { restart, position in
                     startPlayback(restart: restart, startPosition: position)
                 }
@@ -111,36 +123,64 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                     icon: "heart",
                     iconActive: "heart.fill",
                     isActive: isFavorite,
-                    label: "Favorite",
-                    accessibilityLabelOverride: isFavorite
-                        ? "Remove from Favorites" : "Add to Favorites",
+                    label: AppLanguage.string(.detailFavorite, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        isFavorite ? .detailMoreRemoveFavorite : .detailMoreAddFavorite,
+                        locale: locale
+                    ),
                     action: onToggleFavorite
                 )
                 PhoneLabeledAction(
                     icon: "bookmark",
                     iconActive: "bookmark.fill",
                     isActive: inWatchlist,
-                    label: kind.queueLabel,
-                    accessibilityLabelOverride: inWatchlist
-                        ? "Remove from \(kind.queueLabel)" : "Add to \(kind.queueLabel)",
+                    label: AppLanguage.string(kind.queueLabel, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        inWatchlist ? kind.queueRemoveLabel : kind.queueAddLabel,
+                        locale: locale
+                    ),
                     action: onToggleWatchlist
                 )
                 PhoneLabeledAction(
                     icon: "checkmark.circle",
                     iconActive: "checkmark.circle.fill",
                     isActive: isWatched,
-                    label: kind.finishedLabel,
-                    accessibilityLabelOverride: isWatched
-                        ? "Mark as Not Finished" : "Mark as Finished",
+                    label: AppLanguage.string(kind.finishedLabel, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        isWatched ? .detailAudiobookMarkNotFinished : .detailAudiobookMarkFinished,
+                        locale: locale
+                    ),
                     action: onToggleWatched
                 )
-                AudiobookSpeedMenu()
-                PhoneLabeledMenu(label: "More") {
+                if let part = downloadablePart {
+                    if DownloadManager.shared.downloadsEnabled {
+                        DownloadActionButton(
+                            audiobook: detail,
+                            part: part,
+                            title: presentation.title,
+                            author: presentation.playerSubtitle
+                        )
+                    } else if DownloadManager.shared.downloadsRestricted {
+                        DownloadUnavailableButton()
+                    }
+                }
+                PhoneLabeledMenu(label: AppLanguage.string(.detailMore, locale: locale)) {
                     moreMenuItems
                 }
             }
+            // Finished and Start Over act on state a seed lacks, and the
+            // seed's favorite and queue flags are the card's.
+            .disabled(isProvisional)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// The book's one file, when it is stored as one. The server keeps a
+    /// single download per book on a device, so a book split into several
+    /// files can't be saved whole and isn't offered.
+    private var downloadablePart: FileVersion? {
+        let parts = AudiobookPlaybackContext.audioParts(of: detail)
+        return parts.count == 1 ? parts.first : nil
     }
 
     @ViewBuilder
@@ -148,7 +188,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
         Button {
             startPlayback(restart: true)
         } label: {
-            Label("Start Over", systemImage: "arrow.counterclockwise")
+            Label(.detailStartOver, systemImage: "arrow.counterclockwise")
         }
         if !otherNarrations.isEmpty {
             Menu {
@@ -158,7 +198,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                     }
                 }
             } label: {
-                Label("Other Narrations", systemImage: "person.wave.2")
+                Label(.detailAudiobookOtherNarrations, systemImage: "person.wave.2")
             }
         }
     }
@@ -203,7 +243,10 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             }
 
             if let series = detail.audiobook?.series, !series.entries.isEmpty {
-                coverRail(title: series.name ?? "Series", items: series.entries)
+                coverRail(
+                    title: series.name ?? AppLanguage.string(.detailAudiobookSeries, locale: locale),
+                    items: series.entries
+                )
             }
 
             if !otherNarrations.isEmpty {
@@ -215,11 +258,14 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                 coverRail(title: moreByAuthorTitle, items: alsoByAuthor)
             }
 
-            detailsSection
-                .padding(.horizontal, SiloTheme.safePadding)
+            // A seed's facts are a partial list; show the detail's whole one.
+            if !isProvisional {
+                detailsSection
+                    .padding(.horizontal, SiloTheme.safePadding)
+            }
 
             if let similar = detail.audiobook?.related?.similar, !similar.isEmpty {
-                coverRail(title: "More Like This", items: similar)
+                coverRail(title: AppLanguage.string(.detailMoreLikeThis, locale: locale), items: similar)
             }
         }
     }
@@ -237,9 +283,9 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     private var moreByAuthorTitle: String {
         let authors = detail.audiobook?.authors ?? []
         if authors.count == 1, let name = authors.first?.name, !name.contains(",") {
-            return "More by \(name)"
+            return AppLanguage.string(.detailAudiobookMoreByNamedAuthor(name), locale: locale)
         }
-        return "More by These Authors"
+        return AppLanguage.string(.detailAudiobookMoreByTheseAuthors, locale: locale)
     }
 
     // MARK: - Chapters
@@ -247,7 +293,10 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     private func chaptersSection(_ chapters: [DisplayChapter]) -> some View {
         let visibleChapters = showAllChapters ? chapters : Array(chapters.prefix(chapterCollapseLimit))
         return VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Chapters", trailingText: "\(chapters.count)")
+            PhoneSectionHeader(
+                title: AppLanguage.string(.detailAudiobookChapters, locale: locale),
+                trailingText: "\(chapters.count)"
+            )
             VStack(spacing: 0) {
                 ForEach(Array(visibleChapters.enumerated()), id: \.element.id) { index, chapter in
                     timelineRow(
@@ -268,8 +317,8 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                     } label: {
                         HStack(spacing: 6) {
                             Text(showAllChapters
-                                 ? "Show less"
-                                 : "Show all \(chapters.count) chapters")
+                                 ? LocalizedStringResource.detailAudiobookChaptersShowLess
+                                 : .detailAudiobookChaptersShowAll(count: chapters.count, LocaleFormat.integer(chapters.count)))
                             Image(systemName: showAllChapters ? "chevron.up" : "chevron.down")
                                 .font(.system(size: 12, weight: .semibold))
                         }
@@ -288,7 +337,10 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     private func partsSection(_ parts: [FileVersion]) -> some View {
         let startOffsets = Self.partStartOffsets(parts)
         return VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Parts", trailingText: "\(parts.count)")
+            PhoneSectionHeader(
+                title: AppLanguage.string(.detailAudiobookParts, locale: locale),
+                trailingText: "\(parts.count)"
+            )
             VStack(spacing: 0) {
                 ForEach(parts.indices, id: \.self) { index in
                     timelineRow(
@@ -356,35 +408,47 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     private var creditsTitle: String {
         let hasAuthors = !(detail.audiobook?.authors.isEmpty ?? true)
         let hasNarrators = !(detail.audiobook?.narrators.isEmpty ?? true)
+        let title: LocalizedStringResource
         switch (hasAuthors, hasNarrators) {
-        case (true, false): return "Authors"
-        case (false, true): return "Narrators"
-        default: return "Authors & Narrators"
+        case (true, false): title = .detailAudiobookAuthors
+        case (false, true): title = .detailAudiobookNarrators
+        default: title = .detailAudiobookAuthorsAndNarrators
         }
+        return AppLanguage.string(title, locale: locale)
     }
 
     /// Authors then narrators as cast-rail entries, with each person's role
     /// in the caption. Someone who both wrote and reads the book appears
     /// once, as "Author & Narrator".
     private var creditMembers: [CastMember] {
-        var people: [(person: AudiobookPerson, roles: [String])] = []
+        var people: [(person: AudiobookPerson, isAuthor: Bool, isNarrator: Bool)] = []
         var indexById: [String: Int] = [:]
-        let credited = (detail.audiobook?.authors ?? []).map { ($0, "Author") }
-            + (detail.audiobook?.narrators ?? []).map { ($0, "Narrator") }
-        for (person, role) in credited {
-            if let index = indexById[person.id] {
-                if !people[index].roles.contains(role) {
-                    people[index].roles.append(role)
-                }
+        let credited = (detail.audiobook?.authors ?? []).map { ($0, true) }
+            + (detail.audiobook?.narrators ?? []).map { ($0, false) }
+        for (person, isAuthor) in credited {
+            let index: Int
+            if let existing = indexById[person.id] {
+                index = existing
             } else {
-                indexById[person.id] = people.count
-                people.append((person, [role]))
+                index = people.count
+                indexById[person.id] = index
+                people.append((person, false, false))
+            }
+            if isAuthor {
+                people[index].isAuthor = true
+            } else {
+                people[index].isNarrator = true
             }
         }
         return people.enumerated().map { order, entry in
-            CastMember(
+            let role: LocalizedStringResource = switch (entry.isAuthor, entry.isNarrator) {
+            case (true, true): .detailAudiobookRoleAuthorAndNarrator
+            case (true, false): .detailAudiobookRoleAuthor
+            default: .detailAudiobookRoleNarrator
+            }
+            return CastMember(
                 name: entry.person.name,
-                character: entry.roles.joined(separator: " & "),
+                character: AppLanguage.string(role, locale: locale),
                 order: order,
                 personId: entry.person.personId,
                 tmdbId: nil,
@@ -400,7 +464,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 
     private var narrationsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Other Narrations")
+            PhoneSectionHeader(title: AppLanguage.string(.detailAudiobookOtherNarrations, locale: locale))
             VStack(spacing: 0) {
                 ForEach(Array(otherNarrations.enumerated()), id: \.element.id) { index, narration in
                     Button {
@@ -418,13 +482,13 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                                     .foregroundStyle(Color.siloOnSurface)
                                     .lineLimit(1)
                                 if let year = narration.year {
-                                    Text(String(year))
+                                    Text(LocaleFormat.integer(year, locale: locale))
                                         .font(.system(size: 13))
                                         .foregroundStyle(Color.siloOnSurface.opacity(0.6))
                                 }
                             }
                             Spacer()
-                            Image(systemName: "chevron.right")
+                            Image(systemName: "chevron.forward")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                         }
@@ -452,7 +516,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Details")
+            PhoneSectionHeader(title: AppLanguage.string(.detailDetails, locale: locale))
             PhoneDetailFactsSection(detail: detail)
         }
     }
@@ -472,7 +536,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                 if let chapterTitle = chapter.title, !chapterTitle.isEmpty {
                     title = chapterTitle
                 } else {
-                    title = "Chapter \(chapter.index + 1)"
+                    title = AppLanguage.string(.detailAudiobookChapter(LocaleFormat.integer(chapter.index + 1, locale: locale)), locale: locale)
                 }
                 chapters.append(DisplayChapter(
                     id: "\(part.fileId)-\(chapter.index)-\(chapter.startSeconds)",
@@ -493,7 +557,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
         }
         let rawIndex = part.presentationPartIndex ?? fallbackIndex
         let displayIndex = rawIndex <= 0 ? rawIndex + 1 : rawIndex
-        return "Part \(displayIndex)"
+        return AppLanguage.string(.detailAudiobookPart(LocaleFormat.integer(displayIndex, locale: locale)), locale: locale)
     }
 
     private func partDuration(_ part: FileVersion) -> Double {
@@ -520,9 +584,12 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 private struct AudiobookPrimaryButton: View {
     let contentId: String
     let presentation: BookDetailPresentation
+    /// The page shows the card's seed, which has no listening progress.
+    let isProvisional: Bool
     let startPlayback: (_ restart: Bool, _ startPosition: Double?) -> Void
 
     @Environment(AudioPlaybackStore.self) private var audioStore
+    @Environment(\.locale) private var locale
 
     var body: some View {
         let player = audioStore.player
@@ -531,7 +598,7 @@ private struct AudiobookPrimaryButton: View {
             if player.isPlaying {
                 PhonePrimaryPillButton(
                     icon: "waveform",
-                    title: "Now Playing",
+                    title: AppLanguage.string(.detailNowPlaying, locale: locale),
                     action: { audioStore.showFullPlayer() },
                     fullWidth: true,
                     progress: fraction
@@ -545,7 +612,7 @@ private struct AudiobookPrimaryButton: View {
                 // at once, so restart the book like the finished state does.
                 PhonePrimaryPillButton(
                     icon: "arrow.counterclockwise",
-                    title: "Play Again",
+                    title: AppLanguage.string(.detailPlayAgain, locale: locale),
                     action: { startPlayback(true, nil) },
                     fullWidth: true
                 )
@@ -553,7 +620,7 @@ private struct AudiobookPrimaryButton: View {
                 let left = PlayerTimeFormatter.formatRuntime(max(0, player.duration - player.currentTime))
                 PhonePrimaryPillButton(
                     icon: "play.fill",
-                    title: left.isEmpty ? "Resume" : "Resume · \(left) left",
+                    title: AppLanguage.string(left.isEmpty ? .detailResume : .detailResumeTimeLeft(left), locale: locale),
                     action: {
                         player.play()
                         audioStore.showFullPlayer()
@@ -562,6 +629,15 @@ private struct AudiobookPrimaryButton: View {
                     progress: fraction
                 )
             }
+        } else if isProvisional {
+            // Neither Play nor Resume is known until the detail answers.
+            PhonePrimaryPillButton(
+                icon: "play.fill",
+                title: AppLanguage.string(.commonLoading, locale: locale),
+                action: {},
+                fullWidth: true
+            )
+            .disabled(true)
         } else {
             PhonePrimaryPillButton(
                 icon: presentation.primaryIcon,
@@ -577,47 +653,16 @@ private struct AudiobookPrimaryButton: View {
     /// page's resume prompt; Start Over lives in the More menu.
     private func performPrimaryAction(_ action: BookDetailPresentation.PrimaryAction) {
         switch action {
-        case .resume(let position):
-            startPlayback(false, position)
+        case .resume:
+            // The player picks the resume point: the server's, or this
+            // device's newer one for a downloaded book whose listening
+            // hasn't reached the server yet. The page's copy can be stale.
+            startPlayback(false, nil)
         case .playAgain:
             startPlayback(true, nil)
         case .play:
             startPlayback(false, nil)
         }
-    }
-}
-
-/// Playback speed menu. Reads the live rate itself for the same reason as
-/// `AudiobookPrimaryButton`.
-private struct AudiobookSpeedMenu: View {
-    @Environment(AudioPlaybackStore.self) private var audioStore
-
-    private let speedOptions: [Double] = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
-
-    var body: some View {
-        PhoneLabeledMenu(
-            icon: "speedometer",
-            label: "Speed \(speedLabel(audioStore.player.playbackRate))"
-        ) {
-            ForEach(speedOptions, id: \.self) { rate in
-                Button {
-                    audioStore.player.setPlaybackRate(rate)
-                } label: {
-                    if abs(audioStore.player.playbackRate - rate) < 0.01 {
-                        Label(speedLabel(rate), systemImage: "checkmark")
-                    } else {
-                        Text(speedLabel(rate))
-                    }
-                }
-            }
-        }
-    }
-
-    private func speedLabel(_ rate: Double) -> String {
-        let value = rate.truncatingRemainder(dividingBy: 1) == 0
-            ? String(Int(rate))
-            : String(format: "%g", rate)
-        return "\(value)×"
     }
 }
 

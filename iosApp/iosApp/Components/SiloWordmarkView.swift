@@ -10,7 +10,7 @@ struct SiloWordmarkView: View {
                 .resizable()
                 .scaledToFit()
                 .frame(width: width)
-                .accessibilityLabel("Silo")
+                .accessibilityLabel("Silo") // i18n-ignore: brand name
 
             if let subtitle {
                 Text(subtitle)

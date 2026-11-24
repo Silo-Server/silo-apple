@@ -41,7 +41,7 @@ struct SearchMediaTypeMenu: View {
             .contentShape(Capsule())
         }
         .menuOrder(.fixed)
-        .accessibilityLabel("Media type")
-        .accessibilityValue(selectedMediaType.title)
+        .accessibilityLabel(Text(.searchMediaType))
+        .accessibilityValue(Text(selectedMediaType.title))
     }
 }

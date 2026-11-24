@@ -89,6 +89,52 @@ final class SiloControlMultiControllerTests: XCTestCase {
         XCTAssertFalse(Policy.canLaunch(readyGeneration: nil, activeGeneration: nil))
     }
 
+    func testReplacementKeepsOnlyThePlayerThatOwnsTheActiveHandoff() {
+        let current = UUID()
+        func canReplace(_ player: UUID?, _ active: UUID?, disposed: Bool = false, party: Bool = false) -> Bool {
+            Policy.canReplaceInPlayer(
+                playerGeneration: player, activeGeneration: active,
+                playerIsDisposed: disposed, playerIsWatchParty: party
+            )
+        }
+        XCTAssertTrue(canReplace(current, current))
+        XCTAssertFalse(canReplace(current, UUID()), "another profile requires a fresh player")
+        XCTAssertFalse(canReplace(nil, current), "a local player does not own the phone's profile")
+        XCTAssertFalse(canReplace(current, nil))
+        XCTAssertFalse(canReplace(nil, nil))
+        XCTAssertFalse(canReplace(current, current, disposed: true))
+        XCTAssertFalse(canReplace(current, current, party: true))
+    }
+
+    /// A launch that lands while the previous title's cover is closing
+    /// mounts its player twice. The first one leaving must not end the
+    /// phone's identity under the second.
+    func testAPlayerLeavingEndsThePhonesIdentityOnlyOnceNothingIsPresented() {
+        let active = UUID()
+        XCTAssertEqual(
+            Policy.playerExit(playerGeneration: active, activeGeneration: active, presentationIsUp: false),
+            .endIdentity(active)
+        )
+        XCTAssertEqual(
+            Policy.playerExit(playerGeneration: active, activeGeneration: active, presentationIsUp: true),
+            .handToNextPlayer(active)
+        )
+        // A player from an earlier handoff, or one the TV started itself,
+        // has no say over the identity now active.
+        XCTAssertEqual(
+            Policy.playerExit(playerGeneration: UUID(), activeGeneration: active, presentationIsUp: false),
+            .keepIdentity
+        )
+        XCTAssertEqual(
+            Policy.playerExit(playerGeneration: nil, activeGeneration: active, presentationIsUp: true),
+            .keepIdentity
+        )
+        XCTAssertEqual(
+            Policy.playerExit(playerGeneration: active, activeGeneration: nil, presentationIsUp: false),
+            .keepIdentity
+        )
+    }
+
     // MARK: - Identity reuse
 
     func testReuseOnTheConnectionThatCompletedTheHandoff() {

@@ -7,6 +7,10 @@ struct RecommendationsView: View {
     /// tvOS: focus hand-down token from `TVMainTabView`, forwarded to the
     /// Skyline feed so the screen never opens with a dead remote.
     var focusRequest: Int = 0
+    /// tvOS: bumped when a title page opened from a card pops, so the launch
+    /// row reclaims focus, as on Home. Not interested on that page can remove
+    /// the launching card, leaving the engine nothing to restore.
+    var detailReturnFocusRequest: Int = 0
     /// tvOS: the custom top menu owns focus, so deferred content focus
     /// claims must not yank focus away from it.
     var isTopMenuFocused: Bool = false
@@ -20,14 +24,27 @@ struct RecommendationsView: View {
     @State private var chromeScrollState = PageChromeScrollState()
     #endif
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
+    #if os(iOS)
+    @Environment(\.statusColumn) private var statusColumn
+
+    /// iPhone, outside the iPhone Duo's cover screen, shows recommendations,
+    /// the watchlist and favorites as pages switched from a dock, as the
+    /// Libraries tab does. iPad and Mac keep the shortcut row.
+    private var usesDockLayout: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone && statusColumn == nil
+    }
+    #endif
 
     init(
         focusRequest: Int = 0,
+        detailReturnFocusRequest: Int = 0,
         isTopMenuFocused: Bool = false,
         onTopMenuFocusRequest: (() -> Void)? = nil,
         viewModel: RecommendationsViewModel? = nil
     ) {
         self.focusRequest = focusRequest
+        self.detailReturnFocusRequest = detailReturnFocusRequest
         self.isTopMenuFocused = isTopMenuFocused
         self.onTopMenuFocusRequest = onTopMenuFocusRequest
         _viewModel = State(initialValue: viewModel ?? RecommendationsViewModel())
@@ -37,6 +54,10 @@ struct RecommendationsView: View {
         rootLayout
             .task {
                 await viewModel.loadRecommendations()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .titleMarkedNotInterested)) { note in
+                guard let contentId = note.userInfo?[NotInterestedSync.contentIdKey] as? String else { return }
+                viewModel.removeNotInterested(contentId: contentId)
             }
         #if !os(tvOS)
             .refreshable {
@@ -53,9 +74,32 @@ struct RecommendationsView: View {
         tvOSPageContent
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         #else
-        // Content scrolls under the pinned header, which sits in a top
-        // safe-area inset with the shared glass strip behind it (same
-        // structure as `LibrariesTabView`).
+        shortcutOrDockLayout
+            .siloPageBackground()
+        #if os(iOS)
+        .toolbar(.hidden, for: .navigationBar)
+        #endif
+        #endif
+    }
+
+    #if !os(tvOS)
+    @ViewBuilder
+    private var shortcutOrDockLayout: some View {
+        #if os(iOS)
+        if usesDockLayout {
+            ForYouDockedView(viewModel: viewModel)
+        } else {
+            shortcutLayout
+        }
+        #else
+        shortcutLayout
+        #endif
+    }
+
+    /// Content scrolls under the pinned header, which sits in a top
+    /// safe-area inset with the shared glass strip behind it (same
+    /// structure as `LibrariesTabView`).
+    private var shortcutLayout: some View {
         pageContent
             .environment(chromeScrollState)
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -64,21 +108,20 @@ struct RecommendationsView: View {
                         PageChromeGlass(scrollState: chromeScrollState)
                     }
             }
-        .siloPageBackground()
-        #if os(iOS)
-        .toolbar(.hidden, for: .navigationBar)
-        #endif
-        #endif
     }
 
-    #if !os(tvOS)
     private var topChrome: some View {
         HStack(spacing: 12) {
-            SidebarToggleButton()
+            SidebarToggleButton(chromeScrollState: chromeScrollState)
 
-            Text("Recommendations")
+            Text(.forYouRecommendations)
                 .font(.siloTitle)
                 .foregroundColor(.siloOnSurface)
+                .pageChromeBacking(
+                    scrollState: chromeScrollState,
+                    outset: EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10)
+                )
+                .pageChromeTitleFadesOut(scrollState: chromeScrollState)
 
             Spacer(minLength: 8)
 
@@ -89,8 +132,8 @@ struct RecommendationsView: View {
                 onSwitchProfile: {
                     router.switchProfile()
                 },
-                onSwitchServer: { router.navigate(to: .serverList) },
-                onSignOut: { router.signOutAndReset() }
+                onSignOut: { router.signOutAndReset() },
+                chromeScrollState: chromeScrollState
             )
         }
         .clearsWindowControls()
@@ -110,6 +153,7 @@ struct RecommendationsView: View {
             TVSkylineSectionFeed(
                 sections: viewModel.sections,
                 focusRequest: focusRequest,
+                detailReturnFocusRequest: detailReturnFocusRequest,
                 isTopMenuFocused: isTopMenuFocused,
                 onTopMenuFocusRequest: onTopMenuFocusRequest,
                 onItemTap: { destinationContentId, item in
@@ -135,19 +179,19 @@ struct RecommendationsView: View {
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "Loading recommendations",
+                    accessibilityLabel: AppLanguage.string(.homeForYouLoading, locale: locale),
                     onMoveUp: onTopMenuFocusRequest
                 )
         } else {
             EmptyStateView(
                 icon: "sparkles.tv",
-                title: "No recommendations yet",
-                subtitle: "Watch or rate a few titles to build your personalised recommendations."
+                title: AppLanguage.string(.forYouEmpty, locale: locale),
+                subtitle: AppLanguage.string(.forYouEmptyBody, locale: locale)
             )
             .tvPageFocusOwner(
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
-                accessibilityLabel: "No recommendations yet",
+                accessibilityLabel: AppLanguage.string(.forYouEmpty, locale: locale),
                 onMoveUp: onTopMenuFocusRequest
             )
         }
@@ -285,7 +329,7 @@ struct RecommendationsView: View {
     @ViewBuilder
     private var savedListsFallback: some View {
         VStack(spacing: SiloTheme.smallPadding) {
-            Text("No recommendations yet — showing your saved titles.")
+            Text(.homeForYouSavedFallback)
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -318,7 +362,7 @@ private struct SavedShortcutsRow: View {
                     onSelect(shortcut)
                 } label: {
                     Label {
-                        Text(shortcut.rawValue)
+                        Text(shortcut.label)
                             .font(.system(size: 14, weight: .semibold))
                             .lineLimit(1)
                     } icon: {
@@ -328,18 +372,25 @@ private struct SavedShortcutsRow: View {
                     .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(SavedShortcutButtonStyle(isSelected: selection == shortcut))
-                .accessibilityLabel(shortcut.rawValue)
+                .accessibilityLabel(Text(shortcut.label))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-private enum SavedShortcut: String, CaseIterable, Identifiable {
-    case watchlist = "Watchlist"
-    case favorites = "Favorites"
+private enum SavedShortcut: CaseIterable, Identifiable {
+    case watchlist
+    case favorites
 
     var id: Self { self }
+
+    var label: LocalizedStringResource {
+        switch self {
+        case .watchlist: .personalWatchlistTitle
+        case .favorites: .personalFavoritesTitle
+        }
+    }
 
     var systemImage: String {
         switch self {

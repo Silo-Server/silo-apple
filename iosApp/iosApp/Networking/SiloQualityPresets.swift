@@ -48,8 +48,15 @@ enum SiloQualityPresets {
 
     static let all: [SiloQualityPreset] = [
         .init(
+            id: "auto-10mbps",
+            label: "Auto, up to 10 Mbps",
+            description: "Plays the original file up to 10 Mbps, and converts larger files to fit.",
+            resolution: resolutionAuto,
+            bitrateKbps: 10_000
+        ),
+        .init(
             id: "auto",
-            label: "Auto",
+            label: "Auto, no limit",
             description: "Plays the original file whenever this device can, and converts it only when it can't.",
             resolution: resolutionAuto,
             bitrateKbps: nil
@@ -152,7 +159,7 @@ enum SiloQualityPresets {
         200_000, 100_000, 60_000, 40_000, 20_000, 15_000, 10_000, 6_000, 4_000, 2_000, 1_500,
     ]
 
-    static let noBitrateLimitLabel = "No limit"
+    static let noBitrateLimitLabel: LocalizedStringResource = .settingsNoLimit
 
     /// The Resolution picker's label for a stored resolution.
     static func resolutionLabel(_ resolution: String?) -> String {
@@ -164,9 +171,9 @@ enum SiloQualityPresets {
     }
 
     /// The Maximum Bitrate picker's label for a cap; nil is "No limit".
-    static func bitrateLabel(_ bitrateKbps: Int?) -> String {
+    static func bitrateLabel(_ bitrateKbps: Int?) -> LocalizedStringResource {
         guard let bitrateKbps, bitrateKbps > 0 else { return noBitrateLimitLabel }
-        return ApplePlaybackQuality.formatBitrate(kbps: bitrateKbps)
+        return .verbatim(ApplePlaybackQuality.formatBitrate(kbps: bitrateKbps))
     }
 
     /// The Maximum Bitrate picker's caps, with a stored cap no choice covers

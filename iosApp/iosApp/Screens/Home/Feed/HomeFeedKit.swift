@@ -10,17 +10,10 @@ import SwiftUI
 /// reasoning survives the experiment.
 enum HomeFeedMetrics {
     /// True 2:3, the ratio every poster source (TMDB, TVDB, Fanart) ships.
-    /// The shipping card is 120×198 — a 1.65 ratio — so `.fill` + `.clipped()`
-    /// currently shaves roughly 10% off both sides of every poster in the app.
     static let posterAspect: CGFloat = 3.0 / 2.0
 
-    /// Wider than today's 120pt. At 120 the cards read as thumbnails against
-    /// 24pt row gaps; the screen ends up feeling sparse rather than spacious.
-    #if os(macOS)
+    /// The app-wide poster width, so Home's rows match every other page.
     static let posterWidth: CGFloat = SiloTheme.posterCardWidth
-    #else
-    static let posterWidth: CGFloat = 132
-    #endif
     /// 16:9 still used by resume rows. Continue Watching is the row people
     /// act on most, so it reads as "one card plus a peek" rather than matching
     /// the poster rows' density — at 184 the stills felt like thumbnails and
@@ -81,11 +74,13 @@ enum HomeFeed {
 // MARK: - Metadata formatting
 
 enum HomeFeedMeta {
-    static func remaining(position: Double?, duration: Double?) -> String? {
+    static func remaining(position: Double?, duration: Double?, locale: Locale) -> String? {
         guard let position, let duration, duration > 0, position > 0 else { return nil }
         let minutesLeft = Int((duration - position) / 60)
         guard minutesLeft > 0 else { return nil }
-        return MediaTextFormatting.runtime(minutes: minutesLeft).map { "\($0) left" }
+        return MediaTextFormatting.runtime(minutes: minutesLeft).map {
+            AppLanguage.string(.homeTimeLeft($0), locale: locale)
+        }
     }
 
     static func progress(for item: SectionItem) -> Double? {
@@ -96,10 +91,10 @@ enum HomeFeedMeta {
     }
 
     /// Secondary caption line under a card title: "S01E02 · Pilot" for
-    /// episodes, otherwise the year. One line, so every card in a row keeps
-    /// the same height.
-    static func cardSecondLine(for item: SectionItem) -> String? {
-        EpisodeCardCaption.line(for: item) ?? item.year.map(String.init)
+    /// episodes, otherwise the year, or the years a series ran. One line, so
+    /// every card in a row keeps the same height.
+    static func cardSecondLine(for item: SectionItem, locale: Locale) -> String? {
+        EpisodeCardCaption.line(for: item, locale: locale) ?? CardYears.caption(for: item, locale: locale)
     }
 
     /// Caption under a resume still — "23m left".
@@ -109,12 +104,16 @@ enum HomeFeedMeta {
     /// one — ragged, and it read like missing data. Percentage is a weaker
     /// answer than time remaining but it is still true, and it keeps every
     /// resume card the same height.
-    static func resumeCaption(for item: SectionItem) -> String? {
+    static func resumeCaption(for item: SectionItem, locale: Locale) -> String? {
         let progressText: String?
-        if let remainingText = remaining(position: item.positionSeconds, duration: item.durationSeconds) {
+        if let remainingText = remaining(
+            position: item.positionSeconds, duration: item.durationSeconds, locale: locale
+        ) {
             progressText = remainingText
         } else if let fraction = progress(for: item) {
-            progressText = "\(Int((fraction * 100).rounded()))% watched"
+            progressText = AppLanguage.string(
+                .homePercentWatched(Int((fraction * 100).rounded())), locale: locale
+            )
         } else {
             progressText = nil
         }
@@ -137,27 +136,40 @@ private struct HomeCardTap<Label: View>: View {
     let contentId: String
     let accessibilityLabel: String
     var continueWatchingItem: SectionItem? = nil
+    /// The card's item, offered to the page a tap opens to draw from until
+    /// its own detail loads.
+    var seedItem: SectionItem? = nil
     /// Secondary action surfaced to VoiceOver. The card collapses its
     /// children into one element, so a nested play button would otherwise
     /// vanish from the accessibility tree.
-    var accessibilityPlayAction: (name: String, perform: () -> Void)? = nil
+    var accessibilityPlayAction: (name: LocalizedStringResource, perform: () -> Void)? = nil
     /// Replaces opening detail, for hosts that pick rather than browse.
     var onTap: (() -> Void)? = nil
     @ViewBuilder var label: () -> Label
 
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
+    @State private var zoomSourceID = UUID()
 
     var body: some View {
         Button {
             if let onTap { onTap(); return }
             if let continueWatchingItem {
-                router.presentContinueWatchingDetail(for: continueWatchingItem, libraryId: browseLibraryId)
+                router.presentContinueWatchingDetail(
+                    for: continueWatchingItem,
+                    libraryId: browseLibraryId,
+                    zoomSourceID: zoomSourceID
+                )
             } else {
-                router.presentItemDetail(contentId: contentId, libraryId: browseLibraryId)
+                DetailSeedStore.offer(seedItem.map(DetailSeedSource.section), opening: contentId)
+                router.presentItemDetail(
+                    contentId: contentId,
+                    libraryId: browseLibraryId,
+                    zoomSourceID: zoomSourceID
+                )
             }
         } label: {
-            label()
+            label().detailZoomSource(zoomSourceID)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
@@ -167,7 +179,7 @@ private struct HomeCardTap<Label: View>: View {
 }
 
 private struct OptionalAccessibilityAction: ViewModifier {
-    let action: (name: String, perform: () -> Void)?
+    let action: (name: LocalizedStringResource, perform: () -> Void)?
 
     func body(content: Content) -> some View {
         if let action {
@@ -228,10 +240,13 @@ private struct HomeCardMenu: ViewModifier {
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: inWatchlist,
+            isNotInterested: personalState.isNotInterested(item.userState),
             isUpdating: personalState.feedback.isUpdating,
             onToggleWatched: canSetWatched ? toggleWatched : nil,
             onToggleFavorite: hasPersonalActions ? toggleFavorite : nil,
-            onToggleWatchlist: hasPersonalActions ? toggleWatchlist : nil
+            onToggleWatchlist: hasPersonalActions ? toggleWatchlist : nil,
+            onToggleNotInterested: MediaCardPersonalState.offersNotInterested(type: item.type, item.userState)
+                ? toggleNotInterested : nil
         )
 
         if let onRemoveFromContinueWatching {
@@ -258,17 +273,28 @@ private struct HomeCardMenu: ViewModifier {
     private func toggleWatchlist() {
         personalState.toggleWatchlist(contentId: item.contentId, from: item.userState)
     }
+
+    private func toggleNotInterested() {
+        personalState.toggleNotInterested(contentId: item.contentId, from: item.userState)
+    }
 }
 
 // MARK: - Watched check
 
-/// Top-trailing watched indicator shared by both Home cards.
+/// Top-trailing watched indicator on the Home still card. The poster card
+/// draws `CardWatchStatus` instead. Sized with the card's overlay badges.
 private struct HomeWatchedCheck: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
+        let scale = OverlayScale.wide(
+            posterSize: UICustomizationPreferences.shared.cardPresentation.posterSize,
+            dynamicTypeSize: dynamicTypeSize
+        )
         Image(systemName: "checkmark")
-            .font(.system(size: 9, weight: .bold))
+            .font(.system(size: 9 * scale, weight: .bold))
             .foregroundStyle(Color.siloBackground)
-            .frame(width: 18, height: 18)
+            .frame(width: 18 * scale, height: 18 * scale)
             .background(Circle().fill(Color.siloOnSurface))
     }
 }
@@ -281,11 +307,14 @@ private struct HomeWatchedCheck: View {
 struct HomePosterCard: View {
     let item: SectionItem
     var width: CGFloat = HomeFeedMetrics.posterWidth
-    var showsCaption: Bool = true
-    var showsMetadata: Bool = true
     /// Draws the resume rail across the bottom of the artwork.
     var showsProgress: Bool = false
     var opensResumeContext = false
+
+    /// The progress the card draws a bar for, if any.
+    private var barProgress: Double? {
+        showsProgress ? HomeFeedMeta.progress(for: item) : nil
+    }
     /// Audiobook covers are square; stretching one into a 2:3 poster crops
     /// its edges off.
     var aspect: MediaCardAspect = .poster
@@ -301,6 +330,7 @@ struct HomePosterCard: View {
     var secondLineOverride: String? = nil
 
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
+    @Environment(\.locale) private var locale
     /// Optimistic personal state, shared with the menu so the badge flips the
     /// moment "Mark as Watched" is tapped rather than after the Home refresh.
     @State private var personalState = MediaCardPersonalState()
@@ -322,11 +352,12 @@ struct HomePosterCard: View {
             contentId: item.contentId,
             accessibilityLabel: accessibilityDescription,
             continueWatchingItem: opensResumeContext ? item : nil,
+            seedItem: item,
             onTap: onTap
         ) {
             VStack(alignment: .leading, spacing: 7) {
                 artwork
-                if showsCaption { caption }
+                caption
             }
             .frame(width: width, alignment: .leading)
         }
@@ -362,13 +393,15 @@ struct HomePosterCard: View {
         .overlay {
             // Home uses the same renderer and resolved profile preferences as
             // Browse, For You, Watchlist, and Favorites. Keep this below the
-            // progress and watched affordances so those controls retain their
-            // established corner priority.
+            // progress rail and the watch status, which owns the top-right
+            // corner.
             if overlayStore.enabled {
                 CardOverlays(
                     data: OverlayData.from(item),
                     prefs: overlayStore.prefs,
-                    variant: .poster
+                    variant: .poster,
+                    images: overlayStore.images,
+                    hasProgressBar: barProgress != nil
                 )
                 .frame(width: width, height: height)
                 .clipShape(
@@ -379,21 +412,21 @@ struct HomePosterCard: View {
                 )
             }
         }
-        .overlay(alignment: .topTrailing) {
-            if isPlayed {
-                HomeWatchedCheck()
-                    .padding(6)
-            }
+        .overlay {
+            // Shown whether or not badges are on.
+            CardWatchStatus(
+                played: isPlayed,
+                episodesLeft: personalState.episodesLeft(item.userState),
+                cardWidth: width
+            )
         }
         .overlay(alignment: .bottom) {
-            if showsProgress, let progress = HomeFeedMeta.progress(for: item) {
+            if let progress = barProgress {
                 ProgressBar(value: progress)
-                    .padding(.horizontal, 6)
-                    .padding(.bottom, 6)
             }
         }
         .overlay {
-            DownloadedBadgeOverlay(contentId: item.contentId, padding: 6)
+            DownloadedBadgeOverlay(contentId: item.contentId, padding: 6, clearsProgressBar: barProgress != nil)
         }
     }
 
@@ -409,7 +442,7 @@ struct HomePosterCard: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            if showsMetadata, let secondLine = secondLineOverride ?? HomeFeedMeta.cardSecondLine(for: item) {
+            if let secondLine = secondLineOverride ?? HomeFeedMeta.cardSecondLine(for: item, locale: locale) {
                 Text(secondLine)
                     .font(HomeFeedMetrics.captionMetadataFont)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.5))
@@ -425,11 +458,11 @@ struct HomePosterCard: View {
         var components = [HomeFeedMeta.cardTitle(for: item)]
         if let episodeAccessibilityLabel {
             components.append(episodeAccessibilityLabel)
-        } else if let year = item.year {
-            components.append(String(year))
+        } else if let years = CardYears.caption(for: item, locale: locale) {
+            components.append(years)
         }
         if isPlayed {
-            components.append("Watched")
+            components.append(AppLanguage.string(.homeWatched, locale: locale))
         }
         return components.joined(separator: ", ")
     }
@@ -443,8 +476,6 @@ struct HomePosterCard: View {
 struct HomeStillCard: View {
     let item: SectionItem
     var width: CGFloat = HomeFeedMetrics.stillWidth
-    var showsCaption: Bool = true
-    var showsMetadata: Bool = true
     var opensResumeContext = false
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
@@ -456,6 +487,7 @@ struct HomeStillCard: View {
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     @Environment(\.browseLibraryId) private var playbackLibraryId
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     private var isPlayed: Bool { personalState.isPlayed(item.userState) }
 
@@ -488,6 +520,7 @@ struct HomeStillCard: View {
             contentId: item.contentId,
             accessibilityLabel: accessibilityDescription,
             continueWatchingItem: opensResumeContext ? item : nil,
+            seedItem: item,
             accessibilityPlayAction: isDirectlyPlayable && onTap == nil
                 ? (name: playActionName, perform: playItem)
                 : nil,
@@ -495,7 +528,7 @@ struct HomeStillCard: View {
         ) {
             VStack(alignment: .leading, spacing: 8) {
                 artwork
-                if showsCaption { caption }
+                caption
             }
             .frame(width: width, alignment: .leading)
         }
@@ -537,7 +570,8 @@ struct HomeStillCard: View {
                 CardOverlays(
                     data: OverlayData.from(item),
                     prefs: overlayStore.prefs,
-                    variant: .wide
+                    variant: .wide,
+                    images: overlayStore.images
                 )
                 .frame(width: width, height: height)
                 .clipShape(
@@ -550,8 +584,6 @@ struct HomeStillCard: View {
 
             if let progress = HomeFeedMeta.progress(for: item) {
                 ProgressBar(value: progress)
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 7)
             }
         }
         .frame(width: width, height: height)
@@ -576,8 +608,7 @@ struct HomeStillCard: View {
         // Above the progress rail rather than on it — the rail owns the
         // bottom edge of a resume still.
         .overlay {
-            DownloadedBadgeOverlay(contentId: item.contentId, padding: 6)
-                .padding(.bottom, 10)
+            DownloadedBadgeOverlay(contentId: item.contentId, padding: 6, clearsProgressBar: true)
         }
     }
 
@@ -598,7 +629,7 @@ struct HomeStillCard: View {
         if isDirectlyPlayable {
             Button(action: playItem) { badge }
                 .buttonStyle(.plain)
-                .accessibilityLabel(playActionName)
+                .accessibilityLabel(Text(playActionName))
         } else {
             badge.allowsHitTesting(false)
         }
@@ -606,7 +637,9 @@ struct HomeStillCard: View {
 
     private var isDirectlyPlayable: Bool { SiloMediaType.isDirectlyPlayable(item.type) }
 
-    private var playActionName: String { (item.positionSeconds ?? 0) > 0 ? "Resume" : "Play" }
+    private var playActionName: LocalizedStringResource {
+        (item.positionSeconds ?? 0) > 0 ? .cardMenuResume : .cardMenuPlay
+    }
 
     private func playItem() {
         router.presentPlayer(
@@ -619,6 +652,18 @@ struct HomeStillCard: View {
         )
     }
 
+    /// Keep iOS resume cards the same height when only some items have a
+    /// remaining-time caption, including as lazy cards enter/leave. iPad rails
+    /// centre their cards, so a shorter card sits lower. macOS rails align to
+    /// the top and need no placeholder line.
+    private var reservesResumeCaption: Bool {
+        #if os(iOS)
+        opensResumeContext
+        #else
+        false
+        #endif
+    }
+
     private var caption: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(HomeFeedMeta.cardTitle(for: item))
@@ -626,29 +671,25 @@ struct HomeStillCard: View {
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
 
-            if showsMetadata {
-                // Episode code + title (or the year for movies). Space is
-                // reserved even when empty so a row mixing episodes and
-                // movies keeps one caption height.
-                Text(HomeFeedMeta.cardSecondLine(for: item) ?? "")
-                    .font(HomeFeedMetrics.captionMetadataFont)
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.7))
-                    .monospacedDigit()
-                    .lineLimit(1, reservesSpace: true)
-                    .truncationMode(.tail)
-            }
+            // Episode code + title (or the year for movies). Space is
+            // reserved even when empty so a row mixing episodes and
+            // movies keeps one caption height.
+            Text(HomeFeedMeta.cardSecondLine(for: item, locale: locale) ?? "")
+                .font(HomeFeedMetrics.captionMetadataFont)
+                .foregroundStyle(Color.siloOnSurface.opacity(0.7))
+                .monospacedDigit()
+                .lineLimit(1, reservesSpace: true)
+                .truncationMode(.tail)
 
-            if showsMetadata,
-               (opensResumeContext && HorizontalMediaRailLayout.isPhone)
-                   || HomeFeedMeta.resumeCaption(for: item) != nil {
-                // Keep phone resume cards the same height when only some items have
-                // a remaining-time caption, including as lazy cards enter/leave.
-                Text(HomeFeedMeta.resumeCaption(for: item) ?? "0m left")
+            let resumeCaption = HomeFeedMeta.resumeCaption(for: item, locale: locale)
+            if reservesResumeCaption || resumeCaption != nil {
+                // The hidden placeholder only reserves the line's height.
+                Text(resumeCaption ?? AppLanguage.string(.homeTimeLeft("0m"), locale: locale))
                     .font(HomeFeedMetrics.captionMetadataFont)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.55))
                     .lineLimit(1)
-                    .opacity(HomeFeedMeta.resumeCaption(for: item) == nil ? 0 : 1)
-                    .accessibilityHidden(HomeFeedMeta.resumeCaption(for: item) == nil)
+                    .opacity(resumeCaption == nil ? 0 : 1)
+                    .accessibilityHidden(resumeCaption == nil)
             }
         }
         .frame(width: width, alignment: .leading)
@@ -656,16 +697,16 @@ struct HomeStillCard: View {
 
     private var accessibilityDescription: String {
         var components = [HomeFeedMeta.cardTitle(for: item)]
-        if let episodeLabel = EpisodeCardCaption.accessibilityLabel(for: item) {
+        if let episodeLabel = EpisodeCardCaption.accessibilityLabel(for: item, locale: locale) {
             components.append(episodeLabel)
-        } else if let year = item.year {
-            components.append(String(year))
+        } else if let years = CardYears.caption(for: item, locale: locale) {
+            components.append(years)
         }
-        if let resumeCaption = HomeFeedMeta.resumeCaption(for: item) {
+        if let resumeCaption = HomeFeedMeta.resumeCaption(for: item, locale: locale) {
             components.append(resumeCaption)
         }
         if isPlayed {
-            components.append("Watched")
+            components.append(AppLanguage.string(.homeWatched, locale: locale))
         }
         return components.joined(separator: ", ")
     }
@@ -678,24 +719,44 @@ struct HomeStillCard: View {
 struct HomeSectionHeader: View {
     let title: String
     var icon: String? = nil
+    /// Makes the title a link with a chevron, as on web.
+    var action: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 7) {
-            if let icon {
-                Image(systemName: icon)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.85))
+            if let action {
+                Button(action: action) {
+                    HStack(spacing: 7) {
+                        label
+                        Image(systemName: "chevron.forward")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Color.siloOnSurface.opacity(0.5))
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(Text(SectionExploreAllCard.label))
+            } else {
+                label
             }
-
-            Text(title)
-                .font(.siloHeadline)
-                .tracking(-0.3)
-                .foregroundStyle(Color.siloOnSurface)
-                .lineLimit(1)
 
             Spacer(minLength: 8)
         }
         .padding(.horizontal, HomeFeedMetrics.gutter)
+    }
+
+    @ViewBuilder
+    private var label: some View {
+        if let icon {
+            Image(systemName: icon)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.85))
+        }
+
+        Text(title)
+            .font(.siloHeadline)
+            .tracking(-0.3)
+            .foregroundStyle(Color.siloOnSurface)
+            .lineLimit(1)
     }
 }
 

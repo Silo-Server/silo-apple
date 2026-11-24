@@ -306,15 +306,23 @@ final class ASSSubtitleRendererTests: XCTestCase {
         XCTAssertEqual(output.queued.first?.time ?? -1, 0, accuracy: 1e-9)
         XCTAssertEqual(output.queued.last?.time ?? -1, 3 * interval, accuracy: 1e-9)
         XCTAssertGreaterThan(pixel(output.queued[0].buffer, x: 25, y: 35).a, 200)
-        XCTAssertEqual(CVPixelBufferGetWidth(output.queued[1].buffer), 2, "The sign ends with a clear canvas")
+        assertClearCanvas(output.queued[1].buffer, "The sign ends with a clear canvas of the sign's size")
 
         // A late update moves the sign away: the canvas kept on screen must be cleared.
         await presenter.updateCues([cue(1, [drawing(x: 20, y: 30)], start: 5, end: 6)], revision: 2)
         _ = try await presenter.step(timing(interval: interval), generation: 1)
         XCTAssertEqual(output.lastFlushRemovedImage, false)
         XCTAssertEqual(output.queued.count, 1)
-        XCTAssertEqual(output.queued.first.map { CVPixelBufferGetWidth($0.buffer) }, 2,
-                       "An empty frame after a kept canvas queues a clear canvas")
+        assertClearCanvas(output.queued.first?.buffer, "An empty frame after a kept canvas queues a clear canvas")
+    }
+
+    /// A clear canvas of another size made the overlay layer show the
+    /// outgoing sign squashed before it cleared (silo-apple#830).
+    private func assertClearCanvas(_ buffer: CVPixelBuffer?, _ message: String,
+                                   file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(buffer.map(CVPixelBufferGetWidth), canvas.width, message, file: file, line: line)
+        XCTAssertEqual(buffer.map(CVPixelBufferGetHeight), canvas.height, message, file: file, line: line)
+        XCTAssertEqual(alphaCount(buffer), 0, message, file: file, line: line)
     }
 
     func testPresenterRefillsFromTheFrameOnScreenAfterASeekOrAStaleCueUpdate() async throws {

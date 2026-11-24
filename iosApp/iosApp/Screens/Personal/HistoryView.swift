@@ -4,6 +4,7 @@ import SwiftUI
 struct HistoryView: View {
     @State private var viewModel = HistoryViewModel()
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Group {
@@ -22,13 +23,13 @@ struct HistoryView: View {
             } else {
                 EmptyStateView(
                     icon: "clock",
-                    title: "No watch history",
-                    subtitle: "Items you watch will appear here"
+                    title: AppLanguage.string(.personalHistoryEmpty, locale: locale),
+                    subtitle: AppLanguage.string(.personalHistoryEmptyBody, locale: locale)
                 )
             }
         }
         .siloPageBackground()
-        .navigationTitle("History")
+        .navigationTitle(Text(.personalHistoryTitle))
         .siloNavigationTitleDisplayMode(.large)
         .task {
             await viewModel.load(reset: true)

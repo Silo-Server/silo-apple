@@ -5,6 +5,9 @@ struct DeviceLoginStartRequest: Encodable {
     let devicePlatform: String?
     var clientPurpose: String? = nil
     var temporary: Bool? = nil
+    /// base64url(SHA-256(session secret)) when the TV binds this request to
+    /// its pairing session (`PairingSessionBinding`); omitted otherwise.
+    var binding: String? = nil
 }
 
 /// `deviceCode` is the TV-only secret used for polling; it must never be
@@ -62,6 +65,10 @@ struct DeviceLookupResponse {
     /// app links. Absent from servers that predate them.
     var serverId: String? = nil
     var serverName: String? = nil
+    /// The pairing-session binding the TV started this request with, absent
+    /// when it sent none or the server predates binding. The phone trusts
+    /// it only once the person compared this request's code.
+    var binding: String? = nil
 }
 
 /// Eight-character TV sign-in codes as people see and type them.

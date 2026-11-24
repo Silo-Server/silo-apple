@@ -4,7 +4,7 @@ import SwiftUI
 /// Everything the root Settings view needs to present one modal picker while
 /// preserving the exact detail row that should regain focus on dismissal.
 struct TVSettingsPickerRequest {
-    let title: String
+    let title: LocalizedStringResource
     let options: [TVSettingsOption]
     let selection: Binding<String>
     var subtitlePreviewAppearance: SubtitleAppearance? = nil

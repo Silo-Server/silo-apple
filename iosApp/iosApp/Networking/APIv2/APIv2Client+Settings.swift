@@ -29,8 +29,12 @@ extension APIv2Client {
     /// `getOverlayConfig` (profile optional): the server-wide overlay default
     /// and baseline, the same for every profile of the server.
     func overlayConfig(expectedIdentity: HTTPRequestIdentity? = nil) async throws -> APIv2OverlayConfig {
-        let data = try await settingsRead("/api/v2/settings/overlay-config", expectedIdentity: expectedIdentity)
-        return try HTTPClient.makeJSONDecoder().decode(APIv2OverlayConfig.self, from: data)
+        let response = try await settingsResponse(
+            "/api/v2/settings/overlay-config", expectedIdentity: expectedIdentity
+        )
+        // The image library's paths are server-relative.
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url)
+            .decode(APIv2OverlayConfig.self, from: response.data)
     }
 
     /// `listEffectiveSettings` (profile required) for `profileID`, which must
@@ -90,30 +94,6 @@ extension APIv2Client {
             expectedIdentity: expectedIdentity
         )
         return try Self.settingReceipt(response, key: key, scope: scope, profileID: profileID)
-    }
-
-    /// `updateNavigationShortcut` (200 with the stored `nav.shortcuts` row):
-    /// add (`present`) or remove one shortcut of the acting profile. Only that
-    /// entry changes, so concurrent edits of other shortcuts are kept.
-    @discardableResult
-    func updateNavigationShortcut(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        profileID: String,
-        expectedIdentity: HTTPRequestIdentity? = nil
-    ) async throws -> StoredSettingValue {
-        let body = try SettingsWireCoding.makeEncoder().encode(
-            NavigationShortcutMutation(item: item, present: present)
-        )
-        let response = try await settingsWrite(
-            "PUT",
-            path: "\(try Self.settingValuePath(.navShortcuts))/item",
-            query: [:],
-            body: body,
-            profileID: profileID,
-            expectedIdentity: expectedIdentity
-        )
-        return try Self.settingReceipt(response, key: .navShortcuts, scope: .profile, profileID: profileID)
     }
 
     /// `deleteSettingValue` (204). A 404 means nothing is stored at that scope,
@@ -182,10 +162,4 @@ extension APIv2Client {
         }
         return receipt
     }
-}
-
-/// `NavigationShortcutMutation`: both members are required.
-private struct NavigationShortcutMutation: Encodable {
-    let item: PrimaryMenuItem
-    let present: Bool
 }

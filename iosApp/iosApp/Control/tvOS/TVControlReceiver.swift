@@ -111,7 +111,12 @@ final class TVControlReceiver {
         category: "control.receiver"
     )
 
-    private init() {}
+    /// Poster and synopsis for the playing title, sent with its state.
+    private let nowPlayingMetadata = SiloControlNowPlayingMetadataResolver()
+
+    private init() {
+        nowPlayingMetadata.onChange = { [weak self] in self?.broadcastState() }
+    }
 
     func start(router: AppRouter) {
         self.router = router
@@ -257,7 +262,7 @@ final class TVControlReceiver {
         // Everyone watching loses the title, not only the phone that lent it.
         broadcast(.error(SiloControlErrorMessage(
             code: "temporary_session_expired",
-            message: "The phone profile session expired."
+            message: "The phone profile session expired." // i18n-ignore: sent to the phone, English (D44)
         )))
         let hadPlayer = playerViewModel != nil
         stopRemotePlayback()
@@ -297,23 +302,37 @@ final class TVControlReceiver {
         playerHandoffGeneration = nil
         stateTask?.cancel()
         stateTask = nil
+        nowPlayingMetadata.track(contentId: nil)
         refreshStandbyState()
         broadcastState()
         setPlaybackAdvertised(false)
-        if let endingGeneration,
-           RemotePlaybackIdentityManager.shared.activeIdentity?.generationID == endingGeneration {
+        switch SiloControlReceiverPolicy.playerExit(
+            playerGeneration: endingGeneration,
+            activeGeneration: RemotePlaybackIdentityManager.shared.activeIdentity?.generationID,
+            presentationIsUp: router?.presentedPlayer != nil
+        ) {
+        case .keepIdentity:
+            break
+        case .handToNextPlayer(let generation):
+            pendingPlayerHandoffGeneration = generation
+        case .endIdentity(let endingGeneration):
             Task { @MainActor [weak self, weak viewModel] in
                 await viewModel?.waitForCleanupCompletion()
-                let notifyServer = self?.rejectedPlayerHandoffGeneration != endingGeneration
+                // A launch that arrived during the cleanup plays under this
+                // identity; ending it now would fail that title.
+                guard let self,
+                      self.playerHandoffGeneration != endingGeneration,
+                      self.pendingPlayerHandoffGeneration != endingGeneration else { return }
+                let notifyServer = self.rejectedPlayerHandoffGeneration != endingGeneration
                 guard await RemotePlaybackIdentityManager.shared.end(
                     expectedGenerationID: endingGeneration,
                     notifyServer: notifyServer
                 ) else { return }
-                if self?.rejectedPlayerHandoffGeneration == endingGeneration {
-                    self?.rejectedPlayerHandoffGeneration = nil
+                if self.rejectedPlayerHandoffGeneration == endingGeneration {
+                    self.rejectedPlayerHandoffGeneration = nil
                 }
-                self?.refreshAdvertisement()
-                self?.reconcileAuthorization()
+                self.refreshAdvertisement()
+                self.reconcileAuthorization()
             }
         }
     }
@@ -335,7 +354,7 @@ final class TVControlReceiver {
             try? await session.send(makeHello())
             session.enqueue(.error(SiloControlErrorMessage(
                 code: "too_many_controllers",
-                message: "Too many devices are controlling this Apple TV. Disconnect one and try again."
+                message: "Too many devices are controlling this Apple TV. Disconnect one and try again." // i18n-ignore: sent to the phone, English (D44)
             )))
             // The peer's features aren't known yet, but every shipped decoder
             // ignores the `close` payload. Without the reason, a phone that
@@ -396,7 +415,7 @@ final class TVControlReceiver {
         case .handoffOffer(let offer):
             guard (controller.negotiatedVersion ?? 0) >= 2, let controllerDeviceId = controller.deviceId else {
                 sendHandoffCancel(offer.requestId, reason: "version_unsupported",
-                                  message: "Update Silo on both devices to continue.", to: controller)
+                                  message: "Update Silo on both devices to continue.", to: controller) // i18n-ignore: sent to the phone, English (D44)
                 return
             }
             beginHandoff(offer, from: controller, controllerDeviceId: controllerDeviceId)
@@ -407,7 +426,7 @@ final class TVControlReceiver {
             cancelPendingHandoff()
         case .launch(let launch):
             guard controller.isAuthorized else {
-                sendError(code: "unauthorized", message: "Connect with a matching Silo account first.", to: controller)
+                sendError(code: "unauthorized", message: "Connect with a matching Silo account first.", to: controller) // i18n-ignore: sent to the phone, English (D44)
                 return
             }
             if (controller.negotiatedVersion ?? 0) >= 2,
@@ -415,13 +434,13 @@ final class TVControlReceiver {
                    readyGeneration: controller.readyGeneration,
                    activeGeneration: RemotePlaybackIdentityManager.shared.activeIdentity?.generationID
                ) {
-                sendError(code: "handoff_required", message: "Prepare the phone profile before playing.", to: controller)
+                sendError(code: "handoff_required", message: "Prepare the phone profile before playing.", to: controller) // i18n-ignore: sent to the phone, English (D44)
                 return
             }
             handleLaunch(launch, from: controller)
         case .control(let command):
             guard controller.isAuthorized else {
-                sendError(code: "unauthorized", message: "Connect with a matching Silo account first.", to: controller)
+                sendError(code: "unauthorized", message: "Connect with a matching Silo account first.", to: controller) // i18n-ignore: sent to the phone, English (D44)
                 return
             }
             guard controller.commandBudget.allow() else {
@@ -463,7 +482,7 @@ final class TVControlReceiver {
         guard hello.role == .phone,
               let version = SiloControlProtocol.negotiatedVersion(with: hello.supportedVersions),
               let serverId = hello.serverId, !serverId.isEmpty else {
-            sendError(code: "version_unsupported", message: "Update Silo on both devices to continue.", to: controller)
+            sendError(code: "version_unsupported", message: "Update Silo on both devices to continue.", to: controller) // i18n-ignore: sent to the phone, English (D44)
             closeController(controller.id, reason: SiloControlCloseReason.unauthorized)
             return
         }
@@ -484,7 +503,7 @@ final class TVControlReceiver {
         // to complete server-mediated identity handoff.
         guard matchesServer || version >= 2 else {
             sendError(code: "server_mismatch",
-                      message: "This Apple TV is connected to a different Silo server.", to: controller)
+                      message: "This Apple TV is connected to a different Silo server.", to: controller) // i18n-ignore: sent to the phone, English (D44)
             closeController(controller.id, reason: SiloControlCloseReason.unauthorized)
             return
         }
@@ -529,7 +548,7 @@ final class TVControlReceiver {
             sendHandoffCancel(
                 pending.requestId,
                 reason: SiloControlHandoffCancelReason.superseded,
-                message: "\(controller.deviceName ?? "Another device") started playing on this TV.",
+                message: "\(controller.deviceName ?? "Another device") started playing on this TV.", // i18n-ignore: sent to the phone, English (D44)
                 to: other
             )
         }
@@ -710,7 +729,7 @@ final class TVControlReceiver {
         sendHandoffCancel(
             requestId,
             reason: SiloControlHandoffCancelReason.replaceConfirmationRequired,
-            message: "\(nowPlaying.profileName ?? "Someone") is watching \(nowPlaying.title) on this TV.",
+            message: "\(nowPlaying.profileName ?? "Someone") is watching \(nowPlaying.title) on this TV.", // i18n-ignore: sent to the phone, English (D44)
             nowPlaying: nowPlaying,
             to: controller
         )
@@ -733,7 +752,7 @@ final class TVControlReceiver {
             self.reconcileAuthorization()
             guard let controller = self.controllers[controllerId] else { return }
             self.sendError(code: "launch_timeout",
-                           message: "No content was launched, so the temporary profile was restored.",
+                           message: "No content was launched, so the temporary profile was restored.", // i18n-ignore: sent to the phone, English (D44)
                            to: controller)
             // A cross-server controller can't do anything else here.
             if !controller.isAuthorized {
@@ -781,7 +800,7 @@ final class TVControlReceiver {
         let profileName = identity.map(\.profileName) ?? CurrentProfileStore.shared.profile?.name
         return SiloControlNowPlayingSummary(
             contentId: state?.contentId ?? playerContentId,
-            title: state?.title ?? "a title",
+            title: state?.title ?? "a title", // i18n-ignore: sent to the phone (D44, D50)
             subtitle: state?.subtitle,
             profileName: profileName,
             controllerName: startedByPhone ? identity?.controllerDeviceName : nil
@@ -801,13 +820,30 @@ final class TVControlReceiver {
             serverIdentity: launchIdentity
         ) else {
             sendError(code: "server_mismatch",
-                      message: "This Apple TV is connected to a different Silo server.", to: controller)
+                      message: "This Apple TV is connected to a different Silo server.", to: controller) // i18n-ignore: sent to the phone, English (D44)
             return
         }
 
         let playback = launch.playback
         standbyState = nil
         let generation = RemotePlaybackIdentityManager.shared.activeIdentity?.generationID
+        if let player = playerViewModel,
+           SiloControlReceiverPolicy.canReplaceInPlayer(
+               playerGeneration: playerHandoffGeneration, activeGeneration: generation,
+               playerIsDisposed: player.needsReplacementForPresentation,
+               playerIsWatchParty: player.isWatchPartyPlayback
+           ) {
+            readyTimeoutTask?.cancel()
+            readyTimeoutTask = nil
+            playerContentId = playback.contentId
+            player.replaceSiloControlPlayback(playback)
+            DiagnosticsCoordinator.recordBreadcrumb(
+                category: .playback, tag: "SiloControl",
+                message: "remote playback replaced in existing player" // i18n-ignore: sent to the phone, English (D44)
+            )
+            broadcastState()
+            return
+        }
         // Replacing a title: the outgoing player still owns this generation
         // and would end the temporary identity on its way out, just as the
         // incoming player starts loading under it. Hand the generation to
@@ -819,12 +855,13 @@ final class TVControlReceiver {
         router?.presentPlayer(
             contentId: playback.contentId,
             fileId: playback.fileId,
+            pinsVersion: playback.pinsVersion == true,
             audioTrackIndex: playback.audioTrackIndex,
             subtitleTrackIndex: playback.subtitleTrackIndex,
             startFromBeginning: playback.startFromBeginning,
             resumePosition: playback.resumePosition
         )
-        broadcast(.state(placeholderState(contentId: playback.contentId, title: "Loading", isLoading: true)))
+        broadcast(.state(placeholderState(contentId: playback.contentId, title: "Loading", isLoading: true))) // i18n-ignore: sent to the phone, English (D44)
     }
 
     private func handleControl(_ command: SiloControlCommand, from controller: Controller) {
@@ -835,7 +872,7 @@ final class TVControlReceiver {
         }
 
         guard let playerViewModel else {
-            sendError(code: "player_not_ready", message: "The TV player is not ready yet.", to: controller)
+            sendError(code: "player_not_ready", message: "The TV player is not ready yet.", to: controller) // i18n-ignore: sent to the phone, English (D44)
             return
         }
 
@@ -854,7 +891,7 @@ final class TVControlReceiver {
         if let last = controller.rateLimitNoticeAt, now.timeIntervalSince(last) < 1 { return }
         controller.rateLimitNoticeAt = now
         Self.logger.info("control: rate-limiting a controller")
-        sendError(code: "rate_limited", message: "Too many commands. Slow down and try again.", to: controller)
+        sendError(code: "rate_limited", message: "Too many commands. Slow down and try again.", to: controller) // i18n-ignore: sent to the phone, English (D44)
     }
 
     // MARK: - Teardown and authorization
@@ -949,7 +986,7 @@ final class TVControlReceiver {
                 sendState(to: controller)
             } else if !controller.isAuthorized, wasAuthorized, !ownIdentityEnded {
                 sendError(code: "server_mismatch",
-                          message: "This Apple TV is now playing from a different Silo server.",
+                          message: "This Apple TV is now playing from a different Silo server.", // i18n-ignore: sent to the phone, English (D44)
                           to: controller)
             }
         }
@@ -994,6 +1031,8 @@ final class TVControlReceiver {
         guard playerViewModel != nil, controllers.values.contains(where: \.isAuthorized) else {
             stateTask?.cancel()
             stateTask = nil
+            // Nobody to send artwork to, so stop keeping its URL signed.
+            nowPlayingMetadata.track(contentId: nil)
             return
         }
         guard stateTask == nil else { return }
@@ -1006,10 +1045,18 @@ final class TVControlReceiver {
     }
 
     private func currentState() -> SiloControlPlaybackState {
-        if let playerViewModel {
-            return playerViewModel.makeSiloControlPlaybackState(contentId: playerContentId)
+        guard let playerViewModel else {
+            nowPlayingMetadata.track(contentId: nil)
+            return idleState()
         }
-        return idleState()
+        var state = playerViewModel.makeSiloControlPlaybackState(contentId: playerContentId)
+        // Follows the live content ID, so an autoplayed next episode drops
+        // the previous title's poster on its first tick.
+        nowPlayingMetadata.track(contentId: state.contentId)
+        let metadata = nowPlayingMetadata.metadata(for: state.contentId)
+        state.posterUrl = metadata?.posterUrl
+        state.overview = metadata?.overview
+        return state
     }
 
     /// Built once per tick and shared by every authorized controller.
@@ -1065,7 +1112,7 @@ final class TVControlReceiver {
     }
 
     private func idleState() -> SiloControlPlaybackState {
-        placeholderState(contentId: nil, title: "Ready", isLoading: false)
+        placeholderState(contentId: nil, title: "Ready", isLoading: false) // i18n-ignore: sent to the phone, English (D44)
     }
 
     /// State for a TV with no playing title: idle, or loading `contentId`.

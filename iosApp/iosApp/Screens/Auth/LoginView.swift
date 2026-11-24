@@ -14,18 +14,21 @@ struct LoginView: View {
     @State private var expandsPasswordForm = false
     /// Counts failed password attempts so the fields shake on each one.
     @State private var passwordFailures = 0
+    @State private var showsForgotPassword = false
     @FocusState private var focusedField: Field?
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.locale) private var locale
 
     private enum Field: Hashable { case username, password }
 
     var body: some View {
         // Leaving mid-sign-in would let the finished sign-in pull the app
         // back from server setup, so going back waits until it settles.
-        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { router.resetToServerSetup() }) {
+        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { leave() }) {
             MarqueeTopBar {
-                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Change server") {
-                    router.resetToServerSetup()
+                MarqueeIconButton(systemImage: "chevron.backward",
+                                  accessibilityLabel: backLabel) {
+                    leave()
                 }
                 .disabled(viewModel.isBusy)
             } trailing: {
@@ -33,10 +36,11 @@ struct LoginView: View {
             }
         } content: {
             MarqueeHeadline(
-                title: "Sign in",
+                title: AppLanguage.string(.signInTitle),
                 // An expired session says why sign-in is back on screen.
                 lead: router.loginNotice?.message(serverName: server.serverName)
-                    ?? server.branding?.loginSubtitle ?? "Use your \(server.serverName) account."
+                    ?? addingLead
+                    ?? server.branding?.loginSubtitle ?? AppLanguage.string(.signInLead(server.serverName))
             )
             options
                 .padding(.top, 24)
@@ -49,6 +53,10 @@ struct LoginView: View {
         .task {
             MarqueeScene.shared.focus = .account
             MarqueeScene.shared.personalTint = nil
+            // An account signing in again starts with its username.
+            if viewModel.username.isEmpty, let prefill = router.signInPrefill {
+                viewModel.username = prefill
+            }
             await server.load()
         }
         .task {
@@ -61,25 +69,46 @@ struct LoginView: View {
             guard phase == .active, !viewModel.isBusy, viewModel.discovery != .loading else { return }
             Task { await viewModel.loadSignInOptions(showsLoading: false) }
         }
-        .confirmationDialog("Use a different account", isPresented: $choosesProviderForAccountSwitch,
+        .confirmationDialog(.signInDifferentAccount, isPresented: $choosesProviderForAccountSwitch,
                             titleVisibility: .visible) {
             ForEach(viewModel.browserProviders, id: \.id) { provider in
                 Button(SignInOptions.buttonTitle(for: provider)) { signIn(with: provider, choosingAccount: true) }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(.commonCancel, role: .cancel) {}
+        }
+        .navigationDestination(isPresented: $showsForgotPassword) {
+            ForgotPasswordView(login: viewModel.username)
         }
         .marqueeTransparentNavigation()
     }
 
-    static let noSignInText = "This server doesn't offer a sign-in this app can use. Sign in on the web, or ask the server's admin."
+    static var noSignInText: String { AppLanguage.string(.signInErrorNoUsableMethod) }
+
+    /// Back to the picker while another saved account can be chosen, else to
+    /// Change Account while other accounts or servers are saved; otherwise to
+    /// server setup, as on a first sign-in (`AppRouter.leaveSignIn`).
+    private func leave() {
+        router.leaveSignIn()
+    }
+
+    private var backLabel: String {
+        if router.canReturnToPicker { return AppLanguage.string(.commonBack) }
+        return AppLanguage.string(router.signInLeavesForChangeAccount ? LocalizedStringResource.signInChangeAccount : .commonChangeServer)
+    }
+
+    /// Adding an account beside the ones already saved on this server.
+    private var addingLead: String? {
+        guard let request = router.accountSignIn, request.renewingAccountId == nil else { return nil }
+        return AppLanguage.string(.signInAddingLead(server.serverName))
+    }
 
     private var serverMenu: some View {
         Menu {
             Section(server.hostLabel) {
                 Button {
-                    router.resetToServerSetup()
+                    router.leaveSignInForServerSetup()
                 } label: {
-                    Label("Use a different server", systemImage: "server.rack")
+                    Label(.signInUseDifferentServer, systemImage: "server.rack")
                 }
             }
         } label: {
@@ -88,7 +117,7 @@ struct LoginView: View {
         .menuStyle(.button)
         .buttonStyle(.marqueePressable)
         .disabled(viewModel.isBusy)
-        .accessibilityLabel("\(server.serverName), server. Double-tap to change.")
+        .accessibilityLabel(.shellMarqueeServerChip(server.serverName))
     }
 
     // MARK: - Options
@@ -108,7 +137,7 @@ struct LoginView: View {
                             .accessibilityIdentifier("login.networkError")
                     }
                     if !viewModel.browserProviders.isEmpty || viewModel.showsPasswordForm {
-                        MarqueeLabeledDivider(text: "or")
+                        MarqueeLabeledDivider(text: AppLanguage.string(.signInDividerOr))
                             .padding(.vertical, 18)
                     }
                 }
@@ -132,7 +161,7 @@ struct LoginView: View {
 
                 if viewModel.showsPasswordForm {
                     if !viewModel.browserProviders.isEmpty {
-                        MarqueeLabeledDivider(text: foldsPasswordForm ? "or" : "or use your password")
+                        MarqueeLabeledDivider(text: AppLanguage.string(foldsPasswordForm ? LocalizedStringResource.signInDividerOr : .signInDividerOrPassword))
                             .padding(.vertical, 18)
                     }
                     if foldsPasswordForm {
@@ -140,7 +169,7 @@ struct LoginView: View {
                             withAnimation(SiloTheme.springAnimation) { expandsPasswordForm = true }
                             focusedField = .username
                         } label: {
-                            Label("Sign in with a password", systemImage: "key")
+                            Label(.tvSignInActionPassword, systemImage: "key")
                         }
                         .buttonStyle(.marqueePlain)
                         .disabled(viewModel.isBusy)
@@ -175,7 +204,7 @@ struct LoginView: View {
             SkeletonCapsule(cornerRadius: MarqueeMetrics.fieldCorner).frame(height: MarqueeMetrics.fieldHeight * 2)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Loading sign-in options")
+        .accessibilityLabel(.signInLoadingOptions)
     }
 
     /// "Continue as <name>" per network provider: this device's owner signs
@@ -190,14 +219,14 @@ struct LoginView: View {
                     signInWithNetworkIdentity(provider)
                 } label: {
                     if inFlight {
-                        Text("Signing in…")
+                        Text(.tvSignInFormSubmitting)
                     } else {
                         MarqueeNetworkSignInLabel(provider: provider, serverURL: server.serverURL)
                     }
                 }
                 .buttonStyle(.marquee(.primary, isLoading: inFlight))
                 .disabled(viewModel.isBusy)
-                .accessibilityLabel(inFlight ? "Signing in…" : NetworkSignIn.accessibilityLabel(for: provider))
+                .accessibilityLabel(inFlight ? AppLanguage.string(.tvSignInFormSubmitting) : NetworkSignIn.accessibilityLabel(for: provider))
                 .accessibilityIdentifier("login.network.\(provider.id)")
             }
         }
@@ -214,7 +243,7 @@ struct LoginView: View {
                     signIn(with: provider)
                 } label: {
                     if inFlight {
-                        Text("Waiting for sign-in…")
+                        Text(.signInProviderWaiting)
                     } else {
                         MarqueeProviderLabel(
                             title: SignInOptions.buttonTitle(for: provider),
@@ -234,7 +263,7 @@ struct LoginView: View {
     /// pick another provider account instead of reusing the one the system
     /// browser is signed in with.
     private var differentAccountButton: some View {
-        Button("Use a different account") {
+        Button(.signInDifferentAccount) {
             if viewModel.browserProviders.count == 1, let provider = viewModel.browserProviders.first {
                 signIn(with: provider, choosingAccount: true)
             } else {
@@ -250,9 +279,9 @@ struct LoginView: View {
     /// the providers may be missing and retries.
     private var discoveryFailedRow: some View {
         HStack(spacing: 10) {
-            MarqueeErrorText("Couldn't load sign-in options.")
+            MarqueeErrorText(AppLanguage.string(.signInErrorOptionsUnavailable))
             Spacer(minLength: 8)
-            Button("Retry") {
+            Button(.commonRetry) {
                 Task { await viewModel.loadSignInOptions() }
             }
             .buttonStyle(.marqueePressable)
@@ -268,7 +297,7 @@ struct LoginView: View {
             MarqueeFieldGroup(isError: viewModel.error != nil) {
                 MarqueeTextField(
                     systemImage: "person",
-                    placeholder: "Username",
+                    placeholder: AppLanguage.string(.tvSignInFormUsernamePlaceholder),
                     text: $viewModel.username,
                     focus: $focusedField,
                     equals: .username,
@@ -278,7 +307,7 @@ struct LoginView: View {
                 )
                 MarqueeTextField(
                     systemImage: "lock",
-                    placeholder: "Password",
+                    placeholder: AppLanguage.string(.tvSignInFormPasswordPlaceholder),
                     text: $viewModel.password,
                     focus: $focusedField,
                     equals: .password,
@@ -298,8 +327,23 @@ struct LoginView: View {
                     .padding(.leading, 4)
             }
 
+            if viewModel.offersPasswordReset {
+                Button(.signInForgotLink) {
+                    focusedField = nil
+                    showsForgotPassword = true
+                }
+                .buttonStyle(.marqueePressable)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.6))
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.top, 10)
+                .padding(.trailing, 4)
+                .disabled(viewModel.isBusy)
+                .accessibilityIdentifier("login.forgotPassword")
+            }
+
             Button(action: signIn) {
-                Text(viewModel.isLoading ? "Signing in…" : "Sign in")
+                Text(viewModel.isLoading ? LocalizedStringResource.tvSignInFormSubmitting : .tvSignInFormSubmit)
             }
             .buttonStyle(.marquee(.primary, isLoading: viewModel.isLoading))
             .keyboardShortcut(.defaultAction)
@@ -311,15 +355,15 @@ struct LoginView: View {
     @ViewBuilder
     private var footnote: some View {
         if let options = viewModel.signInOptions {
-            if options.browserProviders.isEmpty && options.showsPasswordForm {
-                footnoteText("Forgot your password? Ask the server admin.")
+            if options.browserProviders.isEmpty && options.showsPasswordForm && !viewModel.offersPasswordReset {
+                footnoteText(.signInForgotPassword)
             } else if !options.browserProviders.isEmpty && !options.showsPasswordForm {
-                footnoteText("Password sign-in is turned off on this server.")
+                footnoteText(.signInErrorPasswordOff)
             }
         }
     }
 
-    private func footnoteText(_ text: String) -> some View {
+    private func footnoteText(_ text: LocalizedStringResource) -> some View {
         Text(text)
             .font(.system(size: 13))
             .foregroundStyle(Color.siloOnSurface.opacity(0.4))

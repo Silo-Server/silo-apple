@@ -1,7 +1,7 @@
 #if os(iOS)
 import SwiftUI
 
-/// Infuse-style stats annotation: `PlaybackStats.compactRows` drawn over the
+/// Infuse-style stats annotation: `PlaybackStats.overlayRows` drawn over the
 /// picture on a low-contrast dark plate, with no header, close button or
 /// scroll affordance.
 ///
@@ -10,8 +10,8 @@ import SwiftUI
 /// - It is inert. `allowsHitTesting(false)` means a tap in its footprint
 ///   still reaches the transport and the gesture layer underneath — the
 ///   overlay must never cost the user a play/pause. That rules out
-///   scrolling, which is why it renders the compact row set and not the
-///   full one the tvOS pane pages through.
+///   scrolling, which is why it leaves out the engine rows the settings
+///   sheet's Technical details page and the tvOS pane scroll through.
 /// - It outlives the controls. It sits outside the `showControls` gate in
 ///   `MobilePlayerControls`, so the auto-hide takes the transport away
 ///   and leaves the stats up. Toggled off from where it was toggled on
@@ -51,12 +51,12 @@ struct MobilePlaybackStatsOverlay: View {
 
     @ViewBuilder
     private var content: some View {
-        // Gated on the compact set, not `hasRows`: early snapshots can carry
-        // only rows this overlay filters out, which would draw a blank plate.
-        if !stats.compactRows.isEmpty {
+        // Gated on the overlay set, not `hasRows`: early snapshots can carry
+        // only rows this overlay leaves out, which would draw a blank plate.
+        if !stats.overlayRows.isEmpty {
             PlaybackStatsPanel(stats: stats, layout: .plain)
         } else {
-            Text("Stats appear once playback starts.")
+            Text(.playerStatsAppearOnceStarted)
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.6))
         }

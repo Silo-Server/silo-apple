@@ -77,8 +77,8 @@ final class HorizontalMediaRailTests: XCTestCase {
 
     func testContinueWatchingKeepsEqualCardHeightsWithMissingProgress() async throws {
         let items = try items()
-        XCTAssertNotNil(HomeFeedMeta.resumeCaption(for: items[0]))
-        XCTAssertNil(HomeFeedMeta.resumeCaption(for: items[1]))
+        XCTAssertNotNil(HomeFeedMeta.resumeCaption(for: items[0], locale: Locale(identifier: "en")))
+        XCTAssertNil(HomeFeedMeta.resumeCaption(for: items[1], locale: Locale(identifier: "en")))
         for typeSize in [DynamicTypeSize.large, .accessibility1] {
             let frames = Frames()
             let content = HStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: 10) {
@@ -125,7 +125,7 @@ final class HorizontalMediaRailTests: XCTestCase {
             try await settle(window)
             let ordinary = try XCTUnwrap(frames.cards["ordinary"])
             let resume = try XCTUnwrap(frames.cards["resume"])
-            if HomeFeedMeta.resumeCaption(for: item) == nil {
+            if HomeFeedMeta.resumeCaption(for: item, locale: Locale(identifier: "en")) == nil {
                 XCTAssertGreaterThan(resume.height, ordinary.height + 5,
                                      "Next Up must not reserve an invisible Continue Watching caption")
             } else {
@@ -133,6 +133,64 @@ final class HorizontalMediaRailTests: XCTestCase {
                                "A visible progress caption must remain on either card")
             }
         }
+    }
+
+    @Observable
+    fileprivate final class RowModel {
+        var section: ResolvedSection
+        init(_ section: ResolvedSection) { self.section = section }
+    }
+
+    fileprivate struct ObservedHomeRow: View {
+        let model: RowModel
+        var body: some View { HomeFeedRow(section: model.section) }
+    }
+
+    func testRemovingTheParkedCardKeepsTheRowInPlace() async throws {
+        let cards = try (0..<8).map { index in
+            try JSONDecoder().decode(SectionItem.self, from: Data(
+                "{\"contentId\":\"fixture-resume-\(index)\",\"type\":\"movie\",\"title\":\"Sample \(index)\",\"positionSeconds\":600,\"durationSeconds\":6000}".utf8
+            ))
+        }
+        let model = RowModel(ResolvedSection(
+            id: "continue_watching", sectionType: "continue_watching", title: "Synthetic resume",
+            featured: nil, itemLimit: nil, totalCount: nil, isCustom: nil, customized: nil, items: cards
+        ))
+        let window = makeWindow(ObservedHomeRow(model: model)
+            .environment(AppRouter()).environmentObject(OverlayPrefsStore()))
+        defer { window.isHidden = true; window.rootViewController = nil }
+        try await settle(window)
+        let rail = try XCTUnwrap(scrollViews(in: window).first)
+        let start = -rail.adjustedContentInset.left
+
+        // Park the row a few cards in through the drag callbacks SwiftUI
+        // tracks, so the row's scroll position follows as it does for a swipe.
+        rail.delegate?.scrollViewWillBeginDragging?(rail)
+        rail.setContentOffset(CGPoint(x: start + rail.bounds.width * 2, y: 0), animated: false)
+        rail.delegate?.scrollViewDidEndDragging?(rail, willDecelerate: false)
+        try await settle(window)
+        let parked = rail.contentOffset.x
+        XCTAssertGreaterThan(parked, start + 1)
+
+        // Remove every card that could be the parked one, one at a time, as
+        // Home does after a dismissal; the row must never return to its start.
+        for removed in cards.dropFirst(2).prefix(3) {
+            model.section = model.section.replacingItems(
+                model.section.items.filter { $0.contentId != removed.contentId }
+            )
+            try await settle(window)
+            XCTAssertGreaterThan(rail.contentOffset.x, start + 1, "removing \(removed.contentId) reset the row")
+        }
+    }
+
+    func testScrollAnchorSettlesOnTheNeighbourOfARemovedCard() {
+        let ids = ["a", "b", "c", "d"]
+        XCTAssertEqual(HomeFeedRow.scrollAnchorId(keeping: "b", from: ids, to: ["a", "c", "d"]), "c")
+        XCTAssertEqual(HomeFeedRow.scrollAnchorId(keeping: "d", from: ids, to: ["a", "b", "c"]), "c")
+        XCTAssertEqual(HomeFeedRow.scrollAnchorId(keeping: "c", from: ids, to: ["a", "b", "c", "e"]), "c")
+        // A refill that also drops the following card still lands nearby.
+        XCTAssertEqual(HomeFeedRow.scrollAnchorId(keeping: "b", from: ids, to: ["a", "d", "e"]), "d")
+        XCTAssertEqual(HomeFeedRow.scrollAnchorId(keeping: nil, from: ids, to: ["a", "c"]), "a")
     }
 
     func testHomeRowsKeepTheirBoundsAndPositionWhenRouterDetailStateChanges() async throws {

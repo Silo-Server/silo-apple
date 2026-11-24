@@ -7,24 +7,26 @@ import SwiftUI
 /// this only when `EpisodeSpoilerPreferences.showsSettings` is true.
 struct EpisodeSpoilerSettingsSection: View {
     let store: EpisodeSpoilerPreferences
+    /// The app language, so a switch re-renders the footer.
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Section {
             toggle(
                 .images,
-                title: "Blur unwatched episode images",
-                description: "Blur an episode's thumbnail until you start watching it, so the image does not give away the story."
+                title: .settingsManifestCatalogHideUnwatchedEpisodeImagesLabel,
+                description: .settingsManifestCatalogHideUnwatchedEpisodeImagesDescription
             )
             toggle(
                 .overviews,
-                title: "Hide unwatched episode descriptions",
-                description: "Hide an episode's description until you start watching it."
+                title: .settingsManifestCatalogHideUnwatchedEpisodeOverviewsLabel,
+                description: .settingsManifestCatalogHideUnwatchedEpisodeOverviewsDescription
             )
         } header: {
-            Text("Spoilers")
+            Text(.settingsSectionSpoilers)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
-            Text(footerText)
+            Text(verbatim: footerText)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
@@ -32,8 +34,8 @@ struct EpisodeSpoilerSettingsSection: View {
 
     private func toggle(
         _ setting: EpisodeSpoilerSetting,
-        title: String,
-        description: String
+        title: LocalizedStringResource,
+        description: LocalizedStringResource
     ) -> some View {
         Toggle(isOn: Binding(
             get: { store.settings[setting] },
@@ -51,7 +53,7 @@ struct EpisodeSpoilerSettingsSection: View {
     /// The scope note, then whatever keeps the switches from saving, then any
     /// failed save, one line each.
     private var footerText: String {
-        var lines = ["Applies to episodes you have not started, on every device that uses this profile."]
+        var lines = [AppLanguage.string(.settingsSpoilersFooter, locale: locale)]
         if let status = store.statusMessage {
             lines.append(status)
         }

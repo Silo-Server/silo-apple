@@ -36,7 +36,7 @@ struct AutoDownloadBanner: View {
                             .lineLimit(1)
                     }
                     Spacer(minLength: 8)
-                    Image(systemName: "chevron.right")
+                    Image(systemName: "chevron.forward")
                         .font(.footnote.weight(.semibold))
                         .foregroundColor(.siloSecondaryText)
                 }
@@ -49,8 +49,11 @@ struct AutoDownloadBanner: View {
                 .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Monitoring. \(AutoDownloadRules.headline(status)). \(AutoDownloadRules.ruleSummary(for: subscription))")
-            .accessibilityHint("Shows monitoring options")
+            .accessibilityLabel(Text(.downloadsMonitorListBannerAccessibility(
+                AutoDownloadRules.headline(status),
+                AutoDownloadRules.ruleSummary(for: subscription)
+            )))
+            .accessibilityHint(Text(.downloadsMonitorListBannerHint))
             .task(id: seriesId) { await schedule.refresh() }
             .sheet(isPresented: $showOptions) {
                 SeriesDownloadSheet(seriesId: seriesId, seriesTitle: seriesTitle, seasons: seasons, startsOnMonitor: true)
