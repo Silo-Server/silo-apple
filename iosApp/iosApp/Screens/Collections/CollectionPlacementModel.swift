@@ -842,14 +842,23 @@ final class AddToCollectionModel {
                 HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
                 if self.requestIdentity() == startIdentity {
                     NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
-                    if wasIn == nil,
-                       let refreshed = try? await self.api.collections(),
-                       self.requestIdentity() == startIdentity,
-                       self.entryGeneration[collectionId] == myEntryGen,
-                       let matched = refreshed.collections?.first(where: { $0.id == collectionId }),
-                       let freshCount = matched.itemCount,
-                       let idx = self.entries.firstIndex(where: { $0.id == collectionId }) {
-                        self.entries[idx].itemCount = freshCount
+                    if wasIn == nil {
+                        for _ in 0..<3 {
+                            let refreshStartToken = ResponseCache.shared.writeToken
+                            guard let refreshed = try? await self.api.collections(),
+                                  !Task.isCancelled,
+                                  self.requestIdentity() == startIdentity,
+                                  self.entryGeneration[collectionId] == myEntryGen else { break }
+                            if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: refreshStartToken) {
+                                continue
+                            }
+                            if let matched = refreshed.collections?.first(where: { $0.id == collectionId }),
+                               let freshCount = matched.itemCount,
+                               let idx = self.entries.firstIndex(where: { $0.id == collectionId }) {
+                                self.entries[idx].itemCount = freshCount
+                            }
+                            break
+                        }
                     }
                 }
             } catch {

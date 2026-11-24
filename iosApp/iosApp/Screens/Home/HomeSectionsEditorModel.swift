@@ -87,6 +87,7 @@ final class HomeSectionsEditorModel {
     @ObservationIgnored private var saveFailureCount = 0
     @ObservationIgnored private var acknowledgedFailureCount = 0
     @ObservationIgnored private var editGeneration = 0
+    @ObservationIgnored private var dragGeneration = 0
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var pickerLoadGeneration = 0
 
@@ -604,6 +605,7 @@ final class HomeSectionsEditorModel {
         let newIndex = index + offset
         let anchorAfterId = newIndex + 1 < visible.count ? visible[newIndex + 1].id : nil
         let anchorBeforeId = newIndex > 0 ? visible[newIndex - 1].id : nil
+        dragGeneration += 1
         activeDragPlacement = DragPlacement(
             movedId: id,
             anchorAfterId: anchorAfterId,
@@ -972,6 +974,7 @@ final class HomeSectionsEditorModel {
     private func reloadAfterReset(expectedIdentity: HTTPRequestIdentity?, preservingError: String?) async {
         loadGeneration += 1
         let myLoadGen = loadGeneration
+        let startDragGen = dragGeneration
         isRefreshing = true
         defer {
             if loadGeneration == myLoadGen {
@@ -988,7 +991,9 @@ final class HomeSectionsEditorModel {
                         continue
                     }
                     let message = preservingError ?? ErrorState(URLError(.cannotLoadFromNetwork)).message
-                    activeDragPlacement = nil
+                    if dragGeneration == startDragGen {
+                        activeDragPlacement = nil
+                    }
                     phase = .failed(message)
                     saveError = message
                     return
@@ -1017,7 +1022,9 @@ final class HomeSectionsEditorModel {
                       loadGeneration == myLoadGen,
                       requestIdentity() == expectedIdentity else { return }
                 let message = preservingError ?? ErrorState(error).message
-                activeDragPlacement = nil
+                if dragGeneration == startDragGen {
+                    activeDragPlacement = nil
+                }
                 phase = .failed(message)
                 saveError = message
                 return
