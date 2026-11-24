@@ -1227,6 +1227,8 @@ final class ProfileHomeLayoutTests: XCTestCase {
             }
             try await Task.sleep(for: .milliseconds(10))
         }
+        XCTAssertEqual(writeTransport.writtenValues.count, writesBeforeRevertCheck + 1)
+        XCTAssertEqual(writeTransport.writtenValues.last, .bool(false))
         XCTAssertTrue(model.hideWatchedItems)
         XCTAssertFalse(model.hasReconcilingKeys)
 

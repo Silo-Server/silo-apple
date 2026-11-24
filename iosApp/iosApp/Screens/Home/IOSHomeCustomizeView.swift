@@ -1230,9 +1230,12 @@ struct IOSHomeSectionsSettingsView: View {
                       !Task.isCancelled,
                       librariesLoadGeneration == myGen,
                       SeekIntervalPreferences.activeRequestIdentity() == startIdentity else { break }
-                if ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startToken),
-                   attempt < 2 {
-                    continue
+                if ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startToken) {
+                    if attempt < 2 { continue }
+                    if libraries.isEmpty {
+                        librariesError = AppLanguage.string(.statusErrorGeneric, locale: locale)
+                    }
+                    break
                 }
                 librariesError = ErrorState(error).message
                 break

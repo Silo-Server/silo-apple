@@ -180,12 +180,14 @@ final class ProfilePrefsEditor {
         let serverURL: String
         let profileId: String?
         let clientFamily: String
+        let localAccountId: String?
 
         init(_ identity: HTTPRequestIdentity) {
             self.serverId = identity.serverId
             self.serverURL = identity.serverURL
             self.profileId = identity.profileId
             self.clientFamily = identity.clientFamily
+            self.localAccountId = identity.localAccountId
         }
     }
 
@@ -279,6 +281,7 @@ final class ProfilePrefsEditor {
             where scope.profileId == startProfileId
                 && scope.requestIdentity == startIdentityKey
                 && reconciliationHolds[scope] == capturedGen {
+                guard editGenerations[scope.key] == generations[scope.key] else { continue }
                 reconciliationHolds.removeValue(forKey: scope)
                 if scope.key == ProfileSettingKeys.subtitleLanguage {
                     reconciledSubtitleLanguage = true
@@ -286,8 +289,7 @@ final class ProfilePrefsEditor {
                     reconciledMetadataLanguage = true
                 }
             }
-            if reconciledSubtitleLanguage,
-               editGenerations[ProfileSettingKeys.subtitleLanguage] == generations[ProfileSettingKeys.subtitleLanguage] {
+            if reconciledSubtitleLanguage {
                 ProfilePrefsStore.shared.setPreferredSubtitleLanguage(preferences.subtitleLanguage)
             }
             if reconciledMetadataLanguage {

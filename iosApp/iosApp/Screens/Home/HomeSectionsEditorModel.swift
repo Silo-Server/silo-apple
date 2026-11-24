@@ -979,6 +979,7 @@ final class HomeSectionsEditorModel {
                 self.hasLoadedFromServer = false
                 self.phase = .loading
                 self.saveError = nil
+                self.acknowledgedFailureCount = self.saveFailureCount
                 Self.refreshScope(self.scope)
                 await self.reloadAfterReset(expectedIdentity: startIdentity, preservingError: nil)
             } catch {

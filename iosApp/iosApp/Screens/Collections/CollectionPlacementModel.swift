@@ -252,6 +252,7 @@ final class CollectionPlacementModel {
         guard hasLoadedHome, !isLoading, !isUpdatingHome else { return }
         let startIdentity = requestIdentity()
         homeMutationGeneration += 1
+        let myHomeGen = homeMutationGeneration
         isUpdatingHome = true
         defer {
             homeMutationGeneration += 1
@@ -267,7 +268,7 @@ final class CollectionPlacementModel {
             // edits made elsewhere since this page opened are preserved.
             let layout = try await api.profileLayout(scope: .home)
             guard !Task.isCancelled, requestIdentity() == startIdentity else {
-                if requestIdentity() == startIdentity {
+                if requestIdentity() == startIdentity && homeMutationGeneration == myHomeGen {
                     isPinnedOnHome = !targetPinned
                 }
                 return
@@ -311,7 +312,8 @@ final class CollectionPlacementModel {
               let idx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }),
               libraryPlacements[idx].hasLoaded else { return }
         let startIdentity = requestIdentity()
-        libraryMutationGeneration[libraryId, default: 0] += 1
+        let myLibGen = libraryMutationGeneration[libraryId, default: 0] + 1
+        libraryMutationGeneration[libraryId] = myLibGen
         updatingLibraryIds.insert(libraryId)
         defer {
             libraryMutationGeneration[libraryId, default: 0] += 1
@@ -326,6 +328,7 @@ final class CollectionPlacementModel {
             let layout = try await api.profileLayout(scope: .library(libraryId))
             guard !Task.isCancelled, requestIdentity() == startIdentity else {
                 if requestIdentity() == startIdentity,
+                   libraryMutationGeneration[libraryId] == myLibGen,
                    let restoreIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
                     libraryPlacements[restoreIdx].isPinned = !targetPinned
                 }
