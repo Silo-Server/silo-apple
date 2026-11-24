@@ -432,7 +432,7 @@ struct PlayerView: View {
             }
         }
         // Menu button: step seek-session → HUD → buffering pill → (starting:
-        // dismiss) → intro pill → overlay → dismiss.
+        // dismiss) → timed skip pill → overlay → dismiss.
         // Matches the Infuse / Apple TV pattern. Runs at the shell level
         // so it fires even if focus has drifted — the HUD's own
         // `onExitCommand` handles the common case where focus is inside

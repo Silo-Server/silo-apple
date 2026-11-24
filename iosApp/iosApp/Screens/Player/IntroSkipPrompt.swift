@@ -63,7 +63,8 @@ enum IntroSkipMode: String, CaseIterable, Identifiable, Sendable {
 ///
 /// The only seek this type asks for on its own is the immediate skip that
 /// `always` is: ``update(_:)`` returns its target and the caller performs it.
-/// Every seek the viewer triggers is returned by ``select()`` the same way.
+/// Every seek the viewer triggers is returned by ``select()`` or
+/// ``activate()`` the same way.
 ///
 /// ### Timing
 ///

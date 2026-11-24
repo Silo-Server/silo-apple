@@ -385,7 +385,7 @@ struct TVPlayerControls: View {
     /// to the corner when they hide. One pill at a time: Skip Intro, or Skip
     /// Recap or Skip Credits behind it. Fades in, and fades out when its timer
     /// runs out; Select and Menu take it down instantly (see
-    /// `PlayerViewModel.selectIntroSkipPrompt`).
+    /// `PlayerViewModel.selectIntroSkipPrompt` and `skipCurrentSegment`).
     ///
     /// One focus owner at a time (docs/tvos-focus.md). With the controls
     /// hidden, the shell's press capture owns the remote and routes Select to
