@@ -218,15 +218,16 @@ final class CollectionPlacementModel {
             let message = ErrorState(error).message
             if APIv2MutationOutcome(error).mayHaveApplied {
                 HomeSectionsEditorModel.refreshScope(.home)
-                if let fresh = try? await api.profileLayout(scope: .home),
-                   requestIdentity() == startIdentity {
+                let fresh = try? await api.profileLayout(scope: .home)
+                guard requestIdentity() == startIdentity else { return }
+                if let fresh {
                     isPinnedOnHome = ProfileHomeLayout.pinnedCollectionRow(
                         collectionId: collectionId,
                         isUserCollection: isUserCollection,
                         in: fresh.rows
                     ) != nil
                     hasLoadedHome = true
-                } else if requestIdentity() == startIdentity {
+                } else {
                     isPinnedOnHome = false
                     hasLoadedHome = false
                 }
@@ -272,8 +273,9 @@ final class CollectionPlacementModel {
             let message = ErrorState(error).message
             if APIv2MutationOutcome(error).mayHaveApplied {
                 HomeSectionsEditorModel.refreshScope(.library(libraryId))
-                if let fresh = try? await api.profileLayout(scope: .library(libraryId)),
-                   requestIdentity() == startIdentity,
+                let fresh = try? await api.profileLayout(scope: .library(libraryId))
+                guard requestIdentity() == startIdentity else { return }
+                if let fresh,
                    let refreshedIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
                     libraryPlacements[refreshedIdx].isPinned = ProfileHomeLayout.pinnedCollectionRow(
                         collectionId: collectionId,
@@ -281,8 +283,7 @@ final class CollectionPlacementModel {
                         in: fresh.rows
                     ) != nil
                     libraryPlacements[refreshedIdx].hasLoaded = true
-                } else if requestIdentity() == startIdentity,
-                          let refreshedIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
+                } else if let refreshedIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
                     libraryPlacements[refreshedIdx].isPinned = false
                     libraryPlacements[refreshedIdx].hasLoaded = false
                 }
@@ -320,24 +321,25 @@ final class CollectionPlacementModel {
             guard requestIdentity() == startIdentity, shareMutationGeneration == myShareGen else { return }
             isShared = updated.isShared ?? targetShared
             // Re-read editor to hold the fresh ETag for subsequent toggles.
-            if let fresh = try? await api.collectionEditor(id: collectionId),
-               requestIdentity() == startIdentity,
-               shareMutationGeneration == myShareGen {
+            let fresh = try? await api.collectionEditor(id: collectionId)
+            guard requestIdentity() == startIdentity, shareMutationGeneration == myShareGen else { return }
+            if let fresh {
                 collectionVersion = fresh.version
                 isShared = fresh.value.isShared ?? isShared
                 shareLoadFailed = false
-            } else if requestIdentity() == startIdentity, shareMutationGeneration == myShareGen {
+            } else {
                 collectionVersion = nil
             }
         } catch {
             guard requestIdentity() == startIdentity, shareMutationGeneration == myShareGen else { return }
-            if let fresh = try? await api.collectionEditor(id: collectionId),
-               requestIdentity() == startIdentity,
-               shareMutationGeneration == myShareGen {
+            let message = ErrorState(error).message
+            let fresh = try? await api.collectionEditor(id: collectionId)
+            guard requestIdentity() == startIdentity, shareMutationGeneration == myShareGen else { return }
+            if let fresh {
                 collectionVersion = fresh.version
                 isShared = fresh.value.isShared ?? !targetShared
                 shareLoadFailed = false
-            } else if requestIdentity() == startIdentity, shareMutationGeneration == myShareGen {
+            } else {
                 isShared = !targetShared
                 collectionVersion = nil
                 if APIv2MutationOutcome(error).mayHaveApplied {
@@ -345,7 +347,7 @@ final class CollectionPlacementModel {
                     shareLoadFailed = true
                 }
             }
-            errorMessage = ErrorState(error).message
+            errorMessage = message
         }
     }
 
@@ -659,6 +661,7 @@ final class AddToCollectionModel {
             return .failed
         }
 
+        ResponseCache.shared.remove(CacheKey.collections)
         createdCollectionId = created.id
         busyCollectionIds.insert(created.id)
         let myEntryGen = entryGeneration[created.id, default: 0] + 1

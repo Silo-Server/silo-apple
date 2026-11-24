@@ -420,10 +420,16 @@ final class ProfileHomeLayoutTests: XCTestCase {
         await edit2.value
 
         XCTAssertEqual(editor.phase, .loaded)
-        XCTAssertNil(editor.saveError)
+        XCTAssertNotNil(editor.saveError)
         XCTAssertEqual(editor.rows.map(\.hidden), [true, true, false])
         let putRequests = stub.requests.filter { $0.method == "PUT" && $0.path == "/api/v2/profile/sections" }
         XCTAssertEqual(putRequests.count, 2)
+        // Done stays open once when an earlier edit in the waited batch failed,
+        // then closes on a second tap once the user has seen the error.
+        let firstDone = await editor.waitForPendingSaves()
+        XCTAssertFalse(firstDone)
+        let secondDone = await editor.waitForPendingSaves()
+        XCTAssertTrue(secondDone)
     }
 
     @MainActor
@@ -455,7 +461,14 @@ final class ProfileHomeLayoutTests: XCTestCase {
         stub.reply(path: "/api/v2/profile/sections", 200, #"{"items":[]}"#)
         stub.hold(path: "/api/v2/profile/sections/settings")
 
-        let editor = HomeSectionsEditorModel(scope: .home, api: api, requestIdentity: { currentIdentity })
+        var onNextIdentityRead: (() -> Void)?
+        let editor = HomeSectionsEditorModel(scope: .home, api: api, requestIdentity: {
+            if let signal = onNextIdentityRead {
+                onNextIdentityRead = nil
+                signal()
+            }
+            return currentIdentity
+        })
 
         let first = Task {
             await editor.performQuickAction { $0.setHidden(true, id: "sec-a") }
@@ -463,15 +476,19 @@ final class ProfileHomeLayoutTests: XCTestCase {
         await stub.waitUntilHeld()
 
         var secondMutationRan = false
-        let second = Task {
-            await editor.performQuickAction { model in
-                secondMutationRan = true
-                return model.setHidden(true, id: "sec-a")
+        var secondTask: Task<HomeSectionsEditorModel.QuickActionResult, Never>?
+        await withCheckedContinuation { continuation in
+            onNextIdentityRead = { continuation.resume() }
+            secondTask = Task {
+                await editor.performQuickAction { model in
+                    secondMutationRan = true
+                    return model.setHidden(true, id: "sec-a")
+                }
             }
         }
-        await Task.yield()
+        let second = try XCTUnwrap(secondTask)
 
-        // Switch profile before releasing the first action's load.
+        // Switch profile only after `second` has deterministically captured `profile-one`.
         currentIdentity = HTTPRequestIdentity(
             serverId: "layout-test",
             serverURL: "https://layout.example",

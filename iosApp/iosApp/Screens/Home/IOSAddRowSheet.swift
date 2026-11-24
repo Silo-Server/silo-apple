@@ -72,7 +72,7 @@ struct IOSAddRowSheet: View {
             }
         }
         .task {
-            await editor.loadPickerCatalogIfNeeded(force: true)
+            await editor.loadPickerCatalogIfNeeded()
         }
     }
 
@@ -233,7 +233,7 @@ struct IOSAddRowSheet: View {
                                 subtitle: serverCollectionSubtitle(collection, locale: locale),
                                 posterUrl: collection.posterUrl,
                                 posterThumbhash: collection.posterThumbhash,
-                                badge: editor.isCollectionPresent(collectionId: collection.id, isUserCollection: false)
+                                badge: editor.isCollectionPresent(collectionId: collection.id, isUserCollection: collection.isUserCollection)
                                     ? AppLanguage.string(.homeAddRowOnPageBadge(pageLabel), locale: locale)
                                     : nil
                             )
@@ -982,7 +982,7 @@ private struct IOSCollectionPickerView: View {
                                     subtitle: serverCollectionSubtitle(collection, locale: locale),
                                     posterUrl: collection.posterUrl,
                                     posterThumbhash: collection.posterThumbhash,
-                                    badge: editor.isCollectionPresent(collectionId: collection.id, isUserCollection: false)
+                                    badge: editor.isCollectionPresent(collectionId: collection.id, isUserCollection: collection.isUserCollection)
                                         ? AppLanguage.string(.homeAddRowOnPageBadge(pageLabel), locale: locale)
                                         : nil
                                 )
@@ -1026,8 +1026,10 @@ private enum PickedCollectionTarget {
     }
 
     var isUserCollection: Bool {
-        if case .personal = self { return true }
-        return false
+        switch self {
+        case .personal: return true
+        case .server(let c): return c.isUserCollection
+        }
     }
 
     var defaultTitle: String {
@@ -1357,7 +1359,7 @@ private struct IOSCollectionPostersBuilderView: View {
                 if !filteredServer.isEmpty {
                     Section(.homeAddRowSectionServerCollections) {
                         ForEach(filteredServer) { collection in
-                            let ref = SelectedRef(isUserCollection: false, collectionId: collection.id)
+                            let ref = SelectedRef(isUserCollection: collection.isUserCollection, collectionId: collection.id)
                             let isChosen = selectedSet.contains(ref)
                             selectableCollectionButton(
                                 title: collection.title,
@@ -1492,8 +1494,7 @@ private struct IOSCollectionPostersBuilderView: View {
            let col = editor.personalCollections.first(where: { $0.id == ref.collectionId }) {
             return (col.name, AppLanguage.string(.homeAddRowPersonalCollection, locale: locale), col.posterUrl, col.posterThumbhash)
         }
-        if !ref.isUserCollection,
-           let col = editor.serverCollections.first(where: { $0.id == ref.collectionId }) {
+        if let col = editor.serverCollections.first(where: { $0.id == ref.collectionId && $0.isUserCollection == ref.isUserCollection }) {
             return (col.title, col.libraryName, col.posterUrl, col.posterThumbhash)
         }
         return (AppLanguage.string(.collectionsCollection, locale: locale), nil, nil, nil)

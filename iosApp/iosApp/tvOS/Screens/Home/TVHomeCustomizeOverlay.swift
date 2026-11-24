@@ -1281,8 +1281,9 @@ struct TVAddRowModal: View {
                 }
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
                     ForEach(editor.serverCollections) { collection in
-                        let isAdded = editor.isCollectionPresent(collectionId: collection.id, isUserCollection: false)
-                            || addedKeys.contains("lib:\(collection.id)")
+                        let key = "\(collection.isUserCollection ? "user" : "lib"):\(collection.id)"
+                        let isAdded = editor.isCollectionPresent(collectionId: collection.id, isUserCollection: collection.isUserCollection)
+                            || addedKeys.contains(key)
                         collectionCard(
                             title: collection.title,
                             subtitle: collection.itemCount > 0
@@ -1293,16 +1294,15 @@ struct TVAddRowModal: View {
                             isAdded: isAdded
                         ) {
                             guard !isAdded else { return }
-                            let key = "lib:\(collection.id)"
                             addedKeys.insert(key)
                             let task = editor.addCollectionRow(
                                 collectionId: collection.id,
                                 title: collection.title,
-                                isUserCollection: false
+                                isUserCollection: collection.isUserCollection
                             )
                             Task {
                                 await task.value
-                                if !editor.isCollectionPresent(collectionId: collection.id, isUserCollection: false) {
+                                if !editor.isCollectionPresent(collectionId: collection.id, isUserCollection: collection.isUserCollection) {
                                     addedKeys.remove(key)
                                 }
                             }

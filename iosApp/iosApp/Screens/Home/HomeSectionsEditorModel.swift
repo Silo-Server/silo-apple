@@ -25,6 +25,7 @@ final class HomeSectionsEditorModel {
         let itemCount: Int
         let posterUrl: String?
         let posterThumbhash: String?
+        let isUserCollection: Bool
     }
 
     let scope: ProfileSectionsScope
@@ -56,6 +57,7 @@ final class HomeSectionsEditorModel {
     private(set) var serverCollectionsError: String?
     @ObservationIgnored private var hasLoadedPickerCatalog = false
     @ObservationIgnored private var pickerCatalogIdentity: HTTPRequestIdentity?
+    @ObservationIgnored private var pickerCatalogCacheToken: UInt64 = 0
 
     @ObservationIgnored private let api: SiloAPI
     @ObservationIgnored private let newID: () -> String
@@ -66,6 +68,8 @@ final class HomeSectionsEditorModel {
     @ObservationIgnored private var saveChain: Task<Void, Never>?
     @ObservationIgnored private var quickActionChain: Task<Void, Never>?
     @ObservationIgnored private var pendingSaveCount = 0
+    @ObservationIgnored private var saveFailureCount = 0
+    @ObservationIgnored private var acknowledgedFailureCount = 0
     @ObservationIgnored private var editGeneration = 0
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var pickerLoadGeneration = 0
@@ -216,10 +220,16 @@ final class HomeSectionsEditorModel {
     /// Loads recipes, personal collections, and server collections for the `+ Add Row` picker.
     func loadPickerCatalogIfNeeded(force: Bool = false) async {
         let currentIdentity = requestIdentity()
-        guard force || !hasLoadedPickerCatalog || pickerCatalogIdentity != currentIdentity else { return }
+        let collectionsInvalidated = hasLoadedPickerCatalog
+            && ResponseCache.shared.wasInvalidated(CacheKey.collections, after: pickerCatalogCacheToken)
+        guard force
+            || !hasLoadedPickerCatalog
+            || pickerCatalogIdentity != currentIdentity
+            || collectionsInvalidated else { return }
         pickerLoadGeneration += 1
         let myGen = pickerLoadGeneration
         let startIdentity = currentIdentity
+        let startCacheToken = ResponseCache.shared.writeToken
         isLoadingPickerCatalog = true
         defer {
             if pickerLoadGeneration == myGen {
@@ -279,22 +289,21 @@ final class HomeSectionsEditorModel {
                     group.addTask { [api] in
                         do {
                             let response = try await api.libraryCollections(libraryId: library.id)
-                            // Exclude personal collections surfaced inside a library's
-                            // `user_collections` group; those are already listed under
-                            // `personalCollections` and must serialize as `user_collection_id`.
-                            let mapped = response.collections
-                                .filter { $0.kind != .userCollections }
-                                .map { col in
-                                    ServerCollectionOption(
-                                        id: col.id,
-                                        title: col.name,
-                                        libraryId: library.id,
-                                        libraryName: library.name,
-                                        itemCount: col.itemCount ?? 0,
-                                        posterUrl: col.posterUrl,
-                                        posterThumbhash: col.posterThumbhash
-                                    )
-                                }
+                            // Preserve `isUserCollection` so household-shared personal
+                            // collections surfaced inside a library's `user_collections`
+                            // group remain addable and serialize as `user_collection_id`.
+                            let mapped = response.collections.map { col in
+                                ServerCollectionOption(
+                                    id: col.id,
+                                    title: col.name,
+                                    libraryId: library.id,
+                                    libraryName: library.name,
+                                    itemCount: col.itemCount ?? 0,
+                                    posterUrl: col.posterUrl,
+                                    posterThumbhash: col.posterThumbhash,
+                                    isUserCollection: col.kind == .userCollections
+                                )
+                            }
                             return .success(mapped)
                         } catch {
                             return .failure(error)
@@ -314,9 +323,16 @@ final class HomeSectionsEditorModel {
                 }
             }
             guard !Task.isCancelled, pickerLoadGeneration == myGen, requestIdentity() == startIdentity else { return }
+            let ownPersonalIds = Set(personalCollections.map(\.id))
             var seen = Set<String>()
             serverCollections = collected
-                .filter { seen.insert($0.id).inserted }
+                .filter { option in
+                    if option.isUserCollection && ownPersonalIds.contains(option.id) {
+                        return false
+                    }
+                    let dedupeKey = "\(option.isUserCollection ? "user" : "lib"):\(option.id)"
+                    return seen.insert(dedupeKey).inserted
+                }
                 .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
             if libraryErrors > 0 {
                 serverCollectionsError = ErrorState(firstLibraryError ?? URLError(.cannotLoadFromNetwork)).message
@@ -330,8 +346,10 @@ final class HomeSectionsEditorModel {
             allSucceeded = false
         }
 
-        hasLoadedPickerCatalog = allSucceeded
-        pickerCatalogIdentity = allSucceeded ? startIdentity : nil
+        let invalidatedWhileLoading = ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken)
+        hasLoadedPickerCatalog = allSucceeded && !invalidatedWhileLoading
+        pickerCatalogIdentity = hasLoadedPickerCatalog ? startIdentity : nil
+        pickerCatalogCacheToken = startCacheToken
     }
 
     // MARK: - Queries
@@ -538,17 +556,24 @@ final class HomeSectionsEditorModel {
         featured: Bool = false
     ) -> Task<Void, Never> {
         let nonEmptyConfig = (config?.isEmpty == false) ? config : nil
-        // Pre-check if unhiding an existing matching hidden row when defaults are kept.
-        if !featured && itemLimit == 20,
-           let existingIdx = committedRows.firstIndex(where: { row in
-               row.hidden
-                   && Self.matchesRecipe(row, sectionType: sectionType, params: nonEmptyConfig ?? [:])
-                   && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
-           }) {
-            return setHidden(false, id: committedRows[existingIdx].id)
-        }
+        // Capture any currently matching hidden row to prefer on replay; keep
+        // the full Add intent so if an optimistic match rolls back, rebasing
+        // still creates the requested row.
+        let preferredId: String? = (!featured && itemLimit == 20)
+            ? committedRows.first(where: { row in
+                row.hidden
+                    && Self.matchesRecipe(row, sectionType: sectionType, params: nonEmptyConfig ?? [:])
+                    && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
+            })?.id
+            : nil
         let id = newID()
         return applyEdit { rows in
+            if let preferredId, let existingIdx = rows.firstIndex(where: { $0.id == preferredId }) {
+                guard rows[existingIdx].hidden else { return nil }
+                var next = rows
+                next[existingIdx].hidden = false
+                return next
+            }
             if !featured && itemLimit == 20,
                let existingIdx = rows.firstIndex(where: { row in
                    row.hidden
@@ -587,18 +612,27 @@ final class HomeSectionsEditorModel {
         itemLimit: Int = 20,
         featured: Bool = false
     ) -> Task<Void, Never> {
-        if !featured && itemLimit == 20,
-           let existing = ProfileHomeLayout.matchingCollectionRow(
-               collectionId: collectionId,
-               isUserCollection: isUserCollection,
-               in: committedRows
-           ),
-           existing.hidden,
-           existing.displayTitle.caseInsensitiveCompare(title) == .orderedSame {
-            return setHidden(false, id: existing.id)
-        }
+        let preferredId: String? = {
+            guard !featured && itemLimit == 20,
+                  let existing = ProfileHomeLayout.matchingCollectionRow(
+                      collectionId: collectionId,
+                      isUserCollection: isUserCollection,
+                      in: committedRows
+                  ),
+                  existing.hidden,
+                  existing.displayTitle.caseInsensitiveCompare(title) == .orderedSame else {
+                return nil
+            }
+            return existing.id
+        }()
         let id = newID()
         return applyEdit { rows in
+            if let preferredId, let existingIdx = rows.firstIndex(where: { $0.id == preferredId }) {
+                guard rows[existingIdx].hidden else { return nil }
+                var next = rows
+                next[existingIdx].hidden = false
+                return next
+            }
             if !featured && itemLimit == 20,
                let existingIdx = rows.firstIndex(where: { row in
                    row.hidden
@@ -713,16 +747,22 @@ final class HomeSectionsEditorModel {
     }
 
     /// Waits for any queued row saves to settle before closing Customize Mode.
-    /// Returns `false` if a pending save ended with an error so the editor
-    /// stays visible to show the failure instead of dismissing silently.
+    /// Returns `false` if any unacknowledged save failed (either right before
+    /// Done or during the waited batch, even if a later save succeeded) so the
+    /// editor stays open once to show the failure; a subsequent Done tap with no
+    /// new failure acknowledges it and closes cleanly.
     func waitForPendingSaves() async -> Bool {
-        guard pendingSaveCount > 0 else { return true }
+        let failureCountAtTap = saveFailureCount
         var generation: Int
         repeat {
             generation = editGeneration
             await saveChain?.value
         } while generation != editGeneration || pendingSaveCount > 0
-        return saveError == nil
+        if saveFailureCount > acknowledgedFailureCount || saveFailureCount > failureCountAtTap {
+            acknowledgedFailureCount = saveFailureCount
+            return false
+        }
+        return true
     }
 
     func resetToServerDefault() async {
@@ -858,7 +898,10 @@ final class HomeSectionsEditorModel {
               next != committedRows else { return Task {} }
         dragDraftVisibleOrder = nil
         committedRows = next
-        saveError = nil
+        if pendingSaveCount == 0 {
+            saveError = nil
+            acknowledgedFailureCount = saveFailureCount
+        }
         editGeneration += 1
         let gen = editGeneration
         let identity = requestIdentity()
@@ -903,11 +946,14 @@ final class HomeSectionsEditorModel {
             confirmedRows = sent
             pendingEdits.removeAll { $0.generation <= sentGeneration }
             if pendingEdits.isEmpty { pendingEditsIdentity = nil }
-            saveError = nil
+            if saveFailureCount == acknowledgedFailureCount {
+                saveError = nil
+            }
             Self.refreshScope(scope)
         } catch {
             guard requestIdentity() == startIdentity else { return }
             let message = ErrorState(error).message
+            saveFailureCount += 1
             pendingEdits.removeAll { $0.generation <= sentGeneration }
             if pendingEdits.isEmpty { pendingEditsIdentity = nil }
             if APIv2MutationOutcome(error).mayHaveApplied {
@@ -1015,6 +1061,7 @@ final class HomePreferencesModel {
     private struct DeferredWrite {
         let generation: Int
         let value: SettingJSONValue
+        let onApplyOptimistic: @MainActor () -> Void
         let onConfirm: @MainActor () -> Void
         let onRevertToConfirmed: @MainActor () -> Void
     }
@@ -1022,7 +1069,6 @@ final class HomePreferencesModel {
     @ObservationIgnored private let transport: ProfileScopedSettingTransport
     @ObservationIgnored private let writer: ProfileSettingsWriter
     @ObservationIgnored private let requestIdentity: @MainActor () -> HTTPRequestIdentity?
-    @ObservationIgnored private var activeIdentity: HTTPRequestIdentity?
     @ObservationIgnored private var loadedIdentity: HTTPRequestIdentity?
     @ObservationIgnored private var loadSequence = 0
     @ObservationIgnored private var confirmedNextUpMode: NextUpMode = .combined
@@ -1084,16 +1130,8 @@ final class HomePreferencesModel {
             isAuthorized = false
             supportedKeys = []
             loadedIdentity = nil
-            activeIdentity = nil
-            deferredWrites.removeAll()
-            reconcilingKeys.removeAll()
             errorMessage = nil
             return
-        }
-        if activeIdentity != identity {
-            deferredWrites = deferredWrites.filter { $0.key.identity == identity }
-            reconcilingKeys = reconcilingKeys.filter { $0.identity == identity }
-            activeIdentity = identity
         }
         if loadedIdentity != identity {
             isAuthorized = false
@@ -1233,10 +1271,12 @@ final class HomePreferencesModel {
             errorMessage = preservingError
 
             for (key, deferred) in deferredToDispatch {
+                deferred.onApplyOptimistic()
                 enqueueWrite(
                     key: key,
                     value: deferred.value,
                     identity: identity,
+                    onApplyOptimistic: deferred.onApplyOptimistic,
                     onConfirm: deferred.onConfirm,
                     onRevertToConfirmed: deferred.onRevertToConfirmed
                 )
@@ -1267,6 +1307,7 @@ final class HomePreferencesModel {
             key: .uiNextUpMode,
             value: .string(mode.rawValue),
             identity: identity,
+            onApplyOptimistic: { self.nextUpMode = mode },
             onConfirm: { self.confirmedNextUpMode = mode },
             onRevertToConfirmed: { self.nextUpMode = self.confirmedNextUpMode }
         )
@@ -1279,6 +1320,7 @@ final class HomePreferencesModel {
             key: .uiNextUpNewReleasesFirst,
             value: .bool(enabled),
             identity: identity,
+            onApplyOptimistic: { self.newReleasesFirst = enabled },
             onConfirm: { self.confirmedNewReleasesFirst = enabled },
             onRevertToConfirmed: { self.newReleasesFirst = self.confirmedNewReleasesFirst }
         )
@@ -1291,6 +1333,7 @@ final class HomePreferencesModel {
             key: .homeHideWatchedItems,
             value: .bool(enabled),
             identity: identity,
+            onApplyOptimistic: { self.hideWatchedItems = enabled },
             onConfirm: { self.confirmedHideWatchedItems = enabled },
             onRevertToConfirmed: { self.hideWatchedItems = self.confirmedHideWatchedItems }
         )
@@ -1300,6 +1343,7 @@ final class HomePreferencesModel {
         key: SettingKey,
         value: SettingJSONValue,
         identity: HTTPRequestIdentity,
+        onApplyOptimistic: @escaping @MainActor () -> Void,
         onConfirm: @escaping @MainActor () -> Void,
         onRevertToConfirmed: @escaping @MainActor () -> Void
     ) {
@@ -1320,31 +1364,33 @@ final class HomePreferencesModel {
                 if dispatched {
                     self.settledWrites[scope, default: 0] += 1
                 }
-                if scheduleRecoveryLoad {
+                if scheduleRecoveryLoad, self.requestIdentity() == identity {
                     let preservedError = self.errorMessage
                     Task { @MainActor [weak self] in
                         await self?.load(preservingError: preservedError)
                     }
                 }
             }
-            // Skip obsolete writes superseded while waiting, or writes from a
-            // previous account/profile after switching.
-            guard self.keyGeneration[scope] == generation,
-                  self.requestIdentity() == identity else { return }
-            // If authorization is temporarily unavailable (or this key is
-            // reconciling), retain the user's latest intent in `deferredWrites`,
-            // lock the key, and schedule an authoritative recovery load after
-            // decrementing `pendingWrites`. Once `load()` confirms authorization
-            // for `identity`, it retries this owed write automatically.
+            // Skip obsolete writes superseded while waiting.
+            guard self.keyGeneration[scope] == generation else { return }
+            // If authorization is temporarily unavailable (including after a
+            // profile switch or while this key is reconciling), retain the
+            // user's latest intent partitioned by `scope`, lock the key, and
+            // schedule a recovery load if `identity` is still active. Once
+            // `load()` confirms authorization for `identity`, it retries this
+            // owed write automatically.
             guard self.isAuthorizedForWrite(key, identity: identity) else {
                 self.deferredWrites[scope] = DeferredWrite(
                     generation: generation,
                     value: value,
+                    onApplyOptimistic: onApplyOptimistic,
                     onConfirm: onConfirm,
                     onRevertToConfirmed: onRevertToConfirmed
                 )
                 self.reconcilingKeys.insert(scope)
-                scheduleRecoveryLoad = true
+                if self.requestIdentity() == identity {
+                    scheduleRecoveryLoad = true
+                }
                 return
             }
             dispatched = true
@@ -1365,7 +1411,10 @@ final class HomePreferencesModel {
                             && self?.isAuthorizedForWrite(key, identity: identity) == true
                     }
                 )
-                guard self.isAuthorizedForWrite(key, identity: identity) else { return }
+                guard self.isAuthorizedForWrite(key, identity: identity) else {
+                    self.reconcilingKeys.insert(scope)
+                    return
+                }
                 onConfirm()
                 self.uncertainConfirmedKeys.remove(scope)
                 self.reconcilingKeys.remove(scope)
@@ -1374,38 +1423,37 @@ final class HomePreferencesModel {
                 // A superseded attempt may still have landed on the server;
                 // mark the confirmed baseline uncertain until a newer write
                 // succeeds or a fresh load reconciles the authoritative value.
-                if self.requestIdentity() == identity {
-                    self.uncertainConfirmedKeys.insert(scope)
-                }
+                self.uncertainConfirmedKeys.insert(scope)
                 return
             } catch let held as ProfileSettingsWriter.HeldChange {
                 // Automatic retries were exhausted and the server may already
                 // hold the new value; record uncertainty even if a newer write
-                // superseded this generation, and lock + reconcile immediately
-                // if this write is still the latest.
-                if self.requestIdentity() == identity {
-                    self.uncertainConfirmedKeys.insert(scope)
-                }
-                guard self.keyGeneration[scope] == generation,
-                      self.isAuthorizedForWrite(key, identity: identity) else { return }
+                // superseded this generation, and lock + reconcile if latest.
+                self.uncertainConfirmedKeys.insert(scope)
+                guard self.keyGeneration[scope] == generation else { return }
                 let message = ErrorState(held).message
-                self.errorMessage = message
                 self.reconcilingKeys.insert(scope)
-                Task { @MainActor [weak self] in
-                    await self?.load(preservingError: message)
+                if self.requestIdentity() == identity {
+                    self.errorMessage = message
+                    scheduleRecoveryLoad = true
                 }
             } catch {
-                guard self.keyGeneration[scope] == generation,
-                      self.isAuthorizedForWrite(key, identity: identity) else { return }
+                guard self.keyGeneration[scope] == generation else { return }
                 let message = ErrorState(error).message
-                self.errorMessage = message
-                if self.uncertainConfirmedKeys.contains(scope) {
-                    // Lock only this uncertain key until a fresh capability probe
-                    // and authoritative effective-values read reconcile its value,
-                    // without blocking confirmation of unrelated in-flight keys.
+                if self.requestIdentity() == identity {
+                    self.errorMessage = message
+                }
+                if !self.isAuthorizedForWrite(key, identity: identity)
+                    || self.uncertainConfirmedKeys.contains(scope) {
+                    // Authorization was unavailable when this rejection arrived
+                    // (so an in-flight recovery read may skip installing this key
+                    // because `settledWrites` incremented), or an earlier write
+                    // left server state uncertain. Lock the key in `reconcilingKeys`
+                    // so it cannot become editable with a stale optimistic value
+                    // before an authoritative reload reconciles it.
                     self.reconcilingKeys.insert(scope)
-                    Task { @MainActor [weak self] in
-                        await self?.load(preservingError: message)
+                    if self.requestIdentity() == identity {
+                        scheduleRecoveryLoad = true
                     }
                 } else {
                     onRevertToConfirmed()
