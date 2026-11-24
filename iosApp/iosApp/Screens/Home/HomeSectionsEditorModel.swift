@@ -648,9 +648,41 @@ final class HomeSectionsEditorModel {
         visible.swapAt(index, index + offset)
         let newIndex = index + offset
 
+        let targetVisibleIds = visible.map(\.id)
+        let baseVisibleIds = committedRows.filter { !$0.hidden }.map(\.id)
         var crossings = activeDragPlacement?.movedId == id ? (activeDragPlacement?.crossings ?? []) : []
         if let last = crossings.last, last.neighborId == crossedId && last.movedUp != movedUp {
-            crossings.removeLast()
+            var reduced = crossings
+            reduced.removeLast()
+            let reducedPlacement: DragPlacement?
+            if let prev = reduced.last {
+                let prevAnchorAfter = prev.movedUp
+                    ? prev.neighborId
+                    : (newIndex + 1 < visible.count ? visible[newIndex + 1].id : nil)
+                let prevAnchorBefore = prev.movedUp
+                    ? (newIndex > 0 ? visible[newIndex - 1].id : nil)
+                    : prev.neighborId
+                reducedPlacement = DragPlacement(
+                    movedId: id,
+                    crossings: reduced,
+                    anchorAfterId: prevAnchorAfter,
+                    anchorBeforeId: prevAnchorBefore,
+                    preferBeforeAnchor: !prev.movedUp,
+                    fallbackIndex: newIndex
+                )
+            } else {
+                reducedPlacement = nil
+            }
+            let replayedVisibleIds = (reducedPlacement.map { Self.applyingDragPlacement($0, to: committedRows) } ?? committedRows)
+                .filter { !$0.hidden }
+                .map(\.id)
+            if replayedVisibleIds == targetVisibleIds {
+                crossings = reduced
+            } else if targetVisibleIds == baseVisibleIds {
+                crossings = []
+            } else {
+                crossings.append(DragCrossing(neighborId: crossedId, movedUp: movedUp))
+            }
         } else {
             crossings.append(DragCrossing(neighborId: crossedId, movedUp: movedUp))
         }

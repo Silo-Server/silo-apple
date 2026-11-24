@@ -1326,8 +1326,10 @@ struct TVAddRowModal: View {
         .background(Color.siloBackground.ignoresSafeArea())
         .onExitCommand(perform: onClose)
         .task {
+            if focusedTab == nil {
+                focusedTab = selectedTab
+            }
             await editor.loadPickerCatalogIfNeeded(force: true)
-            focusedTab = .recipes
         }
     }
 

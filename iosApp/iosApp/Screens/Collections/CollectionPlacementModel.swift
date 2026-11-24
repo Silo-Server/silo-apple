@@ -45,6 +45,7 @@ final class CollectionPlacementModel {
     private(set) var isUpdatingHome = false
     private(set) var updatingLibraryIds = Set<Int>()
     private(set) var isUpdatingShare = false
+    private(set) var loadErrorMessage: String?
     private(set) var errorMessage: String?
 
     @ObservationIgnored private let api: SiloAPI
@@ -90,6 +91,7 @@ final class CollectionPlacementModel {
                 isLoading = false
             }
         }
+        loadErrorMessage = nil
         errorMessage = nil
 
         async let homeRead: Result<APIv2ProfileLayoutRead, Error> = {
@@ -131,7 +133,7 @@ final class CollectionPlacementModel {
         case .failure(let error):
             if !isUpdatingHome && homeMutationGeneration == startHomeGen {
                 hasLoadedHome = false
-                errorMessage = ErrorState(error).message
+                loadErrorMessage = ErrorState(error).message
             }
         }
 
@@ -644,7 +646,7 @@ final class AddToCollectionModel {
     @ObservationIgnored private var pendingMutations = 0
     @ObservationIgnored private var entryGeneration: [String: Int] = [:]
     @ObservationIgnored private var entriesIdentity: HTTPRequestIdentity?
-    @ObservationIgnored private var confirmedLocalEntries: [String: (identity: HTTPRequestIdentity?, entry: Entry)] = [:]
+    @ObservationIgnored private var confirmedLocalEntries: [String: (identity: HTTPRequestIdentity?, entry: Entry, isNewlyCreated: Bool)] = [:]
     @ObservationIgnored private var needsReconciliation = false
     @ObservationIgnored private var pendingReconciliationError: String?
     @ObservationIgnored private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -683,195 +685,221 @@ final class AddToCollectionModel {
             hasMutationError = false
         }
 
-        do {
-            let capabilities: APIv2CollectionCapabilities?
+        for attempt in 0..<2 {
+            let startCacheToken = ResponseCache.shared.writeToken
             do {
-                capabilities = try await api.collectionCapabilitiesIfSupported()
-            } catch {
-                guard Self.isRecoverableProbeError(error) else { throw error }
-                capabilities = nil
-            }
-            guard !Task.isCancelled,
-                  loadGeneration == myLoadGen,
-                  pendingMutations == 0,
-                  mutationGeneration == startMutationGen,
-                  requestIdentity() == startIdentity else { return }
-
-            let response: CollectionsResponse
-            let memberCollectionIds: Set<String>?
-            let usesContainsField: Bool
-            if capabilities?.supportsContainsItem == true {
+                let capabilities: APIv2CollectionCapabilities?
                 do {
-                    response = try await api.collections(containsItem: contentId)
-                    memberCollectionIds = nil
-                    usesContainsField = true
+                    capabilities = try await api.collectionCapabilitiesIfSupported()
                 } catch {
                     guard Self.isRecoverableProbeError(error) else { throw error }
-                    guard !Task.isCancelled,
-                          loadGeneration == myLoadGen,
-                          pendingMutations == 0,
-                          mutationGeneration == startMutationGen,
-                          requestIdentity() == startIdentity else { return }
-                    response = try await api.collections()
-                    memberCollectionIds = nil
-                    usesContainsField = false
-                }
-            } else {
-                usesContainsField = false
-                let supportsItemCollections: Bool
-                do {
-                    supportsItemCollections = try await api.catalogSearchFeatures().itemCollections
-                } catch {
-                    guard Self.isRecoverableProbeError(error) else { throw error }
-                    supportsItemCollections = false
+                    capabilities = nil
                 }
                 guard !Task.isCancelled,
                       loadGeneration == myLoadGen,
                       pendingMutations == 0,
                       mutationGeneration == startMutationGen,
                       requestIdentity() == startIdentity else { return }
-                if supportsItemCollections {
-                    async let collectionsTask = api.collections()
-                    async let membershipTask: Set<String>? = {
-                        do {
-                            return try await api.catalogItemCollectionIds(itemId: contentId)
-                        } catch {
-                            guard Self.isRecoverableProbeError(error) else { throw error }
-                            return nil
-                        }
-                    }()
-                    let (fetchedCollections, fetchedMembers) = try await (collectionsTask, membershipTask)
-                    response = fetchedCollections
-                    memberCollectionIds = fetchedMembers
+
+                let response: CollectionsResponse
+                let memberCollectionIds: Set<String>?
+                let usesContainsField: Bool
+                if capabilities?.supportsContainsItem == true {
+                    do {
+                        response = try await api.collections(containsItem: contentId)
+                        memberCollectionIds = nil
+                        usesContainsField = true
+                    } catch {
+                        guard Self.isRecoverableProbeError(error) else { throw error }
+                        guard !Task.isCancelled,
+                              loadGeneration == myLoadGen,
+                              pendingMutations == 0,
+                              mutationGeneration == startMutationGen,
+                              requestIdentity() == startIdentity else { return }
+                        response = try await api.collections()
+                        memberCollectionIds = nil
+                        usesContainsField = false
+                    }
                 } else {
-                    response = try await api.collections()
-                    memberCollectionIds = nil
-                }
-            }
-            guard !Task.isCancelled,
-                  loadGeneration == myLoadGen,
-                  pendingMutations == 0,
-                  mutationGeneration == startMutationGen,
-                  requestIdentity() == startIdentity else { return }
-
-            let activeProfileId = startIdentity?.profileId
-            let manual = (response.collections ?? []).filter { col in
-                let kind = (col.collectionType ?? "manual").lowercased()
-                return (kind == "manual" || kind.isEmpty)
-                    && col.isOwnedBy(profileId: activeProfileId)
-            }
-
-            var localConfirmedById: [String: Entry] = [:]
-            for (id, record) in confirmedLocalEntries
-            where record.identity == startIdentity && !unconfirmedCollectionIds.contains(id) {
-                localConfirmedById[id] = record.entry
-            }
-            if let fallbackEntry, !unconfirmedCollectionIds.contains(fallbackEntry.id) {
-                localConfirmedById[fallbackEntry.id] = fallbackEntry
-            }
-
-            var authoritativeIds = Set<String>()
-            var loaded = manual.map { col in
-                let isMember: Bool?
-                if usesContainsField {
-                    isMember = col.contains
-                } else if let memberCollectionIds {
-                    isMember = memberCollectionIds.contains(col.id)
-                } else {
-                    isMember = nil
-                }
-                if isMember != nil {
-                    authoritativeIds.insert(col.id)
-                }
-                let effectiveContains = isMember ?? localConfirmedById[col.id]?.containsItem
-                return Entry(
-                    collection: col,
-                    containsItem: effectiveContains,
-                    itemCount: col.itemCount
-                )
-            }
-            if let fallbackEntry, !loaded.contains(where: { $0.id == fallbackEntry.id }) {
-                loaded.insert(fallbackEntry, at: 0)
-            }
-            entries = loaded
-            entriesIdentity = startIdentity
-            hasLoaded = true
-            loadErrorMessage = nil
-            if uncertainCreationIdentity != startIdentity {
-                uncertainCreations.removeAll()
-                uncertainCreationIdentity = nil
-            } else if !uncertainCreations.isEmpty {
-                var loadedByName: [String: [Entry]] = [:]
-                for entry in loaded {
-                    let normalized = entry.collection.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    loadedByName[normalized, default: []].append(entry)
-                }
-                for (name, record) in uncertainCreations {
-                    let matches = loadedByName[name] ?? []
-                    if matches.count > record.baselineCount {
-                        // A matching collection is now visible in `entries`; clear the
-                        // duplicate-create hold without auto-adding the item, since a
-                        // concurrent creation on another device could share the name.
-                        uncertainCreations.removeValue(forKey: name)
+                    usesContainsField = false
+                    let supportsItemCollections: Bool
+                    do {
+                        supportsItemCollections = try await api.catalogSearchFeatures().itemCollections
+                    } catch {
+                        guard Self.isRecoverableProbeError(error) else { throw error }
+                        supportsItemCollections = false
+                    }
+                    guard !Task.isCancelled,
+                          loadGeneration == myLoadGen,
+                          pendingMutations == 0,
+                          mutationGeneration == startMutationGen,
+                          requestIdentity() == startIdentity else { return }
+                    if supportsItemCollections {
+                        async let collectionsTask = api.collections()
+                        async let membershipTask: Set<String>? = {
+                            do {
+                                return try await api.catalogItemCollectionIds(itemId: contentId)
+                            } catch {
+                                guard Self.isRecoverableProbeError(error) else { throw error }
+                                return nil
+                            }
+                        }()
+                        let (fetchedCollections, fetchedMembers) = try await (collectionsTask, membershipTask)
+                        response = fetchedCollections
+                        memberCollectionIds = fetchedMembers
                     } else {
-                        var updated = record
-                        updated.hasReconciled = true
-                        uncertainCreations[name] = updated
+                        response = try await api.collections()
+                        memberCollectionIds = nil
                     }
                 }
-                if uncertainCreations.isEmpty {
-                    uncertainCreationIdentity = nil
+                guard !Task.isCancelled,
+                      loadGeneration == myLoadGen,
+                      pendingMutations == 0,
+                      mutationGeneration == startMutationGen,
+                      requestIdentity() == startIdentity else { return }
+                if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken) {
+                    if attempt == 0 { continue }
+                    throw URLError(.cannotLoadFromNetwork)
                 }
-            }
-            // Only unlock previously unconfirmed rows whose membership was
-            // actually confirmed by this read (or that no longer exist).
-            let loadedIds = Set(loaded.map(\.id))
-            let confirmedIds = Set(loaded.compactMap { $0.containsItem != nil ? $0.id : nil })
-            unconfirmedCollectionIds = unconfirmedCollectionIds.filter { id in
-                loadedIds.contains(id) && !confirmedIds.contains(id)
-            }
-            // Retain locally confirmed membership until an authoritative server
-            // response replaces it, the collection disappears, or a mutation
-            // makes its membership uncertain.
-            confirmedLocalEntries = confirmedLocalEntries.filter { id, record in
-                record.identity == startIdentity
-                    && loadedIds.contains(id)
-                    && !authoritativeIds.contains(id)
-                    && !unconfirmedCollectionIds.contains(id)
-            }
-            needsReconciliation = !unconfirmedCollectionIds.isEmpty
-            pendingReconciliationError = nil
-            let hasUnacknowledgedFailure = mutationFailureCount > acknowledgedFailureCount
-            if let preservingError {
-                errorMessage = preservingError
-            } else if !hasUnacknowledgedFailure {
-                errorMessage = nil
-                hasMutationError = false
-                acknowledgedFailureCount = mutationFailureCount
-            }
-        } catch {
-            guard !(error is CancellationError),
-                  !Task.isCancelled,
-                  loadGeneration == myLoadGen,
-                  pendingMutations == 0,
-                  mutationGeneration == startMutationGen,
-                  requestIdentity() == startIdentity else { return }
-            if entriesIdentity != startIdentity {
-                entries = fallbackEntry.map { [$0] } ?? []
-                entriesIdentity = entries.isEmpty ? nil : startIdentity
-            } else if let fallbackEntry, !entries.contains(where: { $0.id == fallbackEntry.id }) {
-                entries.insert(fallbackEntry, at: 0)
-            }
-            hasLoaded = false
-            needsReconciliation = false
-            pendingReconciliationError = nil
-            let loadMessage = ErrorState(error).message
-            loadErrorMessage = loadMessage
-            let hasUnacknowledgedFailure = mutationFailureCount > acknowledgedFailureCount
-            if let preservingError {
-                errorMessage = preservingError
-            } else if !hasUnacknowledgedFailure || errorMessage == nil {
-                errorMessage = loadMessage
+
+                let activeProfileId = startIdentity?.profileId
+                let manual = (response.collections ?? []).filter { col in
+                    let kind = (col.collectionType ?? "manual").lowercased()
+                    return (kind == "manual" || kind.isEmpty)
+                        && col.isOwnedBy(profileId: activeProfileId)
+                }
+
+                var localConfirmedById: [String: Entry] = [:]
+                for (id, record) in confirmedLocalEntries
+                where record.identity == startIdentity && !unconfirmedCollectionIds.contains(id) {
+                    localConfirmedById[id] = record.entry
+                }
+                if let fallbackEntry, !unconfirmedCollectionIds.contains(fallbackEntry.id) {
+                    localConfirmedById[fallbackEntry.id] = fallbackEntry
+                }
+
+                var authoritativeIds = Set<String>()
+                var loaded = manual.map { col in
+                    let isMember: Bool?
+                    if usesContainsField {
+                        isMember = col.contains
+                    } else if let memberCollectionIds {
+                        isMember = memberCollectionIds.contains(col.id)
+                    } else {
+                        isMember = nil
+                    }
+                    if isMember != nil {
+                        authoritativeIds.insert(col.id)
+                    }
+                    let effectiveContains = isMember ?? localConfirmedById[col.id]?.containsItem
+                    return Entry(
+                        collection: col,
+                        containsItem: effectiveContains,
+                        itemCount: col.itemCount
+                    )
+                }
+                let serverReturnedIds = Set(loaded.map(\.id))
+                if let fallbackEntry, !serverReturnedIds.contains(fallbackEntry.id) {
+                    loaded.insert(fallbackEntry, at: 0)
+                }
+                for (id, record) in confirmedLocalEntries
+                where record.identity == startIdentity
+                    && record.isNewlyCreated
+                    && !loaded.contains(where: { $0.id == id }) {
+                    loaded.insert(record.entry, at: 0)
+                }
+                entries = loaded
+                entriesIdentity = startIdentity
+                hasLoaded = true
+                loadErrorMessage = nil
+                if uncertainCreationIdentity != startIdentity {
+                    uncertainCreations.removeAll()
+                    uncertainCreationIdentity = nil
+                } else if !uncertainCreations.isEmpty {
+                    var loadedByName: [String: [Entry]] = [:]
+                    for entry in loaded {
+                        let normalized = entry.collection.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        loadedByName[normalized, default: []].append(entry)
+                    }
+                    for (name, record) in uncertainCreations {
+                        let matches = loadedByName[name] ?? []
+                        if matches.count > record.baselineCount {
+                            // A matching collection is now visible in `entries`; clear the
+                            // duplicate-create hold without auto-adding the item, since a
+                            // concurrent creation on another device could share the name.
+                            uncertainCreations.removeValue(forKey: name)
+                        } else {
+                            var updated = record
+                            updated.hasReconciled = true
+                            uncertainCreations[name] = updated
+                        }
+                    }
+                    if uncertainCreations.isEmpty {
+                        uncertainCreationIdentity = nil
+                    }
+                }
+                // Only unlock previously unconfirmed rows whose membership was
+                // actually confirmed by this read (or that no longer exist).
+                let loadedIds = Set(loaded.map(\.id))
+                let confirmedIds = Set(loaded.compactMap { $0.containsItem != nil ? $0.id : nil })
+                unconfirmedCollectionIds = unconfirmedCollectionIds.filter { id in
+                    loadedIds.contains(id) && !confirmedIds.contains(id)
+                }
+                // Retain locally confirmed membership until an authoritative server
+                // response replaces it, the collection disappears (unless newly
+                // created and not yet reflected in the server list), or a mutation
+                // makes its membership uncertain.
+                var nextConfirmedLocalEntries: [String: (identity: HTTPRequestIdentity?, entry: Entry, isNewlyCreated: Bool)] = [:]
+                for (id, record) in confirmedLocalEntries
+                where record.identity == startIdentity && !unconfirmedCollectionIds.contains(id) {
+                    if serverReturnedIds.contains(id) {
+                        if !authoritativeIds.contains(id) {
+                            nextConfirmedLocalEntries[id] = (record.identity, record.entry, false)
+                        }
+                    } else if record.isNewlyCreated {
+                        nextConfirmedLocalEntries[id] = record
+                    }
+                }
+                confirmedLocalEntries = nextConfirmedLocalEntries
+                needsReconciliation = !unconfirmedCollectionIds.isEmpty
+                pendingReconciliationError = nil
+                let hasUnacknowledgedFailure = mutationFailureCount > acknowledgedFailureCount
+                if let preservingError {
+                    errorMessage = preservingError
+                } else if !hasUnacknowledgedFailure {
+                    errorMessage = nil
+                    hasMutationError = false
+                    acknowledgedFailureCount = mutationFailureCount
+                }
+                return
+            } catch {
+                guard !(error is CancellationError),
+                      !Task.isCancelled,
+                      loadGeneration == myLoadGen,
+                      pendingMutations == 0,
+                      mutationGeneration == startMutationGen,
+                      requestIdentity() == startIdentity else { return }
+                if attempt == 0, ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken) {
+                    continue
+                }
+                if entriesIdentity != startIdentity {
+                    entries = fallbackEntry.map { [$0] } ?? []
+                    entriesIdentity = entries.isEmpty ? nil : startIdentity
+                } else if let fallbackEntry, !entries.contains(where: { $0.id == fallbackEntry.id }) {
+                    entries.insert(fallbackEntry, at: 0)
+                }
+                hasLoaded = false
+                needsReconciliation = false
+                pendingReconciliationError = nil
+                let loadMessage = ErrorState(error).message
+                loadErrorMessage = loadMessage
+                let hasUnacknowledgedFailure = mutationFailureCount > acknowledgedFailureCount
+                if let preservingError {
+                    errorMessage = preservingError
+                } else if !hasUnacknowledgedFailure || errorMessage == nil {
+                    errorMessage = loadMessage
+                }
+                return
             }
         }
     }
@@ -924,11 +952,12 @@ final class AddToCollectionModel {
 
     @discardableResult
     func startToggle(collectionId: String) -> Task<Void, Never> {
-        guard !busyCollectionIds.contains(collectionId),
+        let startIdentity = requestIdentity()
+        guard entriesIdentity == startIdentity,
+              !busyCollectionIds.contains(collectionId),
               !unconfirmedCollectionIds.contains(collectionId),
               let index = entries.firstIndex(where: { $0.id == collectionId }) else { return Task {} }
         beginMutation()
-        let startIdentity = requestIdentity()
         pendingMutations += 1
         mutationGeneration += 1
         let myEntryGen = entryGeneration[collectionId, default: 0] + 1
@@ -1023,7 +1052,8 @@ final class AddToCollectionModel {
                 )
                 if stillMatchesIdentity {
                     if let idx = self.entries.firstIndex(where: { $0.id == collectionId }) {
-                        self.confirmedLocalEntries[collectionId] = (startIdentity, self.entries[idx])
+                        let wasNewlyCreated = self.confirmedLocalEntries[collectionId]?.isNewlyCreated ?? false
+                        self.confirmedLocalEntries[collectionId] = (startIdentity, self.entries[idx], wasNewlyCreated)
                     }
                     if wasIn == nil || previousItemCount == nil {
                         for _ in 0..<3 {
@@ -1255,7 +1285,7 @@ final class AddToCollectionModel {
                     collectionId: created.id,
                     postCollectionItemsChange: true
                 )
-                self.confirmedLocalEntries[created.id] = (startIdentity, createdEntry)
+                self.confirmedLocalEntries[created.id] = (startIdentity, createdEntry, true)
                 result = .createdAndAdded
             } catch {
                 guard self.requestIdentity() == startIdentity else {
@@ -1280,7 +1310,7 @@ final class AddToCollectionModel {
                     self.needsReconciliation = true
                     self.pendingReconciliationError = message
                 } else {
-                    self.confirmedLocalEntries[created.id] = (startIdentity, createdEntry)
+                    self.confirmedLocalEntries[created.id] = (startIdentity, createdEntry, true)
                 }
                 result = .createdOnly
             }

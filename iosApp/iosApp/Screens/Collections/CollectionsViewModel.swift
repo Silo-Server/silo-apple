@@ -38,6 +38,7 @@ class CollectionsViewModel {
     var isLoading = false
     var isRefreshing = false
     var error: ErrorState?
+    private(set) var refreshError: ErrorState?
     private(set) var groupSupport: CollectionGroupSupport = .checking
     private let api: SiloAPI
 
@@ -138,6 +139,7 @@ class CollectionsViewModel {
             }
         }
         error = nil
+        refreshError = nil
         async let support: Void = refreshGroupSupport()
         for attempt in 0..<3 {
             let startToken = ResponseCache.shared.writeToken
@@ -153,8 +155,11 @@ class CollectionsViewModel {
                     if attempt < 2 {
                         continue
                     }
+                    let retryError = ErrorState(URLError(.cannotLoadFromNetwork))
                     if collections.isEmpty && groups.isEmpty {
-                        self.error = ErrorState(URLError(.cannotLoadFromNetwork))
+                        self.error = retryError
+                    } else {
+                        self.refreshError = retryError
                     }
                     await support
                     return
@@ -163,6 +168,7 @@ class CollectionsViewModel {
                 collections = response.collections ?? []
                 groups = sortGroups(response.groups ?? [])
                 rebuildSections()
+                refreshError = nil
                 break
             } catch let err {
                 guard !(err is CancellationError),
@@ -178,6 +184,8 @@ class CollectionsViewModel {
                 }
                 if collections.isEmpty && groups.isEmpty {
                     self.error = ErrorState(err)
+                } else {
+                    self.refreshError = ErrorState(err)
                 }
                 break
             }

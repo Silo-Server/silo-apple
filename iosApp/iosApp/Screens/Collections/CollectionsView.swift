@@ -41,8 +41,13 @@ struct CollectionsView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if case .unknown(let message) = viewModel.groupSupport {
-                groupSupportNotice(message)
+            VStack(spacing: 0) {
+                if let refreshError = viewModel.refreshError {
+                    refreshErrorNotice(refreshError.message)
+                }
+                if case .unknown(let message) = viewModel.groupSupport {
+                    groupSupportNotice(message)
+                }
             }
         }
         .siloPageBackground()
@@ -195,6 +200,22 @@ struct CollectionsView: View {
 
     /// The capability read failed: groups can't be managed until it is
     /// retried, but nothing concludes they are unsupported.
+    private func refreshErrorNotice(_ message: String) -> some View {
+        HStack(spacing: SiloTheme.padding) {
+            Text(message)
+                .font(.siloCaption)
+                .foregroundColor(.siloSecondaryText)
+            Spacer()
+            Button(.commonRetry) {
+                Task { await viewModel.loadCollections() }
+            }
+            .foregroundColor(.siloPrimary)
+        }
+        .padding(.horizontal, SiloTheme.padding)
+        .padding(.vertical, 8)
+        .background(Color.siloSurface)
+    }
+
     private func groupSupportNotice(_ message: String) -> some View {
         HStack(spacing: SiloTheme.padding) {
             Text(message)

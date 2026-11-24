@@ -164,9 +164,13 @@ final class LibraryCollectionDetailViewModel {
                     && fetchedPages < maxPagesPerBatch
 
                 if wasCacheInvalidated {
-                    if attempt == 0 { continue }
+                    if attempt == 0 && (resetsPage || continuation == nil) { continue }
                     let retryError = ErrorState(URLError(.cannotLoadFromNetwork))
-                    if items.isEmpty && (!hasLoadedOnce || kind != .regular) {
+                    if !resetsPage && continuation != nil {
+                        continuation = nil
+                        hasPendingInvalidation = true
+                        self.refreshError = retryError
+                    } else if items.isEmpty && (!hasLoadedOnce || kind != .regular) {
                         self.error = retryError
                     } else if resetsPage {
                         self.refreshError = retryError
@@ -240,9 +244,13 @@ final class LibraryCollectionDetailViewModel {
                 }
                 if !isIdentityError,
                    ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) {
-                    if attempt == 0 { continue }
+                    if attempt == 0 && (resetsPage || continuation == nil) { continue }
                     let retryError = ErrorState(URLError(.cannotLoadFromNetwork))
-                    if items.isEmpty && (!hasLoadedOnce || kind != .regular) {
+                    if !resetsPage && continuation != nil {
+                        continuation = nil
+                        hasPendingInvalidation = true
+                        self.refreshError = retryError
+                    } else if items.isEmpty && (!hasLoadedOnce || kind != .regular) {
                         self.error = retryError
                     } else if resetsPage {
                         self.refreshError = retryError
