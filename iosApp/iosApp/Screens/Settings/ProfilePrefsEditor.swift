@@ -175,28 +175,55 @@ final class ProfilePrefsEditor {
     /// Writes taken from the queue whose request has not settled yet.
     private var inFlightSubtitleWrites: Set<SubtitleWriteIdentity> = []
 
+    private struct RequestIdentityKey: Hashable {
+        let serverId: String
+        let serverURL: String
+        let profileId: String?
+        let clientFamily: String
+
+        init(_ identity: HTTPRequestIdentity) {
+            self.serverId = identity.serverId
+            self.serverURL = identity.serverURL
+            self.profileId = identity.profileId
+            self.clientFamily = identity.clientFamily
+        }
+    }
+
+    private struct ReconciliationScope: Hashable {
+        let key: SettingKey
+        let profileId: String?
+        let requestIdentity: RequestIdentityKey?
+
+        init(key: SettingKey, profileId: String?, requestIdentity: HTTPRequestIdentity?) {
+            self.key = key
+            self.profileId = profileId
+            self.requestIdentity = requestIdentity.map(RequestIdentityKey.init)
+        }
+    }
+
     /// Subtitle values that ran out of automatic retries.
     /// A held value is not sent again until the user retries it, edits that
     /// control, or discards it.
     private var heldSubtitleEditorValues: [SubtitleWriteIdentity: String] = [:]
-    /// Subtitle keys whose post-retry refusal still needs an authoritative
-    /// server read; retrying these reads from the server instead of resending
-    /// the refused value.
-    private var reconciliationSubtitleKeys: Set<SubtitleWriteIdentity> = []
+    /// Keys whose post-retry refusal still needs an authoritative server read,
+    /// keyed by `(key, profileId, requestIdentity)` and mapped to the hold
+    /// generation created when reconciliation failed. Retrying reads from the
+    /// server instead of resending the refused value.
+    private var reconciliationHolds: [ReconciliationScope: Int] = [:]
+    private var reconciliationHoldGeneration = 0
     /// The metadata language write that ran out of automatic retries.
     private var heldMetadataWrite: MetadataWrite?
-    /// Profile whose post-retry metadata refusal still needs an authoritative
-    /// server read; retrying reads instead of resending the refused value.
-    private var reconciliationMetadataProfileId: String?
-    private var hasReconciliationMetadataPending = false
 
     /// True while any change is held (or awaiting reconciliation read) for the
-    /// profile this editor shows.
+    /// profile and request identity this editor shows.
+    @MainActor
     var hasHeldChanges: Bool {
-        heldSubtitleEditorValues.keys.contains { $0.profileId == boundProfileId }
-            || reconciliationSubtitleKeys.contains { $0.profileId == boundProfileId }
+        let currentIdentity = requestIdentity().map(RequestIdentityKey.init)
+        return heldSubtitleEditorValues.keys.contains { $0.profileId == boundProfileId }
+            || reconciliationHolds.keys.contains {
+                $0.profileId == boundProfileId && $0.requestIdentity == currentIdentity
+            }
             || (heldMetadataWrite.map { $0.profileId == boundProfileId } ?? false)
-            || (hasReconciliationMetadataPending && reconciliationMetadataProfileId == boundProfileId)
     }
 
     /// Coalescing for the metadata language: it has a side effect the others
@@ -237,6 +264,7 @@ final class ProfilePrefsEditor {
         let startIdentity = requestIdentity()
         let startProfileId = boundProfileId
         let generations = editGenerations
+        let capturedHolds = reconciliationHolds
         do {
             let (preferences, byKey) = try await writer.load()
             guard loadGeneration == myLoadGen,
@@ -244,26 +272,39 @@ final class ProfilePrefsEditor {
                   boundProfileId == startProfileId else { return }
             serverUpgradeRequired = false
             apply(preferences, editedSince: generations)
-            let subtitleLangIdentity = SubtitleWriteIdentity(
-                key: ProfileSettingKeys.subtitleLanguage,
-                profileId: startProfileId
-            )
-            if reconciliationSubtitleKeys.contains(subtitleLangIdentity),
+            let startIdentityKey = startIdentity.map(RequestIdentityKey.init)
+            var reconciledSubtitleLanguage = false
+            var reconciledMetadataLanguage = false
+            for (scope, capturedGen) in capturedHolds
+            where scope.profileId == startProfileId
+                && scope.requestIdentity == startIdentityKey
+                && reconciliationHolds[scope] == capturedGen {
+                reconciliationHolds.removeValue(forKey: scope)
+                if scope.key == ProfileSettingKeys.subtitleLanguage {
+                    reconciledSubtitleLanguage = true
+                } else if scope.key == ProfileSettingKeys.metadataLanguage {
+                    reconciledMetadataLanguage = true
+                }
+            }
+            if reconciledSubtitleLanguage,
                editGenerations[ProfileSettingKeys.subtitleLanguage] == generations[ProfileSettingKeys.subtitleLanguage] {
                 ProfilePrefsStore.shared.setPreferredSubtitleLanguage(preferences.subtitleLanguage)
             }
-            reconciliationSubtitleKeys = reconciliationSubtitleKeys.filter { $0.profileId != startProfileId }
-            if hasReconciliationMetadataPending && reconciliationMetadataProfileId == startProfileId {
-                hasReconciliationMetadataPending = false
-                reconciliationMetadataProfileId = nil
-                if editGenerations[ProfileSettingKeys.metadataLanguage] == generations[ProfileSettingKeys.metadataLanguage] {
-                    Self.invalidateMetadataCaches()
-                }
+            if reconciledMetadataLanguage,
+               editGenerations[ProfileSettingKeys.metadataLanguage] == generations[ProfileSettingKeys.metadataLanguage] {
+                Self.invalidateMetadataCaches()
             }
             showHeldValues()
             resolvedSources = byKey.compactMapValues { $0.source }
             adoptLanguageSuggestions(from: byKey)
-            if !hasHeldChanges && saveState == .held {
+            let hasNewerHold = reconciliationHolds.contains { scope, gen in
+                scope.profileId == startProfileId
+                    && scope.requestIdentity == startIdentityKey
+                    && capturedHolds[scope] != gen
+            }
+            if hasNewerHold {
+                await load()
+            } else if !hasHeldChanges && saveState == .held {
                 saveState = nil
             }
         } catch SettingsAPIError.serverUpgradeRequired {
@@ -364,8 +405,10 @@ final class ProfilePrefsEditor {
     /// budget.
     @MainActor
     func retryHeldChanges() async {
-        let needsReconciliationRead = reconciliationSubtitleKeys.contains { $0.profileId == boundProfileId }
-            || (hasReconciliationMetadataPending && reconciliationMetadataProfileId == boundProfileId)
+        let currentIdentityKey = requestIdentity().map(RequestIdentityKey.init)
+        let needsReconciliationRead = reconciliationHolds.keys.contains {
+            $0.profileId == boundProfileId && $0.requestIdentity == currentIdentityKey
+        }
         for (identity, value) in heldSubtitleEditorValues where pendingSubtitleEditorValues[identity] == nil {
             pendingSubtitleEditorValues[identity] = value
         }
@@ -395,6 +438,7 @@ final class ProfilePrefsEditor {
     /// has since moved shows a newer edit, which is not discarded.
     @MainActor
     func discardHeldChanges() async {
+        let currentIdentityKey = requestIdentity().map(RequestIdentityKey.init)
         for (identity, held) in heldSubtitleEditorValues
         where identity.profileId == boundProfileId && currentEditorValue(for: identity.key) == held {
             if pendingSubtitleEditorValues[identity] == held {
@@ -410,13 +454,21 @@ final class ProfilePrefsEditor {
             if pendingMetadataWrite == held { pendingMetadataWrite = nil }
             preferredMetadataLanguage = serverValues.metadataLanguage ?? PlaybackPrefSentinel.none
         }
+        for scope in reconciliationHolds.keys
+        where scope.profileId == boundProfileId
+            && scope.requestIdentity == currentIdentityKey
+            && !hasUnsettledEdit(for: scope.key) {
+            if let confirmed = serverValue(for: scope.key) {
+                setEditorValue(confirmed, for: scope.key)
+            }
+        }
         heldSubtitleEditorValues.removeAll()
-        reconciliationSubtitleKeys.removeAll()
         heldMetadataWrite = nil
-        hasReconciliationMetadataPending = false
-        reconciliationMetadataProfileId = nil
         saveState = nil
         await load()
+        if hasHeldChanges {
+            saveState = .held
+        }
     }
 
     @MainActor
@@ -568,7 +620,12 @@ final class ProfilePrefsEditor {
                     )
                     let startEditGen = editGenerations[write.key, default: 0]
                     let startRequestIdentity = requestIdentity()
-                    reconciliationSubtitleKeys.remove(identity)
+                    let reconciliationScope = ReconciliationScope(
+                        key: write.key,
+                        profileId: write.profileId,
+                        requestIdentity: startRequestIdentity
+                    )
+                    reconciliationHolds.removeValue(forKey: reconciliationScope)
                     defer { inFlightSubtitleWrites.remove(identity) }
                     do {
                         try await writer.write(
@@ -647,7 +704,8 @@ final class ProfilePrefsEditor {
                                   requestIdentity() == startRequestIdentity,
                                   editGenerations[write.key, default: 0] == startEditGen {
                             failures.removeValue(forKey: identity)
-                            reconciliationSubtitleKeys.insert(identity)
+                            reconciliationHoldGeneration += 1
+                            reconciliationHolds[reconciliationScope] = reconciliationHoldGeneration
                         }
                     } catch {
                         if Self.isServerUpgradeRequired(error) {
@@ -870,10 +928,12 @@ final class ProfilePrefsEditor {
     private func writeMetadataLanguage(_ write: MetadataWrite) async {
         let startEditGen = editGenerations[ProfileSettingKeys.metadataLanguage, default: 0]
         let startRequestIdentity = requestIdentity()
-        if reconciliationMetadataProfileId == write.profileId {
-            hasReconciliationMetadataPending = false
-            reconciliationMetadataProfileId = nil
-        }
+        let reconciliationScope = ReconciliationScope(
+            key: ProfileSettingKeys.metadataLanguage,
+            profileId: write.profileId,
+            requestIdentity: startRequestIdentity
+        )
+        reconciliationHolds.removeValue(forKey: reconciliationScope)
         saveState = .saving
         do {
             try await writer.write(
@@ -937,8 +997,8 @@ final class ProfilePrefsEditor {
             } else if boundProfileId == write.profileId,
                       requestIdentity() == startRequestIdentity,
                       editGenerations[ProfileSettingKeys.metadataLanguage, default: 0] == startEditGen {
-                hasReconciliationMetadataPending = true
-                reconciliationMetadataProfileId = write.profileId
+                reconciliationHoldGeneration += 1
+                reconciliationHolds[reconciliationScope] = reconciliationHoldGeneration
                 saveState = .held
             } else if pendingMetadataWrite == nil {
                 saveState = nil
