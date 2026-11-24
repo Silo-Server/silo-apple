@@ -804,6 +804,7 @@ struct LibraryCollectionDetailView: View {
     @State private var isVisible = false
     @State private var hasPendingInvalidation = false
     @State private var invalidationGeneration = 0
+    @State private var resetGeneration = 0
     @State private var reloadTask: Task<Void, Never>?
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
@@ -1056,7 +1057,8 @@ struct LibraryCollectionDetailView: View {
 
     private func loadItems(reset: Bool) async {
         let startGen = invalidationGeneration
-        let startPageSequence = viewModel.pageSequence
+        if reset { resetGeneration += 1 }
+        let myResetGen = resetGeneration
         let succeeded = await viewModel.load(
             libraryId: libraryId,
             collectionId: collectionId,
@@ -1064,8 +1066,8 @@ struct LibraryCollectionDetailView: View {
             mediaScope: mediaScope,
             reset: reset
         )
-        if reset, !Task.isCancelled, invalidationGeneration == startGen {
-            if succeeded || viewModel.pageSequence != startPageSequence {
+        if reset, !Task.isCancelled, invalidationGeneration == startGen, resetGeneration == myResetGen {
+            if succeeded || viewModel.lastResetReplacedPageOne {
                 hasPendingInvalidation = false
             } else if viewModel.refreshError != nil {
                 hasPendingInvalidation = true

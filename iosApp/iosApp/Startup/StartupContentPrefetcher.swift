@@ -400,10 +400,13 @@ enum StartupContentPrefetcher {
         let probe = PrefetchProbe.begin("user_libraries", isOriginator: !userLibraries.isInFlight)
         #endif
         let task = userLibraries.join {
+            let fetchGeneration = profileScopedGeneration
             async let hidden = HiddenLibraryPreference.hiddenLibraryIds()
             let response = try await SiloAPI.shared.libraries()
+            let hiddenIds = await hidden
+            try validateProfileScopedGeneration(fetchGeneration)
             let visible = LibrariesResponse(
-                libraries: HiddenLibraryPreference.visibleLibraries(response.libraries, hiding: await hidden)
+                libraries: HiddenLibraryPreference.visibleLibraries(response.libraries, hiding: hiddenIds)
             )
             userLibrariesRevision += 1
             return UserLibrariesSnapshot(response: visible, revision: userLibrariesRevision)

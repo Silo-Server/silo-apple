@@ -13,6 +13,7 @@ final class LibraryCollectionDetailViewModel {
     private(set) var paginationError: ErrorState?
     private(set) var hasMore = true
     private(set) var totalItems: Int?
+    private(set) var lastResetReplacedPageOne = false
 
     private struct Selection: Equatable {
         let libraryId: Int
@@ -76,6 +77,7 @@ final class LibraryCollectionDetailViewModel {
         paginationError = nil
         if resetsPage {
             refreshError = nil
+            lastResetReplacedPageOne = false
         }
         defer {
             if requestGeneration == generation { isLoading = false }
@@ -211,6 +213,9 @@ final class LibraryCollectionDetailViewModel {
                 if replacedPageOne {
                     refreshError = nil
                     hasPendingInvalidation = false
+                    if resetsPage {
+                        lastResetReplacedPageOne = true
+                    }
                 }
                 return !hitPageBudget
             } catch {
@@ -295,6 +300,9 @@ final class LibraryCollectionDetailViewModel {
                     if validatedReplacedPageOne {
                         self.refreshError = nil
                         hasPendingInvalidation = false
+                        if resetsPage {
+                            lastResetReplacedPageOne = true
+                        }
                     }
                     self.paginationError = ErrorState(effectiveError)
                     return false

@@ -715,11 +715,13 @@ final class ProfilePrefsEditor {
                                 setEditorValue(authoritative, for: write.key)
                             }
                             failures[identity] = refusal.cause
-                        } else if boundProfileId == write.profileId,
-                                  requestIdentity() == startRequestIdentity {
-                            failures.removeValue(forKey: identity)
+                        } else {
                             reconciliationHoldGeneration += 1
                             reconciliationHolds[reconciliationScope] = reconciliationHoldGeneration
+                            if boundProfileId == write.profileId,
+                               requestIdentity() == startRequestIdentity {
+                                failures.removeValue(forKey: identity)
+                            }
                         }
                     } catch {
                         if Self.isServerUpgradeRequired(error) {
@@ -1010,17 +1012,19 @@ final class ProfilePrefsEditor {
                 } else if pendingMetadataWrite == nil {
                     saveState = nil
                 }
-            } else if boundProfileId == write.profileId,
-                      requestIdentity() == startRequestIdentity {
+            } else {
                 reconciliationHoldGeneration += 1
                 reconciliationHolds[reconciliationScope] = reconciliationHoldGeneration
-                if editGenerations[ProfileSettingKeys.metadataLanguage, default: 0] == startEditGen {
-                    saveState = .held
+                if boundProfileId == write.profileId,
+                   requestIdentity() == startRequestIdentity {
+                    if editGenerations[ProfileSettingKeys.metadataLanguage, default: 0] == startEditGen {
+                        saveState = .held
+                    } else if pendingMetadataWrite == nil {
+                        saveState = nil
+                    }
                 } else if pendingMetadataWrite == nil {
                     saveState = nil
                 }
-            } else if pendingMetadataWrite == nil {
-                saveState = nil
             }
         } catch {
             if Self.isServerUpgradeRequired(error) {

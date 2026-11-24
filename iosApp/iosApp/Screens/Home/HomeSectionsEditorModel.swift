@@ -343,11 +343,17 @@ final class HomeSectionsEditorModel {
                 capturedLibrariesRevision = librariesRevision
                 let libraries = response.libraries
                 nextAvailableLibraries = libraries
+                let librariesForCollections: [Library]
+                if case .library(let scopedLibraryId) = scope {
+                    librariesForCollections = libraries.filter { $0.id == scopedLibraryId }
+                } else {
+                    librariesForCollections = libraries
+                }
                 var collected: [ServerCollectionOption] = []
                 var libraryErrors = 0
                 var firstLibraryError: Error?
                 await withTaskGroup(of: Result<[ServerCollectionOption], Error>.self) { group in
-                    for library in libraries {
+                    for library in librariesForCollections {
                         group.addTask { [api] in
                             do {
                                 let response = try await api.libraryCollections(libraryId: library.id)

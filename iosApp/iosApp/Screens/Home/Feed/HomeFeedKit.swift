@@ -244,7 +244,7 @@ private struct HomeCardMenu: ViewModifier {
                     if let targetId = addToCollectionTargetId {
                         IOSAddToCollectionSheet(
                             contentId: targetId,
-                            itemTitle: SiloMediaType.isEpisode(item.type) ? (item.seriesTitle ?? item.title) : item.title
+                            itemTitle: SiloMediaType.isEpisode(item.type) ? item.seriesTitle : item.title
                         )
                     }
                 }
