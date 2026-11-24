@@ -20,6 +20,24 @@ struct APIv2ProfileSectionSetting: Decodable, Hashable, Identifiable, Sendable {
     let customized: Bool
     let position: Int
     let config: [String: SettingJSONValue]?
+    /// The catalog key of `title` while it is the server's own text, and its
+    /// placeholder values; absent once an admin or the profile typed it.
+    let titleKey: String?
+    let titleArgs: [String: String]?
+    /// The same for `defaultTitle`.
+    let defaultTitleKey: String?
+    let defaultTitleArgs: [String: String]?
+
+    /// The row's name in the language `locale` shows, as Home shows it.
+    func displayTitle(in locale: Locale) -> String {
+        AppLanguage.serverText(title, key: titleKey, args: titleArgs, language: AppLanguage.language(of: locale))
+    }
+
+    /// The administrator's name for the row in the language `locale` shows.
+    func displayDefaultTitle(in locale: Locale) -> String {
+        AppLanguage.serverText(defaultTitle, key: defaultTitleKey, args: defaultTitleArgs,
+                               language: AppLanguage.language(of: locale))
+    }
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -33,6 +51,31 @@ struct APIv2ProfileSectionSetting: Decodable, Hashable, Identifiable, Sendable {
         case customized
         case position
         case config
+        case titleKey = "title_key"
+        case titleArgs = "title_args"
+        case defaultTitleKey = "default_title_key"
+        case defaultTitleArgs = "default_title_args"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        sectionType = try c.decode(String.self, forKey: .sectionType)
+        title = try c.decode(String.self, forKey: .title)
+        defaultTitle = try c.decode(String.self, forKey: .defaultTitle)
+        featured = try c.decode(Bool.self, forKey: .featured)
+        itemLimit = try c.decode(Int.self, forKey: .itemLimit)
+        hidden = try c.decode(Bool.self, forKey: .hidden)
+        isCustom = try c.decode(Bool.self, forKey: .isCustom)
+        customized = try c.decode(Bool.self, forKey: .customized)
+        position = try c.decode(Int.self, forKey: .position)
+        config = try c.decodeIfPresent([String: SettingJSONValue].self, forKey: .config)
+        // Optional extras: a malformed key or argument map shows the
+        // server's text rather than failing the layout.
+        titleKey = (try? c.decodeIfPresent(String.self, forKey: .titleKey)) ?? nil
+        titleArgs = (try? c.decodeIfPresent([String: String].self, forKey: .titleArgs)) ?? nil
+        defaultTitleKey = (try? c.decodeIfPresent(String.self, forKey: .defaultTitleKey)) ?? nil
+        defaultTitleArgs = (try? c.decodeIfPresent([String: String].self, forKey: .defaultTitleArgs)) ?? nil
     }
 }
 

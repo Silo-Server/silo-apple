@@ -9,6 +9,7 @@ import SwiftUI
 /// menu for VoiceOver, keyboard and pointer users.
 struct HomeSectionsCustomizationView: View {
     @State private var model = HomeSectionsEditorModel()
+    @Environment(\.locale) private var locale
 
     var body: some View {
         List {
@@ -28,23 +29,23 @@ struct HomeSectionsCustomizationView: View {
                         Spacer()
                     }
                     .padding(.vertical, 16)
-                    .accessibilityLabel("Loading Home sections")
+                    .accessibilityLabel(Text(.homeProfileEditorLoading))
                 case .failed(let message):
                     ContentUnavailableView {
-                        Label("Couldn’t Load Home Sections", systemImage: "wifi.exclamationmark")
+                        Label(.homeProfileEditorLoadFailedTitle, systemImage: "wifi.exclamationmark")
                     } description: {
                         Text(message)
                     } actions: {
-                        Button("Try Again") {
+                        Button(.homeProfileEditorTryAgain) {
                             Task { await model.load() }
                         }
                     }
                 case .loaded where model.rows.isEmpty:
-                    ContentUnavailableView(
-                        "No Home Sections",
-                        systemImage: "rectangle.3.group",
-                        description: Text("This profile’s Home has no rows to arrange yet.")
-                    )
+                    ContentUnavailableView {
+                        Label(.homeProfileEditorEmptyTitle, systemImage: "rectangle.3.group")
+                    } description: {
+                        Text(.homeProfileEditorEmptyBody)
+                    }
                 case .loaded:
                     ForEach(model.rows) { row in
                         sectionRow(row)
@@ -64,7 +65,7 @@ struct HomeSectionsCustomizationView: View {
         #else
         .siloGroupedListStyle()
         #endif
-        .navigationTitle("Home Sections")
+        .navigationTitle(Text(.homeProfileEditorTitle))
         #if os(iOS)
         .toolbar {
             if model.phase == .loaded, model.rows.count > 1 {
@@ -80,16 +81,17 @@ struct HomeSectionsCustomizationView: View {
         }
     }
 
-    private var footerText: String {
+    private var footerText: LocalizedStringResource {
         #if os(macOS)
-        "Open eye: shown on Home. Closed eye: hidden and dimmed here. Drag rows into a new order. Changes save to this profile and apply on all of its devices."
+        .homeProfileEditorFooterMac
         #else
-        "Open eye: shown on Home. Closed eye: hidden and dimmed here. Tap Edit to drag rows into a new order. Changes save to this profile and apply on all of its devices."
+        .homeProfileEditorFooterTouch
         #endif
     }
 
     private func sectionRow(_ row: APIv2ProfileSectionSetting) -> some View {
         let isVisible = !row.hidden
+        let title = row.displayTitle(in: locale)
         return HStack(spacing: 12) {
             Button {
                 model.setHidden(isVisible, id: row.id)
@@ -101,10 +103,10 @@ struct HomeSectionsCustomizationView: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isVisible ? "Hide \(row.title)" : "Show \(row.title)")
+            .accessibilityLabel(Text(isVisible ? .homeProfileEditorHideRow(title) : .homeProfileEditorShowRow(title)))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(row.title)
+                Text(verbatim: title)
                     .font(.body.weight(.medium))
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)
@@ -116,7 +118,7 @@ struct HomeSectionsCustomizationView: View {
                 }
             }
             .accessibilityElement(children: .combine)
-            .accessibilityValue(isVisible ? "Shown on Home" : "Hidden from Home")
+            .accessibilityValue(Text(isVisible ? .homeProfileEditorRowShown : .homeProfileEditorRowHidden))
 
             Spacer(minLength: 8)
         }
@@ -124,38 +126,40 @@ struct HomeSectionsCustomizationView: View {
         .animation(.easeInOut(duration: SiloTheme.fastDuration), value: isVisible)
         .accessibilityActions {
             if model.canMove(id: row.id, by: -1) {
-                Button("Move Up") { model.move(id: row.id, by: -1) }
+                Button(.homeProfileEditorMoveUp) { model.move(id: row.id, by: -1) }
             }
             if model.canMove(id: row.id, by: 1) {
-                Button("Move Down") { model.move(id: row.id, by: 1) }
+                Button(.homeProfileEditorMoveDown) { model.move(id: row.id, by: 1) }
             }
         }
         .contextMenu {
             Button {
                 model.move(id: row.id, by: -1)
             } label: {
-                Label("Move Up", systemImage: "arrow.up")
+                Label(.homeProfileEditorMoveUp, systemImage: "arrow.up")
             }
             .disabled(!model.canMove(id: row.id, by: -1))
 
             Button {
                 model.move(id: row.id, by: 1)
             } label: {
-                Label("Move Down", systemImage: "arrow.down")
+                Label(.homeProfileEditorMoveDown, systemImage: "arrow.down")
             }
             .disabled(!model.canMove(id: row.id, by: 1))
 
             Button {
                 model.setHidden(isVisible, id: row.id)
             } label: {
-                Label(isVisible ? "Hide" : "Show", systemImage: isVisible ? "eye.slash" : "eye")
+                Label(isVisible ? .homeProfileEditorHide : .homeProfileEditorShow, systemImage: isVisible ? "eye.slash" : "eye")
             }
         }
     }
 
-    private func detail(for row: APIv2ProfileSectionSetting) -> String? {
-        if row.isCustom { return "Added by this profile" }
-        if row.title != row.defaultTitle, !row.defaultTitle.isEmpty { return "Renamed from \(row.defaultTitle)" }
+    private func detail(for row: APIv2ProfileSectionSetting) -> LocalizedStringResource? {
+        if row.isCustom { return .homeProfileEditorAddedByProfile }
+        if row.title != row.defaultTitle, !row.defaultTitle.isEmpty {
+            return .homeProfileEditorRenamedFrom(row.displayDefaultTitle(in: locale))
+        }
         return nil
     }
 }

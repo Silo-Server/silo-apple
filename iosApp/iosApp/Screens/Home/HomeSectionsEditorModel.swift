@@ -143,7 +143,7 @@ final class HomeSectionsEditorModel {
             if editGeneration == sentGeneration {
                 rows = confirmedRows
             }
-            saveError = "Couldn’t save the Home layout. \(ErrorState(error).message)"
+            saveError = AppLanguage.string(.homeProfileEditorSaveFailed(ErrorState(error).message))
         }
     }
 
