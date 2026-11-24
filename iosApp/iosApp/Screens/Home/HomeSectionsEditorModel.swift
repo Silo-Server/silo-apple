@@ -299,9 +299,12 @@ final class HomeSectionsEditorModel {
                 do { return .success(try await api.collections()) }
                 catch { return .failure(error) }
             }()
-            async let librariesResult: Result<LibrariesResponse, Error> = {
-                do { return .success(try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: !force && attempt == 0)) }
-                catch { return .failure(error) }
+            async let librariesResult: Result<(response: LibrariesResponse, revision: Int), Error> = {
+                do {
+                    return .success(try await StartupContentPrefetcher.fetchUserLibrariesWithRevision(reusingRecent: !force && attempt == 0))
+                } catch {
+                    return .failure(error)
+                }
             }()
 
             let (fetchedRecipes, fetchedPersonal, fetchedLibraries) = await (recipesResult, personalResult, librariesResult)
@@ -334,8 +337,10 @@ final class HomeSectionsEditorModel {
             let nextAvailableLibraries: [Library]
             let nextServerCollections: [ServerCollectionOption]
             let nextServerError: String?
+            let capturedLibrariesRevision: Int?
             switch fetchedLibraries {
-            case .success(let response):
+            case .success(let (response, librariesRevision)):
+                capturedLibrariesRevision = librariesRevision
                 let libraries = response.libraries
                 nextAvailableLibraries = libraries
                 var collected: [ServerCollectionOption] = []
@@ -397,14 +402,19 @@ final class HomeSectionsEditorModel {
                     nextServerError = nil
                 }
             case .failure(let error):
+                capturedLibrariesRevision = nil
                 nextAvailableLibraries = []
                 nextServerCollections = []
                 nextServerError = ErrorState(error).message
                 allSucceeded = false
             }
 
+            let librariesRevisionChanged = capturedLibrariesRevision.map {
+                $0 != StartupContentPrefetcher.userLibrariesRevision
+            } ?? false
             if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken)
-                || ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startCacheToken) {
+                || ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startCacheToken)
+                || librariesRevisionChanged {
                 if attempt < 2 {
                     continue
                 }
@@ -425,7 +435,7 @@ final class HomeSectionsEditorModel {
             hasLoadedPickerCatalog = allSucceeded
             pickerCatalogIdentity = allSucceeded ? startIdentity : nil
             pickerCatalogCacheToken = startCacheToken
-            pickerCatalogLibrariesRevision = StartupContentPrefetcher.userLibrariesRevision
+            pickerCatalogLibrariesRevision = capturedLibrariesRevision ?? StartupContentPrefetcher.userLibrariesRevision
             return
         }
     }

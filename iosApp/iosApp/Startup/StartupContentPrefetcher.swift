@@ -378,6 +378,11 @@ enum StartupContentPrefetcher {
         }
     }
 
+    static func fetchUserLibrariesWithRevision(reusingRecent: Bool = true) async throws -> (response: LibrariesResponse, revision: Int) {
+        let response = try await fetchUserLibraries(reusingRecent: reusingRecent)
+        return (response, userLibrariesRevision)
+    }
+
     /// The libraries the active profile browses: every library it can open,
     /// less the ones it hid from navigation (`ui.disabled_library_ids`).
     /// `reusingRecent: false` is for an explicit refresh by the user.
