@@ -625,7 +625,7 @@ final class AddToCollectionModel {
                 try await api.removeItemFromCollection(collectionId: collectionId, itemId: contentId)
             }
             ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
-            HomeSectionsEditorModel.refreshScope(.home)
+            HomeSectionsEditorModel.refreshAllSectionScopes()
             if requestIdentity() == startIdentity {
                 NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
             }
@@ -645,7 +645,7 @@ final class AddToCollectionModel {
                     // the response was lost; invalidate caches and reconcile from
                     // the server once all pending mutations settle.
                     ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
-                    HomeSectionsEditorModel.refreshScope(.home)
+                    HomeSectionsEditorModel.refreshAllSectionScopes()
                     NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
                     needsReconciliation = true
                     pendingReconciliationError = message
@@ -750,7 +750,7 @@ final class AddToCollectionModel {
                 }
             }
             ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
-            HomeSectionsEditorModel.refreshScope(.home)
+            HomeSectionsEditorModel.refreshAllSectionScopes()
             NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
             result = .createdAndAdded
         } catch {
@@ -765,7 +765,7 @@ final class AddToCollectionModel {
             if APIv2MutationOutcome(error).mayHaveApplied {
                 ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
                 ResponseCache.shared.remove(CacheKey.collections)
-                HomeSectionsEditorModel.refreshScope(.home)
+                HomeSectionsEditorModel.refreshAllSectionScopes()
                 NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
                 needsReconciliation = true
                 pendingReconciliationError = message

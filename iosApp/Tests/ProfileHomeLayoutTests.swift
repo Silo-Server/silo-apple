@@ -647,6 +647,56 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
         XCTAssertEqual(model.entries.first?.containsItem, true)
     }
+
+    @MainActor
+    func testForegroundLoadDoesNotDropInFlightQuickAction() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "quick-action-test")
+        await tokens.setServerUrl("https://quick.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "quick-action-test",
+            serverURL: "https://quick.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+
+        let settingsJSON = """
+        {"items":[
+          {"id":"sec-a","section_type":"recently_added","title":"A","default_title":"A","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":0}
+        ]}
+        """
+        stub.reply(path: "/api/v2/profile/sections/settings", 200, settingsJSON)
+        stub.reply(path: "/api/v2/profile/sections", 200, #"{"items":[]}"#)
+        stub.hold(path: "/api/v2/profile/sections/settings")
+
+        let editor = HomeSectionsEditorModel(scope: .home, api: api, requestIdentity: { identity })
+        let quickAction = Task {
+            await editor.performQuickAction { $0.setHidden(true, id: "sec-a") }
+        }
+        await stub.waitUntilHeld()
+
+        // Opening Customize mode calls `load()` while the quick action's read is in flight.
+        let foregroundLoad = Task { await editor.load() }
+        await Task.yield()
+        stub.release()
+
+        let result = await quickAction.value
+        let loaded = await foregroundLoad.value
+        XCTAssertTrue(result.succeeded)
+        XCTAssertNil(result.errorMessage)
+        XCTAssertTrue(loaded)
+        let putRequests = stub.requests.filter { $0.method == "PUT" && $0.path == "/api/v2/profile/sections" }
+        XCTAssertEqual(putRequests.count, 1)
+    }
 }
 
 @MainActor

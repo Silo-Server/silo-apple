@@ -876,6 +876,7 @@ struct IOSHomeOptionsSheet: View {
     @Bindable var preferences: HomePreferencesModel
     @Environment(\.dismiss) private var dismiss
     @State private var isConfirmingReset = false
+    @State private var isFinishingDone = false
 
     var body: some View {
         NavigationStack {
@@ -890,7 +891,7 @@ struct IOSHomeOptionsSheet: View {
                                 Text(mode.titleResource).tag(mode)
                             }
                         }
-                        .disabled(!preferences.canEdit(.uiNextUpMode))
+                        .disabled(isFinishingDone || !preferences.canEdit(.uiNextUpMode))
 
                         Toggle(isOn: Binding(
                             get: { preferences.newReleasesFirst },
@@ -903,7 +904,7 @@ struct IOSHomeOptionsSheet: View {
                                     .foregroundStyle(Color.siloSecondaryText)
                             }
                         }
-                        .disabled(!preferences.canEdit(.uiNextUpNewReleasesFirst))
+                        .disabled(isFinishingDone || !preferences.canEdit(.uiNextUpNewReleasesFirst))
 
                         Toggle(isOn: Binding(
                             get: { preferences.hideWatchedItems },
@@ -916,7 +917,7 @@ struct IOSHomeOptionsSheet: View {
                                     .foregroundStyle(Color.siloSecondaryText)
                             }
                         }
-                        .disabled(!preferences.canEdit(.homeHideWatchedItems))
+                        .disabled(isFinishingDone || !preferences.canEdit(.homeHideWatchedItems))
                     } header: {
                         Text(.homeCustomizeSectionDisplay)
                     }
@@ -950,7 +951,7 @@ struct IOSHomeOptionsSheet: View {
                             }
                         }
                     }
-                    .disabled(editor.isResetting || editor.isRefreshing || editor.phase != .loaded)
+                    .disabled(isFinishingDone || editor.isResetting || editor.isRefreshing || editor.phase != .loaded)
                 } footer: {
                     Text(.homeCustomizeResetFooter)
                 }
@@ -966,11 +967,32 @@ struct IOSHomeOptionsSheet: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(.commonDone) { dismiss() }
-                        .disabled(editor.isResetting)
+                    Button {
+                        guard !isFinishingDone, !editor.isResetting else { return }
+                        if editor.scope != .home {
+                            dismiss()
+                            return
+                        }
+                        isFinishingDone = true
+                        Task {
+                            let settled = await preferences.waitForPendingWrites()
+                            isFinishingDone = false
+                            if settled {
+                                dismiss()
+                            }
+                        }
+                    } label: {
+                        if isFinishingDone {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Text(.commonDone)
+                        }
+                    }
+                    .disabled(editor.isResetting || isFinishingDone)
                 }
             }
-            .interactiveDismissDisabled(editor.isResetting)
+            .interactiveDismissDisabled(editor.isResetting || isFinishingDone || (editor.scope == .home && preferences.hasPendingWrites))
             .confirmationDialog(
                 Text(.homeCustomizeResetConfirmTitle),
                 isPresented: $isConfirmingReset,

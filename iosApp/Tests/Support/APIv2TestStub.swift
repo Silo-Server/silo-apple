@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 @testable import Silo
 
 /// Scenario wrapper over the shared `StubURLProtocol.Handler` for the API v2
@@ -38,7 +39,8 @@ final class APIv2TestStub: @unchecked Sendable {
     private var holdPath: String?
     private var gate: StubURLProtocol.Gate?
     private var heldArrived = false
-    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var nextWaiterId = 0
+    private var heldWaiters: [(id: Int, continuation: CheckedContinuation<Bool, Never>)] = []
 
     init(fallback: Reply = .json(200, "{}")) {
         self.fallback = fallback
@@ -63,7 +65,7 @@ final class APIv2TestStub: @unchecked Sendable {
                 heldArrived = true
                 let waiters = heldWaiters
                 heldWaiters.removeAll()
-                for waiter in waiters { waiter.resume() }
+                for waiter in waiters { waiter.continuation.resume(returning: true) }
                 return (reply, gate)
             }
             if let gate { await gate.wait() }
@@ -116,15 +118,43 @@ final class APIv2TestStub: @unchecked Sendable {
         }
     }
 
-    /// Suspends until the parked request has arrived at the stub.
-    func waitUntilHeld() async {
-        await withCheckedContinuation { continuation in
-            let resumeNow = lock.withLock { () -> Bool in
-                if heldArrived { return true }
-                heldWaiters.append(continuation)
-                return false
+    /// Suspends until the parked request has arrived at the stub or `timeout`
+    /// expires. Fails the test with the expected path on timeout and resumes
+    /// the continuation exactly once even when arrival and timeout race.
+    func waitUntilHeld(
+        timeout: Duration = .seconds(5),
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let expectedPath = lock.withLock { holdPath }
+        var timeoutTask: Task<Void, Never>?
+        let arrived = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let waiterId: Int? = lock.withLock {
+                if heldArrived { return nil }
+                nextWaiterId += 1
+                let id = nextWaiterId
+                heldWaiters.append((id: id, continuation: continuation))
+                return id
             }
-            if resumeNow { continuation.resume() }
+            guard let waiterId else {
+                continuation.resume(returning: true)
+                return
+            }
+            timeoutTask = Task {
+                try? await Task.sleep(for: timeout)
+                let timedOut: CheckedContinuation<Bool, Never>? = self.lock.withLock {
+                    guard let idx = self.heldWaiters.firstIndex(where: { $0.id == waiterId }) else {
+                        return nil
+                    }
+                    return self.heldWaiters.remove(at: idx).continuation
+                }
+                timedOut?.resume(returning: false)
+            }
+        }
+        timeoutTask?.cancel()
+        if !arrived {
+            let target = expectedPath.map { " to \($0)" } ?? ""
+            XCTFail("Timed out waiting for held request\(target)", file: file, line: line)
         }
     }
 

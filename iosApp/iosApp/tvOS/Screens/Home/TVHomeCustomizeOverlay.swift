@@ -438,7 +438,7 @@ struct TVHomeCustomizeOverlay: View {
     }
 
     private func handleMove(_ direction: MoveCommandDirection) {
-        guard !isOverlayOpen else { return }
+        guard !isOverlayOpen, !isFinishingDone else { return }
 
         // Grabbed state: Up / Down slides the grabbed row in the draft without saving per step.
         if let grabbedId = grabbedRowId {
@@ -511,7 +511,7 @@ struct TVHomeCustomizeOverlay: View {
     }
 
     private func handleSelect() {
-        guard !isOverlayOpen else { return }
+        guard !isOverlayOpen, !isFinishingDone else { return }
 
         if let grabbedId = grabbedRowId {
             // Drop row in place and persist the final reordered draft once.
@@ -563,9 +563,10 @@ struct TVHomeCustomizeOverlay: View {
         guard !editor.isResetting, !isFinishingDone else { return }
         isFinishingDone = true
         Task {
-            let settled = await editor.waitForPendingSaves()
+            let rowsSettled = await editor.waitForPendingSaves()
+            let prefsSettled = editor.scope == .home ? await preferences.waitForPendingWrites() : true
             isFinishingDone = false
-            if settled {
+            if rowsSettled && prefsSettled {
                 editor.triggerFeedRefresh()
                 onDone()
             }
@@ -573,7 +574,7 @@ struct TVHomeCustomizeOverlay: View {
     }
 
     private func handlePlayPause() {
-        guard !isOverlayOpen, grabbedRowId == nil, editor.phase == .loaded, !editor.isResetting else { return }
+        guard !isOverlayOpen, !isFinishingDone, grabbedRowId == nil, editor.phase == .loaded, !editor.isResetting else { return }
         switch highlighted {
         case .row(let id), .hiddenRow(let id):
             openRowOptions(for: id)
@@ -583,7 +584,7 @@ struct TVHomeCustomizeOverlay: View {
     }
 
     private func handleExit() {
-        guard !isOverlayOpen else { return }
+        guard !isOverlayOpen, !isFinishingDone else { return }
         if grabbedRowId != nil {
             withAnimation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.84)) {
                 editor.cancelDraggedOrder()

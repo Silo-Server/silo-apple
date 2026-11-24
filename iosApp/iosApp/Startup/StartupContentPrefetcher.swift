@@ -117,15 +117,21 @@ enum StartupContentPrefetcher {
         librarySections[libraryId]?.reset()
     }
 
+    /// Cancels every library's in-flight sections request and bumps its
+    /// generation so pre-mutation library reads cannot repopulate the cache.
+    static func invalidateAllLibrarySectionsInFlight() {
+        for libraryId in librarySections.keys {
+            invalidateLibrarySectionsInFlight(libraryId: libraryId)
+        }
+    }
+
     /// A personal-state change (watched, favorite, watchlist) alters these
     /// lists: requests already in flight carry the old rows, so callers that
     /// join after the change must start a fresh one.
     static func invalidateDerivedListsInFlight() {
         invalidateHomeSectionsInFlight()
         recommendations.reset()
-        for libraryId in librarySections.keys {
-            invalidateLibrarySectionsInFlight(libraryId: libraryId)
-        }
+        invalidateAllLibrarySectionsInFlight()
         browseFirstPages.values.forEach { $0.reset() }
     }
 

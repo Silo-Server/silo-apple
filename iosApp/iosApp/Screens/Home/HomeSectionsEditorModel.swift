@@ -67,6 +67,7 @@ final class HomeSectionsEditorModel {
     @ObservationIgnored private var confirmedRows: [APIv2ProfileSectionSetting] = []
     @ObservationIgnored private var saveChain: Task<Void, Never>?
     @ObservationIgnored private var quickActionChain: Task<Void, Never>?
+    @ObservationIgnored private var quickActionGeneration = 0
     @ObservationIgnored private var pendingSaveCount = 0
     @ObservationIgnored private var saveFailureCount = 0
     @ObservationIgnored private var acknowledgedFailureCount = 0
@@ -130,10 +131,21 @@ final class HomeSectionsEditorModel {
         }
     }
 
-    /// Reads the layout once every queued save has landed.
+    /// Reads the layout once every queued quick action and save has landed.
     /// Returns `true` only when this call fetched and applied fresh server state.
     @discardableResult
     func load() async -> Bool {
+        var quickGen: Int
+        repeat {
+            quickGen = quickActionGeneration
+            await quickActionChain?.value
+        } while quickGen != quickActionGeneration && !Task.isCancelled
+        guard !Task.isCancelled else { return false }
+        return await loadUnlocked()
+    }
+
+    @discardableResult
+    private func loadUnlocked() async -> Bool {
         var generation: Int
         repeat {
             generation = editGeneration
@@ -746,18 +758,23 @@ final class HomeSectionsEditorModel {
         _ mutation: @escaping @MainActor (HomeSectionsEditorModel) -> Task<Void, Never>
     ) async -> QuickActionResult {
         let requestedIdentity = requestIdentity()
+        quickActionGeneration += 1
         let previous = quickActionChain
         let task = Task<QuickActionResult, Never> { @MainActor in
             await previous?.value
             guard !Task.isCancelled, self.requestIdentity() == requestedIdentity else {
                 return QuickActionResult(succeeded: false, errorMessage: nil)
             }
-            let loaded = await self.load()
+            let loaded = await self.loadUnlocked()
             guard !Task.isCancelled,
                   loaded,
                   self.phase == .loaded,
                   self.requestIdentity() == requestedIdentity else {
-                let message = self.requestIdentity() == requestedIdentity ? self.saveError : nil
+                let message: String? = if self.requestIdentity() == requestedIdentity, !Task.isCancelled {
+                    self.saveError ?? ErrorState(URLError(.cannotLoadFromNetwork)).message
+                } else {
+                    nil
+                }
                 return QuickActionResult(succeeded: false, errorMessage: message)
             }
             await mutation(self).value
@@ -1023,6 +1040,17 @@ final class HomeSectionsEditorModel {
         }
         NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
     }
+
+    /// Invalidates Home and all Library section reads/caches (for example when
+    /// collection membership changes and that collection may be pinned on Home
+    /// or any Library page), then notifies mounted feeds to reload.
+    static func refreshAllSectionScopes() {
+        StartupContentPrefetcher.invalidateHomeSectionsInFlight()
+        StartupContentPrefetcher.invalidateAllLibrarySectionsInFlight()
+        ResponseCache.shared.remove(CacheKey.homeSections)
+        ResponseCache.shared.removeAll(withPrefix: "library:")
+        NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+    }
 }
 
 // MARK: - Home Preferences Model
@@ -1062,7 +1090,10 @@ final class HomePreferencesModel {
     var hideWatchedItems = false
     private(set) var isLoading = false
     private(set) var isSaving = false
+    private(set) var queuedWriteCount = 0
     private(set) var errorMessage: String?
+
+    var hasPendingWrites: Bool { queuedWriteCount > 0 }
     /// True only after both the contract capability probe and the effective-values
     /// read succeeded for the current server and profile.
     private struct KeyScope: Hashable {
@@ -1103,6 +1134,9 @@ final class HomePreferencesModel {
     @ObservationIgnored private var deferredWrites: [KeyScope: DeferredWrite] = [:]
     @ObservationIgnored private var keyWriteTail: [KeyScope: Task<Void, Never>] = [:]
     @ObservationIgnored private var activeWriteCount = 0
+    @ObservationIgnored private var writeWaiters: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var writeFailureCount = 0
+    @ObservationIgnored private var acknowledgedFailureCount = 0
 
     private static let preferenceKeys: [SettingKey] = [
         .uiNextUpMode,
@@ -1291,6 +1325,9 @@ final class HomePreferencesModel {
             supportedKeys = resolvedKeys
             isAuthorized = !resolvedKeys.isEmpty
             errorMessage = preservingError
+            if preservingError == nil {
+                acknowledgedFailureCount = writeFailureCount
+            }
 
             for (key, deferred) in deferredToDispatch {
                 applyOptimistic(deferred.value, for: key)
@@ -1400,6 +1437,23 @@ final class HomePreferencesModel {
         )
     }
 
+    /// Waits for any queued preference writes to settle before closing Options.
+    /// Returns `false` once when any unacknowledged write failed so the user
+    /// sees `errorMessage`; a subsequent Done tap with no new failure closes cleanly.
+    func waitForPendingWrites() async -> Bool {
+        let failureCountAtTap = writeFailureCount
+        while queuedWriteCount > 0 {
+            await withCheckedContinuation { continuation in
+                writeWaiters.append(continuation)
+            }
+        }
+        if writeFailureCount > acknowledgedFailureCount || writeFailureCount > failureCountAtTap {
+            acknowledgedFailureCount = writeFailureCount
+            return false
+        }
+        return true
+    }
+
     private func enqueueWrite(
         key: SettingKey,
         value: SettingJSONValue,
@@ -1409,8 +1463,12 @@ final class HomePreferencesModel {
         let generation = keyGeneration[scope, default: 0] + 1
         keyGeneration[scope] = generation
         deferredWrites.removeValue(forKey: scope)
+        if queuedWriteCount == 0 {
+            errorMessage = nil
+            acknowledgedFailureCount = writeFailureCount
+        }
+        queuedWriteCount += 1
         pendingWrites[scope, default: 0] += 1
-        errorMessage = nil
         let previous = keyWriteTail[scope]
         keyWriteTail[scope] = Task { @MainActor [weak self] in
             await previous?.value
@@ -1421,6 +1479,14 @@ final class HomePreferencesModel {
                 self.pendingWrites[scope] = max(0, self.pendingWrites[scope, default: 0] - 1)
                 if dispatched {
                     self.settledWrites[scope, default: 0] += 1
+                }
+                self.queuedWriteCount = max(0, self.queuedWriteCount - 1)
+                if self.queuedWriteCount == 0, !self.writeWaiters.isEmpty {
+                    let waiters = self.writeWaiters
+                    self.writeWaiters.removeAll()
+                    for waiter in waiters {
+                        waiter.resume()
+                    }
                 }
                 if scheduleRecoveryLoad, self.requestIdentity() == identity {
                     let preservedError = self.errorMessage
@@ -1483,7 +1549,15 @@ final class HomePreferencesModel {
                 // A superseded attempt may still have landed on the server;
                 // mark the confirmed baseline uncertain until a newer write
                 // succeeds or a fresh load reconciles the authoritative value.
+                // When no newer write exists for this key (e.g. authorization
+                // dropped mid-backoff), lock the key and schedule reconciliation
+                // so a Retry load cannot re-enable editing over unsaved state.
                 self.uncertainConfirmedKeys.insert(scope)
+                guard self.keyGeneration[scope] == generation else { return }
+                self.reconcilingKeys.insert(scope)
+                if self.requestIdentity() == identity {
+                    scheduleRecoveryLoad = true
+                }
                 return
             } catch let held as ProfileSettingsWriter.HeldChange {
                 // Automatic retries were exhausted and the server may already
@@ -1494,6 +1568,7 @@ final class HomePreferencesModel {
                 let message = ErrorState(held).message
                 self.reconcilingKeys.insert(scope)
                 if self.requestIdentity() == identity {
+                    self.writeFailureCount += 1
                     self.errorMessage = message
                     scheduleRecoveryLoad = true
                 }
@@ -1501,6 +1576,7 @@ final class HomePreferencesModel {
                 guard self.keyGeneration[scope] == generation else { return }
                 let message = ErrorState(error).message
                 if self.requestIdentity() == identity {
+                    self.writeFailureCount += 1
                     self.errorMessage = message
                 }
                 if !self.isAuthorizedForWrite(key, identity: identity)
