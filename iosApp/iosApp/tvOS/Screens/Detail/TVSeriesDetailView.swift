@@ -1150,11 +1150,13 @@ struct TVSeriesDetailView: View {
                     if model.isLoading && !model.hasLoaded {
                         return [TVActionPopoverItem(id: "col:loading", title: loadingTitle, isEnabled: false)]
                     }
-                    if let error = model.errorMessage, !model.hasLoaded {
-                        return [
-                            TVActionPopoverItem(id: "col:error", title: error, isEnabled: false),
-                            TVActionPopoverItem(id: "col:retry", title: AppLanguage.string(.commonRetry, locale: locale), systemImage: "arrow.clockwise"),
-                        ]
+                    if !model.hasLoaded {
+                        var rows: [TVActionPopoverItem] = []
+                        if let error = model.loadErrorMessage ?? model.errorMessage {
+                            rows.append(TVActionPopoverItem(id: "col:error", title: error, isEnabled: false))
+                        }
+                        rows.append(TVActionPopoverItem(id: "col:retry", title: AppLanguage.string(.commonRetry, locale: locale), systemImage: "arrow.clockwise"))
+                        return rows
                     }
                     if model.entries.isEmpty {
                         return [

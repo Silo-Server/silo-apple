@@ -1023,6 +1023,25 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertTrue(ownerModel.isShared)
         XCTAssertFalse(ownerModel.shareLoadFailed)
     }
+
+    func testRemovingCustomRowUpdatesSurvivingCustomRowPositionsWithoutPinningAdminOrder() {
+        let a = makeRow(id: "admin-a", position: 0)
+        let x = makeRow(id: "custom-x", isCustom: true, position: 1)
+        let b = makeRow(id: "admin-b", position: 2)
+        let y = makeRow(id: "custom-y", isCustom: true, position: 3)
+        let c = makeRow(id: "admin-c", position: 4)
+        let baseline = [a, x, b, y, c]
+        let saved: [APIv2SectionOverride] = [
+            APIv2SectionOverride(id: "custom-x", sectionId: "", position: 1, hidden: false, isUserAdded: true, userSectionType: "collection", userTitle: "X"),
+            APIv2SectionOverride(id: "custom-y", sectionId: "", position: 3, hidden: false, isUserAdded: true, userSectionType: "collection", userTitle: "Y"),
+        ]
+
+        // Remove custom-x -> [A, B, Y, C]. Surviving custom-y must update to position 2
+        // without pinning admin rows A, B, or C.
+        let updated = ProfileHomeLayout.overrides(rows: [a, b, y, c], baseline: baseline, saved: saved)
+        XCTAssertEqual(updated.map(\.id), ["custom-y"])
+        XCTAssertEqual(updated.first?.position, 2)
+    }
 }
 
 @MainActor

@@ -548,6 +548,10 @@ final class AddToCollectionModel {
     /// (rather than an initial list load), so tvOS alerts stay visible even if
     /// a follow-up reconciliation load fails and clears `hasLoaded`.
     private(set) var hasMutationError = false
+    /// Preserved across alert dismissal (`clearError()`) while `hasLoaded` is
+    /// false, so tvOS submenus keep showing the failed-load Retry action instead
+    /// of falling back to an empty state.
+    private(set) var loadErrorMessage: String?
     private(set) var errorMessage: String?
 
     var hasPendingMutations: Bool { activeMutationCount > 0 }
@@ -597,6 +601,7 @@ final class AddToCollectionModel {
                 isLoading = false
             }
         }
+        loadErrorMessage = nil
         if preservingError == nil && mutationFailureCount <= acknowledgedFailureCount {
             errorMessage = nil
             hasMutationError = false
@@ -677,6 +682,7 @@ final class AddToCollectionModel {
             }
             entries = loaded
             hasLoaded = true
+            loadErrorMessage = nil
             hasUncertainCreation = false
             unconfirmedCollectionIds.removeAll()
             needsReconciliation = false
@@ -704,11 +710,13 @@ final class AddToCollectionModel {
             }
             needsReconciliation = false
             pendingReconciliationError = nil
+            let loadMessage = ErrorState(error).message
+            loadErrorMessage = loadMessage
             let hasUnacknowledgedFailure = mutationFailureCount > acknowledgedFailureCount
             if let preservingError {
                 errorMessage = preservingError
             } else if !hasUnacknowledgedFailure || errorMessage == nil {
-                errorMessage = ErrorState(error).message
+                errorMessage = loadMessage
             }
         }
     }

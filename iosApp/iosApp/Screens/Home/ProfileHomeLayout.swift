@@ -72,7 +72,7 @@ enum ProfileHomeLayout {
             used.insert(index)
             var override = saved[index]
             if override.id.isEmpty { override.id = newID() }
-            if ordered { override.position = position }
+            if ordered || row.isCustom { override.position = position }
             override.hidden = row.hidden
             result.append(override)
         }
