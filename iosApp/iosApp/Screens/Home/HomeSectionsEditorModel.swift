@@ -36,6 +36,10 @@ final class HomeSectionsEditorModel {
         let movedId: String
         let anchorAfterId: String?
         let anchorBeforeId: String?
+        /// True when the row was dragged downward past `anchorBeforeId`, so
+        /// replay prefers placing it after `anchorBeforeId` rather than before
+        /// `anchorAfterId`.
+        let preferBeforeAnchor: Bool
         let fallbackIndex: Int
     }
 
@@ -561,14 +565,26 @@ final class HomeSectionsEditorModel {
                 return false
             }
             let row = currentVisible.remove(at: fromIndex)
-            if let anchorAfterId = placement.anchorAfterId,
-               let afterIndex = currentVisible.firstIndex(where: { $0.id == anchorAfterId }) {
-                currentVisible.insert(row, at: afterIndex)
-            } else if let anchorBeforeId = placement.anchorBeforeId,
-                      let beforeIndex = currentVisible.firstIndex(where: { $0.id == anchorBeforeId }) {
-                currentVisible.insert(row, at: beforeIndex + 1)
+            if placement.preferBeforeAnchor {
+                if let anchorBeforeId = placement.anchorBeforeId,
+                   let beforeIndex = currentVisible.firstIndex(where: { $0.id == anchorBeforeId }) {
+                    currentVisible.insert(row, at: beforeIndex + 1)
+                } else if let anchorAfterId = placement.anchorAfterId,
+                          let afterIndex = currentVisible.firstIndex(where: { $0.id == anchorAfterId }) {
+                    currentVisible.insert(row, at: afterIndex)
+                } else {
+                    currentVisible.insert(row, at: min(placement.fallbackIndex, currentVisible.count))
+                }
             } else {
-                currentVisible.insert(row, at: min(placement.fallbackIndex, currentVisible.count))
+                if let anchorAfterId = placement.anchorAfterId,
+                   let afterIndex = currentVisible.firstIndex(where: { $0.id == anchorAfterId }) {
+                    currentVisible.insert(row, at: afterIndex)
+                } else if let anchorBeforeId = placement.anchorBeforeId,
+                          let beforeIndex = currentVisible.firstIndex(where: { $0.id == anchorBeforeId }) {
+                    currentVisible.insert(row, at: beforeIndex + 1)
+                } else {
+                    currentVisible.insert(row, at: min(placement.fallbackIndex, currentVisible.count))
+                }
             }
             return true
         } ?? base
@@ -592,6 +608,7 @@ final class HomeSectionsEditorModel {
             movedId: id,
             anchorAfterId: anchorAfterId,
             anchorBeforeId: anchorBeforeId,
+            preferBeforeAnchor: offset > 0,
             fallbackIndex: newIndex
         )
         return true
@@ -675,6 +692,8 @@ final class HomeSectionsEditorModel {
         let matchesRequestedRecipe: (APIv2ProfileSectionSetting) -> Bool = { row in
             Self.matchesRecipe(row, sectionType: sectionType, params: nonEmptyConfig ?? [:])
                 && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
+                && row.itemLimit == itemLimit
+                && row.featured == featured
         }
         // Capture any currently matching hidden row to prefer on replay; keep
         // the full Add intent so if an optimistic match rolls back or mutates,
@@ -733,16 +752,12 @@ final class HomeSectionsEditorModel {
                 in: [row]
             ) != nil
                 && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
+                && row.itemLimit == itemLimit
+                && row.featured == featured
         }
         let preferredId: String? = {
             guard !featured && itemLimit == 20,
-                  let existing = ProfileHomeLayout.matchingCollectionRow(
-                      collectionId: collectionId,
-                      isUserCollection: isUserCollection,
-                      in: committedRows
-                  ),
-                  existing.hidden,
-                  existing.displayTitle.caseInsensitiveCompare(title) == .orderedSame else {
+                  let existing = committedRows.first(where: { $0.hidden && matchesRequestedCollection($0) }) else {
                 return nil
             }
             return existing.id
@@ -856,6 +871,7 @@ final class HomeSectionsEditorModel {
                 }
                 return QuickActionResult(succeeded: false, errorMessage: message)
             }
+            let startFailureCount = self.saveFailureCount
             await mutation(self).value
             var gen: Int
             repeat {
@@ -865,8 +881,9 @@ final class HomeSectionsEditorModel {
             guard self.requestIdentity() == requestedIdentity else {
                 return QuickActionResult(succeeded: false, errorMessage: nil)
             }
-            let message = self.saveError
-            return QuickActionResult(succeeded: message == nil, errorMessage: message)
+            let failed = self.saveFailureCount > startFailureCount
+            let message = failed ? self.saveError : nil
+            return QuickActionResult(succeeded: !failed, errorMessage: message)
         }
         quickActionChain = Task { _ = await task.value }
         return await task.value
@@ -971,6 +988,7 @@ final class HomeSectionsEditorModel {
                         continue
                     }
                     let message = preservingError ?? ErrorState(URLError(.cannotLoadFromNetwork)).message
+                    activeDragPlacement = nil
                     phase = .failed(message)
                     saveError = message
                     return
@@ -985,7 +1003,10 @@ final class HomeSectionsEditorModel {
                     pendingEditsIdentity = nil
                     committedRows = layout.rows
                 }
-                activeDragPlacement = nil
+                if let placement = activeDragPlacement,
+                   !committedRows.contains(where: { $0.id == placement.movedId && !$0.hidden }) {
+                    activeDragPlacement = nil
+                }
                 hasLoadedFromServer = true
                 saveError = preservingError
                 phase = .loaded
@@ -996,6 +1017,7 @@ final class HomeSectionsEditorModel {
                       loadGeneration == myLoadGen,
                       requestIdentity() == expectedIdentity else { return }
                 let message = preservingError ?? ErrorState(error).message
+                activeDragPlacement = nil
                 phase = .failed(message)
                 saveError = message
                 return
@@ -1098,7 +1120,6 @@ final class HomeSectionsEditorModel {
                 if pendingEdits.isEmpty {
                     committedRows = []
                 }
-                activeDragPlacement = nil
                 hasLoadedFromServer = false
                 phase = .loading
                 saveError = message

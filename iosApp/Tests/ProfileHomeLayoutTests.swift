@@ -887,23 +887,31 @@ final class ProfileHomeLayoutTests: XCTestCase {
         ],"groups":[]}
         """)
 
+        let case1Start = stub.requests.count
         let model = AddToCollectionModel(contentId: "movie-99", api: api, requestIdentity: { identity })
         await model.load()
+        let case1Requests = Array(stub.requests[case1Start...])
         XCTAssertTrue(model.hasLoaded)
         XCTAssertEqual(model.entries.map(\.id), ["own-1"])
         XCTAssertEqual(model.entries.first?.containsItem, true)
-        XCTAssertFalse(stub.requests.contains { $0.path == "/api/v2/catalog/items/movie-99/collections" })
+        let case1CollectionsReq = try XCTUnwrap(case1Requests.first { $0.path == "/api/v2/collections" })
+        XCTAssertEqual(case1CollectionsReq.query["contains_item"], "movie-99")
+        XCTAssertFalse(case1Requests.contains { $0.path == "/api/v2/catalog/items/movie-99/collections" })
 
         // 2) Server lacks both contains_item and item_collections: skips membership route
-        //    and still loads the personal collection list.
+        //    and still loads the personal collection list without contains_item.
         stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":false,"contains_item":false}"#)
         stub.reply(path: "/api/v2/catalog/search/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"item_collections":false}"#)
+        let case2Start = stub.requests.count
         let olderModel = AddToCollectionModel(contentId: "movie-99", api: api, requestIdentity: { identity })
         await olderModel.load()
+        let case2Requests = Array(stub.requests[case2Start...])
         XCTAssertTrue(olderModel.hasLoaded)
         XCTAssertEqual(olderModel.entries.map(\.id), ["own-1"])
         XCTAssertNil(olderModel.entries.first?.containsItem)
-        XCTAssertFalse(stub.requests.contains { $0.path == "/api/v2/catalog/items/movie-99/collections" })
+        let case2CollectionsReq = try XCTUnwrap(case2Requests.first { $0.path == "/api/v2/collections" })
+        XCTAssertNil(case2CollectionsReq.query["contains_item"])
+        XCTAssertFalse(case2Requests.contains { $0.path == "/api/v2/catalog/items/movie-99/collections" })
 
         // 3) Unconfirmed row after failed create-and-add + failed reconciliation stays locked until Retry succeeds.
         stub.reply(path: "/api/v2/collections/capabilities", 500, #"{"error":{"code":"internal","message":"down"}}"#)

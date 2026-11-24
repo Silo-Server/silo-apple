@@ -36,6 +36,7 @@ final class LibraryCollectionDetailViewModel {
     private var continuation: APIv2CatalogContinuation?
     private var generation = 0
     private var invalidationGeneration = 0
+    private var hasPendingInvalidation = false
 
     init(api: SiloAPI = .shared, tokens: TokenStore = .shared) {
         self.api = api
@@ -44,6 +45,8 @@ final class LibraryCollectionDetailViewModel {
 
     func noteInvalidation() {
         invalidationGeneration += 1
+        hasPendingInvalidation = true
+        continuation = nil
     }
 
     @discardableResult
@@ -60,9 +63,10 @@ final class LibraryCollectionDetailViewModel {
             // Refreshing the same selection keeps every visible page if the
             // network fails. A different selection cannot reuse those rows.
             if selectionChanged { clearPage() }
-        } else if isLoading || !hasMore || refreshError != nil {
+        } else if isLoading || !hasMore || refreshError != nil || hasPendingInvalidation {
             return false
         }
+        let hadVisibleItemsBeforeLoad = !items.isEmpty
         let requestGeneration = generation
         let startInvalidation = invalidationGeneration
         let startToken = ResponseCache.shared.writeToken
@@ -142,6 +146,10 @@ final class LibraryCollectionDetailViewModel {
                 nextPage = page.continuation
             } while loaded.count < CatalogGrid.loadMoreLead && nextPage != nil && restarts < 2
 
+            if loaded.count < CatalogGrid.loadMoreLead && nextPage != nil {
+                throw APIv2Error.invalidCatalogContinuation
+            }
+
             if !replacedPageOne {
                 items.append(contentsOf: loaded)
             } else {
@@ -164,6 +172,7 @@ final class LibraryCollectionDetailViewModel {
             paginationError = nil
             if replacedPageOne {
                 refreshError = nil
+                hasPendingInvalidation = false
             }
             return true
         } catch {
@@ -187,12 +196,25 @@ final class LibraryCollectionDetailViewModel {
                       !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
                 effectiveError = HTTPError.requestIdentityChanged
             }
-            if case HTTPError.requestIdentityChanged = effectiveError { clearPage() }
-            if case HTTPError.authorityChanged = effectiveError { clearPage() }
+            let isIdentityError: Bool
+            if case HTTPError.requestIdentityChanged = effectiveError {
+                clearPage()
+                isIdentityError = true
+            } else if case HTTPError.authorityChanged = effectiveError {
+                clearPage()
+                isIdentityError = true
+            } else {
+                isIdentityError = false
+            }
             // If an earlier page in this batch already succeeded and ownership is
             // still intact, publish those validated cards and surface a retryable
-            // pagination error on the failed continuation instead of discarding them.
+            // pagination error on the failed continuation — unless this was a
+            // refresh over already-visible pages, in which case keep the existing
+            // pages intact and surface refreshError instead of replacing them with
+            // an incomplete prefix.
             if ownerStillValid,
+               !isIdentityError,
+               !(resetsPage && hadVisibleItemsBeforeLoad),
                let lastValidatedPage,
                let capturedOwner,
                !validatedLoaded.isEmpty {
@@ -217,6 +239,7 @@ final class LibraryCollectionDetailViewModel {
                 self.error = nil
                 if validatedReplacedPageOne {
                     self.refreshError = nil
+                    hasPendingInvalidation = false
                 }
                 self.paginationError = ErrorState(effectiveError)
                 return false
@@ -239,5 +262,6 @@ final class LibraryCollectionDetailViewModel {
         hasMore = true
         refreshError = nil
         paginationError = nil
+        hasPendingInvalidation = false
     }
 }

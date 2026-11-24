@@ -690,6 +690,9 @@ private class LibraryRecommendedViewModel {
 struct LibraryRecommendedView: View {
     let libraryId: Int
     var mediaScope: LibraryVideoScope? = nil
+    /// Whether this tab is currently selected inside `LibrariesTabView`, which
+    /// keeps hidden tabs mounted at zero opacity on iPhone.
+    var isActivePage: Bool = true
 
     @State private var viewModel = LibraryRecommendedViewModel()
     @State private var isVisible = false
@@ -783,7 +786,7 @@ struct LibraryRecommendedView: View {
         }
         .onAppear {
             isVisible = true
-            if hasPendingRefresh {
+            if isActivePage && hasPendingRefresh {
                 scheduleRefresh(delay: nil)
             }
         }
@@ -791,6 +794,16 @@ struct LibraryRecommendedView: View {
             isVisible = false
             refreshTask?.cancel()
             refreshTask = nil
+        }
+        .onChange(of: isActivePage) { _, active in
+            if active {
+                if isVisible && hasPendingRefresh {
+                    scheduleRefresh(delay: nil)
+                }
+            } else {
+                refreshTask?.cancel()
+                refreshTask = nil
+            }
         }
         // The Libraries tab keeps this page alive under its others, so a
         // title marked watched elsewhere would otherwise keep its old card
@@ -803,7 +816,7 @@ struct LibraryRecommendedView: View {
             viewModel.noteInvalidation()
             refreshInvalidationGen += 1
             hasPendingRefresh = true
-            if isVisible {
+            if isVisible && isActivePage {
                 let isCollectionEdit = note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.collectionId] != nil
                 scheduleRefresh(delay: isCollectionEdit ? .milliseconds(350) : nil)
             } else {

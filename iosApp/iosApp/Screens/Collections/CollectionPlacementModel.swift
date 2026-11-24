@@ -369,7 +369,9 @@ final class CollectionPlacementModel {
                 version = editor.version
             }
             guard Self.authMatchesIdentity(version.auth, startIdentity) else {
-                isShared = !targetShared
+                if requestIdentity() == startIdentity && shareMutationGeneration == myShareGen {
+                    isShared = !targetShared
+                }
                 return
             }
             let updated = try await api.setCollectionShared(version, isShared: targetShared)
@@ -776,7 +778,8 @@ final class AddToCollectionModel {
         let startIdentity = requestIdentity()
         pendingMutations += 1
         mutationGeneration += 1
-        entryGeneration[collectionId, default: 0] += 1
+        let myEntryGen = entryGeneration[collectionId, default: 0] + 1
+        entryGeneration[collectionId] = myEntryGen
         busyCollectionIds.insert(collectionId)
 
         let wasIn = entries[index].containsItem
@@ -805,14 +808,29 @@ final class AddToCollectionModel {
             }
             defer { releaseMutationAccounting() }
 
-            guard !Task.isCancelled, self.requestIdentity() == startIdentity else { return }
+            let restoreOptimisticBeforeDispatch = {
+                if self.requestIdentity() == startIdentity,
+                   self.entryGeneration[collectionId] == myEntryGen,
+                   let idx = self.entries.firstIndex(where: { $0.id == collectionId }) {
+                    self.entries[idx].containsItem = wasIn
+                    self.entries[idx].itemCount = previousItemCount
+                }
+            }
+
+            guard !Task.isCancelled, self.requestIdentity() == startIdentity else {
+                restoreOptimisticBeforeDispatch()
+                return
+            }
 
             var toggleError: String?
             do {
                 let auth = try await self.api.captureMutationAuth()
                 guard !Task.isCancelled,
                       self.requestIdentity() == startIdentity,
-                      Self.authMatchesIdentity(auth, startIdentity) else { return }
+                      Self.authMatchesIdentity(auth, startIdentity) else {
+                    restoreOptimisticBeforeDispatch()
+                    return
+                }
                 if nextIn {
                     try await self.api.addItemToCollection(collectionId: collectionId, itemId: self.contentId, position: 0, auth: auth)
                 } else {
@@ -824,6 +842,15 @@ final class AddToCollectionModel {
                 HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
                 if self.requestIdentity() == startIdentity {
                     NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
+                    if wasIn == nil,
+                       let refreshed = try? await self.api.collections(),
+                       self.requestIdentity() == startIdentity,
+                       self.entryGeneration[collectionId] == myEntryGen,
+                       let matched = refreshed.collections?.first(where: { $0.id == collectionId }),
+                       let freshCount = matched.itemCount,
+                       let idx = self.entries.firstIndex(where: { $0.id == collectionId }) {
+                        self.entries[idx].itemCount = freshCount
+                    }
                 }
             } catch {
                 if self.requestIdentity() == startIdentity {
@@ -833,7 +860,8 @@ final class AddToCollectionModel {
                     self.hasMutationError = true
                     self.errorMessage = message
                     if !APIv2MutationOutcome(error).mayHaveApplied {
-                        if let idx = self.entries.firstIndex(where: { $0.id == collectionId }) {
+                        if self.entryGeneration[collectionId] == myEntryGen,
+                           let idx = self.entries.firstIndex(where: { $0.id == collectionId }) {
                             self.entries[idx].containsItem = wasIn
                             self.entries[idx].itemCount = previousItemCount
                         }
@@ -858,12 +886,15 @@ final class AddToCollectionModel {
 
             guard self.pendingMutations == 0, self.requestIdentity() == startIdentity else { return }
             if self.needsReconciliation {
-                await self.load(preservingEntry: nil, preservingError: self.pendingReconciliationError ?? toggleError)
+                await self.load(
+                    preservingEntry: nil,
+                    preservingError: toggleError ?? self.errorMessage ?? self.pendingReconciliationError
+                )
             } else if !self.hasLoaded {
                 // If this toggle invalidated an in-flight recovery reload while the full
                 // list was still incomplete, schedule a fresh reload so existing collections
                 // and Retry state reconcile cleanly.
-                await self.load(preservingEntry: currentEntry, preservingError: toggleError)
+                await self.load(preservingEntry: currentEntry, preservingError: toggleError ?? self.errorMessage)
             }
         }
     }
@@ -934,8 +965,9 @@ final class AddToCollectionModel {
                 self.hasMutationError = true
                 self.errorMessage = message
                 if APIv2MutationOutcome(error).mayHaveApplied {
-                    // POST may have created the collection on the server; reread
-                    // the list before allowing another POST to prevent duplicates.
+                    // POST may have created the collection on the server; invalidate
+                    // cached list and reread before allowing another POST to prevent duplicates.
+                    ResponseCache.shared.remove(CacheKey.collections)
                     self.hasUncertainCreation = true
                     self.needsReconciliation = true
                     self.pendingReconciliationError = message
@@ -1014,9 +1046,12 @@ final class AddToCollectionModel {
 
             if self.pendingMutations == 0 {
                 if self.needsReconciliation {
-                    await self.load(preservingEntry: nil, preservingError: self.pendingReconciliationError ?? addError)
+                    await self.load(
+                        preservingEntry: nil,
+                        preservingError: addError ?? self.errorMessage ?? self.pendingReconciliationError
+                    )
                 } else if !self.hasLoaded {
-                    await self.load(preservingEntry: createdEntry, preservingError: addError)
+                    await self.load(preservingEntry: createdEntry, preservingError: addError ?? self.errorMessage)
                 }
             }
             return result

@@ -807,7 +807,15 @@ struct LibraryCollectionDetailView: View {
                 content
             } else if viewModel.hasMore && viewModel.paginationError == nil {
                 ProgressView()
-                    .task {
+                    #if os(tvOS)
+                    .tvPageFocusOwner(
+                        focusRequest: 0,
+                        isTopMenuFocused: false,
+                        accessibilityLabel: AppLanguage.string(.commonLoading, locale: locale),
+                        onMoveUp: nil
+                    )
+                    #endif
+                    .task(id: "\(viewModel.items.count)-\(viewModel.hasMore)-\(viewModel.isLoading)") {
                         await loadMoreIfNeeded()
                     }
             } else if let paginationError = viewModel.paginationError {
@@ -922,10 +930,18 @@ struct LibraryCollectionDetailView: View {
                     HStack {
                         Spacer()
                         ProgressView()
+                            #if os(tvOS)
+                            .tvPageFocusOwner(
+                                focusRequest: 0,
+                                isTopMenuFocused: false,
+                                accessibilityLabel: AppLanguage.string(.commonLoading, locale: locale),
+                                onMoveUp: nil
+                            )
+                            #endif
                         Spacer()
                     }
                     .padding(.vertical, SiloTheme.largePadding)
-                    .task {
+                    .task(id: "\(viewModel.items.count)-\(viewModel.hasMore)-\(viewModel.isLoading)") {
                         await loadMoreIfNeeded()
                     }
                 } else {
@@ -941,6 +957,11 @@ struct LibraryCollectionDetailView: View {
                             Task { await loadMoreIfNeeded() }
                         }
                     )
+                    .task(id: "\(viewModel.items.count)-\(viewModel.hasMore)-\(viewModel.paginationError == nil)-\(viewModel.refreshError == nil)") {
+                        if viewModel.items.count < CatalogGrid.loadMoreLead {
+                            await loadMoreIfNeeded()
+                        }
+                    }
                 }
 
                 if let paginationError = viewModel.paginationError {

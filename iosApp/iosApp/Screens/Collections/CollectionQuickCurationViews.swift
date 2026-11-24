@@ -416,10 +416,12 @@ struct IOSAddToCollectionSheet: View {
                                 .buttonStyle(.plain)
                                 .disabled(isFinishing || model.busyCollectionIds.contains(entry.id) || isUnconfirmed)
                                 .accessibilityValue(
-                                    entry.containsItem.map { Text($0 ? LocalizedStringResource.detailActionOn : .detailActionOff) }
-                                        ?? Text(.collectionsAddToMenuAction)
+                                    isUnconfirmed
+                                        ? Text(.detailUnknown)
+                                        : (entry.containsItem.map { Text($0 ? LocalizedStringResource.detailActionOn : .detailActionOff) }
+                                            ?? Text(.collectionsAddToMenuAction))
                                 )
-                                .accessibilityAddTraits(entry.containsItem == true ? [.isSelected] : [])
+                                .accessibilityAddTraits(!isUnconfirmed && entry.containsItem == true ? [.isSelected] : [])
                             }
                             if !model.hasLoaded && !model.isLoading && model.errorMessage == nil {
                                 Button(.commonRetry) {
