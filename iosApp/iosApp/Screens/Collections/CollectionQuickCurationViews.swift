@@ -85,109 +85,129 @@ struct CollectionPinActionBar: View {
 
     #if !os(tvOS)
     private var iosControls: some View {
-        HStack(spacing: 8) {
-            Button {
-                hapticCount += 1
-                Task { await model.toggleHomePin() }
-            } label: {
-                HStack(spacing: 6) {
-                    if model.isUpdatingHome {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .tint(model.isPinnedOnHome ? .black : .white)
-                    } else {
-                        Image(systemName: model.isPinnedOnHome ? "pin.fill" : "pin")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button {
+                    hapticCount += 1
+                    Task { await model.toggleHomePin() }
+                } label: {
+                    HStack(spacing: 6) {
+                        if model.isUpdatingHome {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(model.isPinnedOnHome ? .black : .white)
+                        } else {
+                            Image(systemName: model.isPinnedOnHome ? "pin.fill" : "pin")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        Text(model.isPinnedOnHome ? .collectionsPinOnHome : .collectionsPinPinToHome)
                             .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
                     }
-                    Text(model.isPinnedOnHome ? .collectionsPinOnHome : .collectionsPinPinToHome)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(model.isPinnedOnHome ? Color.black : Color.siloOnSurface)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .background(
-                    Capsule().fill(
-                        model.isPinnedOnHome
-                            ? Color.white
-                            : Color.white.opacity(0.12)
-                    )
-                )
-                .overlay(
-                    Capsule().strokeBorder(
-                        Color.white.opacity(model.isPinnedOnHome ? 0 : 0.16),
-                        lineWidth: 0.75
-                    )
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
-
-            Menu {
-                Section(.collectionsPinWhereItShows) {
-                    Button {
-                        hapticCount += 1
-                        Task { await model.toggleHomePin() }
-                    } label: {
-                        Label(
-                            .tabHome,
-                            systemImage: model.isPinnedOnHome ? "checkmark.circle.fill" : "circle"
+                    .foregroundStyle(model.isPinnedOnHome ? Color.black : Color.siloOnSurface)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(
+                        Capsule().fill(
+                            model.isPinnedOnHome
+                                ? Color.white
+                                : Color.white.opacity(0.12)
                         )
-                    }
-                    .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
+                    )
+                    .overlay(
+                        Capsule().strokeBorder(
+                            Color.white.opacity(model.isPinnedOnHome ? 0 : 0.16),
+                            lineWidth: 0.75
+                        )
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
 
-                    if model.hasFailedLoad && !model.isLoading {
-                        Button {
-                            Task { await model.load() }
-                        } label: {
-                            Label(.commonRetry, systemImage: "arrow.clockwise")
-                        }
-                    }
-
-                    ForEach(model.libraryPlacements) { placement in
+                Menu {
+                    Section(.collectionsPinWhereItShows) {
                         Button {
                             hapticCount += 1
-                            Task { await model.toggleLibraryPin(libraryId: placement.libraryId) }
+                            Task { await model.toggleHomePin() }
                         } label: {
                             Label(
-                                placement.libraryName,
-                                systemImage: placement.hasLoaded
-                                    ? (placement.isPinned ? "checkmark.circle.fill" : "circle")
-                                    : "exclamationmark.triangle"
+                                .tabHome,
+                                systemImage: model.isPinnedOnHome ? "checkmark.circle.fill" : "circle"
                             )
                         }
-                        .disabled(model.isLoading || !placement.hasLoaded || model.updatingLibraryIds.contains(placement.libraryId))
-                    }
-                }
+                        .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
 
-                if model.isUserCollection && model.canToggleShare {
-                    Section(.collectionsPinHousehold) {
-                        Button {
-                            hapticCount += 1
-                            Task { await model.toggleShared() }
-                        } label: {
-                            Label(
-                                .collectionsPinShareWithHousehold,
-                                systemImage: model.isShared ? "checkmark.circle.fill" : "person.2"
-                            )
+                        if model.hasFailedLoad && !model.isLoading {
+                            Button {
+                                Task { await model.load() }
+                            } label: {
+                                Label(.commonRetry, systemImage: "arrow.clockwise")
+                            }
                         }
-                        .disabled(model.isLoading || model.isUpdatingShare)
+
+                        ForEach(model.libraryPlacements) { placement in
+                            Button {
+                                hapticCount += 1
+                                Task { await model.toggleLibraryPin(libraryId: placement.libraryId) }
+                            } label: {
+                                Label(
+                                    placement.libraryName,
+                                    systemImage: placement.hasLoaded
+                                        ? (placement.isPinned ? "checkmark.circle.fill" : "circle")
+                                        : "exclamationmark.triangle"
+                                )
+                            }
+                            .disabled(model.isLoading || !placement.hasLoaded || model.updatingLibraryIds.contains(placement.libraryId))
+                        }
                     }
+
+                    if model.isUserCollection && model.canToggleShare {
+                        Section(.collectionsPinHousehold) {
+                            Button {
+                                hapticCount += 1
+                                Task { await model.toggleShared() }
+                            } label: {
+                                Label(
+                                    .collectionsPinShareWithHousehold,
+                                    systemImage: model.isShared ? "checkmark.circle.fill" : "person.2"
+                                )
+                            }
+                            .disabled(model.isLoading || model.isUpdatingShare)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.siloOnSurface)
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(Color.white.opacity(0.12)))
+                        .overlay(Circle().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.75))
                 }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.siloOnSurface)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(Color.white.opacity(0.12)))
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.16), lineWidth: 0.75))
+                #if os(macOS)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                #endif
+                .accessibilityLabel(.collectionsPinWhereItShows)
             }
-            #if os(macOS)
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            #endif
-            .accessibilityLabel(.collectionsPinWhereItShows)
+
+            if let loadError = model.loadErrorMessage, !model.isLoading {
+                HStack(spacing: 8) {
+                    Label {
+                        Text(verbatim: loadError)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .lineLimit(2)
+
+                    Button(.commonRetry) {
+                        Task { await model.load() }
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+            }
         }
     }
     #endif
@@ -196,47 +216,49 @@ struct CollectionPinActionBar: View {
 
     #if os(tvOS)
     private var tvControls: some View {
-        HStack(spacing: 16) {
-            Button {
-                Task { await model.toggleHomePin() }
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: model.isPinnedOnHome ? "pin.fill" : "pin")
-                        .font(.system(size: 20, weight: .semibold))
-                    Text(model.isPinnedOnHome ? .collectionsPinOnHome : .collectionsPinPinToHome)
-                        .font(.system(size: 22, weight: .semibold))
-                }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 12)
-            }
-            .buttonStyle(.bordered)
-            .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
-
-            TVCircleMenuButton(
-                icon: "ellipsis",
-                title: AppLanguage.string(.collectionsPinWhereItShows, locale: locale),
-                accessibilityLabel: AppLanguage.string(.collectionsPinWhereItShows, locale: locale),
-                items: {
-                    var items: [TVActionPopoverItem] = [
-                        TVActionPopoverItem(
-                            id: "home",
-                            title: AppLanguage.string(.tabHome, locale: locale),
-                            detail: AppLanguage.string(
-                                model.isPinnedOnHome ? .collectionsPinPinnedOnHome : .collectionsPinNotOnHome,
-                                locale: locale
-                            ),
-                            systemImage: "house",
-                            isSelected: model.isPinnedOnHome,
-                            isEnabled: !model.isLoading && model.hasLoadedHome && !model.isUpdatingHome
-                        ),
-                    ]
-                    if model.hasFailedLoad && !model.isLoading {
-                        items.append(TVActionPopoverItem(
-                            id: "retry",
-                            title: AppLanguage.string(.commonRetry, locale: locale),
-                            systemImage: "arrow.clockwise"
-                        ))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 16) {
+                Button {
+                    Task { await model.toggleHomePin() }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: model.isPinnedOnHome ? "pin.fill" : "pin")
+                            .font(.system(size: 20, weight: .semibold))
+                        Text(model.isPinnedOnHome ? .collectionsPinOnHome : .collectionsPinPinToHome)
+                            .font(.system(size: 22, weight: .semibold))
                     }
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
+
+                TVCircleMenuButton(
+                    icon: "ellipsis",
+                    title: AppLanguage.string(.collectionsPinWhereItShows, locale: locale),
+                    accessibilityLabel: AppLanguage.string(.collectionsPinWhereItShows, locale: locale),
+                    items: {
+                        var items: [TVActionPopoverItem] = [
+                            TVActionPopoverItem(
+                                id: "home",
+                                title: AppLanguage.string(.tabHome, locale: locale),
+                                detail: AppLanguage.string(
+                                    model.isPinnedOnHome ? .collectionsPinPinnedOnHome : .collectionsPinNotOnHome,
+                                    locale: locale
+                                ),
+                                systemImage: "house",
+                                isSelected: model.isPinnedOnHome,
+                                isEnabled: !model.isLoading && model.hasLoadedHome && !model.isUpdatingHome
+                            ),
+                        ]
+                        if model.hasFailedLoad && !model.isLoading {
+                            items.append(TVActionPopoverItem(
+                                id: "retry",
+                                title: AppLanguage.string(.commonRetry, locale: locale),
+                                detail: model.loadErrorMessage,
+                                systemImage: "arrow.clockwise"
+                            ))
+                        }
                     for placement in model.libraryPlacements {
                         items.append(TVActionPopoverItem(
                             id: "lib:\(placement.libraryId)",
@@ -265,19 +287,38 @@ struct CollectionPinActionBar: View {
                     }
                     return items
                 },
-                onSelect: { item in
-                    if item.id == "home" {
-                        Task { await model.toggleHomePin() }
-                    } else if item.id == "retry" {
-                        Task { await model.load() }
-                    } else if item.id == "share" {
-                        Task { await model.toggleShared() }
-                    } else if item.id.hasPrefix("lib:"),
-                              let libId = Int(item.id.dropFirst(4)) {
-                        Task { await model.toggleLibraryPin(libraryId: libId) }
+                    onSelect: { item in
+                        if item.id == "home" {
+                            Task { await model.toggleHomePin() }
+                        } else if item.id == "retry" {
+                            Task { await model.load() }
+                        } else if item.id == "share" {
+                            Task { await model.toggleShared() }
+                        } else if item.id.hasPrefix("lib:"),
+                                  let libId = Int(item.id.dropFirst(4)) {
+                            Task { await model.toggleLibraryPin(libraryId: libId) }
+                        }
                     }
+                )
+            }
+
+            if let loadError = model.loadErrorMessage, !model.isLoading {
+                HStack(spacing: 12) {
+                    Label {
+                        Text(verbatim: loadError)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle")
+                    }
+                    .font(.system(size: 19, weight: .medium))
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .lineLimit(2)
+
+                    Button(.commonRetry) {
+                        Task { await model.load() }
+                    }
+                    .buttonStyle(.bordered)
                 }
-            )
+            }
         }
     }
     #endif

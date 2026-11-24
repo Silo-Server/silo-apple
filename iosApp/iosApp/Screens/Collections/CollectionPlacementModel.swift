@@ -879,7 +879,8 @@ final class AddToCollectionModel {
                       pendingMutations == 0,
                       mutationGeneration == startMutationGen,
                       requestIdentity() == startIdentity else { return }
-                if attempt == 0, ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken) {
+                let wasInvalidated = ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken)
+                if attempt == 0, wasInvalidated {
                     continue
                 }
                 if entriesIdentity != startIdentity {
@@ -891,7 +892,7 @@ final class AddToCollectionModel {
                 hasLoaded = false
                 needsReconciliation = false
                 pendingReconciliationError = nil
-                let loadMessage = ErrorState(error).message
+                let loadMessage = ErrorState(wasInvalidated ? URLError(.cannotLoadFromNetwork) : error).message
                 loadErrorMessage = loadMessage
                 let hasUnacknowledgedFailure = mutationFailureCount > acknowledgedFailureCount
                 if let preservingError {
