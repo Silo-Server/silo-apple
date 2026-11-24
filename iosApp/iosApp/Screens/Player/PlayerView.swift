@@ -1467,28 +1467,30 @@ struct PlayerNextUpScreen: View {
         }
         #else
         VStack(spacing: compact ? 6 : 10) {
-            HStack(spacing: 12) {
-                if hasNextEpisode {
-                    Button(action: { viewModel.playNextEpisodeNow() }) {
-                        Label(.upNextPlayNow, systemImage: "play.fill")
-                            .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
+            if hasNextEpisode && viewModel.shuffleState != nil {
+                // Pick Another shares Play Next Up's line when both labels
+                // fit; longer labels give it a line of its own rather than
+                // truncate Play Next Up.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        mobilePlayNextUpButton(compact: compact)
+                        mobilePickAnotherButton(compact: compact)
+                        mobileCountdownRing
                     }
-                    .siloPrimaryButton(isLoading: viewModel.isStartingNextUp)
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("next-up-play-now")
-                }
-                if hasNextEpisode && viewModel.shuffleState != nil {
-                    Button(action: { viewModel.pickAnotherShufflePick() }) {
-                        Label(.upNextPickAnother, systemImage: "shuffle")
-                            .frame(minHeight: compact ? 24 : 44)
+                    VStack(spacing: compact ? 6 : 10) {
+                        HStack(spacing: 12) {
+                            mobilePlayNextUpButton(compact: compact)
+                            mobileCountdownRing
+                        }
+                        mobilePickAnotherButton(compact: compact, stacked: true)
                     }
-                    .siloSecondaryButton()
-                    .frame(minHeight: 44)
-                    .disabled(!viewModel.canPickAnotherShufflePick)
-                    .accessibilityIdentifier("next-up-pick-another")
                 }
-                if let seconds = viewModel.nextUpCountdownSeconds {
-                    CountdownRing(seconds: seconds, totalSeconds: viewModel.nextUpCountdownTotalSeconds)
+            } else {
+                HStack(spacing: 12) {
+                    if hasNextEpisode {
+                        mobilePlayNextUpButton(compact: compact)
+                    }
+                    mobileCountdownRing
                 }
             }
 
@@ -1562,6 +1564,37 @@ struct PlayerNextUpScreen: View {
     #endif
 
     #if !os(tvOS)
+    private func mobilePlayNextUpButton(compact: Bool) -> some View {
+        Button(action: { viewModel.playNextEpisodeNow() }) {
+            Label(.upNextPlayNow, systemImage: "play.fill")
+                .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
+        }
+        .siloPrimaryButton(isLoading: viewModel.isStartingNextUp)
+        .frame(minHeight: 44)
+        .accessibilityIdentifier("next-up-play-now")
+    }
+
+    private func mobilePickAnotherButton(compact: Bool, stacked: Bool = false) -> some View {
+        Button(action: { viewModel.pickAnotherShufflePick() }) {
+            Label(.upNextPickAnother, systemImage: "shuffle")
+                .frame(maxWidth: stacked ? .infinity : nil, minHeight: compact ? 24 : 44)
+        }
+        .siloSecondaryButton()
+        .frame(minHeight: 44)
+        // On a shared line, its full label; Play Next Up takes the rest.
+        // iOS 18's secondary style would otherwise split the line evenly.
+        .fixedSize(horizontal: !stacked, vertical: false)
+        .disabled(!viewModel.canPickAnotherShufflePick)
+        .accessibilityIdentifier("next-up-pick-another")
+    }
+
+    @ViewBuilder
+    private var mobileCountdownRing: some View {
+        if let seconds = viewModel.nextUpCountdownSeconds {
+            CountdownRing(seconds: seconds, totalSeconds: viewModel.nextUpCountdownTotalSeconds)
+        }
+    }
+
     /// Keep Watching and Exit Playback share a line, or stack when a
     /// translation is too long for both to show in full.
     private func secondaryActionRow(compact: Bool) -> some View {
@@ -1589,7 +1622,10 @@ struct PlayerNextUpScreen: View {
         .siloSecondaryButton()
         .frame(minHeight: 44)
         // On a shared line, claim the full label width before the auto-play
-        // toggle and Keep Watching; an even split would truncate it.
+        // toggle and Keep Watching; an even split would truncate it. Fixed,
+        // because iOS 18's secondary style stretches and would otherwise
+        // take the whole line.
+        .fixedSize(horizontal: !stacked, vertical: false)
         .layoutPriority(stacked ? 0 : 2)
     }
     #endif
