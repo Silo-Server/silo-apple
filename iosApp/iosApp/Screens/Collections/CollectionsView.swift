@@ -922,6 +922,7 @@ struct LibraryCollectionDetailView: View {
                             isUserCollection: false,
                             sourceLibraryId: libraryId
                         )
+                        .id("\(collectionId)-\(libraryId)")
                     }
                     if !viewModel.items.isEmpty {
                         Text(countLabel)

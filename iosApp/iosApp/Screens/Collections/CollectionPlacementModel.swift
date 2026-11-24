@@ -115,8 +115,15 @@ final class CollectionPlacementModel {
             }()
             : nil
 
-        let (homeResult, librariesResult, capabilitiesResult, editorResult) = await (
-            homeRead, librariesRead, capabilitiesRead, editorRead
+        async let sourceLibraryCollectionsRead: [LibraryCollection]? = (!isUserCollection && sourceLibraryId != nil)
+            ? await {
+                guard let sourceLibraryId else { return nil }
+                return (try? await api.libraryCollections(libraryId: sourceLibraryId))?.collections
+            }()
+            : nil
+
+        let (homeResult, librariesResult, capabilitiesResult, editorResult, sourceLibraryCollections) = await (
+            homeRead, librariesRead, capabilitiesRead, editorRead, sourceLibraryCollectionsRead
         )
         guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == startIdentity else { return }
 
@@ -185,12 +192,20 @@ final class CollectionPlacementModel {
         case .success(let librariesResponse):
             libraryDiscoveryFailed = false
             let libraries = librariesResponse.libraries
-            // Server/library collections only exist inside their owning library, so
-            // limit library placement to that library when known; user collections
-            // can be pinned to any video library.
+            // Server/library collections only exist inside the libraries listed in
+            // `library_ids` (defaulting to `sourceLibraryId` alone when omitted);
+            // user collections can be pinned to any video library.
             let relevant: [Library]
             if !isUserCollection, let sourceLibraryId {
-                relevant = libraries.filter { $0.id == sourceLibraryId }
+                let matchedLibraryIds = sourceLibraryCollections?
+                    .first(where: { $0.id == collectionId })?
+                    .parsedLibraryIds ?? []
+                let allowedIds = matchedLibraryIds.isEmpty
+                    ? Set([sourceLibraryId])
+                    : matchedLibraryIds.union([sourceLibraryId])
+                let owning = libraries.filter { $0.id == sourceLibraryId }
+                let others = libraries.filter { $0.id != sourceLibraryId && allowedIds.contains($0.id) }
+                relevant = owning + others
             } else if let sourceLibraryId, let owning = libraries.first(where: { $0.id == sourceLibraryId }) {
                 relevant = [owning] + libraries.filter { $0.id != sourceLibraryId && ($0.isMovieLibrary || $0.isSeriesLibrary || $0.isMixedLibrary) }
             } else {
@@ -685,6 +700,16 @@ final class AddToCollectionModel {
             hasMutationError = false
         }
 
+        let markRetryPendingIfSupersededByMutation = {
+            if !Task.isCancelled,
+               self.loadGeneration == myLoadGen,
+               self.requestIdentity() == startIdentity,
+               (self.pendingMutations > 0 || self.mutationGeneration != startMutationGen),
+               !self.uncertainCreations.isEmpty {
+                self.needsReconciliation = true
+            }
+        }
+
         for attempt in 0..<2 {
             let startCacheToken = ResponseCache.shared.writeToken
             do {
@@ -699,7 +724,10 @@ final class AddToCollectionModel {
                       loadGeneration == myLoadGen,
                       pendingMutations == 0,
                       mutationGeneration == startMutationGen,
-                      requestIdentity() == startIdentity else { return }
+                      requestIdentity() == startIdentity else {
+                    markRetryPendingIfSupersededByMutation()
+                    return
+                }
 
                 let response: CollectionsResponse
                 let memberCollectionIds: Set<String>?
@@ -715,7 +743,10 @@ final class AddToCollectionModel {
                               loadGeneration == myLoadGen,
                               pendingMutations == 0,
                               mutationGeneration == startMutationGen,
-                              requestIdentity() == startIdentity else { return }
+                              requestIdentity() == startIdentity else {
+                            markRetryPendingIfSupersededByMutation()
+                            return
+                        }
                         response = try await api.collections()
                         memberCollectionIds = nil
                         usesContainsField = false
@@ -733,7 +764,10 @@ final class AddToCollectionModel {
                           loadGeneration == myLoadGen,
                           pendingMutations == 0,
                           mutationGeneration == startMutationGen,
-                          requestIdentity() == startIdentity else { return }
+                          requestIdentity() == startIdentity else {
+                        markRetryPendingIfSupersededByMutation()
+                        return
+                    }
                     if supportsItemCollections {
                         async let collectionsTask = api.collections()
                         async let membershipTask: Set<String>? = {
@@ -756,7 +790,10 @@ final class AddToCollectionModel {
                       loadGeneration == myLoadGen,
                       pendingMutations == 0,
                       mutationGeneration == startMutationGen,
-                      requestIdentity() == startIdentity else { return }
+                      requestIdentity() == startIdentity else {
+                    markRetryPendingIfSupersededByMutation()
+                    return
+                }
                 if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken) {
                     if attempt == 0 { continue }
                     throw URLError(.cannotLoadFromNetwork)

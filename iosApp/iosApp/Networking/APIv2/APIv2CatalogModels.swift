@@ -419,6 +419,7 @@ struct APIv2CuratedCollection: Decodable {
     let id: String
     let title: String
     let collectionType: String
+    let libraryIds: [String]?
     @RequiredArtworkURL var posterUrl: String
     let posterThumbhash: String?
     let itemCount: Int

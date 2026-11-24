@@ -61,29 +61,53 @@ struct TVLibraryBrowseView: View {
             } else if contentSections.isEmpty {
                 emptyHint
             } else {
-                TVSkylineSectionFeed(
-                    sections: contentSections,
-                    libraryId: library.id,
-                    focusRequest: focusRequest,
-                    isTopMenuFocused: isTopMenuFocused,
-                    onTopMenuFocusRequest: onMoveUp,
-                    onItemTap: { destinationContentId, item in
-                        router.navigate(
-                            to: .itemDetail(
-                                destinationContentId: destinationContentId,
-                                sectionItem: item,
-                                libraryId: library.id
-                            )
-                        )
-                    },
-                    onExploreAll: { section in
-                        router.navigate(to: .sectionCatalog(SectionCatalogTarget(
-                            section, scope: .library(library.id), mediaScope: mediaScope
-                        )))
+                VStack(spacing: 0) {
+                    if let error = sectionsError {
+                        HStack(spacing: 16) {
+                            Label {
+                                Text(verbatim: error.message)
+                            } icon: {
+                                Image(systemName: "exclamationmark.triangle")
+                            }
+                            .font(.callout)
+                            .foregroundStyle(Color.siloSecondaryText)
+                            .lineLimit(2)
+
+                            Spacer(minLength: 12)
+
+                            Button(.commonRetry) {
+                                Task { await loadContent() }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .padding(.horizontal, 80)
+                        .padding(.vertical, 12)
+                        .focusSection()
                     }
-                )
-                .environment(\.browseMediaScope, mediaScope)
-                .id(library.id)
+                    TVSkylineSectionFeed(
+                        sections: contentSections,
+                        libraryId: library.id,
+                        focusRequest: focusRequest,
+                        isTopMenuFocused: isTopMenuFocused,
+                        onTopMenuFocusRequest: onMoveUp,
+                        onItemTap: { destinationContentId, item in
+                            router.navigate(
+                                to: .itemDetail(
+                                    destinationContentId: destinationContentId,
+                                    sectionItem: item,
+                                    libraryId: library.id
+                                )
+                            )
+                        },
+                        onExploreAll: { section in
+                            router.navigate(to: .sectionCatalog(SectionCatalogTarget(
+                                section, scope: .library(library.id), mediaScope: mediaScope
+                            )))
+                        }
+                    )
+                    .environment(\.browseMediaScope, mediaScope)
+                    .id(library.id)
+                }
             }
         }
         .overlay(alignment: .bottom) {

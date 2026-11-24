@@ -99,6 +99,7 @@ struct MediaCard: View {
     /// An episode card's series and episode. When set, a tap opens the
     /// series on that episode instead of loading the episode first.
     var seriesContext: SeriesDetailContext? = nil
+    var collectionTargetTitle: String? = nil
     /// The item behind the card. A tap offers it to the page it opens,
     /// which draws from it until its own detail loads.
     var detailSeedSource: DetailSeedSource? = nil
@@ -211,7 +212,10 @@ struct MediaCard: View {
         }
         .sheet(isPresented: $isShowingAddToCollection) {
             if let targetId = addToCollectionTargetId {
-                IOSAddToCollectionSheet(contentId: targetId, itemTitle: title)
+                IOSAddToCollectionSheet(
+                    contentId: targetId,
+                    itemTitle: seriesContext != nil ? collectionTargetTitle : title
+                )
             }
         }
         .frame(width: cardWidth)

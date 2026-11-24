@@ -90,6 +90,7 @@ struct CollectionDetailView: View {
                     title: title,
                     isUserCollection: true
                 )
+                .id(collectionId)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, SiloTheme.padding)

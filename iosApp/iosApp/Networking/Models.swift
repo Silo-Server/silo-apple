@@ -1732,6 +1732,12 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
     let kind: LibraryCollectionKind?
     /// Creator profile id, populated only for [LibraryCollectionKind.userCollections].
     let creatorProfileId: String?
+    /// Library IDs that contain this curated server collection when reported by the server.
+    let libraryIds: [String]?
+
+    var parsedLibraryIds: Set<Int> {
+        Set((libraryIds ?? []).compactMap(Int.init))
+    }
 
     /// Server emits `title`, not `name`. All other fields go through the
     /// shared `.convertFromSnakeCase` strategy — camelCase raw values
@@ -1745,6 +1751,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
         case posterThumbhash
         case kind
         case creatorProfileId
+        case libraryIds
     }
 
     /// Convenience initializer for code that constructs from a wire
@@ -1757,7 +1764,8 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
         posterUrl: String? = nil,
         posterThumbhash: String? = nil,
         kind: LibraryCollectionKind? = nil,
-        creatorProfileId: String? = nil
+        creatorProfileId: String? = nil,
+        libraryIds: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -1767,6 +1775,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
         self.posterThumbhash = posterThumbhash
         self.kind = kind
         self.creatorProfileId = creatorProfileId
+        self.libraryIds = libraryIds
     }
 
     init(from decoder: Decoder) throws {
@@ -1786,6 +1795,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
             kind = nil
         }
         creatorProfileId = try c.decodeIfPresent(String.self, forKey: .creatorProfileId)
+        libraryIds = try c.decodeIfPresent([String].self, forKey: .libraryIds)
     }
 }
 

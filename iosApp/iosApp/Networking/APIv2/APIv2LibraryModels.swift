@@ -13,7 +13,8 @@ extension LibraryCollectionsResponse {
             let flat = tab.collections.map {
                 LibraryCollection(id: $0.id, name: $0.title, collectionType: $0.collectionType,
                                   itemCount: $0.itemCount, posterUrl: $0.posterUrl.isEmpty ? nil : $0.posterUrl,
-                                  posterThumbhash: $0.posterThumbhash, kind: .regular)
+                                  posterThumbhash: $0.posterThumbhash, kind: .regular,
+                                  libraryIds: $0.libraryIds)
             }
             self.init(collections: flat, sections: [])
             return
@@ -30,7 +31,8 @@ extension LibraryCollectionsResponse {
                     posterUrl: $0.posterUrl.isEmpty ? nil : $0.posterUrl,
                     posterThumbhash: $0.posterThumbhash,
                     kind: kind,
-                    creatorProfileId: $0.creatorProfileId
+                    creatorProfileId: $0.creatorProfileId,
+                    libraryIds: definitions[$0.id]?.libraryIds
                 )
             }
         }

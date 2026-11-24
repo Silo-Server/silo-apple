@@ -323,4 +323,37 @@ final class LibraryCollectionDetailViewModelTests: XCTestCase {
         XCTAssertNotNil(model.paginationError)
         XCTAssertTrue(model.hasMore)
     }
+
+    func testColdLoadPublishesFirstPageCardsBeforeSecondPageCompletes() async throws {
+        let handler = StubURLProtocol.Handler()
+        let secondPageStarted = expectation(description: "second page request started")
+        let releaseSecondPage = DispatchSemaphore(value: 0)
+        defer { releaseSecondPage.signal() }
+
+        handler.expect(StubURLProtocol.any) { _ in Self.page("page-one-card", type: "movie", cursor: "p2") }
+        handler.expect(StubURLProtocol.any) { _ in
+            secondPageStarted.fulfill()
+            _ = releaseSecondPage.wait(timeout: .now() + 5)
+            return Self.page("page-two-card", type: "movie")
+        }
+        let (api, tokens) = try await client(handler)
+        let model = LibraryCollectionDetailViewModel(api: api, tokens: tokens)
+
+        let loadTask = Task {
+            await self.load(model, scope: .movie)
+        }
+        await fulfillment(of: [secondPageStarted], timeout: 5.0)
+
+        // Page 1 must already be visible on a cold load while page 2 is still in flight.
+        XCTAssertEqual(model.items.map(\.contentId), ["page-one-card"])
+        XCTAssertTrue(model.hasLoadedOnce)
+        XCTAssertTrue(model.hasMore)
+
+        releaseSecondPage.signal()
+        await loadTask.value
+
+        XCTAssertEqual(model.items.map(\.contentId), ["page-one-card", "page-two-card"])
+        XCTAssertFalse(model.hasMore)
+        XCTAssertNil(model.error)
+    }
 }

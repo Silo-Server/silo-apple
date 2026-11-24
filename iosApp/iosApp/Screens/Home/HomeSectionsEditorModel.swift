@@ -1051,23 +1051,33 @@ final class HomeSectionsEditorModel {
             } catch {
                 guard self.requestIdentity() == startIdentity else { return }
                 let message = ErrorState(error).message
-                // DELETE may have reached the server even when the client receives
-                // an error. Clear the pre-reset baseline and reconcile from the
-                // server (keeping edits blocked if the reload also fails) so a
-                // subsequent edit can never re-upload stale pre-reset overrides.
+                let mayHaveApplied = APIv2MutationOutcome(error).mayHaveApplied
+                // When DELETE may have reached the server, clear pre-reset pending
+                // edits so a subsequent edit cannot re-upload stale overrides. On a
+                // definite rejection, retain unsent intents so reloadAfterReset
+                // rebases them onto the fresh layout and saves them afterward.
                 self.editGeneration += 1
                 self.auth = nil
                 self.saved = []
                 self.confirmedRows = []
                 self.committedRows = []
-                self.pendingEdits.removeAll()
-                self.pendingEditsIdentity = nil
+                if mayHaveApplied {
+                    self.pendingEdits.removeAll()
+                    self.pendingEditsIdentity = nil
+                }
                 self.activeDragPlacement = nil
                 self.hasLoadedFromServer = false
                 self.phase = .loading
                 self.saveError = message
                 Self.refreshScope(self.scope)
                 await self.reloadAfterReset(expectedIdentity: startIdentity, preservingError: message)
+                if !mayHaveApplied,
+                   self.phase == .loaded,
+                   self.pendingEditsIdentity == startIdentity,
+                   !self.pendingEdits.isEmpty,
+                   self.committedRows != self.confirmedRows {
+                    await self.saveCurrentRows()
+                }
             }
         }
         saveChain = task

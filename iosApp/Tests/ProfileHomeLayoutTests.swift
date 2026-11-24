@@ -1176,7 +1176,9 @@ final class ProfileHomeLayoutTests: XCTestCase {
         await model.load()
         XCTAssertFalse(model.hideWatchedItems)
 
-        // 1) A first-attempt refusal (403) with no prior retryable failure rolls back cleanly.
+        // 1) A first-attempt refusal (403) with no prior retryable failure rolls back cleanly
+        //    without triggering a server reconciliation read.
+        let readsBeforeRefusal = scopedTransport.effectiveValuesReadCount
         writeTransport.queuedErrors = [
             SettingsAPIError.server(status: 403, code: "forbidden", message: "Denied"),
         ]
@@ -1185,12 +1187,15 @@ final class ProfileHomeLayoutTests: XCTestCase {
             if !model.isSaving && model.errorMessage != nil { break }
             try await Task.sleep(for: .milliseconds(10))
         }
+        XCTAssertEqual(writeTransport.writtenValues.count, 1)
+        XCTAssertEqual(scopedTransport.effectiveValuesReadCount, readsBeforeRefusal)
         XCTAssertFalse(model.hideWatchedItems)
         XCTAssertFalse(model.hasReconcilingKeys)
 
         // 2) An earlier retryable failure (response lost — server applied `true`) followed
         //    by a refusal (403) on retry must report uncertainty and reconcile from the server
         //    instead of rolling back to `false`.
+        let readsBeforeUncertainRefusal = scopedTransport.effectiveValuesReadCount
         scopedTransport.hideWatchedItems = true
         writeTransport.queuedErrors = [
             SettingsAPIError.transport(description: "response lost"),
@@ -1208,6 +1213,7 @@ final class ProfileHomeLayoutTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertEqual(writeTransport.writtenValues.count, writesBefore + 2)
+        XCTAssertGreaterThan(scopedTransport.effectiveValuesReadCount, readsBeforeUncertainRefusal)
         XCTAssertTrue(model.hideWatchedItems)
         XCTAssertFalse(model.hasReconcilingKeys)
         XCTAssertNotNil(model.errorMessage)
@@ -1729,6 +1735,7 @@ final class ProfileHomeLayoutTests: XCTestCase {
 private final class FakeHomePreferencesTransport: ProfileScopedSettingTransport, @unchecked Sendable {
     var capabilities: SettingsCapabilitiesResult = .available(FakeHomePreferencesTransport.makeCapabilities())
     var hideWatchedItems = false
+    private(set) var effectiveValuesReadCount = 0
 
     static func makeCapabilities() -> APIv2SettingsContractCapabilities {
         APIv2SettingsContractCapabilities(
@@ -1751,7 +1758,10 @@ private final class FakeHomePreferencesTransport: ProfileScopedSettingTransport,
         keys: [SettingKey],
         requestIdentity: HTTPRequestIdentity
     ) async throws -> EffectiveSettingValuesResponse {
-        let hideWatched = await MainActor.run { hideWatchedItems }
+        let hideWatched = await MainActor.run {
+            self.effectiveValuesReadCount += 1
+            return hideWatchedItems
+        }
         let rows: [[String: Any]] = keys.map { key in
             switch key {
             case .uiNextUpMode:

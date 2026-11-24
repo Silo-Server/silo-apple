@@ -160,6 +160,32 @@ final class LibraryCollectionDetailViewModel {
                     validatedLoaded = loaded
                     lastValidatedPage = page
                     nextPage = page.continuation
+                    if !hadVisibleItemsBeforeLoad,
+                       replacedPageOne,
+                       fetchedPages == 1,
+                       !loaded.isEmpty,
+                       nextPage != nil {
+                        items = loaded
+                        let cachedResponse = CatalogResponse(
+                            items: loaded,
+                            total: page.response.total,
+                            totalExact: page.response.totalExact,
+                            hasMore: true
+                        )
+                        ResponseCache.shared.set(CachedPage(owner: requestOwner, response: cachedResponse),
+                                                 for: requested.cacheKey, fetchedAt: startToken)
+                        totalItems = page.response.totalExact == false ? nil : page.response.total
+                        continuation = page.continuation
+                        hasMore = true
+                        hasLoadedOnce = true
+                        pageSequence += 1
+                        error = nil
+                        refreshError = nil
+                        hasPendingInvalidation = false
+                        if resetsPage {
+                            lastResetReplacedPageOne = true
+                        }
+                    }
                 } while loaded.count < CatalogGrid.loadMoreLead
                     && nextPage != nil
                     && restarts < 2
