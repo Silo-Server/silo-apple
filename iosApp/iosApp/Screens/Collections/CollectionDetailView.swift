@@ -134,8 +134,8 @@ struct CollectionDetailView: View {
         reloadTask = Task {
             if let delay {
                 try? await Task.sleep(for: delay)
-                guard !Task.isCancelled else { return }
             }
+            guard !Task.isCancelled else { return }
             await loadItems()
         }
     }

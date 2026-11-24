@@ -18,6 +18,9 @@ struct IOSHomeCustomizeView: View {
     var isStandaloneScreen = false
     /// Optional page title (e.g. library name) shown in the header banner.
     var pageTitle: String? = nil
+    /// Optional hook awaited after this editor settles (e.g. to drain pending
+    /// saves on sibling library editors in Settings before dismissing).
+    var beforeDone: (() async -> Bool)? = nil
     let onDone: () -> Void
 
     @State private var isHiddenExpanded = false
@@ -613,8 +616,9 @@ struct IOSHomeCustomizeView: View {
                 isFinishingDone = true
                 Task {
                     let settled = await editor.waitForPendingSaves()
+                    let othersSettled = settled ? (await beforeDone?() ?? true) : true
                     isFinishingDone = false
-                    if settled {
+                    if settled && othersSettled {
                         editor.triggerFeedRefresh()
                         onDone()
                     }
@@ -1081,6 +1085,9 @@ struct IOSHomeSectionsSettingsView: View {
                     topInset: 0,
                     isStandaloneScreen: true,
                     pageTitle: activePageTitle,
+                    beforeDone: {
+                        await settleOtherEditors(excluding: selectedScope)
+                    },
                     onDone: { dismiss() }
                 )
             }
@@ -1101,6 +1108,21 @@ struct IOSHomeSectionsSettingsView: View {
         }
         selectedScope = scope
         Task { await loadArtwork(for: scope) }
+    }
+
+    private func settleOtherEditors(excluding currentScope: ProfileSectionsScope) async -> Bool {
+        var firstFailedScope: ProfileSectionsScope?
+        for (scope, otherEditor) in editors where scope != currentScope {
+            let settled = await otherEditor.waitForPendingSaves()
+            if !settled && firstFailedScope == nil {
+                firstFailedScope = scope
+            }
+        }
+        if let failedScope = firstFailedScope {
+            selectedScope = failedScope
+            return false
+        }
+        return true
     }
 
     private var pageSwitcherBar: some View {

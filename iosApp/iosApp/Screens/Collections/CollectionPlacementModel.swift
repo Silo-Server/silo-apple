@@ -674,6 +674,7 @@ final class AddToCollectionModel {
                 }
                 ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
                 ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(collectionId))
+                ResponseCache.shared.remove(CacheKey.collections)
                 HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
                 if self.requestIdentity() == startIdentity {
                     NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
@@ -695,6 +696,7 @@ final class AddToCollectionModel {
                         // the server once all pending mutations settle.
                         ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
                         ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(collectionId))
+                        ResponseCache.shared.remove(CacheKey.collections)
                         HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
                         NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
                         self.needsReconciliation = true
@@ -811,6 +813,7 @@ final class AddToCollectionModel {
                 }
                 ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
                 ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(created.id))
+                ResponseCache.shared.remove(CacheKey.collections)
                 HomeSectionsEditorModel.refreshCollectionMembership(collectionId: created.id)
                 NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
                 result = .createdAndAdded

@@ -70,6 +70,7 @@ final class HomeSectionsEditorModel {
     @ObservationIgnored private var saveChain: Task<Void, Never>?
     @ObservationIgnored private var quickActionChain: Task<Void, Never>?
     @ObservationIgnored private var quickActionGeneration = 0
+    @ObservationIgnored var onLoadWaitingForQuickActions: (@MainActor () -> Void)?
     @ObservationIgnored private var pendingSaveCount = 0
     @ObservationIgnored private var saveFailureCount = 0
     @ObservationIgnored private var acknowledgedFailureCount = 0
@@ -140,6 +141,9 @@ final class HomeSectionsEditorModel {
         var quickGen: Int
         repeat {
             quickGen = quickActionGeneration
+            if quickActionChain != nil {
+                onLoadWaitingForQuickActions?()
+            }
             await quickActionChain?.value
         } while quickGen != quickActionGeneration && !Task.isCancelled
         guard !Task.isCancelled else { return false }
@@ -392,14 +396,31 @@ final class HomeSectionsEditorModel {
 
     // MARK: - Queries
 
+    private static func normalizedRecipeConfig(
+        _ config: [String: SettingJSONValue]?
+    ) -> [String: SettingJSONValue]? {
+        guard var config, !config.isEmpty else { return nil }
+        if case .array(let values)? = config["filter_library_ids"] {
+            let ints = values.compactMap { value -> Int? in
+                if case .int(let n) = value { return n }
+                return nil
+            }
+            if ints.count == values.count {
+                let uniqueSorted = Array(Set(ints)).sorted().map { SettingJSONValue.int($0) }
+                config["filter_library_ids"] = .array(uniqueSorted)
+            }
+        }
+        return config
+    }
+
     static func matchesRecipe(
         _ row: APIv2ProfileSectionSetting,
         sectionType: String,
         params: [String: SettingJSONValue]
     ) -> Bool {
         guard row.sectionType.lowercased() == sectionType.lowercased() else { return false }
-        let rowConfig = (row.config?.isEmpty == false) ? row.config : nil
-        let targetConfig = params.isEmpty ? nil : params
+        let rowConfig = normalizedRecipeConfig(row.config)
+        let targetConfig = normalizedRecipeConfig(params)
         return rowConfig == targetConfig
     }
 
@@ -1380,7 +1401,7 @@ final class HomePreferencesModel {
                 return reconcilingKeys.contains(scope) && pendingWrites[scope, default: 0] == 0
             }
             if needsReconciliation {
-                scheduleRecoveryLoad(preservingError: preservingError)
+                scheduleRecoveryLoad(for: identity, preservingError: preservingError)
             }
         } catch {
             guard !(error is CancellationError), !Task.isCancelled, loadSequence == sequence, requestIdentity() == identity else { return }
@@ -1503,7 +1524,10 @@ final class HomePreferencesModel {
         }
     }
 
-    private func scheduleRecoveryLoad(preservingError: String?) {
+    private func scheduleRecoveryLoad(
+        for expectedIdentity: HTTPRequestIdentity,
+        preservingError: String?
+    ) {
         recoveryLoadCount += 1
         Task { @MainActor [weak self] in
             defer {
@@ -1512,7 +1536,8 @@ final class HomePreferencesModel {
                     self.resumeWriteWaitersIfIdle()
                 }
             }
-            await self?.load(preservingError: preservingError)
+            guard let self, self.requestIdentity() == expectedIdentity else { return }
+            await self.load(preservingError: preservingError)
         }
     }
 
@@ -1546,7 +1571,7 @@ final class HomePreferencesModel {
                     // Increment `recoveryLoadCount` before decrementing `queuedWriteCount`
                     // so Done never observes an idle gap before the recovery load retries
                     // an owed deferred write.
-                    self.scheduleRecoveryLoad(preservingError: self.errorMessage)
+                    self.scheduleRecoveryLoad(for: identity, preservingError: self.errorMessage)
                 }
                 self.queuedWriteCount = max(0, self.queuedWriteCount - 1)
                 self.resumeWriteWaitersIfIdle()

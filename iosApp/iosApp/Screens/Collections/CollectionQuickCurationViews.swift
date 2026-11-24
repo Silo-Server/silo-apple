@@ -340,6 +340,7 @@ struct IOSAddToCollectionSheet: View {
                                     Task { await model.load() }
                                 }
                                 .font(.subheadline.weight(.semibold))
+                                .disabled(isFinishing || model.hasPendingMutations || model.isLoading)
                             }
                         }
                     }
@@ -363,6 +364,7 @@ struct IOSAddToCollectionSheet: View {
                                 Button(.commonRetry) {
                                     Task { await model.load() }
                                 }
+                                .disabled(isFinishing || model.hasPendingMutations || model.isLoading)
                             }
                         } else {
                             ForEach(model.entries) { entry in
@@ -402,6 +404,7 @@ struct IOSAddToCollectionSheet: View {
                                 Button(.commonRetry) {
                                     Task { await model.load() }
                                 }
+                                .disabled(isFinishing || model.hasPendingMutations)
                             }
                         }
                     }

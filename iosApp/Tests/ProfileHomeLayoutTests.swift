@@ -332,6 +332,11 @@ final class ProfileHomeLayoutTests: XCTestCase {
             type: "watchlist",
             config: ["media_type": .string("movie"), "filter_library_ids": .array([.int(7)])]
         )
+        let multiLibraryWatchlist = makeRow(
+            id: "wl-movies-lib9-7",
+            type: "watchlist",
+            config: ["media_type": .string("movie"), "filter_library_ids": .array([.int(9), .int(7)])]
+        )
         let unfilteredWatchlist = makeRow(
             id: "wl-all",
             type: "watchlist",
@@ -343,6 +348,16 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertFalse(HomeSectionsEditorModel.matchesRecipe(libraryRestrictedWatchlist, sectionType: "watchlist", params: ["media_type": .string("movie")]))
         XCTAssertTrue(HomeSectionsEditorModel.matchesRecipe(
             libraryRestrictedWatchlist,
+            sectionType: "watchlist",
+            params: ["media_type": .string("movie"), "filter_library_ids": .array([.int(7)])]
+        ))
+        XCTAssertTrue(HomeSectionsEditorModel.matchesRecipe(
+            multiLibraryWatchlist,
+            sectionType: "watchlist",
+            params: ["media_type": .string("movie"), "filter_library_ids": .array([.int(7), .int(9)])]
+        ))
+        XCTAssertFalse(HomeSectionsEditorModel.matchesRecipe(
+            multiLibraryWatchlist,
             sectionType: "watchlist",
             params: ["media_type": .string("movie"), "filter_library_ids": .array([.int(7)])]
         ))
@@ -688,8 +703,14 @@ final class ProfileHomeLayoutTests: XCTestCase {
         await stub.waitUntilHeld()
 
         // Opening Customize mode calls `load()` while the quick action's read is in flight.
+        // Wait for `load()` to deterministically enter its quick-action barrier before releasing.
+        let enteredLoadExpectation = expectation(description: "foreground load entered quick-action barrier")
+        editor.onLoadWaitingForQuickActions = {
+            editor.onLoadWaitingForQuickActions = nil
+            enteredLoadExpectation.fulfill()
+        }
         let foregroundLoad = Task { await editor.load() }
-        await Task.yield()
+        await fulfillment(of: [enteredLoadExpectation], timeout: 2.0)
         stub.release()
 
         let result = await quickAction.value

@@ -127,10 +127,11 @@ class CollectionsViewModel {
             isRefreshing = true
         }
         error = nil
+        let startToken = ResponseCache.shared.writeToken
         async let support: Void = refreshGroupSupport()
         do {
             let response: CollectionsResponse = try await api.collections()
-            ResponseCache.shared.set(response, for: CacheKey.collections)
+            ResponseCache.shared.set(response, for: CacheKey.collections, fetchedAt: startToken)
             collections = response.collections ?? []
             groups = sortGroups(response.groups ?? [])
             rebuildSections()

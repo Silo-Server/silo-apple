@@ -591,10 +591,17 @@ private class LibraryRecommendedViewModel {
     var scopeIncomplete = false
     private var identity: String?
     private var generation = 0
+    private var invalidationGeneration = 0
 
-    func loadSections(libraryId: Int, mediaScope: LibraryVideoScope?) async {
+    func noteInvalidation() {
+        invalidationGeneration += 1
+    }
+
+    @discardableResult
+    func loadSections(libraryId: Int, mediaScope: LibraryVideoScope?) async -> Bool {
         generation += 1
         let run = generation
+        let startInvalidation = invalidationGeneration
         let key = CacheKey.librarySections(libraryId) + (mediaScope.map { ".type-\($0.rawValue)" } ?? "")
         if identity != key {
             identity = key
@@ -614,6 +621,11 @@ private class LibraryRecommendedViewModel {
         isLoading = sections.isEmpty
         error = nil
         let writeToken = ResponseCache.shared.writeToken
+        defer {
+            if run == generation {
+                isLoading = false
+            }
+        }
 
         do {
             let read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: libraryId)
@@ -646,21 +658,28 @@ private class LibraryRecommendedViewModel {
                 incomplete = false
             }
             guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
-            guard run == generation, !Task.isCancelled else { return }
+            guard run == generation,
+                  invalidationGeneration == startInvalidation,
+                  !Task.isCancelled,
+                  !ResponseCache.shared.wasInvalidated(key, after: writeToken) else { return false }
             sections = loaded.filter(\.hasCards)
             scopeIncomplete = incomplete
             if mediaScope != nil {
                 ResponseCache.shared.set((sections: sections, incomplete: incomplete), for: key, fetchedAt: writeToken)
             }
+            return true
         } catch {
-            guard run == generation, !Task.isCancelled else { return }
-            if error is CancellationError { return }
+            guard run == generation,
+                  invalidationGeneration == startInvalidation,
+                  !Task.isCancelled,
+                  !ResponseCache.shared.wasInvalidated(key, after: writeToken) else { return false }
+            if error is CancellationError { return false }
             if case HTTPError.requestIdentityChanged = error { sections = [] }
             if case HTTPError.authorityChanged = error { sections = [] }
             if sections.isEmpty { self.error = ErrorState(error) }
             scopeIncomplete = mediaScope != nil
+            return false
         }
-        isLoading = false
     }
 
     private static func displayed(_ sections: [ResolvedSection]) -> [ResolvedSection] {
@@ -781,6 +800,7 @@ struct LibraryRecommendedView: View {
                targetLibraryId != libraryId {
                 return
             }
+            viewModel.noteInvalidation()
             refreshInvalidationGen += 1
             hasPendingRefresh = true
             if isVisible {
@@ -809,16 +829,16 @@ struct LibraryRecommendedView: View {
         refreshTask = Task {
             if let delay {
                 try? await Task.sleep(for: delay)
-                guard !Task.isCancelled else { return }
             }
+            guard !Task.isCancelled else { return }
             await runFencedLoad()
         }
     }
 
     private func runFencedLoad() async {
         let startGen = refreshInvalidationGen
-        await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
-        if !Task.isCancelled, refreshInvalidationGen == startGen, viewModel.error == nil {
+        let published = await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
+        if published, !Task.isCancelled, refreshInvalidationGen == startGen {
             hasPendingRefresh = false
         }
     }
