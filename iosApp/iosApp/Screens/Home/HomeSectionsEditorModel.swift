@@ -1184,7 +1184,7 @@ final class HomeSectionsEditorModel {
         var userInfo: [AnyHashable: Any]? = nil
         if case .library(let libraryId) = scope {
             StartupContentPrefetcher.invalidateLibrarySectionsInFlight(libraryId: libraryId)
-            ResponseCache.shared.remove(CacheKey.librarySections(libraryId))
+            ResponseCache.shared.removeAll(withPrefix: CacheKey.librarySections(libraryId))
             userInfo = [RefreshNotificationKey.libraryId: libraryId]
         }
         NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil, userInfo: userInfo)

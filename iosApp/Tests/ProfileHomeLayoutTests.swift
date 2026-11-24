@@ -1349,6 +1349,34 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertEqual(fallbackModel.entries.map(\.id), ["old-col"])
         XCTAssertNil(fallbackModel.entries.first?.containsItem)
     }
+
+    @MainActor
+    func testRefreshLibraryScopeInvalidatesMediaScopedSectionCaches() {
+        let baseKey = CacheKey.librarySections(7)
+        let movieKey = baseKey + ".type-movie"
+        let seriesKey = baseKey + ".type-series"
+        let otherKey = CacheKey.librarySections(8)
+        let empty = SectionsResponse(sections: [])
+        ResponseCache.shared.set(empty, for: baseKey)
+        ResponseCache.shared.set(empty, for: movieKey)
+        ResponseCache.shared.set(empty, for: seriesKey)
+        ResponseCache.shared.set(empty, for: otherKey)
+        defer {
+            ResponseCache.shared.removeAll(withPrefix: baseKey)
+            ResponseCache.shared.removeAll(withPrefix: otherKey)
+        }
+
+        HomeSectionsEditorModel.refreshScope(.library(7))
+
+        let cachedBase: SectionsResponse? = ResponseCache.shared.get(baseKey)
+        let cachedMovie: SectionsResponse? = ResponseCache.shared.get(movieKey)
+        let cachedSeries: SectionsResponse? = ResponseCache.shared.get(seriesKey)
+        let cachedOther: SectionsResponse? = ResponseCache.shared.get(otherKey)
+        XCTAssertNil(cachedBase)
+        XCTAssertNil(cachedMovie)
+        XCTAssertNil(cachedSeries)
+        XCTAssertNotNil(cachedOther)
+    }
 }
 
 @MainActor
