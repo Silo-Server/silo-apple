@@ -1119,12 +1119,19 @@ struct TVAddRowModal: View {
                             || addedKeys.contains(preset.key)
                         Button {
                             guard !isAdded else { return }
-                            addedKeys.insert(preset.key)
-                            editor.addRecipeRow(
+                            let key = preset.key
+                            addedKeys.insert(key)
+                            let task = editor.addRecipeRow(
                                 sectionType: def.type,
                                 title: preset.displayName,
                                 config: preset.defaultParams
                             )
+                            Task {
+                                await task.value
+                                if !editor.isRecipePresent(sectionType: def.type, params: preset.defaultParams) {
+                                    addedKeys.remove(key)
+                                }
+                            }
                         } label: {
                             HStack(spacing: 18) {
                                 ZStack {
@@ -1201,12 +1208,19 @@ struct TVAddRowModal: View {
                         isAdded: isAdded
                     ) {
                         guard !isAdded else { return }
-                        addedKeys.insert("user:\(collection.id)")
-                        editor.addCollectionRow(
+                        let key = "user:\(collection.id)"
+                        addedKeys.insert(key)
+                        let task = editor.addCollectionRow(
                             collectionId: collection.id,
                             title: collection.name,
                             isUserCollection: true
                         )
+                        Task {
+                            await task.value
+                            if !editor.isCollectionPresent(collectionId: collection.id, isUserCollection: true) {
+                                addedKeys.remove(key)
+                            }
+                        }
                     }
                 }
             }
@@ -1260,12 +1274,19 @@ struct TVAddRowModal: View {
                             isAdded: isAdded
                         ) {
                             guard !isAdded else { return }
-                            addedKeys.insert("lib:\(collection.id)")
-                            editor.addCollectionRow(
+                            let key = "lib:\(collection.id)"
+                            addedKeys.insert(key)
+                            let task = editor.addCollectionRow(
                                 collectionId: collection.id,
                                 title: collection.title,
                                 isUserCollection: false
                             )
+                            Task {
+                                await task.value
+                                if !editor.isCollectionPresent(collectionId: collection.id, isUserCollection: false) {
+                                    addedKeys.remove(key)
+                                }
+                            }
                         }
                     }
                 }

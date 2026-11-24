@@ -27,7 +27,7 @@ struct IOSAddRowSheet: View {
     }
 
     private var catalogGroups: [AddRowGroup] {
-        AddRowCatalog.groups(from: editor.recipeCatalog)
+        AddRowCatalog.groups(from: editor.recipeCatalog, locale: locale)
     }
 
     private var trimmedQuery: String {
@@ -1882,13 +1882,13 @@ private enum AddRowCatalog {
         "next_up",
     ]
 
-    private static let groupOrder: [(id: String, title: String)] = [
-        ("keep", "Keep Watching"),
-        ("new", "What's New"),
-        ("popular", "Popular"),
-        ("picked", "For You"),
-        ("moods", "Moods & Discovery"),
-        ("other", "More"),
+    private static let groupOrder: [(id: String, titleResource: LocalizedStringResource)] = [
+        ("keep", .homeAddRowGroupKeepWatching),
+        ("new", .homeAddRowGroupWhatsNew),
+        ("popular", .homeAddRowGroupPopular),
+        ("picked", .homeAddRowGroupForYou),
+        ("moods", .homeAddRowGroupMoodsDiscovery),
+        ("other", .homeAddRowGroupMore),
     ]
 
     private static let kindMeta: [String: KindMeta] = [
@@ -2038,7 +2038,7 @@ private enum AddRowCatalog {
         ),
     ]
 
-    static func groups(from catalog: APIv2RecipeCatalog) -> [AddRowGroup] {
+    static func groups(from catalog: APIv2RecipeCatalog, locale: Locale = .current) -> [AddRowGroup] {
         let definitions = catalog.categories
             .flatMap(\.recipes)
             .filter { def in
@@ -2056,10 +2056,10 @@ private enum AddRowCatalog {
             let meta = kindMeta[typeKey]
             let groupId = meta?.groupId ?? "other"
             let order = meta?.order ?? 999
-            let title = meta?.title
+            let title = meta.map { AppLanguage.string($0.titleResource, locale: locale) }
                 ?? def.presets.first?.displayName
                 ?? typeKey.replacingOccurrences(of: "_", with: " ").capitalized
-            let subtitle = meta?.subtitle
+            let subtitle = meta.map { AppLanguage.string($0.subtitleResource, locale: locale) }
                 ?? def.presets.first?.descriptionShort
                 ?? ""
 
@@ -2078,7 +2078,11 @@ private enum AddRowCatalog {
                 if $0.order != $1.order { return $0.order < $1.order }
                 return $0.entry.title.localizedCaseInsensitiveCompare($1.entry.title) == .orderedAscending
             }.map(\.entry)
-            return AddRowGroup(id: group.id, title: group.title, entries: sorted)
+            return AddRowGroup(
+                id: group.id,
+                title: AppLanguage.string(group.titleResource, locale: locale),
+                entries: sorted
+            )
         }
     }
 

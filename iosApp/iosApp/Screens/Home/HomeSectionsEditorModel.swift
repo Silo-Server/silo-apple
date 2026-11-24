@@ -595,7 +595,7 @@ final class HomeSectionsEditorModel {
     }
 
     func resetToServerDefault() async {
-        guard let auth, !isResetting else { return }
+        guard let auth, !isResetting, !isRefreshing, phase == .loaded else { return }
         let startIdentity = requestIdentity()
         isResetting = true
         dragDraftVisibleOrder = nil
@@ -621,7 +621,11 @@ final class HomeSectionsEditorModel {
                 await self.reloadAfterReset(expectedIdentity: startIdentity)
             } catch {
                 guard self.requestIdentity() == startIdentity else { return }
-                self.saveError = ErrorState(error).message
+                let message = ErrorState(error).message
+                self.saveError = message
+                if self.phase == .loading {
+                    self.phase = .failed(message)
+                }
             }
         }
         saveChain = task
@@ -762,8 +766,23 @@ final class HomePreferencesModel {
     private(set) var errorMessage: String?
     /// True only after both the contract capability probe and the effective-values
     /// read succeeded for the current server and profile.
+    private struct KeyScope: Hashable {
+        let identity: HTTPRequestIdentity
+        let key: SettingKey
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(identity.serverId)
+            hasher.combine(identity.serverURL)
+            hasher.combine(identity.profileId)
+            hasher.combine(identity.clientFamily)
+            hasher.combine(identity.localAccountId)
+            hasher.combine(key)
+        }
+    }
+
     private(set) var isAuthorized = false
     private(set) var supportedKeys = Set<SettingKey>()
+    private var reconcilingKeys = Set<KeyScope>()
 
     @ObservationIgnored private let transport: ProfileScopedSettingTransport
     @ObservationIgnored private let writer: ProfileSettingsWriter
@@ -773,11 +792,11 @@ final class HomePreferencesModel {
     @ObservationIgnored private var confirmedNextUpMode: NextUpMode = .combined
     @ObservationIgnored private var confirmedNewReleasesFirst = false
     @ObservationIgnored private var confirmedHideWatchedItems = false
-    @ObservationIgnored private var keyGeneration: [SettingKey: Int] = [:]
-    @ObservationIgnored private var pendingWrites: [SettingKey: Int] = [:]
-    @ObservationIgnored private var settledWrites: [SettingKey: Int] = [:]
-    @ObservationIgnored private var uncertainConfirmedKeys = Set<SettingKey>()
-    @ObservationIgnored private var keyWriteTail: [SettingKey: Task<Void, Never>] = [:]
+    @ObservationIgnored private var keyGeneration: [KeyScope: Int] = [:]
+    @ObservationIgnored private var pendingWrites: [KeyScope: Int] = [:]
+    @ObservationIgnored private var settledWrites: [KeyScope: Int] = [:]
+    @ObservationIgnored private var uncertainConfirmedKeys = Set<KeyScope>()
+    @ObservationIgnored private var keyWriteTail: [KeyScope: Task<Void, Never>] = [:]
     @ObservationIgnored private var activeWriteCount = 0
 
     private static let preferenceKeys: [SettingKey] = [
@@ -797,10 +816,10 @@ final class HomePreferencesModel {
     }
 
     func canEdit(_ key: SettingKey) -> Bool {
-        isAuthorized
+        guard let identity = loadedIdentity, identity == requestIdentity() else { return false }
+        return isAuthorized
             && supportedKeys.contains(key)
-            && loadedIdentity != nil
-            && loadedIdentity == requestIdentity()
+            && !reconcilingKeys.contains(KeyScope(identity: identity, key: key))
     }
 
     private func isAuthorizedForWrite(_ key: SettingKey, identity: HTTPRequestIdentity) -> Bool {
@@ -808,6 +827,7 @@ final class HomePreferencesModel {
             && supportedKeys.contains(key)
             && loadedIdentity == identity
             && requestIdentity() == identity
+            && !reconcilingKeys.contains(KeyScope(identity: identity, key: key))
     }
 
     func load() async {
@@ -822,7 +842,6 @@ final class HomePreferencesModel {
             isAuthorized = false
             supportedKeys = []
             loadedIdentity = nil
-            uncertainConfirmedKeys.removeAll()
             errorMessage = nil
             return
         }
@@ -830,7 +849,6 @@ final class HomePreferencesModel {
             isAuthorized = false
             supportedKeys = []
             loadedIdentity = nil
-            uncertainConfirmedKeys.removeAll()
         }
         isLoading = true
         defer {
@@ -842,8 +860,14 @@ final class HomePreferencesModel {
             errorMessage = nil
         }
 
-        let capturedGenerations = keyGeneration
-        let capturedSettled = settledWrites
+        let capturedGenerations = Dictionary(uniqueKeysWithValues: Self.preferenceKeys.map { key in
+            let scope = KeyScope(identity: identity, key: key)
+            return (key, keyGeneration[scope, default: 0])
+        })
+        let capturedSettled = Dictionary(uniqueKeysWithValues: Self.preferenceKeys.map { key in
+            let scope = KeyScope(identity: identity, key: key)
+            return (key, settledWrites[scope, default: 0])
+        })
         let capabilitiesResult = await transport.contractCapabilities(requestIdentity: identity)
         guard !Task.isCancelled, loadSequence == sequence, requestIdentity() == identity else { return }
 
@@ -875,9 +899,10 @@ final class HomePreferencesModel {
             var resolvedKeys = Set<SettingKey>()
 
             func isUntouched(_ key: SettingKey) -> Bool {
-                keyGeneration[key] == capturedGenerations[key]
-                    && settledWrites[key, default: 0] == capturedSettled[key, default: 0]
-                    && pendingWrites[key, default: 0] == 0
+                let scope = KeyScope(identity: identity, key: key)
+                return keyGeneration[scope, default: 0] == capturedGenerations[key, default: 0]
+                    && settledWrites[scope, default: 0] == capturedSettled[key, default: 0]
+                    && pendingWrites[scope, default: 0] == 0
             }
 
             if keysSupportedByContract.contains(.uiNextUpMode), response.servesAll([.uiNextUpMode]) {
@@ -886,7 +911,9 @@ final class HomePreferencesModel {
                     let serverVal = byKey[.uiNextUpMode]?.value.stringValue.flatMap(NextUpMode.init(rawValue:)) ?? .combined
                     confirmedNextUpMode = serverVal
                     nextUpMode = serverVal
-                    uncertainConfirmedKeys.remove(.uiNextUpMode)
+                    let scope = KeyScope(identity: identity, key: .uiNextUpMode)
+                    uncertainConfirmedKeys.remove(scope)
+                    reconcilingKeys.remove(scope)
                 }
             }
             if keysSupportedByContract.contains(.uiNextUpNewReleasesFirst), response.servesAll([.uiNextUpNewReleasesFirst]) {
@@ -895,7 +922,9 @@ final class HomePreferencesModel {
                     let serverVal = byKey[.uiNextUpNewReleasesFirst]?.value.boolValue ?? false
                     confirmedNewReleasesFirst = serverVal
                     newReleasesFirst = serverVal
-                    uncertainConfirmedKeys.remove(.uiNextUpNewReleasesFirst)
+                    let scope = KeyScope(identity: identity, key: .uiNextUpNewReleasesFirst)
+                    uncertainConfirmedKeys.remove(scope)
+                    reconcilingKeys.remove(scope)
                 }
             }
             if keysSupportedByContract.contains(.homeHideWatchedItems), response.servesAll([.homeHideWatchedItems]) {
@@ -904,7 +933,9 @@ final class HomePreferencesModel {
                     let serverVal = byKey[.homeHideWatchedItems]?.value.boolValue ?? false
                     confirmedHideWatchedItems = serverVal
                     hideWatchedItems = serverVal
-                    uncertainConfirmedKeys.remove(.homeHideWatchedItems)
+                    let scope = KeyScope(identity: identity, key: .homeHideWatchedItems)
+                    uncertainConfirmedKeys.remove(scope)
+                    reconcilingKeys.remove(scope)
                 }
             }
 
@@ -964,21 +995,22 @@ final class HomePreferencesModel {
         onConfirm: @escaping @MainActor () -> Void,
         onRevertToConfirmed: @escaping @MainActor () -> Void
     ) {
-        let generation = (keyGeneration[key] ?? 0) + 1
-        keyGeneration[key] = generation
-        pendingWrites[key, default: 0] += 1
+        let scope = KeyScope(identity: identity, key: key)
+        let generation = keyGeneration[scope, default: 0] + 1
+        keyGeneration[scope] = generation
+        pendingWrites[scope, default: 0] += 1
         errorMessage = nil
-        let previous = keyWriteTail[key]
-        keyWriteTail[key] = Task { @MainActor [weak self] in
+        let previous = keyWriteTail[scope]
+        keyWriteTail[scope] = Task { @MainActor [weak self] in
             await previous?.value
             guard let self else { return }
             defer {
-                self.pendingWrites[key] = max(0, self.pendingWrites[key, default: 0] - 1)
-                self.settledWrites[key, default: 0] += 1
+                self.pendingWrites[scope] = max(0, self.pendingWrites[scope, default: 0] - 1)
+                self.settledWrites[scope, default: 0] += 1
             }
             // Skip obsolete writes superseded while waiting, or writes whose
             // authorization / key support was revoked by a newer refresh.
-            guard self.keyGeneration[key] == generation,
+            guard self.keyGeneration[scope] == generation,
                   self.isAuthorizedForWrite(key, identity: identity) else { return }
             self.activeWriteCount += 1
             self.isSaving = true
@@ -992,33 +1024,33 @@ final class HomePreferencesModel {
                     value: value,
                     profileId: identity.profileId,
                     isLatest: { [weak self] in
-                        self?.keyGeneration[key] == generation
+                        self?.keyGeneration[scope] == generation
                             && self?.isAuthorizedForWrite(key, identity: identity) == true
                     }
                 )
                 guard self.isAuthorizedForWrite(key, identity: identity) else { return }
                 onConfirm()
-                self.uncertainConfirmedKeys.remove(key)
+                self.uncertainConfirmedKeys.remove(scope)
+                self.reconcilingKeys.remove(scope)
                 HomeSectionsEditorModel.refreshScope(.home)
             } catch is ProfileSettingsWriter.Superseded {
                 // A superseded attempt may still have landed on the server;
                 // mark the confirmed baseline uncertain until a newer write
                 // succeeds or a fresh load reconciles the authoritative value.
                 if self.requestIdentity() == identity, self.loadedIdentity == identity {
-                    self.uncertainConfirmedKeys.insert(key)
+                    self.uncertainConfirmedKeys.insert(scope)
                 }
                 return
             } catch {
-                guard self.keyGeneration[key] == generation,
+                guard self.keyGeneration[scope] == generation,
                       self.isAuthorizedForWrite(key, identity: identity) else { return }
                 let message = ErrorState(error).message
                 self.errorMessage = message
-                if self.uncertainConfirmedKeys.contains(key) {
-                    // Lock edits for this identity until a fresh capability probe
-                    // and authoritative effective-values read reconcile the server state.
-                    self.isAuthorized = false
-                    self.supportedKeys = []
-                    self.loadedIdentity = nil
+                if self.uncertainConfirmedKeys.contains(scope) {
+                    // Lock only this uncertain key until a fresh capability probe
+                    // and authoritative effective-values read reconcile its value,
+                    // without blocking confirmation of unrelated in-flight keys.
+                    self.reconcilingKeys.insert(scope)
                     Task { @MainActor [weak self] in
                         await self?.load(preservingError: message)
                     }

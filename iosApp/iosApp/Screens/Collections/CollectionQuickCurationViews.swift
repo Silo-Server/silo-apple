@@ -43,6 +43,11 @@ struct CollectionPinActionBar: View {
                     set: { if !$0 { model.clearError() } }
                 )
             ) {
+                if !model.hasLoadedHome {
+                    Button(.commonRetry) {
+                        Task { await model.load() }
+                    }
+                }
                 Button(.homeUpdateFailedOk, role: .cancel) {}
             } message: {
                 if let error = model.errorMessage {
@@ -59,6 +64,11 @@ struct CollectionPinActionBar: View {
                     set: { if !$0 { model.clearError() } }
                 )
             ) {
+                if !model.hasLoadedHome {
+                    Button(.commonRetry) {
+                        Task { await model.load() }
+                    }
+                }
                 Button(.homeUpdateFailedOk, role: .cancel) {}
             } message: {
                 if let error = model.errorMessage {
@@ -125,6 +135,14 @@ struct CollectionPinActionBar: View {
                         )
                     }
                     .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
+
+                    if !model.hasLoadedHome && !model.isLoading {
+                        Button {
+                            Task { await model.load() }
+                        } label: {
+                            Label(.commonRetry, systemImage: "arrow.clockwise")
+                        }
+                    }
 
                     ForEach(model.libraryPlacements) { placement in
                         Button {
@@ -209,6 +227,13 @@ struct CollectionPinActionBar: View {
                             isEnabled: !model.isLoading && model.hasLoadedHome && !model.isUpdatingHome
                         ),
                     ]
+                    if !model.hasLoadedHome && !model.isLoading {
+                        items.append(TVActionPopoverItem(
+                            id: "retry",
+                            title: AppLanguage.string(.commonRetry, locale: locale),
+                            systemImage: "arrow.clockwise"
+                        ))
+                    }
                     for placement in model.libraryPlacements {
                         items.append(TVActionPopoverItem(
                             id: "lib:\(placement.libraryId)",
@@ -238,6 +263,8 @@ struct CollectionPinActionBar: View {
                 onSelect: { item in
                     if item.id == "home" {
                         Task { await model.toggleHomePin() }
+                    } else if item.id == "retry" {
+                        Task { await model.load() }
                     } else if item.id == "share" {
                         Task { await model.toggleShared() }
                     } else if item.id.hasPrefix("lib:"),
@@ -311,53 +338,62 @@ struct IOSAddToCollectionSheet: View {
                     }
                 }
 
-                Section(.homeAddRowSectionYourCollections) {
-                    if model.isLoading && model.entries.isEmpty {
-                        HStack {
-                            Spacer()
-                            ProgressView()
-                            Spacer()
-                        }
-                        .padding(.vertical, 12)
-                    } else if !model.hasLoaded && model.entries.isEmpty && model.errorMessage != nil {
-                        Button(.commonRetry) {
-                            Task { await model.load() }
-                        }
-                    } else if model.entries.isEmpty {
-                        Text(.collectionsAddToEmptyBody)
-                            .font(.subheadline)
-                            .foregroundStyle(Color.siloSecondaryText)
-                    } else {
-                        ForEach(model.entries) { entry in
-                            Button {
-                                hapticCount += 1
-                                Task { await model.toggle(collectionId: entry.id) }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: entry.containsItem ? "checkmark.circle.fill" : "circle")
-                                        .font(.title3)
-                                        .foregroundStyle(entry.containsItem ? Color.green : Color.siloSecondaryText)
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(verbatim: entry.collection.name)
-                                            .font(.body.weight(.medium))
-                                            .foregroundStyle(Color.siloOnSurface)
-                                        Text(.collectionsItemCount(count: entry.itemCount, LocaleFormat.groupedCount(entry.itemCount, locale: locale)))
-                                            .font(.caption)
-                                            .foregroundStyle(Color.siloSecondaryText)
-                                    }
-
-                                    Spacer()
-
-                                    if model.busyCollectionIds.contains(entry.id) {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                    }
-                                }
-                                .contentShape(Rectangle())
+                if model.isLoading || model.hasLoaded || !model.entries.isEmpty || model.errorMessage == nil {
+                    Section(.homeAddRowSectionYourCollections) {
+                        if model.isLoading && model.entries.isEmpty {
+                            HStack {
+                                Spacer()
+                                ProgressView()
+                                Spacer()
                             }
-                            .buttonStyle(.plain)
-                            .disabled(model.busyCollectionIds.contains(entry.id))
+                            .padding(.vertical, 12)
+                        } else if model.entries.isEmpty {
+                            if model.hasLoaded {
+                                Text(.collectionsAddToEmptyBody)
+                                    .font(.subheadline)
+                                    .foregroundStyle(Color.siloSecondaryText)
+                            } else {
+                                Button(.commonRetry) {
+                                    Task { await model.load() }
+                                }
+                            }
+                        } else {
+                            ForEach(model.entries) { entry in
+                                Button {
+                                    hapticCount += 1
+                                    Task { await model.toggle(collectionId: entry.id) }
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Image(systemName: entry.containsItem ? "checkmark.circle.fill" : "circle")
+                                            .font(.title3)
+                                            .foregroundStyle(entry.containsItem ? Color.green : Color.siloSecondaryText)
+
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(verbatim: entry.collection.name)
+                                                .font(.body.weight(.medium))
+                                                .foregroundStyle(Color.siloOnSurface)
+                                            Text(.collectionsItemCount(count: entry.itemCount, LocaleFormat.groupedCount(entry.itemCount, locale: locale)))
+                                                .font(.caption)
+                                                .foregroundStyle(Color.siloSecondaryText)
+                                        }
+
+                                        Spacer()
+
+                                        if model.busyCollectionIds.contains(entry.id) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                        }
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(model.busyCollectionIds.contains(entry.id))
+                            }
+                            if !model.hasLoaded && !model.isLoading && model.errorMessage == nil {
+                                Button(.commonRetry) {
+                                    Task { await model.load() }
+                                }
+                            }
                         }
                     }
                 }

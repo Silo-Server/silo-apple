@@ -1157,11 +1157,18 @@ struct TVSeriesDetailView: View {
                         ]
                     }
                     if model.entries.isEmpty {
-                        return [TVActionPopoverItem(
-                            id: "col:empty",
-                            title: AppLanguage.string(.collectionsAddToEmptyTv, locale: locale),
-                            isEnabled: false
-                        )]
+                        return [
+                            TVActionPopoverItem(
+                                id: "col:empty",
+                                title: AppLanguage.string(.collectionsAddToEmptyTv, locale: locale),
+                                isEnabled: false
+                            ),
+                            TVActionPopoverItem(
+                                id: "col:close",
+                                title: AppLanguage.string(.commonBack, locale: locale),
+                                systemImage: "chevron.left"
+                            ),
+                        ]
                     }
                     return model.entries.map { entry in
                         TVActionPopoverItem(
@@ -1177,9 +1184,17 @@ struct TVSeriesDetailView: View {
                         )
                     }
                 }()
+                let emptyCollectionsHint: String? = {
+                    guard let model = collectionsModel,
+                          model.hasLoaded,
+                          model.errorMessage == nil,
+                          model.entries.isEmpty else { return nil }
+                    return AppLanguage.string(.collectionsAddToEmptyTv, locale: locale)
+                }()
                 items.append(TVActionPopoverItem(
                     id: "add-to-collection-submenu",
                     title: AppLanguage.string(.collectionsAddToTitle, locale: locale),
+                    detail: emptyCollectionsHint,
                     systemImage: "folder.badge.plus",
                     children: collectionChildren
                 ))
@@ -1213,6 +1228,9 @@ struct TVSeriesDetailView: View {
                 }
             },
             onSelect: { item in
+                if item.id == "col:close" {
+                    return
+                }
                 if item.id == "col:retry" {
                     if let model = collectionsModel {
                         Task { await model.load() }

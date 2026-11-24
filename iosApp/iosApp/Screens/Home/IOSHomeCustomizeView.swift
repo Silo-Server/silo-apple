@@ -933,7 +933,7 @@ struct IOSHomeOptionsSheet: View {
                             }
                         }
                     }
-                    .disabled(editor.isResetting)
+                    .disabled(editor.isResetting || editor.isRefreshing || editor.phase != .loaded)
                 } footer: {
                     Text(.homeCustomizeResetFooter)
                 }

@@ -258,6 +258,7 @@ final class CollectionPlacementModel {
                requestIdentity() == startIdentity,
                shareMutationGeneration == myShareGen {
                 collectionVersion = fresh.version
+                isShared = fresh.value.isShared ?? isShared
             } else if requestIdentity() == startIdentity, shareMutationGeneration == myShareGen {
                 collectionVersion = nil
             }
@@ -462,11 +463,6 @@ final class AddToCollectionModel {
         mutationGeneration += 1
         entryGeneration[collectionId, default: 0] += 1
         busyCollectionIds.insert(collectionId)
-        defer {
-            pendingMutations = max(0, pendingMutations - 1)
-            mutationGeneration += 1
-            busyCollectionIds.remove(collectionId)
-        }
         errorMessage = nil
 
         let wasIn = entries[index].containsItem
@@ -474,6 +470,7 @@ final class AddToCollectionModel {
         entries[index].containsItem = nextIn
         entries[index].itemCount = max(0, entries[index].itemCount + (nextIn ? 1 : -1))
 
+        var toggleError: String?
         do {
             if nextIn {
                 try await api.addItemToCollection(collectionId: collectionId, itemId: contentId, position: 0)
@@ -483,12 +480,27 @@ final class AddToCollectionModel {
             ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
             HomeSectionsEditorModel.refreshScope(.home)
         } catch {
-            guard requestIdentity() == startIdentity else { return }
-            if let idx = entries.firstIndex(where: { $0.id == collectionId }) {
-                entries[idx].containsItem = wasIn
-                entries[idx].itemCount = max(0, entries[idx].itemCount + (wasIn ? 1 : -1))
+            if requestIdentity() == startIdentity {
+                if let idx = entries.firstIndex(where: { $0.id == collectionId }) {
+                    entries[idx].containsItem = wasIn
+                    entries[idx].itemCount = max(0, entries[idx].itemCount + (wasIn ? 1 : -1))
+                }
+                let message = ErrorState(error).message
+                toggleError = message
+                errorMessage = message
             }
-            errorMessage = ErrorState(error).message
+        }
+
+        let currentEntry = entries.first(where: { $0.id == collectionId })
+        pendingMutations = max(0, pendingMutations - 1)
+        mutationGeneration += 1
+        busyCollectionIds.remove(collectionId)
+
+        // If this toggle invalidated an in-flight recovery reload while the full
+        // list was still incomplete, schedule a fresh reload so existing collections
+        // and Retry state reconcile cleanly.
+        if !hasLoaded, requestIdentity() == startIdentity {
+            await load(preservingEntry: currentEntry, preservingError: toggleError)
         }
     }
 
@@ -500,30 +512,34 @@ final class AddToCollectionModel {
         pendingMutations += 1
         mutationGeneration += 1
         isCreating = true
+        defer { isCreating = false }
         errorMessage = nil
 
         var createdCollectionId: String?
-        let finishMutation = {
+        var releasedMutation = false
+        let releaseMutationAccounting = {
+            guard !releasedMutation else { return }
+            releasedMutation = true
             if let createdCollectionId {
                 self.busyCollectionIds.remove(createdCollectionId)
             }
             self.pendingMutations = max(0, self.pendingMutations - 1)
             self.mutationGeneration += 1
-            self.isCreating = false
         }
+        defer { releaseMutationAccounting() }
 
         let created: UserCollection
         do {
             created = try await api.createCollection(name: trimmed)
         } catch {
-            finishMutation()
+            releaseMutationAccounting()
             guard requestIdentity() == startIdentity else { return .failed }
             errorMessage = ErrorState(error).message
             return .failed
         }
 
         guard requestIdentity() == startIdentity else {
-            finishMutation()
+            releaseMutationAccounting()
             return .failed
         }
 
@@ -543,7 +559,7 @@ final class AddToCollectionModel {
         do {
             try await api.addItemToCollection(collectionId: created.id, itemId: contentId, position: 0)
             guard requestIdentity() == startIdentity else {
-                finishMutation()
+                releaseMutationAccounting()
                 return .failed
             }
             if entryGeneration[created.id] == myEntryGen {
@@ -558,7 +574,7 @@ final class AddToCollectionModel {
             result = .createdAndAdded
         } catch {
             guard requestIdentity() == startIdentity else {
-                finishMutation()
+                releaseMutationAccounting()
                 return .failed
             }
             let message = ErrorState(error).message
@@ -567,11 +583,10 @@ final class AddToCollectionModel {
             result = .createdOnly
         }
 
-        finishMutation()
+        // Release mutation accounting before the follow-up reload so `load()` can
+        // apply, while `isCreating` stays true (via defer) until this call returns.
+        releaseMutationAccounting()
 
-        // If creation overlapped or followed an incomplete initial load, reload
-        // the full collection list before treating the picker as loaded while
-        // preserving the newly created entry and any add-item error.
         if !hasLoaded {
             await load(preservingEntry: createdEntry, preservingError: addError)
         }

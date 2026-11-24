@@ -78,6 +78,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @State private var showDownloadOptions = false
     /// Personal collection quick-add half-sheet.
     @State private var isShowingAddToCollection = false
+    #if os(iOS)
+    @State private var hasDeferredRefitForCollectionSheet = false
+    #endif
     /// The viewer opened the Media Info section.
     @State private var showsMediaInfo = false
 
@@ -115,25 +118,30 @@ struct MovieDetailContent<BelowOverview: View>: View {
             resumeLookupTask?.cancel()
             resumeLookupTask = nil
             #if os(iOS)
-            if isShowingAddToCollection {
+            if hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = false
                 router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
-                isShowingAddToCollection = false
+                router.refitItemDetail()
             }
+            isShowingAddToCollection = false
             #endif
         }
         .sheet(isPresented: $isShowingAddToCollection, onDismiss: {
             #if os(iOS)
+            if hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = false
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+            }
             router.refitItemDetail()
             #endif
         }) {
             IOSAddToCollectionSheet(contentId: detail.contentId, itemTitle: detail.title)
         }
         #if os(iOS)
-        .onChange(of: isShowingAddToCollection) { wasShowing, showing in
-            if showing && !wasShowing {
+        .onChange(of: isShowingAddToCollection) { _, showing in
+            if showing && !hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = true
                 router.itemDetailDeferredRefitCount += 1
-            } else if !showing && wasShowing {
-                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
             }
         }
         #endif

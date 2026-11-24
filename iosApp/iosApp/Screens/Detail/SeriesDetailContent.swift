@@ -99,6 +99,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     }
     @State private var pendingResume: PendingResume?
     @State private var isShowingAddToCollection = false
+    #if os(iOS)
+    @State private var hasDeferredRefitForCollectionSheet = false
+    #endif
     /// The Play tap's in-flight watch-state read. A second tap replaces it.
     @State private var resumeLookupTask: Task<Void, Never>?
     @State private var isUpdatingWatched = false
@@ -163,25 +166,30 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             resumeLookupTask = nil
             pendingEpisodePlayRequest = nil
             #if os(iOS)
-            if isShowingAddToCollection {
+            if hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = false
                 router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
-                isShowingAddToCollection = false
+                router.refitItemDetail()
             }
+            isShowingAddToCollection = false
             #endif
         }
         .sheet(isPresented: $isShowingAddToCollection, onDismiss: {
             #if os(iOS)
+            if hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = false
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+            }
             router.refitItemDetail()
             #endif
         }) {
             IOSAddToCollectionSheet(contentId: detail.seriesId ?? detail.contentId, itemTitle: detail.title)
         }
         #if os(iOS)
-        .onChange(of: isShowingAddToCollection) { wasShowing, showing in
-            if showing && !wasShowing {
+        .onChange(of: isShowingAddToCollection) { _, showing in
+            if showing && !hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = true
                 router.itemDetailDeferredRefitCount += 1
-            } else if !showing && wasShowing {
-                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
             }
         }
         #endif
