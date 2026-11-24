@@ -1035,6 +1035,7 @@ struct LibraryCollectionDetailView: View {
 
     private func loadItems(reset: Bool) async {
         let startGen = invalidationGeneration
+        let startPageSequence = viewModel.pageSequence
         let succeeded = await viewModel.load(
             libraryId: libraryId,
             collectionId: collectionId,
@@ -1043,7 +1044,7 @@ struct LibraryCollectionDetailView: View {
             reset: reset
         )
         if reset, !Task.isCancelled, invalidationGeneration == startGen {
-            if succeeded {
+            if succeeded || viewModel.pageSequence != startPageSequence {
                 hasPendingInvalidation = false
             } else if viewModel.refreshError != nil {
                 hasPendingInvalidation = true

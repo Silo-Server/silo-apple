@@ -1076,7 +1076,6 @@ final class AddToCollectionModel {
                 }
             }
 
-            let currentEntry = self.entries.first(where: { $0.id == collectionId })
             releaseMutationAccounting()
 
             guard self.pendingMutations == 0, self.requestIdentity() == startIdentity else { return }
@@ -1089,7 +1088,7 @@ final class AddToCollectionModel {
                 // If this toggle invalidated an in-flight recovery reload while the full
                 // list was still incomplete, schedule a fresh reload so existing collections
                 // and Retry state reconcile cleanly.
-                await self.load(preservingEntry: currentEntry, preservingError: toggleError ?? self.errorMessage)
+                await self.load(preservingEntry: nil, preservingError: toggleError ?? self.errorMessage)
             }
         }
     }

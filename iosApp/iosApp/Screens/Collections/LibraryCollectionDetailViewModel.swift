@@ -262,7 +262,7 @@ final class LibraryCollectionDetailViewModel {
                    !(resetsPage && hadVisibleItemsBeforeLoad),
                    let lastValidatedPage,
                    let capturedOwner,
-                   !validatedLoaded.isEmpty {
+                   (!validatedLoaded.isEmpty || lastValidatedPage.continuation != nil) {
                     if !validatedReplacedPageOne {
                         items.append(contentsOf: validatedLoaded)
                     } else {

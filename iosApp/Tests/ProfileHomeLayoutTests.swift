@@ -1412,10 +1412,17 @@ final class ProfileHomeLayoutTests: XCTestCase {
         defer { stub.release() }
         await stub.waitUntilHeld()
 
-        let createdB = await overlapModel.createAndAdd(name: "Col B")
-        XCTAssertEqual(createdB, .createdAndAdded)
+        let bCompleted = expectation(description: "Col B create-and-add finishes while Col A toggle is parked")
+        let createBTask = Task { @MainActor in
+            let result = await overlapModel.createAndAdd(name: "Col B")
+            bCompleted.fulfill()
+            return result
+        }
+        await fulfillment(of: [bCompleted], timeout: 5.0)
 
         stub.release()
+        let createdB = await createBTask.value
+        XCTAssertEqual(createdB, .createdAndAdded)
         await toggleA.value
         XCTAssertTrue(overlapModel.hasLoaded)
         XCTAssertEqual(overlapModel.entries.first(where: { $0.id == "col-a" })?.containsItem, false)
