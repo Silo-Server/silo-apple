@@ -65,6 +65,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.locale) private var locale
+    #if os(iOS)
+    @Environment(AppRouter.self) private var router
+    #endif
     /// The position the resume prompt offers; non-nil while it is shown.
     @State private var pendingResumePosition: Double?
     /// The watch state `pendingResumePosition` came from.
@@ -111,10 +114,29 @@ struct MovieDetailContent<BelowOverview: View>: View {
         .onDisappear {
             resumeLookupTask?.cancel()
             resumeLookupTask = nil
+            #if os(iOS)
+            if isShowingAddToCollection {
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+                isShowingAddToCollection = false
+            }
+            #endif
         }
-        .sheet(isPresented: $isShowingAddToCollection) {
+        .sheet(isPresented: $isShowingAddToCollection, onDismiss: {
+            #if os(iOS)
+            router.refitItemDetail()
+            #endif
+        }) {
             IOSAddToCollectionSheet(contentId: detail.contentId, itemTitle: detail.title)
         }
+        #if os(iOS)
+        .onChange(of: isShowingAddToCollection) { wasShowing, showing in
+            if showing && !wasShowing {
+                router.itemDetailDeferredRefitCount += 1
+            } else if !showing && wasShowing {
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+            }
+        }
+        #endif
     }
 
     // MARK: - Hero
@@ -309,7 +331,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
         Button {
             isShowingAddToCollection = true
         } label: {
-            Label("Add to Collection…", systemImage: "folder.badge.plus")
+            Label(.collectionsAddToMenuAction, systemImage: "folder.badge.plus")
         }
         if showsDownloadButton {
             Button {

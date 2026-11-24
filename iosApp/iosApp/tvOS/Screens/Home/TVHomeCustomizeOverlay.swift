@@ -170,11 +170,11 @@ struct TVHomeCustomizeOverlay: View {
         VStack(alignment: .leading, spacing: 22) {
             compressedStatusBanner
 
-            if let error = editor.saveError {
+            if let error = editor.saveError ?? preferences.errorMessage {
                 HStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.yellow)
-                    Text(error)
+                    Text(verbatim: error)
                         .font(.system(size: 20, weight: .medium))
                         .foregroundStyle(.white.opacity(0.9))
                 }
@@ -426,16 +426,17 @@ struct TVHomeCustomizeOverlay: View {
     private func handleMove(_ direction: MoveCommandDirection) {
         guard !isOverlayOpen else { return }
 
-        // Grabbed state: Up / Down slides the grabbed row live!
+        // Grabbed state: Up / Down slides the grabbed row in the draft without saving per step.
         if let grabbedId = grabbedRowId {
+            guard !editor.isResetting else { return }
             switch direction {
             case .up:
                 withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.84)) {
-                    editor.moveVisible(id: grabbedId, by: -1)
+                    _ = editor.swapVisibleDuringDrag(id: grabbedId, by: -1)
                 }
             case .down:
                 withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.84)) {
-                    editor.moveVisible(id: grabbedId, by: 1)
+                    _ = editor.swapVisibleDuringDrag(id: grabbedId, by: 1)
                 }
             case .left, .right:
                 break
@@ -499,7 +500,8 @@ struct TVHomeCustomizeOverlay: View {
         guard !isOverlayOpen else { return }
 
         if let grabbedId = grabbedRowId {
-            // Drop row in place (every slide already persisted via serialized saveChain).
+            // Drop row in place and persist the final reordered draft once.
+            editor.commitDraggedOrder()
             withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.84)) {
                 grabbedRowId = nil
                 highlighted = .row(grabbedId)
@@ -509,10 +511,12 @@ struct TVHomeCustomizeOverlay: View {
 
         switch highlighted {
         case .row(let id):
+            guard editor.phase == .loaded, !editor.isResetting else { return }
             withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.82)) {
                 grabbedRowId = id
             }
         case .hiddenRow(let id):
+            guard editor.phase == .loaded, !editor.isResetting else { return }
             withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.84)) {
                 editor.setHidden(false, id: id)
                 highlighted = .row(id)
@@ -520,6 +524,7 @@ struct TVHomeCustomizeOverlay: View {
         case .footer(let action):
             switch action {
             case .addRow:
+                guard editor.phase == .loaded, !editor.isResetting else { return }
                 isShowingAddRow = true
             case .hiddenRows:
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
@@ -529,8 +534,10 @@ struct TVHomeCustomizeOverlay: View {
                     highlighted = .hiddenRow(firstHidden.id)
                 }
             case .options:
+                guard !editor.isResetting else { return }
                 isShowingOptions = true
             case .done:
+                guard !editor.isResetting else { return }
                 editor.triggerFeedRefresh()
                 onDone()
             }
@@ -538,7 +545,7 @@ struct TVHomeCustomizeOverlay: View {
     }
 
     private func handlePlayPause() {
-        guard !isOverlayOpen, grabbedRowId == nil else { return }
+        guard !isOverlayOpen, grabbedRowId == nil, editor.phase == .loaded, !editor.isResetting else { return }
         switch highlighted {
         case .row(let id), .hiddenRow(let id):
             openRowOptions(for: id)
@@ -551,10 +558,12 @@ struct TVHomeCustomizeOverlay: View {
         guard !isOverlayOpen else { return }
         if grabbedRowId != nil {
             withAnimation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.84)) {
+                editor.cancelDraggedOrder()
                 grabbedRowId = nil
             }
             return
         }
+        guard !editor.isResetting else { return }
         editor.triggerFeedRefresh()
         onDone()
     }
@@ -651,12 +660,14 @@ struct TVHomeCustomizeOverlay: View {
                 title: "Next Up Mode",
                 detail: preferences.nextUpMode.title,
                 systemImage: "forward.end.fill",
+                isEnabled: preferences.canEdit(.uiNextUpMode),
                 children: HomePreferencesModel.NextUpMode.allCases.map { mode in
                     TVActionPopoverItem(
                         id: "nextup:\(mode.rawValue)",
                         title: mode.title,
                         detail: mode.subtitle,
-                        isSelected: preferences.nextUpMode == mode
+                        isSelected: preferences.nextUpMode == mode,
+                        isEnabled: preferences.canEdit(.uiNextUpMode)
                     )
                 }
             ))
@@ -665,14 +676,16 @@ struct TVHomeCustomizeOverlay: View {
                 title: "New Releases First",
                 detail: preferences.newReleasesFirst ? "On" : "Off",
                 systemImage: "sparkles",
-                isSelected: preferences.newReleasesFirst
+                isSelected: preferences.newReleasesFirst,
+                isEnabled: preferences.canEdit(.uiNextUpNewReleasesFirst)
             ))
             items.append(TVActionPopoverItem(
                 id: "hide-watched",
                 title: "Hide Watched Items",
                 detail: preferences.hideWatchedItems ? "On" : "Off",
                 systemImage: "eye.slash",
-                isSelected: preferences.hideWatchedItems
+                isSelected: preferences.hideWatchedItems,
+                isEnabled: preferences.canEdit(.homeHideWatchedItems)
             ))
         }
         items.append(TVActionPopoverItem(
@@ -680,13 +693,15 @@ struct TVHomeCustomizeOverlay: View {
             title: "Reset to Server Default",
             detail: "Restore default rows and order",
             systemImage: "arrow.counterclockwise",
+            isEnabled: !editor.isResetting,
             startsSection: !items.isEmpty,
             children: [
                 TVActionPopoverItem(
                     id: "confirm-reset",
                     title: "Confirm Reset Layout",
                     detail: "Removes custom order and added rows",
-                    systemImage: "trash"
+                    systemImage: "trash",
+                    isEnabled: !editor.isResetting
                 ),
             ]
         ))
@@ -777,18 +792,40 @@ private struct TVArrangeRowCard: View {
         return row.displayTitle
     }
 
-    private var previewArtworks: [(url: String, thumbhash: String?)] {
+    private struct PreviewArtwork {
+        let url: String
+        let thumbhash: String?
+        let hidesSpoiler: Bool
+    }
+
+    private var previewArtworks: [PreviewArtwork] {
         guard let resolved else { return [] }
         if resolved.holdsCollections {
             return Array(resolved.collections.prefix(4)).compactMap { col in
                 guard let url = col.posterUrl, !url.isEmpty else { return nil }
-                return (url, col.posterThumbhash)
+                return PreviewArtwork(url: url, thumbhash: col.posterThumbhash, hidesSpoiler: false)
             }
         }
+        let spoilers = EpisodeSpoilerPreferences.shared.settings
         return Array(resolved.items.prefix(4)).compactMap { item in
-            let url = (item.posterUrl?.isEmpty == false ? item.posterUrl : item.backdropUrl) ?? ""
-            guard !url.isEmpty else { return nil }
-            return (url, item.posterThumbhash ?? item.backdropThumbhash)
+            let watchState = EpisodeWatchState(sectionItem: item)
+            if let poster = item.posterUrl, !poster.isEmpty {
+                let hides = item.isEpisodeItem && spoilers.hidesImage(for: watchState, isEpisodeStill: item.posterIsEpisodeStill)
+                return PreviewArtwork(
+                    url: poster,
+                    thumbhash: hides ? nil : item.posterThumbhash,
+                    hidesSpoiler: hides
+                )
+            }
+            if let backdrop = item.backdropUrl, !backdrop.isEmpty {
+                let hides = item.isEpisodeItem && spoilers.hidesImage(for: watchState, isEpisodeStill: item.backdropIsEpisodeStill)
+                return PreviewArtwork(
+                    url: backdrop,
+                    thumbhash: hides ? nil : item.backdropThumbhash,
+                    hidesSpoiler: hides
+                )
+            }
+            return nil
         }
     }
 
@@ -920,6 +957,7 @@ private struct TVArrangeRowCard: View {
                         contentMode: .fill,
                         placeholderStyle: .artwork
                     )
+                    .episodeSpoilerBlur(entry.hidesSpoiler)
                     .frame(width: 44, height: 66)
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -1080,6 +1118,7 @@ struct TVAddRowModal: View {
                         let isAdded = editor.isRecipePresent(sectionType: def.type, params: preset.defaultParams)
                             || addedKeys.contains(preset.key)
                         Button {
+                            guard !isAdded else { return }
                             addedKeys.insert(preset.key)
                             editor.addRecipeRow(
                                 sectionType: def.type,
@@ -1133,7 +1172,18 @@ struct TVAddRowModal: View {
     @ViewBuilder
     private var myCollectionsGrid: some View {
         let columns = [GridItem(.adaptive(minimum: 420), spacing: 24)]
-        if editor.personalCollections.isEmpty {
+        if let error = editor.personalCollectionsError, editor.personalCollections.isEmpty {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(verbatim: error)
+                    .font(.system(size: 22))
+                    .foregroundStyle(.white.opacity(0.75))
+                Button(.commonRetry) {
+                    Task { await editor.loadPickerCatalogIfNeeded(force: true) }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(.top, 40)
+        } else if editor.personalCollections.isEmpty {
             Text("No personal collections yet.")
                 .font(.system(size: 24))
                 .foregroundStyle(.white.opacity(0.6))
@@ -1150,6 +1200,7 @@ struct TVAddRowModal: View {
                         posterThumbhash: collection.posterThumbhash,
                         isAdded: isAdded
                     ) {
+                        guard !isAdded else { return }
                         addedKeys.insert("user:\(collection.id)")
                         editor.addCollectionRow(
                             collectionId: collection.id,
@@ -1165,7 +1216,18 @@ struct TVAddRowModal: View {
     @ViewBuilder
     private var serverCollectionsGrid: some View {
         let columns = [GridItem(.adaptive(minimum: 420), spacing: 24)]
-        if editor.serverCollections.isEmpty {
+        if let error = editor.serverCollectionsError, editor.serverCollections.isEmpty {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(verbatim: error)
+                    .font(.system(size: 22))
+                    .foregroundStyle(.white.opacity(0.75))
+                Button(.commonRetry) {
+                    Task { await editor.loadPickerCatalogIfNeeded(force: true) }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(.top, 40)
+        } else if editor.serverCollections.isEmpty {
             Text(editor.isLoadingPickerCatalog ? "Loading server collections…" : "No server collections found.")
                 .font(.system(size: 24))
                 .foregroundStyle(.white.opacity(0.6))
@@ -1184,6 +1246,7 @@ struct TVAddRowModal: View {
                         posterThumbhash: collection.posterThumbhash,
                         isAdded: isAdded
                     ) {
+                        guard !isAdded else { return }
                         addedKeys.insert("lib:\(collection.id)")
                         editor.addCollectionRow(
                             collectionId: collection.id,

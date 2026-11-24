@@ -233,7 +233,7 @@ private struct HomeCardMenu: ViewModifier {
                 .sheet(isPresented: $isShowingAddToCollection) {
                     IOSAddToCollectionSheet(
                         contentId: item.contentId,
-                        itemTitle: HomeFeedMeta.cardTitle(for: item)
+                        itemTitle: SiloMediaType.isEpisode(item.type) ? (item.seriesTitle ?? item.title) : item.title
                     )
                 }
         } else {
@@ -798,18 +798,18 @@ private struct SectionHeaderContextMenuModifier: ViewModifier {
             content.contextMenu {
                 if let onMoveToTop {
                     Button(action: onMoveToTop) {
-                        Label("Move to Top", systemImage: "arrow.up.to.line")
+                        Label(.homeCustomizeMoveToTop, systemImage: "arrow.up.to.line")
                     }
                 }
                 if let onHideRow {
                     Button(role: .destructive, action: onHideRow) {
-                        Label("Hide Row", systemImage: "eye.slash")
+                        Label(.homeCustomizeHideRow, systemImage: "eye.slash")
                     }
                 }
                 if let onCustomizeHome {
                     Divider()
                     Button(action: onCustomizeHome) {
-                        Label("Customize Home…", systemImage: "slider.horizontal.3")
+                        Label(.homeCustomizeContextMenuAction, systemImage: "slider.horizontal.3")
                     }
                 }
             }

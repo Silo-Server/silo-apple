@@ -162,10 +162,29 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             resumeLookupTask?.cancel()
             resumeLookupTask = nil
             pendingEpisodePlayRequest = nil
+            #if os(iOS)
+            if isShowingAddToCollection {
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+                isShowingAddToCollection = false
+            }
+            #endif
         }
-        .sheet(isPresented: $isShowingAddToCollection) {
+        .sheet(isPresented: $isShowingAddToCollection, onDismiss: {
+            #if os(iOS)
+            router.refitItemDetail()
+            #endif
+        }) {
             IOSAddToCollectionSheet(contentId: detail.seriesId ?? detail.contentId, itemTitle: detail.title)
         }
+        #if os(iOS)
+        .onChange(of: isShowingAddToCollection) { wasShowing, showing in
+            if showing && !wasShowing {
+                router.itemDetailDeferredRefitCount += 1
+            } else if !showing && wasShowing {
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+            }
+        }
+        #endif
         .onChange(of: hierarchyError) { _, error in
             if error != nil { pendingEpisodePlayRequest = nil }
         }
@@ -424,7 +443,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         Button {
             isShowingAddToCollection = true
         } label: {
-            Label("Add to Collection…", systemImage: "folder.badge.plus")
+            Label(.collectionsAddToMenuAction, systemImage: "folder.badge.plus")
         }
         Divider()
         Button(action: onFindTrailers) {

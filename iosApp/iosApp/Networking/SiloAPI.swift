@@ -630,6 +630,13 @@ actor SiloAPI {
         try await apiV2Client.setCollectionShared(version, isShared: isShared)
     }
 
+    func catalogItemCollectionIds(itemId: String) async throws -> Set<String> {
+        let auth = try await detailReadAuth()
+        let ids = try await apiV2Client.catalogItemCollectionIds(itemId: itemId, auth: auth)
+        try await requireCurrentOwner(auth)
+        return ids
+    }
+
     // --- Profile Sections Layout ---
 
     func profileLayout(scope: ProfileSectionsScope = .home) async throws -> APIv2ProfileLayoutRead {

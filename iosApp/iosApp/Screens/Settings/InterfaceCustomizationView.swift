@@ -17,16 +17,16 @@ struct InterfaceCustomizationView: View {
                 } label: {
                     #if os(iOS)
                     SettingsOverviewRow(
-                        title: .verbatim("Home Screen"),
+                        title: .homeCustomizeHomeScreen,
                         subtitle: .verbatim("Reorder, hide, and add rows on Home and library pages."),
                         systemImage: "slider.horizontal.3"
                     )
                     #else
-                    Label("Home Screen", systemImage: "slider.horizontal.3")
+                    Label(.homeCustomizeHomeScreen, systemImage: "slider.horizontal.3")
                     #endif
                 }
             } header: {
-                Text("Home")
+                Text(.tabHome)
             }
 
             if titleArt.isOffered {

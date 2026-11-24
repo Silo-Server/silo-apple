@@ -314,10 +314,21 @@ struct TVSeriesDetailView: View {
                 .ignoresSafeArea()
                 .focusScope(detailFocusNamespace)
                 .defaultFocus($focusedAction, preferredAction, priority: .userInitiated)
-                .task(id: detail.contentId) {
-                    let model = AddToCollectionModel(contentId: detail.seriesId ?? detail.contentId)
-                    collectionsModel = model
-                    await model.load()
+                .onChange(of: detail.contentId) { _, _ in
+                    collectionsModel = nil
+                }
+                .alert(
+                    Text(.homeUpdateFailedTitle),
+                    isPresented: Binding(
+                        get: { collectionsModel?.errorMessage != nil && collectionsModel?.hasLoaded == true },
+                        set: { if !$0 { collectionsModel?.clearError() } }
+                    )
+                ) {
+                    Button(.homeUpdateFailedOk, role: .cancel) {}
+                } message: {
+                    if let error = collectionsModel?.errorMessage {
+                        Text(verbatim: error)
+                    }
                 }
                 .detailFocusScroll(
                     proxy: scrollProxy,
@@ -1132,13 +1143,23 @@ struct TVSeriesDetailView: View {
                     startsSection: true
                 ))
                 let collectionChildren: [TVActionPopoverItem] = {
+                    let loadingTitle = AppLanguage.string(.collectionsAddToLoading, locale: locale)
                     guard let model = collectionsModel else {
-                        return [TVActionPopoverItem(id: "col:loading", title: "Loading collections…", isEnabled: false)]
+                        return [TVActionPopoverItem(id: "col:loading", title: loadingTitle, isEnabled: false)]
+                    }
+                    if model.isLoading && !model.hasLoaded {
+                        return [TVActionPopoverItem(id: "col:loading", title: loadingTitle, isEnabled: false)]
+                    }
+                    if let error = model.errorMessage, !model.hasLoaded {
+                        return [
+                            TVActionPopoverItem(id: "col:error", title: error, isEnabled: false),
+                            TVActionPopoverItem(id: "col:retry", title: AppLanguage.string(.commonRetry, locale: locale), systemImage: "arrow.clockwise"),
+                        ]
                     }
                     if model.entries.isEmpty {
                         return [TVActionPopoverItem(
                             id: "col:empty",
-                            title: model.isLoading ? "Loading collections…" : "No Personal Collections",
+                            title: AppLanguage.string(.collectionsAddToEmptyTv, locale: locale),
                             isEnabled: false
                         )]
                     }
@@ -1146,7 +1167,10 @@ struct TVSeriesDetailView: View {
                         TVActionPopoverItem(
                             id: "col:\(entry.id)",
                             title: entry.collection.name,
-                            detail: entry.itemCount == 1 ? "1 item" : "\(entry.itemCount) items",
+                            detail: AppLanguage.string(
+                                .collectionsItemCount(count: entry.itemCount, LocaleFormat.groupedCount(entry.itemCount, locale: locale)),
+                                locale: locale
+                            ),
                             systemImage: "folder",
                             isSelected: entry.containsItem,
                             isEnabled: !model.busyCollectionIds.contains(entry.id)
@@ -1155,7 +1179,7 @@ struct TVSeriesDetailView: View {
                 }()
                 items.append(TVActionPopoverItem(
                     id: "add-to-collection-submenu",
-                    title: "Add to Collection",
+                    title: AppLanguage.string(.collectionsAddToTitle, locale: locale),
                     systemImage: "folder.badge.plus",
                     children: collectionChildren
                 ))
@@ -1178,7 +1202,23 @@ struct TVSeriesDetailView: View {
                 }
                 return items
             },
+            onOpen: {
+                let targetId = detail.seriesId ?? detail.contentId
+                if collectionsModel == nil || collectionsModel?.contentId != targetId {
+                    let model = AddToCollectionModel(contentId: targetId)
+                    collectionsModel = model
+                    Task { await model.load() }
+                } else if let model = collectionsModel, !model.hasLoaded, !model.isLoading {
+                    Task { await model.load() }
+                }
+            },
             onSelect: { item in
+                if item.id == "col:retry" {
+                    if let model = collectionsModel {
+                        Task { await model.load() }
+                    }
+                    return
+                }
                 if item.id.hasPrefix("col:") {
                     let colId = String(item.id.dropFirst(4))
                     if let model = collectionsModel {

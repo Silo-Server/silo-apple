@@ -807,7 +807,7 @@ struct LibraryRecommendedView: View {
                             isCustomizing = true
                         }
                     } label: {
-                        Label("Customize Rows", systemImage: "slider.horizontal.3")
+                        Label(.homeCustomizeRowsButton, systemImage: "slider.horizontal.3")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(Color.siloSecondaryText)
                             .padding(.horizontal, 18)

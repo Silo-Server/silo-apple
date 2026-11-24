@@ -42,7 +42,7 @@ struct MediaStateMenuItems: View {
             }
             if let onAddToCollection {
                 Button(action: onAddToCollection) {
-                    Label("Add to Collection…", systemImage: "folder.badge.plus")
+                    Label(.collectionsAddToMenuAction, systemImage: "folder.badge.plus")
                 }
             }
             NotInterestedMenuButton(isNotInterested: isNotInterested, action: onToggleNotInterested)

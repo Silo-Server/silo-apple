@@ -244,6 +244,12 @@ struct LibrariesTabView: View {
         .onChange(of: navPrefs.showAudiobooks) {
             applyLibrarySelection()
         }
+        #if os(iOS)
+        .onAppear { syncActiveCustomizableLibrary() }
+        .onChange(of: selectedTab) { syncActiveCustomizableLibrary() }
+        .onChange(of: activeLibrary?.id) { syncActiveCustomizableLibrary() }
+        .onDisappear { router.activeCustomizableLibrary = nil }
+        #endif
         .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) {
             notification in
             guard let response = notification.object as? LibrariesResponse else { return }
@@ -268,11 +274,22 @@ struct LibrariesTabView: View {
         if let library = visibleLibraries.first(where: { $0.id == id }) {
             showInDock(library)
         }
+        syncActiveCustomizableLibrary()
         #endif
         persistLibrarySelection(id)
         showPicker = false
         StartupContentPrefetcher.prefetchLibraryLanding(libraryId: id)
     }
+
+    #if os(iOS)
+    private func syncActiveCustomizableLibrary() {
+        if selectedTab == .recommended, let activeLibrary {
+            router.activeCustomizableLibrary = (id: activeLibrary.id, name: activeLibrary.name)
+        } else {
+            router.activeCustomizableLibrary = nil
+        }
+    }
+    #endif
 
     @ViewBuilder
     private func loadedContent(activeLibrary: Library) -> some View {
@@ -353,7 +370,7 @@ struct LibrariesTabView: View {
                     router.switchProfile()
                 },
                 onSignOut: { router.signOutAndReset() },
-                customizePageTitle: selectedTab == .recommended ? "Customize \(activeLibrary.name)" : nil,
+                customizePageTitle: selectedTab == .recommended ? AppLanguage.string(.homeCustomizeTitleNamed(activeLibrary.name), locale: locale) : nil,
                 onCustomizePage: selectedTab == .recommended ? {
                     NotificationCenter.default.post(name: .libraryCustomizeRequested, object: activeLibrary.id)
                 } : nil,
@@ -500,7 +517,7 @@ struct LibrariesTabView: View {
                     onOpenRequests: { router.navigate(to: .requestsHub) },
                     onSwitchProfile: { router.switchProfile() },
                     onSignOut: { router.signOutAndReset() },
-                    customizePageTitle: selectedTab == .recommended ? "Customize \(activeLibrary.name)" : nil,
+                    customizePageTitle: selectedTab == .recommended ? AppLanguage.string(.homeCustomizeTitleNamed(activeLibrary.name), locale: locale) : nil,
                     onCustomizePage: selectedTab == .recommended ? {
                         NotificationCenter.default.post(name: .libraryCustomizeRequested, object: activeLibrary.id)
                     } : nil,

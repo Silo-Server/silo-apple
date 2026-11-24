@@ -12,6 +12,7 @@ struct CollectionPinActionBar: View {
 
     @State private var model: CollectionPlacementModel
     @State private var hapticCount = 0
+    @Environment(\.locale) private var locale
 
     init(
         collectionId: String,
@@ -35,9 +36,35 @@ struct CollectionPinActionBar: View {
         #if os(tvOS)
         tvControls
             .task(id: collectionId) { await model.load() }
+            .alert(
+                Text(.homeUpdateFailedTitle),
+                isPresented: Binding(
+                    get: { model.errorMessage != nil },
+                    set: { if !$0 { model.clearError() } }
+                )
+            ) {
+                Button(.homeUpdateFailedOk, role: .cancel) {}
+            } message: {
+                if let error = model.errorMessage {
+                    Text(verbatim: error)
+                }
+            }
         #else
         iosControls
             .task(id: collectionId) { await model.load() }
+            .alert(
+                Text(.homeUpdateFailedTitle),
+                isPresented: Binding(
+                    get: { model.errorMessage != nil },
+                    set: { if !$0 { model.clearError() } }
+                )
+            ) {
+                Button(.homeUpdateFailedOk, role: .cancel) {}
+            } message: {
+                if let error = model.errorMessage {
+                    Text(verbatim: error)
+                }
+            }
             #if os(iOS)
             .sensoryFeedback(.impact(weight: .light), trigger: hapticCount)
             #endif
@@ -62,7 +89,7 @@ struct CollectionPinActionBar: View {
                         Image(systemName: model.isPinnedOnHome ? "pin.fill" : "pin")
                             .font(.subheadline.weight(.semibold))
                     }
-                    Text(model.isPinnedOnHome ? "On Home" : "Pin to Home")
+                    Text(model.isPinnedOnHome ? .collectionsPinOnHome : .collectionsPinPinToHome)
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                 }
@@ -84,19 +111,20 @@ struct CollectionPinActionBar: View {
                 )
             }
             .buttonStyle(.plain)
-            .disabled(model.isUpdatingHome)
+            .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
 
             Menu {
-                Section("Where It Shows") {
+                Section(.collectionsPinWhereItShows) {
                     Button {
                         hapticCount += 1
                         Task { await model.toggleHomePin() }
                     } label: {
                         Label(
-                            "Home",
+                            .tabHome,
                             systemImage: model.isPinnedOnHome ? "checkmark.circle.fill" : "circle"
                         )
                     }
+                    .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
 
                     ForEach(model.libraryPlacements) { placement in
                         Button {
@@ -108,17 +136,18 @@ struct CollectionPinActionBar: View {
                                 systemImage: placement.isPinned ? "checkmark.circle.fill" : "circle"
                             )
                         }
+                        .disabled(model.isLoading || model.updatingLibraryIds.contains(placement.libraryId))
                     }
                 }
 
                 if model.isUserCollection && model.canToggleShare {
-                    Section("Household") {
+                    Section(.collectionsPinHousehold) {
                         Button {
                             hapticCount += 1
                             Task { await model.toggleShared() }
                         } label: {
                             Label(
-                                "Share with Household Profiles",
+                                .collectionsPinShareWithHousehold,
                                 systemImage: model.isShared ? "checkmark.circle.fill" : "person.2"
                             )
                         }
@@ -137,7 +166,7 @@ struct CollectionPinActionBar: View {
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
             #endif
-            .accessibilityLabel("Where It Shows")
+            .accessibilityLabel(.collectionsPinWhereItShows)
         }
     }
     #endif
@@ -153,45 +182,51 @@ struct CollectionPinActionBar: View {
                 HStack(spacing: 10) {
                     Image(systemName: model.isPinnedOnHome ? "pin.fill" : "pin")
                         .font(.system(size: 20, weight: .semibold))
-                    Text(model.isPinnedOnHome ? "On Home" : "Pin to Home")
+                    Text(model.isPinnedOnHome ? .collectionsPinOnHome : .collectionsPinPinToHome)
                         .font(.system(size: 22, weight: .semibold))
                 }
                 .padding(.horizontal, 22)
                 .padding(.vertical, 12)
             }
             .buttonStyle(.bordered)
-            .disabled(model.isUpdatingHome)
+            .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
 
             TVCircleMenuButton(
                 icon: "ellipsis",
-                title: "Where It Shows",
-                accessibilityLabel: "Where It Shows",
+                title: AppLanguage.string(.collectionsPinWhereItShows, locale: locale),
+                accessibilityLabel: AppLanguage.string(.collectionsPinWhereItShows, locale: locale),
                 items: {
                     var items: [TVActionPopoverItem] = [
                         TVActionPopoverItem(
                             id: "home",
-                            title: "Home",
-                            detail: model.isPinnedOnHome ? "Pinned on Home" : "Not on Home",
+                            title: AppLanguage.string(.tabHome, locale: locale),
+                            detail: AppLanguage.string(
+                                model.isPinnedOnHome ? .collectionsPinPinnedOnHome : .collectionsPinNotOnHome,
+                                locale: locale
+                            ),
                             systemImage: "house",
                             isSelected: model.isPinnedOnHome,
-                            isEnabled: !model.isUpdatingHome
+                            isEnabled: !model.isLoading && model.hasLoadedHome && !model.isUpdatingHome
                         ),
                     ]
                     for placement in model.libraryPlacements {
                         items.append(TVActionPopoverItem(
                             id: "lib:\(placement.libraryId)",
                             title: placement.libraryName,
-                            detail: placement.isPinned ? "Pinned on Library page" : nil,
+                            detail: placement.isPinned ? AppLanguage.string(.collectionsPinPinnedOnLibrary, locale: locale) : nil,
                             systemImage: "film.stack",
                             isSelected: placement.isPinned,
-                            isEnabled: !model.updatingLibraryIds.contains(placement.libraryId)
+                            isEnabled: !model.isLoading && !model.updatingLibraryIds.contains(placement.libraryId)
                         ))
                     }
                     if model.isUserCollection && model.canToggleShare {
                         items.append(TVActionPopoverItem(
                             id: "share",
-                            title: "Share with Profiles",
-                            detail: model.isShared ? "Visible to household profiles" : "Only this profile",
+                            title: AppLanguage.string(.collectionsPinShareWithProfilesTv, locale: locale),
+                            detail: AppLanguage.string(
+                                model.isShared ? .collectionsPinVisibleToHousehold : .collectionsPinOnlyThisProfile,
+                                locale: locale
+                            ),
                             systemImage: "person.2",
                             isSelected: model.isShared,
                             isEnabled: !model.isUpdatingShare,
@@ -225,8 +260,10 @@ struct IOSAddToCollectionSheet: View {
 
     @State private var model: AddToCollectionModel
     @State private var newCollectionName = ""
+    @State private var nameEditGeneration = 0
     @State private var hapticCount = 0
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
 
     init(contentId: String, itemTitle: String? = nil) {
         self.contentId = contentId
@@ -243,30 +280,38 @@ struct IOSAddToCollectionSheet: View {
                         Image(systemName: "plus.circle.fill")
                             .font(.title3)
                             .foregroundStyle(Color.accentColor)
-                        TextField("New Collection", text: $newCollectionName)
+                        TextField(AppLanguage.string(.collectionsCreateTitle, locale: locale), text: $newCollectionName)
                             .submitLabel(.done)
                             .onSubmit(createCollection)
                         if !newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Button("Create", action: createCollection)
+                            Button(.collectionsGroupCreate, action: createCollection)
                                 .font(.subheadline.weight(.semibold))
                                 .disabled(model.isCreating)
                         }
                     }
                 } header: {
                     if let itemTitle, !itemTitle.isEmpty {
-                        Text(itemTitle)
+                        Text(verbatim: itemTitle)
                     }
                 }
 
                 if let error = model.errorMessage {
                     Section {
-                        Label(error, systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(Color.siloSecondaryText)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label(error, systemImage: "exclamationmark.triangle")
+                                .font(.footnote)
+                                .foregroundStyle(Color.siloSecondaryText)
+                            if !model.hasLoaded {
+                                Button(.commonRetry) {
+                                    Task { await model.load() }
+                                }
+                                .font(.subheadline.weight(.semibold))
+                            }
+                        }
                     }
                 }
 
-                Section("Your Collections") {
+                Section(.homeAddRowSectionYourCollections) {
                     if model.isLoading && model.entries.isEmpty {
                         HStack {
                             Spacer()
@@ -274,8 +319,12 @@ struct IOSAddToCollectionSheet: View {
                             Spacer()
                         }
                         .padding(.vertical, 12)
+                    } else if !model.hasLoaded && model.errorMessage != nil {
+                        Button(.commonRetry) {
+                            Task { await model.load() }
+                        }
                     } else if model.entries.isEmpty {
-                        Text("No personal collections yet. Create one above.")
+                        Text(.collectionsAddToEmptyBody)
                             .font(.subheadline)
                             .foregroundStyle(Color.siloSecondaryText)
                     } else {
@@ -290,10 +339,10 @@ struct IOSAddToCollectionSheet: View {
                                         .foregroundStyle(entry.containsItem ? Color.green : Color.siloSecondaryText)
 
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(entry.collection.name)
+                                        Text(verbatim: entry.collection.name)
                                             .font(.body.weight(.medium))
                                             .foregroundStyle(Color.siloOnSurface)
-                                        Text(entry.itemCount == 1 ? "1 item" : "\(entry.itemCount) items")
+                                        Text(.collectionsItemCount(count: entry.itemCount, LocaleFormat.groupedCount(entry.itemCount, locale: locale)))
                                             .font(.caption)
                                             .foregroundStyle(Color.siloSecondaryText)
                                     }
@@ -318,18 +367,21 @@ struct IOSAddToCollectionSheet: View {
             #else
             .siloGroupedListStyle()
             #endif
-            .navigationTitle("Add to Collection")
+            .navigationTitle(Text(.collectionsAddToTitle))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button(.commonDone) { dismiss() }
                 }
             }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .onChange(of: newCollectionName) { _, _ in
+            nameEditGeneration += 1
+        }
         .task {
             await model.load()
         }
@@ -340,11 +392,14 @@ struct IOSAddToCollectionSheet: View {
 
     private func createCollection() {
         let name = newCollectionName
+        let capturedGeneration = nameEditGeneration
         Task {
             let ok = await model.createAndAdd(name: name)
             if ok {
                 hapticCount += 1
-                newCollectionName = ""
+                if nameEditGeneration == capturedGeneration {
+                    newCollectionName = ""
+                }
             }
         }
     }

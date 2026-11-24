@@ -19,6 +19,7 @@ final class CollectionPlacementModel {
     let sourceLibraryId: Int?
 
     private(set) var isPinnedOnHome = false
+    private(set) var hasLoadedHome = false
     private(set) var libraryPlacements: [LibraryPlacement] = []
     private(set) var isShared = false
     private(set) var canToggleShare = false
@@ -29,46 +30,72 @@ final class CollectionPlacementModel {
     private(set) var errorMessage: String?
 
     @ObservationIgnored private let api: SiloAPI
-    @ObservationIgnored private var homeLayout: APIv2ProfileLayoutRead?
-    @ObservationIgnored private var libraryLayouts: [Int: APIv2ProfileLayoutRead] = [:]
+    @ObservationIgnored private let requestIdentity: @MainActor () -> HTTPRequestIdentity?
     @ObservationIgnored private var collectionVersion: CollectionEditVersion?
+    @ObservationIgnored private var loadGeneration = 0
+    @ObservationIgnored private var homeMutationGeneration = 0
+    @ObservationIgnored private var libraryMutationGeneration: [Int: Int] = [:]
+    @ObservationIgnored private var shareMutationGeneration = 0
 
     init(
         collectionId: String,
         title: String,
         isUserCollection: Bool,
         sourceLibraryId: Int? = nil,
-        api: SiloAPI = .shared
+        api: SiloAPI = .shared,
+        requestIdentity: @escaping @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity
     ) {
         self.collectionId = collectionId
         self.collectionTitle = title
         self.isUserCollection = isUserCollection
         self.sourceLibraryId = sourceLibraryId
         self.api = api
+        self.requestIdentity = requestIdentity
     }
 
     func load() async {
+        loadGeneration += 1
+        let myLoadGen = loadGeneration
+        let startIdentity = requestIdentity()
+        let startHomeGen = homeMutationGeneration
+        let startShareGen = shareMutationGeneration
+        let startLibGens = libraryMutationGeneration
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if loadGeneration == myLoadGen {
+                isLoading = false
+            }
+        }
         errorMessage = nil
 
-        async let homeRead: APIv2ProfileLayoutRead? = try? await api.profileLayout(scope: .home)
+        async let homeRead: Result<APIv2ProfileLayoutRead, Error> = {
+            do { return .success(try await api.profileLayout(scope: .home)) }
+            catch { return .failure(error) }
+        }()
         async let librariesRead: LibrariesResponse? = try? await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: true)
         async let editorRead: CollectionEditor<UserCollection>? = isUserCollection
             ? (try? await api.collectionEditor(id: collectionId))
             : nil
 
-        let (home, librariesResponse, editor) = await (homeRead, librariesRead, editorRead)
-        if let home {
-            homeLayout = home
-            isPinnedOnHome = ProfileHomeLayout.pinnedCollectionRow(
-                collectionId: collectionId,
-                isUserCollection: isUserCollection,
-                in: home.rows
-            ) != nil
+        let (homeResult, librariesResponse, editor) = await (homeRead, librariesRead, editorRead)
+        guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == startIdentity else { return }
+
+        switch homeResult {
+        case .success(let home):
+            if homeMutationGeneration == startHomeGen {
+                isPinnedOnHome = ProfileHomeLayout.pinnedCollectionRow(
+                    collectionId: collectionId,
+                    isUserCollection: isUserCollection,
+                    in: home.rows
+                ) != nil
+            }
+            hasLoadedHome = true
+        case .failure(let error):
+            hasLoadedHome = false
+            errorMessage = ErrorState(error).message
         }
 
-        if let editor {
+        if let editor, shareMutationGeneration == startShareGen {
             collectionVersion = editor.version
             isShared = editor.value.isShared ?? false
             canToggleShare = true
@@ -95,10 +122,13 @@ final class CollectionPlacementModel {
                 for await pair in group {
                     fetched[pair.0.id] = pair
                 }
+                guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == startIdentity else { return }
                 for lib in relevant {
                     let layout = fetched[lib.id]?.1
-                    if let layout {
-                        libraryLayouts[lib.id] = layout
+                    if libraryMutationGeneration[lib.id] != startLibGens[lib.id],
+                       let existing = libraryPlacements.first(where: { $0.libraryId == lib.id }) {
+                        placements.append(existing)
+                        continue
                     }
                     let pinned = layout.map {
                         ProfileHomeLayout.pinnedCollectionRow(
@@ -114,12 +144,19 @@ final class CollectionPlacementModel {
                     ))
                 }
             }
+            guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == startIdentity else { return }
             libraryPlacements = placements
         }
     }
 
+    func clearError() {
+        errorMessage = nil
+    }
+
     func toggleHomePin() async {
-        guard !isUpdatingHome else { return }
+        guard hasLoadedHome, !isLoading, !isUpdatingHome else { return }
+        let startIdentity = requestIdentity()
+        homeMutationGeneration += 1
         isUpdatingHome = true
         defer { isUpdatingHome = false }
         errorMessage = nil
@@ -128,14 +165,12 @@ final class CollectionPlacementModel {
         isPinnedOnHome = targetPinned
 
         do {
-            let layout: APIv2ProfileLayoutRead
-            if let cached = homeLayout {
-                layout = cached
-            } else {
-                layout = try await api.profileLayout(scope: .home)
-            }
+            // Always re-read the current layout immediately before writing so
+            // edits made elsewhere since this page opened are preserved.
+            let layout = try await api.profileLayout(scope: .home)
+            guard !Task.isCancelled, requestIdentity() == startIdentity else { return }
             let updated = try await applyPin(targetPinned, on: layout)
-            homeLayout = updated
+            guard requestIdentity() == startIdentity else { return }
             isPinnedOnHome = ProfileHomeLayout.pinnedCollectionRow(
                 collectionId: collectionId,
                 isUserCollection: isUserCollection,
@@ -143,14 +178,18 @@ final class CollectionPlacementModel {
             ) != nil
             HomeSectionsEditorModel.refreshScope(.home)
         } catch {
+            guard requestIdentity() == startIdentity else { return }
             isPinnedOnHome = !targetPinned
-            errorMessage = "Couldn't update Home placement. \(ErrorState(error).message)"
+            errorMessage = ErrorState(error).message
         }
     }
 
     func toggleLibraryPin(libraryId: Int) async {
-        guard !updatingLibraryIds.contains(libraryId),
+        guard !isLoading,
+              !updatingLibraryIds.contains(libraryId),
               let idx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) else { return }
+        let startIdentity = requestIdentity()
+        libraryMutationGeneration[libraryId, default: 0] += 1
         updatingLibraryIds.insert(libraryId)
         defer { updatingLibraryIds.remove(libraryId) }
         errorMessage = nil
@@ -159,14 +198,10 @@ final class CollectionPlacementModel {
         libraryPlacements[idx].isPinned = targetPinned
 
         do {
-            let layout: APIv2ProfileLayoutRead
-            if let cached = libraryLayouts[libraryId] {
-                layout = cached
-            } else {
-                layout = try await api.profileLayout(scope: .library(libraryId))
-            }
+            let layout = try await api.profileLayout(scope: .library(libraryId))
+            guard !Task.isCancelled, requestIdentity() == startIdentity else { return }
             let updated = try await applyPin(targetPinned, on: layout)
-            libraryLayouts[libraryId] = updated
+            guard requestIdentity() == startIdentity else { return }
             if let refreshedIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
                 libraryPlacements[refreshedIdx].isPinned = ProfileHomeLayout.pinnedCollectionRow(
                     collectionId: collectionId,
@@ -176,15 +211,18 @@ final class CollectionPlacementModel {
             }
             HomeSectionsEditorModel.refreshScope(.library(libraryId))
         } catch {
+            guard requestIdentity() == startIdentity else { return }
             if let refreshedIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
                 libraryPlacements[refreshedIdx].isPinned = !targetPinned
             }
-            errorMessage = "Couldn't update library placement. \(ErrorState(error).message)"
+            errorMessage = ErrorState(error).message
         }
     }
 
     func toggleShared() async {
-        guard isUserCollection, !isUpdatingShare else { return }
+        guard isUserCollection, !isLoading, !isUpdatingShare else { return }
+        let startIdentity = requestIdentity()
+        shareMutationGeneration += 1
         isUpdatingShare = true
         defer { isUpdatingShare = false }
         errorMessage = nil
@@ -201,18 +239,31 @@ final class CollectionPlacementModel {
                 version = editor.version
             }
             let updated = try await api.setCollectionShared(version, isShared: targetShared)
+            guard requestIdentity() == startIdentity else { return }
             isShared = updated.isShared ?? targetShared
             // Re-read editor to hold the fresh ETag for subsequent toggles.
-            if let fresh = try? await api.collectionEditor(id: collectionId) {
+            if let fresh = try? await api.collectionEditor(id: collectionId),
+               requestIdentity() == startIdentity {
                 collectionVersion = fresh.version
             } else {
                 collectionVersion = nil
             }
         } catch {
+            guard requestIdentity() == startIdentity else { return }
             isShared = !targetShared
             collectionVersion = nil
-            errorMessage = "Couldn't update sharing. \(ErrorState(error).message)"
+            errorMessage = ErrorState(error).message
         }
+    }
+
+    private func matchesThisCollection(_ row: APIv2ProfileSectionSetting) -> Bool {
+        let type = row.sectionType.lowercased()
+        guard type == "collection" || type == "user_collection" || type == "library_collection" else {
+            return false
+        }
+        return isUserCollection
+            ? row.userCollectionId == collectionId
+            : row.libraryCollectionId == collectionId
     }
 
     private func applyPin(
@@ -221,15 +272,9 @@ final class CollectionPlacementModel {
     ) async throws -> APIv2ProfileLayoutRead {
         var nextRows = layout.rows
         if pinned {
-            if let existingIdx = nextRows.firstIndex(where: { row in
-                let type = row.sectionType.lowercased()
-                guard type == "collection" || type == "user_collection" || type == "library_collection" else {
-                    return false
-                }
-                return isUserCollection
-                    ? row.userCollectionId == collectionId
-                    : row.libraryCollectionId == collectionId
-            }) {
+            if nextRows.contains(where: { !$0.hidden && matchesThisCollection($0) }) {
+                // Already visibly pinned.
+            } else if let existingIdx = nextRows.firstIndex(where: { matchesThisCollection($0) }) {
                 nextRows[existingIdx].hidden = false
             } else {
                 let newRow = ProfileHomeLayout.makeCollectionRow(
@@ -241,19 +286,13 @@ final class CollectionPlacementModel {
                 nextRows.append(newRow)
             }
         } else {
-            if let existingIdx = nextRows.firstIndex(where: { row in
-                let type = row.sectionType.lowercased()
-                guard type == "collection" || type == "user_collection" || type == "library_collection" else {
-                    return false
-                }
-                return isUserCollection
-                    ? row.userCollectionId == collectionId
-                    : row.libraryCollectionId == collectionId
-            }) {
-                if nextRows[existingIdx].isCustom {
-                    nextRows.remove(at: existingIdx)
+            // Unpin every visible matching row (removing custom rows and hiding admin rows)
+            // so a preceding hidden duplicate never blocks unpinning the visible row.
+            for idx in nextRows.indices.reversed() where !nextRows[idx].hidden && matchesThisCollection(nextRows[idx]) {
+                if nextRows[idx].isCustom {
+                    nextRows.remove(at: idx)
                 } else {
-                    nextRows[existingIdx].hidden = true
+                    nextRows[idx].hidden = true
                 }
             }
         }
@@ -276,8 +315,8 @@ final class CollectionPlacementModel {
 // MARK: - Add to Collection Model
 
 /// Loads the acting profile's personal manual collections and tracks whether
-/// a specific title (`contentId`) belongs to each, supporting 1-tap toggle and
-/// inline creation of a new collection.
+/// a specific title (`contentId`) belongs to each via `catalogItemCollectionIds`,
+/// supporting 1-tap toggle and inline creation of a new collection.
 @Observable
 @MainActor
 final class AddToCollectionModel {
@@ -305,59 +344,83 @@ final class AddToCollectionModel {
     let contentId: String
 
     private(set) var entries: [Entry] = []
+    private(set) var hasLoaded = false
     private(set) var isLoading = false
     private(set) var busyCollectionIds = Set<String>()
     private(set) var isCreating = false
     private(set) var errorMessage: String?
 
     @ObservationIgnored private let api: SiloAPI
+    @ObservationIgnored private let requestIdentity: @MainActor () -> HTTPRequestIdentity?
+    @ObservationIgnored private var loadGeneration = 0
+    @ObservationIgnored private var mutationGeneration = 0
 
-    init(contentId: String, api: SiloAPI = .shared) {
+    init(
+        contentId: String,
+        api: SiloAPI = .shared,
+        requestIdentity: @escaping @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity
+    ) {
         self.contentId = contentId
         self.api = api
+        self.requestIdentity = requestIdentity
     }
 
     func load() async {
+        loadGeneration += 1
+        let myLoadGen = loadGeneration
+        let startMutationGen = mutationGeneration
+        let startIdentity = requestIdentity()
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if loadGeneration == myLoadGen {
+                isLoading = false
+            }
+        }
         errorMessage = nil
 
         do {
-            let response = try await api.collections()
+            async let collectionsTask = api.collections()
+            async let membershipTask = api.catalogItemCollectionIds(itemId: contentId)
+            let (response, memberCollectionIds) = try await (collectionsTask, membershipTask)
+            guard !Task.isCancelled,
+                  loadGeneration == myLoadGen,
+                  mutationGeneration == startMutationGen,
+                  requestIdentity() == startIdentity else { return }
+
             let manual = (response.collections ?? []).filter { col in
                 let kind = (col.collectionType ?? "manual").lowercased()
                 return kind == "manual" || kind.isEmpty
             }
 
-            var membership: [String: Bool] = [:]
-            await withTaskGroup(of: (String, Bool).self) { group in
-                for col in manual {
-                    group.addTask { [api, contentId] in
-                        let cards = try? await api.collectionItems(collectionId: col.id)
-                        let has = cards?.items.contains(where: { $0.contentId == contentId }) ?? false
-                        return (col.id, has)
-                    }
-                }
-                for await (id, has) in group {
-                    membership[id] = has
-                }
-            }
-
             entries = manual.map { col in
                 Entry(
                     collection: col,
-                    containsItem: membership[col.id] ?? false,
+                    containsItem: memberCollectionIds.contains(col.id),
                     itemCount: col.itemCount ?? 0
                 )
             }
+            hasLoaded = true
         } catch {
-            errorMessage = "Couldn't load collections. \(ErrorState(error).message)"
+            guard !(error is CancellationError),
+                  !Task.isCancelled,
+                  loadGeneration == myLoadGen,
+                  requestIdentity() == startIdentity else { return }
+            hasLoaded = false
+            entries = []
+            errorMessage = ErrorState(error).message
         }
     }
 
+    func clearError() {
+        errorMessage = nil
+    }
+
     func toggle(collectionId: String) async {
-        guard !busyCollectionIds.contains(collectionId),
+        guard hasLoaded,
+              !busyCollectionIds.contains(collectionId),
               let index = entries.firstIndex(where: { $0.id == collectionId }) else { return }
+        let startIdentity = requestIdentity()
+        mutationGeneration += 1
         busyCollectionIds.insert(collectionId)
         defer { busyCollectionIds.remove(collectionId) }
         errorMessage = nil
@@ -376,11 +439,12 @@ final class AddToCollectionModel {
             ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
             HomeSectionsEditorModel.refreshScope(.home)
         } catch {
+            guard requestIdentity() == startIdentity else { return }
             if let idx = entries.firstIndex(where: { $0.id == collectionId }) {
                 entries[idx].containsItem = wasIn
                 entries[idx].itemCount = max(0, entries[idx].itemCount + (wasIn ? 1 : -1))
             }
-            errorMessage = "Couldn't update collection. \(ErrorState(error).message)"
+            errorMessage = ErrorState(error).message
         }
     }
 
@@ -388,6 +452,8 @@ final class AddToCollectionModel {
     func createAndAdd(name: String) async -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isCreating else { return false }
+        let startIdentity = requestIdentity()
+        mutationGeneration += 1
         isCreating = true
         defer { isCreating = false }
         errorMessage = nil
@@ -395,12 +461,15 @@ final class AddToCollectionModel {
         do {
             let created = try await api.createCollection(name: trimmed)
             try await api.addItemToCollection(collectionId: created.id, itemId: contentId, position: 0)
+            guard requestIdentity() == startIdentity else { return false }
             entries.insert(Entry(collection: created, containsItem: true, itemCount: 1), at: 0)
+            hasLoaded = true
             ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
             HomeSectionsEditorModel.refreshScope(.home)
             return true
         } catch {
-            errorMessage = "Couldn't create collection. \(ErrorState(error).message)"
+            guard requestIdentity() == startIdentity else { return false }
+            errorMessage = ErrorState(error).message
             return false
         }
     }

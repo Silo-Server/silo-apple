@@ -111,7 +111,7 @@ struct IOSHomeCustomizeView: View {
                     .font(.subheadline)
                     .foregroundStyle(Color.siloSecondaryText)
                     .multilineTextAlignment(.center)
-                Button("Retry") {
+                Button(.commonRetry) {
                     Task { await editor.load() }
                 }
                 .buttonStyle(.borderedProminent)
@@ -154,9 +154,18 @@ struct IOSHomeCustomizeView: View {
                     HStack(spacing: 10) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.yellow)
-                        Text(error)
+                        Text(verbatim: error)
                             .font(.footnote)
                             .foregroundStyle(Color.siloOnSurface)
+                        Spacer(minLength: 8)
+                        if editor.phase != .loaded {
+                            Button(.commonRetry) {
+                                Task { await editor.load() }
+                            }
+                            .font(.footnote.weight(.semibold))
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -166,6 +175,8 @@ struct IOSHomeCustomizeView: View {
                     )
                     .padding(.bottom, 12)
                 }
+
+                let canEditRows = editor.phase == .loaded && !editor.isResetting
 
                 // Visible shelves — pure SwiftUI live drag-to-reorder (zero black drag square)
                 if editor.visibleRows.isEmpty {
@@ -180,8 +191,10 @@ struct IOSHomeCustomizeView: View {
                                 resolved: sectionLookup[row.id],
                                 isHidden: false,
                                 isDragging: isDragging,
-                                showsDragHandle: editor.visibleRows.count > 1,
+                                showsDragHandle: canEditRows && editor.visibleRows.count > 1,
+                                isInteractive: canEditRows,
                                 onToggleVisibility: {
+                                    guard canEditRows else { return }
                                     hapticCount += 1
                                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                                         editor.setHidden(true, id: row.id)
@@ -192,6 +205,9 @@ struct IOSHomeCustomizeView: View {
                                 },
                                 onDragEnded: {
                                     handleDragEnded()
+                                },
+                                onDragCancelled: {
+                                    handleDragCancelled()
                                 }
                             )
                             .onGeometryChange(for: CGFloat.self) { proxy in
@@ -211,42 +227,44 @@ struct IOSHomeCustomizeView: View {
                             )
                             .animation(.spring(response: 0.24, dampingFraction: 0.84), value: isDragging)
                             .contextMenu {
-                                Button {
-                                    hapticCount += 1
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                        editor.moveToTop(id: row.id)
-                                    }
-                                } label: {
-                                    Label("Move to Top", systemImage: "arrow.up.to.line")
-                                }
-
-                                Button {
-                                    hapticCount += 1
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                        editor.moveToBottom(id: row.id)
-                                    }
-                                } label: {
-                                    Label("Move to Bottom", systemImage: "arrow.down.to.line")
-                                }
-
-                                Button {
-                                    hapticCount += 1
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                        editor.setHidden(true, id: row.id)
-                                    }
-                                } label: {
-                                    Label("Hide Row", systemImage: "eye.slash")
-                                }
-
-                                if row.isCustom {
-                                    Divider()
-                                    Button(role: .destructive) {
+                                if canEditRows {
+                                    Button {
                                         hapticCount += 1
                                         withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                            editor.removeCustomRow(id: row.id)
+                                            editor.moveToTop(id: row.id)
                                         }
                                     } label: {
-                                        Label("Delete Row", systemImage: "trash")
+                                        Label(.homeCustomizeMoveToTop, systemImage: "arrow.up.to.line")
+                                    }
+
+                                    Button {
+                                        hapticCount += 1
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                            editor.moveToBottom(id: row.id)
+                                        }
+                                    } label: {
+                                        Label(.homeCustomizeMoveToBottom, systemImage: "arrow.down.to.line")
+                                    }
+
+                                    Button {
+                                        hapticCount += 1
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                            editor.setHidden(true, id: row.id)
+                                        }
+                                    } label: {
+                                        Label(.homeCustomizeHideRow, systemImage: "eye.slash")
+                                    }
+
+                                    if row.isCustom {
+                                        Divider()
+                                        Button(role: .destructive) {
+                                            hapticCount += 1
+                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                                editor.removeCustomRow(id: row.id)
+                                            }
+                                        } label: {
+                                            Label(.homeCustomizeDeleteRow, systemImage: "trash")
+                                        }
                                     }
                                 }
                             }
@@ -268,7 +286,7 @@ struct IOSHomeCustomizeView: View {
                                 Image(systemName: "eye.slash")
                                     .font(.footnote.weight(.semibold))
                                     .foregroundStyle(Color.siloSecondaryText)
-                                Text("Hidden Rows (\(editor.hiddenRows.count))")
+                                Text(.homeCustomizeHiddenRows(LocaleFormat.integer(editor.hiddenRows.count, locale: locale)))
                                     .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(Color.siloSecondaryText)
                                 Spacer()
@@ -294,7 +312,9 @@ struct IOSHomeCustomizeView: View {
                                     isHidden: true,
                                     isDragging: false,
                                     showsDragHandle: false,
+                                    isInteractive: canEditRows,
                                     onToggleVisibility: {
+                                        guard canEditRows else { return }
                                         hapticCount += 1
                                         withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                                             editor.setHidden(false, id: row.id)
@@ -303,29 +323,32 @@ struct IOSHomeCustomizeView: View {
                                 )
                                 .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                                 .onTapGesture {
+                                    guard canEditRows else { return }
                                     hapticCount += 1
                                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                                         editor.setHidden(false, id: row.id)
                                     }
                                 }
                                 .contextMenu {
-                                    Button {
-                                        hapticCount += 1
-                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                            editor.setHidden(false, id: row.id)
-                                        }
-                                    } label: {
-                                        Label("Show Row", systemImage: "eye")
-                                    }
-                                    if row.isCustom {
-                                        Divider()
-                                        Button(role: .destructive) {
+                                    if canEditRows {
+                                        Button {
                                             hapticCount += 1
                                             withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                                editor.removeCustomRow(id: row.id)
+                                                editor.setHidden(false, id: row.id)
                                             }
                                         } label: {
-                                            Label("Delete Row", systemImage: "trash")
+                                            Label(.homeCustomizeShowRow, systemImage: "eye")
+                                        }
+                                        if row.isCustom {
+                                            Divider()
+                                            Button(role: .destructive) {
+                                                hapticCount += 1
+                                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                                    editor.removeCustomRow(id: row.id)
+                                                }
+                                            } label: {
+                                                Label(.homeCustomizeDeleteRow, systemImage: "trash")
+                                            }
                                         }
                                     }
                                 }
@@ -490,13 +513,22 @@ struct IOSHomeCustomizeView: View {
         editor.commitDraggedOrder()
     }
 
+    private func handleDragCancelled() {
+        stopAutoScrollLoop()
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+            draggingRowId = nil
+            dragOffsetY = 0
+        }
+        editor.cancelDraggedOrder()
+    }
+
     private var customizeHeaderBanner: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(headerTitle)
                     .font(.title3.weight(.bold))
                     .foregroundStyle(Color.siloOnSurface)
-                Text("Drag handles to reorder · Tap eye to hide · Hold for more")
+                Text(.homeCustomizeSubtitle)
                     .font(.caption)
                     .foregroundStyle(Color.siloSecondaryText)
             }
@@ -512,9 +544,9 @@ struct IOSHomeCustomizeView: View {
 
     private var headerTitle: String {
         if let pageTitle, !pageTitle.isEmpty {
-            return "Customize \(pageTitle)"
+            return AppLanguage.string(.homeCustomizeTitleNamed(pageTitle), locale: locale)
         }
-        return editor.scope == .home ? "Customize Home" : "Customize Library"
+        return AppLanguage.string(editor.scope == .home ? .homeCustomizeTitleHome : .homeCustomizeTitleLibrary, locale: locale)
     }
 
     private var emptyVisibleCard: some View {
@@ -522,10 +554,10 @@ struct IOSHomeCustomizeView: View {
             Image(systemName: "rectangle.stack.badge.plus")
                 .font(.title2)
                 .foregroundStyle(Color.siloSecondaryText)
-            Text(editor.hiddenRows.isEmpty ? "No rows on this page yet" : "All rows are hidden")
+            Text(editor.hiddenRows.isEmpty ? .homeCustomizeEmptyNoRowsTitle : .homeCustomizeEmptyAllHiddenTitle)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.siloOnSurface)
-            Text(editor.hiddenRows.isEmpty ? "Tap + Add Row to add your first row." : "Tap + Add Row or unhide a row below.")
+            Text(editor.hiddenRows.isEmpty ? .homeCustomizeEmptyNoRowsBody : .homeCustomizeEmptyAllHiddenBody)
                 .font(.caption)
                 .foregroundStyle(Color.siloSecondaryText)
         }
@@ -548,7 +580,7 @@ struct IOSHomeCustomizeView: View {
                 hapticCount += 1
                 isShowingAddRow = true
             } label: {
-                Label("Add Row", systemImage: "plus")
+                Label(.homeCustomizeAddRow, systemImage: "plus")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
@@ -557,6 +589,8 @@ struct IOSHomeCustomizeView: View {
                     .contentShape(Capsule())
             }
             .buttonStyle(.plain)
+            .disabled(editor.phase != .loaded || editor.isResetting)
+            .opacity(editor.phase == .loaded && !editor.isResetting ? 1 : 0.45)
 
             Button {
                 hapticCount += 1
@@ -570,14 +604,14 @@ struct IOSHomeCustomizeView: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Home Options")
+            .accessibilityLabel(.homeCustomizeOptions)
 
             Button {
                 hapticCount += 1
                 editor.triggerFeedRefresh()
                 onDone()
             } label: {
-                Text("Done")
+                Text(.commonDone)
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(.black)
                     .padding(.horizontal, 18)
@@ -602,15 +636,25 @@ struct IOSHomeCustomizeView: View {
 // MARK: - Live Mini-Poster Filmstrip Card
 
 private struct ShelfStripCard: View {
+    private struct PreviewArtwork {
+        let url: String
+        let thumbhash: String?
+        let hidesSpoiler: Bool
+    }
+
     let row: APIv2ProfileSectionSetting
     let resolved: ResolvedSection?
     let isHidden: Bool
     let isDragging: Bool
     let showsDragHandle: Bool
+    var isInteractive: Bool = true
     let onToggleVisibility: () -> Void
     var onDragChanged: ((DragGesture.Value) -> Void)? = nil
     var onDragEnded: (() -> Void)? = nil
+    var onDragCancelled: (() -> Void)? = nil
 
+    @GestureState private var isDragGestureActive = false
+    @State private var dragEndedNormally = false
     @Environment(\.locale) private var locale
 
     private var effectiveTitle: String {
@@ -623,18 +667,34 @@ private struct ShelfStripCard: View {
         return row.displayTitle
     }
 
-    private var previewArtworks: [(url: String, thumbhash: String?)] {
+    private var previewArtworks: [PreviewArtwork] {
         guard let resolved else { return [] }
         if resolved.holdsCollections {
             return Array(resolved.collections.prefix(3)).compactMap { col in
                 guard let url = col.posterUrl, !url.isEmpty else { return nil }
-                return (url, col.posterThumbhash)
+                return PreviewArtwork(url: url, thumbhash: col.posterThumbhash, hidesSpoiler: false)
             }
         }
+        let spoilers = EpisodeSpoilerPreferences.shared.settings
         return Array(resolved.items.prefix(3)).compactMap { item in
-            let url = (item.posterUrl?.isEmpty == false ? item.posterUrl : item.backdropUrl) ?? ""
-            guard !url.isEmpty else { return nil }
-            return (url, item.posterThumbhash ?? item.backdropThumbhash)
+            let watchState = EpisodeWatchState(sectionItem: item)
+            if let poster = item.posterUrl, !poster.isEmpty {
+                let hides = item.isEpisodeItem && spoilers.hidesImage(for: watchState, isEpisodeStill: item.posterIsEpisodeStill)
+                return PreviewArtwork(
+                    url: poster,
+                    thumbhash: hides ? nil : item.posterThumbhash,
+                    hidesSpoiler: hides
+                )
+            }
+            if let backdrop = item.backdropUrl, !backdrop.isEmpty {
+                let hides = item.isEpisodeItem && spoilers.hidesImage(for: watchState, isEpisodeStill: item.backdropIsEpisodeStill)
+                return PreviewArtwork(
+                    url: backdrop,
+                    thumbhash: hides ? nil : item.backdropThumbhash,
+                    hidesSpoiler: hides
+                )
+            }
+            return nil
         }
     }
 
@@ -644,7 +704,10 @@ private struct ShelfStripCard: View {
             ? resolved.collections.count
             : (resolved.totalCount ?? resolved.items.count)
         guard count > 0 else { return nil }
-        return count == 1 ? "1 item" : "\(count) items"
+        return AppLanguage.string(
+            .collectionsItemCount(count: count, LocaleFormat.groupedCount(count, locale: locale)),
+            locale: locale
+        )
     }
 
     var body: some View {
@@ -652,13 +715,13 @@ private struct ShelfStripCard: View {
             filmstripPreview
 
             VStack(alignment: .leading, spacing: 5) {
-                Text(effectiveTitle)
+                Text(verbatim: effectiveTitle)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)
 
                 HStack(spacing: 6) {
-                    Text(row.isCustom ? "Yours" : "Server")
+                    Text(row.isCustom ? .homeCustomizeBadgeYours : .accountServer)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(row.isCustom ? Color.white : Color.siloSecondaryText)
                         .padding(.horizontal, 7)
@@ -672,7 +735,7 @@ private struct ShelfStripCard: View {
                         )
 
                     if let count = itemCountText {
-                        Text(count)
+                        Text(verbatim: count)
                             .font(.caption2)
                             .foregroundStyle(Color.siloSecondaryText)
                             .monospacedDigit()
@@ -694,7 +757,8 @@ private struct ShelfStripCard: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isHidden ? "Show \(effectiveTitle)" : "Hide \(effectiveTitle)")
+            .disabled(!isInteractive)
+            .accessibilityLabel(isHidden ? .homeCustomizeA11YShowRow(effectiveTitle) : .homeCustomizeA11YHideRow(effectiveTitle))
 
             if showsDragHandle, let onDragChanged, let onDragEnded {
                 Image(systemName: "line.3.horizontal")
@@ -704,10 +768,24 @@ private struct ShelfStripCard: View {
                     .contentShape(Rectangle())
                     .highPriorityGesture(
                         DragGesture(minimumDistance: 2, coordinateSpace: .named("shelfViewportSpace"))
-                            .onChanged(onDragChanged)
-                            .onEnded { _ in onDragEnded() }
+                            .updating($isDragGestureActive) { _, state, _ in
+                                state = true
+                            }
+                            .onChanged { value in
+                                dragEndedNormally = false
+                                onDragChanged(value)
+                            }
+                            .onEnded { _ in
+                                dragEndedNormally = true
+                                onDragEnded()
+                            }
                     )
-                    .accessibilityLabel("Reorder \(effectiveTitle)")
+                    .onChange(of: isDragGestureActive) { wasActive, active in
+                        if wasActive && !active && !dragEndedNormally {
+                            onDragCancelled?()
+                        }
+                    }
+                    .accessibilityLabel(.homeCustomizeA11YReorderRow(effectiveTitle))
             }
         }
         .padding(.leading, 12)
@@ -757,6 +835,7 @@ private struct ShelfStripCard: View {
                         contentMode: .fill,
                         placeholderStyle: .artwork
                     )
+                    .episodeSpoilerBlur(entry.hidesSpoiler)
                     .frame(width: 30, height: 44)
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -786,47 +865,58 @@ struct IOSHomeOptionsSheet: View {
             List {
                 if editor.scope == .home {
                     Section {
-                        Picker("Next Up Mode", selection: Binding(
+                        Picker(.homeCustomizeNextUpMode, selection: Binding(
                             get: { preferences.nextUpMode },
                             set: { preferences.setNextUpMode($0) }
                         )) {
                             ForEach(HomePreferencesModel.NextUpMode.allCases) { mode in
-                                Text(mode.title).tag(mode)
+                                Text(mode.titleResource).tag(mode)
                             }
                         }
+                        .disabled(!preferences.canEdit(.uiNextUpMode))
 
                         Toggle(isOn: Binding(
                             get: { preferences.newReleasesFirst },
                             set: { preferences.setNewReleasesFirst($0) }
                         )) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("New Releases First")
-                                Text("Put newly aired episodes at the front of Next Up.")
+                                Text(.homeCustomizeNewReleasesFirst)
+                                Text(.homeCustomizeNewReleasesFirstBody)
                                     .font(.caption)
                                     .foregroundStyle(Color.siloSecondaryText)
                             }
                         }
+                        .disabled(!preferences.canEdit(.uiNextUpNewReleasesFirst))
 
                         Toggle(isOn: Binding(
                             get: { preferences.hideWatchedItems },
                             set: { preferences.setHideWatchedItems($0) }
                         )) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Hide Watched Items")
-                                Text("Remove watched titles from ordinary Home rows.")
+                                Text(.homeCustomizeHideWatchedItems)
+                                Text(.homeCustomizeHideWatchedItemsBody)
                                     .font(.caption)
                                     .foregroundStyle(Color.siloSecondaryText)
                             }
                         }
+                        .disabled(!preferences.canEdit(.homeHideWatchedItems))
                     } header: {
-                        Text("Home Display")
+                        Text(.homeCustomizeSectionDisplay)
                     }
 
                     if let error = preferences.errorMessage {
                         Section {
-                            Label(error, systemImage: "exclamationmark.triangle")
-                                .font(.footnote)
-                                .foregroundStyle(Color.siloSecondaryText)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label(error, systemImage: "exclamationmark.triangle")
+                                    .font(.footnote)
+                                    .foregroundStyle(Color.siloSecondaryText)
+                                if !preferences.isAuthorized {
+                                    Button(.commonRetry) {
+                                        Task { await preferences.load() }
+                                    }
+                                    .font(.subheadline.weight(.semibold))
+                                }
+                            }
                         }
                     }
                 }
@@ -836,7 +926,7 @@ struct IOSHomeOptionsSheet: View {
                         isConfirmingReset = true
                     } label: {
                         HStack {
-                            Label("Reset to Server Default", systemImage: "arrow.counterclockwise")
+                            Label(.homeCustomizeResetToDefault, systemImage: "arrow.counterclockwise")
                             Spacer()
                             if editor.isResetting {
                                 ProgressView()
@@ -845,7 +935,7 @@ struct IOSHomeOptionsSheet: View {
                     }
                     .disabled(editor.isResetting)
                 } footer: {
-                    Text("Removes your custom order, hidden rows, and pinned rows for this page.")
+                    Text(.homeCustomizeResetFooter)
                 }
             }
             #if os(macOS)
@@ -853,29 +943,31 @@ struct IOSHomeOptionsSheet: View {
             #else
             .siloGroupedListStyle()
             #endif
-            .navigationTitle("Options")
+            .navigationTitle(Text(.homeCustomizeOptionsTitle))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button(.commonDone) { dismiss() }
+                        .disabled(editor.isResetting)
                 }
             }
+            .interactiveDismissDisabled(editor.isResetting)
             .confirmationDialog(
-                "Reset to Server Default?",
+                Text(.homeCustomizeResetConfirmTitle),
                 isPresented: $isConfirmingReset,
                 titleVisibility: .visible
             ) {
-                Button("Reset Layout", role: .destructive) {
+                Button(.homeCustomizeResetConfirmAction, role: .destructive) {
                     Task {
                         await editor.resetToServerDefault()
                         dismiss()
                     }
                 }
-                Button("Cancel", role: .cancel) {}
+                Button(.commonCancel, role: .cancel) {}
             } message: {
-                Text("This restores the server's default rows and order for your profile.")
+                Text(.homeCustomizeResetConfirmBody)
             }
         }
         .task {
@@ -899,6 +991,7 @@ struct IOSHomeSectionsSettingsView: View {
     @State private var libraries: [Library] = []
     @State private var loadedSectionsByScope: [ProfileSectionsScope: [ResolvedSection]] = [:]
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
 
     private var activeEditor: HomeSectionsEditorModel? {
         editors[selectedScope]
@@ -937,7 +1030,7 @@ struct IOSHomeSectionsSettingsView: View {
             }
         }
         .siloPageBackground()
-        .navigationTitle("Home Screen")
+        .navigationTitle(Text(.homeCustomizeHomeScreen))
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -958,7 +1051,7 @@ struct IOSHomeSectionsSettingsView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 pagePill(
-                    title: "Home",
+                    title: AppLanguage.string(.tabHome, locale: locale),
                     systemImage: "house.fill",
                     isSelected: selectedScope == .home
                 ) {
@@ -1008,8 +1101,11 @@ struct IOSHomeSectionsSettingsView: View {
     }
 
     private func loadLibrariesAndCurrentArtwork() async {
+        let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
         async let homeArtwork: Void = loadArtwork(for: .home)
-        if let response = try? await StartupContentPrefetcher.fetchUserLibraries() {
+        if let response = try? await StartupContentPrefetcher.fetchUserLibraries(),
+           !Task.isCancelled,
+           SeekIntervalPreferences.activeRequestIdentity() == startIdentity {
             libraries = response.libraries
         }
         await homeArtwork
@@ -1017,15 +1113,23 @@ struct IOSHomeSectionsSettingsView: View {
 
     private func loadArtwork(for scope: ProfileSectionsScope) async {
         if loadedSectionsByScope[scope] != nil { return }
+        let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
+        let startToken = ResponseCache.shared.writeToken
         switch scope {
         case .home:
             if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.homeSections) {
                 loadedSectionsByScope[.home] = cached.sections
-            } else if let read = try? await SiloAPI.shared.homeSections() {
+            } else if let read = try? await SiloAPI.shared.homeSections(),
+                      !Task.isCancelled,
+                      SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
+                      ResponseCache.shared.writeToken == startToken {
                 loadedSectionsByScope[.home] = read.response.sections
             }
         case .library(let libraryId):
-            if let read = try? await SiloAPI.shared.librarySections(libraryId: libraryId) {
+            if let read = try? await SiloAPI.shared.librarySections(libraryId: libraryId),
+               !Task.isCancelled,
+               SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
+               ResponseCache.shared.writeToken == startToken {
                 loadedSectionsByScope[scope] = read.response.sections
             }
         }

@@ -206,7 +206,7 @@ struct HomeView: View {
                         router.switchProfile()
                     },
                     onSignOut: { router.signOutAndReset() },
-                    customizePageTitle: isCustomizingHome ? nil : "Customize Home",
+                    customizePageTitle: isCustomizingHome ? nil : AppLanguage.string(.homeCustomizeTitleHome, locale: locale),
                     onCustomizePage: isCustomizingHome ? nil : {
                         withAnimation(.spring(response: 0.36, dampingFraction: 0.86)) {
                             isCustomizingHome = true
@@ -365,7 +365,7 @@ struct HomeView: View {
                             isCustomizingHome = true
                         }
                     } label: {
-                        Label("Customize Home", systemImage: "slider.horizontal.3")
+                        Label(.homeCustomizeTitleHome, systemImage: "slider.horizontal.3")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(Color.siloSecondaryText)
                             .padding(.horizontal, 18)
@@ -430,16 +430,36 @@ struct HomeView: View {
             onSetWatched: setWatched,
             onMoveToTop: {
                 Task {
-                    if homeEditor.phase != .loaded { await homeEditor.load() }
+                    await homeEditor.load()
+                    guard homeEditor.phase == .loaded else {
+                        if let message = homeEditor.saveError {
+                            viewModel.presentActionError(message: message)
+                        }
+                        return
+                    }
                     await homeEditor.moveToTop(id: section.id).value
-                    await viewModel.loadSections()
+                    if let message = homeEditor.saveError {
+                        viewModel.presentActionError(message: message)
+                    } else {
+                        await viewModel.loadSections()
+                    }
                 }
             },
             onHideRow: {
                 Task {
-                    if homeEditor.phase != .loaded { await homeEditor.load() }
+                    await homeEditor.load()
+                    guard homeEditor.phase == .loaded else {
+                        if let message = homeEditor.saveError {
+                            viewModel.presentActionError(message: message)
+                        }
+                        return
+                    }
                     await homeEditor.setHidden(true, id: section.id).value
-                    await viewModel.loadSections()
+                    if let message = homeEditor.saveError {
+                        viewModel.presentActionError(message: message)
+                    } else {
+                        await viewModel.loadSections()
+                    }
                 }
             },
             onCustomizeHome: {

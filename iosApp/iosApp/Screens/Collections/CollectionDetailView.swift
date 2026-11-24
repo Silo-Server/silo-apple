@@ -54,7 +54,7 @@ struct CollectionDetailView: View {
                 }
                 CollectionPinActionBar(
                     collectionId: collectionId,
-                    title: title ?? "Collection",
+                    title: title ?? AppLanguage.string(.collectionsCollection, locale: locale),
                     isUserCollection: true
                 )
                 Spacer(minLength: 0)

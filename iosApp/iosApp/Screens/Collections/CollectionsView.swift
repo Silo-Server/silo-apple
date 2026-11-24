@@ -840,7 +840,7 @@ struct LibraryCollectionDetailView: View {
                     if kind == nil || kind == .regular {
                         CollectionPinActionBar(
                             collectionId: collectionId,
-                            title: title ?? "Collection",
+                            title: title ?? AppLanguage.string(.collectionsCollection, locale: locale),
                             isUserCollection: false,
                             sourceLibraryId: libraryId
                         )

@@ -14,11 +14,12 @@ struct IOSAddRowSheet: View {
     var pageTitle: String? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     @State private var searchText = ""
 
     private var pageLabel: String {
         if let pageTitle, !pageTitle.isEmpty { return pageTitle }
-        return editor.scope == .home ? "Home" : "Library"
+        return AppLanguage.string(editor.scope == .home ? .tabHome : .libraryLibraryTab, locale: locale)
     }
 
     private var totalCollectionCount: Int {
@@ -57,16 +58,16 @@ struct IOSAddRowSheet: View {
             .searchable(
                 text: $searchText,
                 placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "Search rows and collections"
+                prompt: Text(.homeAddRowSearchPrompt)
             )
             #else
-            .searchable(text: $searchText, prompt: "Search rows and collections")
+            .searchable(text: $searchText, prompt: Text(.homeAddRowSearchPrompt))
             #endif
-            .navigationTitle("Add Row")
+            .navigationTitle(Text(.homeCustomizeAddRow))
             .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(.commonCancel) { dismiss() }
                 }
             }
         }
@@ -88,9 +89,9 @@ struct IOSAddRowSheet: View {
             } label: {
                 AddRowCatalogCell(
                     symbol: "square.stack.fill",
-                    title: "A Collection",
-                    subtitle: "Show titles from one personal or server collection",
-                    trailingValue: totalCollectionCount > 0 ? "\(totalCollectionCount)" : nil
+                    title: AppLanguage.string(.homeAddRowACollectionTitle, locale: locale),
+                    subtitle: AppLanguage.string(.homeAddRowACollectionSubtitle, locale: locale),
+                    trailingValue: totalCollectionCount > 0 ? LocaleFormat.integer(totalCollectionCount, locale: locale) : nil
                 )
             }
 
@@ -103,13 +104,13 @@ struct IOSAddRowSheet: View {
             } label: {
                 AddRowCatalogCell(
                     symbol: "square.grid.2x2.fill",
-                    title: "Row of Collections",
-                    subtitle: "Show several collections as poster cards",
+                    title: AppLanguage.string(.homeAddRowRowOfCollectionsTitle, locale: locale),
+                    subtitle: AppLanguage.string(.homeAddRowRowOfCollectionsSubtitle, locale: locale),
                     trailingValue: nil
                 )
             }
         } header: {
-            Text("Collections")
+            Text(.collectionsTitle)
         }
     }
 
@@ -134,13 +135,13 @@ struct IOSAddRowSheet: View {
                             title: entry.title,
                             subtitle: entry.subtitle,
                             trailingValue: editor.isRecipeTypePresent(sectionType: entry.definition.type)
-                                ? "On \(pageLabel)"
+                                ? AppLanguage.string(.homeAddRowOnPageBadge(pageLabel), locale: locale)
                                 : nil
                         )
                     }
                 }
             } header: {
-                Text(group.title)
+                Text(verbatim: group.title)
             }
         }
     }
@@ -165,7 +166,7 @@ struct IOSAddRowSheet: View {
                 .listRowSeparator(.hidden)
         } else {
             if !matchedRecipes.isEmpty {
-                Section("Rows") {
+                Section(.homeAddRowSectionRows) {
                     ForEach(matchedRecipes) { hit in
                         NavigationLink {
                             IOSConfigureRecipeRowView(
@@ -183,7 +184,7 @@ struct IOSAddRowSheet: View {
                                     ? "\(hit.entry.title) · \(hit.matchedSubtitle)"
                                     : hit.entry.subtitle,
                                 trailingValue: editor.isRecipeTypePresent(sectionType: hit.entry.definition.type)
-                                    ? "On \(pageLabel)"
+                                    ? AppLanguage.string(.homeAddRowOnPageBadge(pageLabel), locale: locale)
                                     : nil
                             )
                         }
@@ -192,7 +193,7 @@ struct IOSAddRowSheet: View {
             }
 
             if !matchedPersonal.isEmpty {
-                Section("Your Collections") {
+                Section(.homeAddRowSectionYourCollections) {
                     ForEach(matchedPersonal) { collection in
                         NavigationLink {
                             IOSConfigureCollectionRowView(
@@ -204,11 +205,11 @@ struct IOSAddRowSheet: View {
                         } label: {
                             CollectionListRowLabel(
                                 title: collection.name,
-                                subtitle: itemCountLabel(collection.itemCount),
+                                subtitle: itemCountLabel(collection.itemCount, locale: locale),
                                 posterUrl: collection.posterUrl,
                                 posterThumbhash: collection.posterThumbhash,
                                 badge: editor.isCollectionPresent(collectionId: collection.id, isUserCollection: true)
-                                    ? "On \(pageLabel)"
+                                    ? AppLanguage.string(.homeAddRowOnPageBadge(pageLabel), locale: locale)
                                     : nil
                             )
                         }
@@ -217,7 +218,7 @@ struct IOSAddRowSheet: View {
             }
 
             if !matchedServer.isEmpty {
-                Section("Server Collections") {
+                Section(.homeAddRowSectionServerCollections) {
                     ForEach(matchedServer) { collection in
                         NavigationLink {
                             IOSConfigureCollectionRowView(
@@ -229,11 +230,11 @@ struct IOSAddRowSheet: View {
                         } label: {
                             CollectionListRowLabel(
                                 title: collection.title,
-                                subtitle: serverCollectionSubtitle(collection),
+                                subtitle: serverCollectionSubtitle(collection, locale: locale),
                                 posterUrl: collection.posterUrl,
                                 posterThumbhash: collection.posterThumbhash,
                                 badge: editor.isCollectionPresent(collectionId: collection.id, isUserCollection: false)
-                                    ? "On \(pageLabel)"
+                                    ? AppLanguage.string(.homeAddRowOnPageBadge(pageLabel), locale: locale)
                                     : nil
                             )
                         }
@@ -456,7 +457,7 @@ private struct IOSConfigureRecipeRowView: View {
         .siloNavigationTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Add") {
+                Button(.profilesAdd) {
                     confirmHaptic += 1
                     editor.addRecipeRow(
                         sectionType: entry.definition.type,
@@ -485,12 +486,12 @@ private struct IOSConfigureRecipeRowView: View {
                 AddRowIconTile(symbol: activePresetSymbol, size: 42)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(effectiveTitle)
+                    Text(verbatim: effectiveTitle)
                         .font(.headline)
                         .foregroundStyle(Color.siloOnSurface)
                         .lineLimit(2)
 
-                    Text(activeDescription)
+                    Text(verbatim: activeDescription)
                         .font(.footnote)
                         .foregroundStyle(Color.siloSecondaryText)
                         .fixedSize(horizontal: false, vertical: true)
@@ -499,11 +500,11 @@ private struct IOSConfigureRecipeRowView: View {
             .padding(.vertical, 4)
 
             if alreadyOnPage {
-                Label("Already on \(pageLabel). Adding creates another row.", systemImage: "info.circle")
+                Label(.homeAddRowAlreadyOnPageNote(pageLabel), systemImage: "info.circle")
                     .font(.footnote)
                     .foregroundStyle(Color.siloSecondaryText)
             } else if hiddenOnPage {
-                Label("Hidden on \(pageLabel). Tap Add to show it again.", systemImage: "eye")
+                Label(.homeAddRowHiddenOnPageNote(pageLabel), systemImage: "eye")
                     .font(.footnote)
                     .foregroundStyle(Color.siloSecondaryText)
             }
@@ -608,40 +609,40 @@ private struct IOSConfigureRecipeRowView: View {
         switch sectionType {
         case "recently_added", "recently_released":
             if editor.scope == .home && editor.availableLibraries.count > 1 {
-                Section("Libraries") {
+                Section(.libraryLibraries) {
                     libraryFilterLink
                 }
             }
 
         case "trending_discover":
-            Section("Include") {
-                Picker("Media Type", selection: $filterMediaType) {
-                    Text("Both").tag("all")
-                    Text("Movies").tag("movie")
-                    Text("TV Shows").tag("series")
+            Section(.homeAddRowSectionInclude) {
+                Picker(.searchMediaTypePicker, selection: $filterMediaType) {
+                    Text(.settingsManifestUiCardQuickActionsOptionBoth).tag("all")
+                    Text(.boxSetsMovies).tag("movie")
+                    Text(.personalFilterTvShows).tag("series")
                 }
                 .pickerStyle(.segmented)
                 .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
             }
 
         case "watchlist", "favorites":
-            Section("Filter & Sort") {
-                Picker("Media Type", selection: $filterMediaType) {
-                    Text("Everything").tag("all")
-                    Text("Movies").tag("movie")
-                    Text("Shows").tag("series")
-                    Text("Audiobooks").tag("audiobook")
+            Section(.homeAddRowSectionFilterSort) {
+                Picker(.searchMediaTypePicker, selection: $filterMediaType) {
+                    Text(.settingsManifestSearchMediaScopeOptionAll).tag("all")
+                    Text(.boxSetsMovies).tag("movie")
+                    Text(.homeAddRowMediaShows).tag("series")
+                    Text(.libraryKindAudiobooks).tag("audiobook")
                 }
 
-                Picker("Sort Order", selection: $listSortOrder) {
-                    Text("Default").tag("default")
-                    Text("Recently Added").tag("added_at:desc")
-                    Text("Oldest Added").tag("added_at:asc")
-                    Text("Title A–Z").tag("title:asc")
-                    Text("Title Z–A").tag("title:desc")
-                    Text("Newest Release").tag("release_date:desc")
-                    Text("Oldest Release").tag("release_date:asc")
-                    Text("Highest IMDb Rating").tag("rating_imdb:desc")
+                Picker(.homeAddRowSortOrder, selection: $listSortOrder) {
+                    Text(.detailTrackDefault).tag("default")
+                    Text(.homeSectionRecentlyAdded).tag("added_at:desc")
+                    Text(.homeAddRowSortOldestAdded).tag("added_at:asc")
+                    Text(.homeAddRowSortTitleAsc).tag("title:asc")
+                    Text(.homeAddRowSortTitleDesc).tag("title:desc")
+                    Text(.homeAddRowSortNewestRelease).tag("release_date:desc")
+                    Text(.homeAddRowSortOldestRelease).tag("release_date:asc")
+                    Text(.homeAddRowSortHighestImdb).tag("rating_imdb:desc")
                 }
 
                 if editor.scope == .home && editor.availableLibraries.count > 1 {
@@ -652,39 +653,48 @@ private struct IOSConfigureRecipeRowView: View {
         case "returning_shows":
             Section {
                 Stepper(value: $lookbackDays, in: 7...180, step: 7) {
-                    LabeledContent("Look Back", value: "\(lookbackDays) days")
+                    LabeledContent {
+                        Text(.homeAddRowLookBackDays(lookbackDays))
+                    } label: {
+                        Text(.homeAddRowLookBack)
+                    }
                 }
             } header: {
-                Text("Timing")
+                Text(.playerTracksTiming)
             } footer: {
-                Text("Shows with a new season added within this window.")
+                Text(.homeAddRowLookBackFooter)
             }
 
         case "short_watches":
             Section {
                 Stepper(value: $maxMinutes, in: 30...180, step: 5) {
-                    LabeledContent("Max Runtime", value: "\(maxMinutes) min")
+                    LabeledContent {
+                        Text(.homeAddRowMaxRuntimeMinutes(LocaleFormat.integer(maxMinutes)))
+                    } label: {
+                        Text(.homeAddRowMaxRuntime)
+                    }
                 }
             } header: {
-                Text("Length")
+                Text(.detailFactsLength)
             }
 
         case "anniversaries":
             Section {
                 Stepper(value: $milestoneYears, in: 1...25, step: 1) {
-                    LabeledContent(
-                        "Milestone",
-                        value: milestoneYears == 1 ? "Every year" : "Every \(milestoneYears) years"
-                    )
+                    LabeledContent {
+                        Text(.homeAddRowMilestoneInterval(count: milestoneYears))
+                    } label: {
+                        Text(.homeAddRowMilestone)
+                    }
                 }
             } header: {
-                Text("Schedule")
+                Text(.homeAddRowSectionSchedule)
             }
 
         case "taste_match":
             Section {
                 HStack {
-                    TextField("Any genre", text: $genreFilter)
+                    TextField(AppLanguage.string(.homeAddRowAnyGenrePlaceholder), text: $genreFilter)
                     if !genreFilter.isEmpty {
                         Button {
                             genreFilter = ""
@@ -696,22 +706,22 @@ private struct IOSConfigureRecipeRowView: View {
                     }
                 }
             } header: {
-                Text("Genre Filter")
+                Text(.homeAddRowSectionGenreFilter)
             } footer: {
-                Text("Optional. Leave blank to match across all genres.")
+                Text(.homeAddRowGenreFilterFooter)
             }
 
         case "editorial_spotlight":
             if !isSpotlightEraPreset {
-                Section("Spotlight") {
-                    Toggle("Rotate Automatically", isOn: $autoRotate)
+                Section(.homeAddRowSectionSpotlight) {
+                    Toggle(.homeAddRowRotateAutomatically, isOn: $autoRotate)
                         .tint(Color.siloSwitchOn)
 
                     if autoRotate {
-                        Picker("How Often", selection: $rotationCadence) {
-                            Text("Every Day").tag("daily")
-                            Text("Every Week").tag("weekly")
-                            Text("Every Month").tag("monthly")
+                        Picker(.homeAddRowHowOften, selection: $rotationCadence) {
+                            Text(.homeAddRowCadenceDaily).tag("daily")
+                            Text(.homeAddRowCadenceWeekly).tag("weekly")
+                            Text(.homeAddRowCadenceMonthly).tag("monthly")
                         }
                     } else {
                         TextField(spotlightPlaceholder, text: $pinnedSubject)
@@ -725,15 +735,17 @@ private struct IOSConfigureRecipeRowView: View {
                     NavigationLink {
                         IOSSeasonalThemesPickerView(selectedKeys: $enabledSeasonalThemes)
                     } label: {
-                        LabeledContent("Holidays") {
-                            Text(seasonalSummaryText)
+                        LabeledContent {
+                            Text(verbatim: seasonalSummaryText)
                                 .foregroundStyle(Color.siloSecondaryText)
+                        } label: {
+                            Text(.homeAddRowHolidays)
                         }
                     }
                 } header: {
-                    Text("Holidays")
+                    Text(.homeAddRowHolidays)
                 } footer: {
-                    Text("Automatically swaps in titles as each holiday arrives.")
+                    Text(.homeAddRowHolidaysFooter)
                 }
             }
 
@@ -744,20 +756,20 @@ private struct IOSConfigureRecipeRowView: View {
 
     private var spotlightPlaceholder: String {
         switch selectedPresetKey {
-        case "es_actor": return "Actor name"
-        case "es_studio": return "Studio name (e.g. A24)"
-        default: return "Director name"
+        case "es_actor": AppLanguage.string(.homeAddRowActorNamePlaceholder)
+        case "es_studio": AppLanguage.string(.homeAddRowStudioNamePlaceholder)
+        default: AppLanguage.string(.homeAddRowDirectorNamePlaceholder)
         }
     }
 
     private var seasonalSummaryText: String {
         if enabledSeasonalThemes.count == AddRowCatalog.holidayThemes.count {
-            return "All (\(enabledSeasonalThemes.count))"
+            return AppLanguage.string(.homeAddRowHolidaysAllCount(LocaleFormat.integer(enabledSeasonalThemes.count)))
         }
         if enabledSeasonalThemes.isEmpty {
-            return "None"
+            return AppLanguage.string(.accountDownloadsNone)
         }
-        return "\(enabledSeasonalThemes.count) selected"
+        return "\(LocaleFormat.integer(enabledSeasonalThemes.count)) \(AppLanguage.string(.playerMenuSelected).lowercased())"
     }
 
     private var libraryFilterLink: some View {
@@ -767,16 +779,18 @@ private struct IOSConfigureRecipeRowView: View {
                 selectedIds: $selectedLibraryIds
             )
         } label: {
-            LabeledContent("From Libraries") {
-                Text(libraryFilterSummary)
+            LabeledContent {
+                Text(verbatim: libraryFilterSummary)
                     .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
+            } label: {
+                Text(.homeAddRowFromLibraries)
             }
         }
     }
 
     private var libraryFilterSummary: String {
-        if selectedLibraryIds.isEmpty { return "All Libraries" }
+        if selectedLibraryIds.isEmpty { return AppLanguage.string(.homeAddRowAllLibraries) }
         let names = editor.availableLibraries
             .filter { selectedLibraryIds.contains($0.id) }
             .map(\.name)
@@ -807,14 +821,14 @@ private struct IOSConfigureRecipeRowView: View {
                             .foregroundStyle(Color.siloSecondaryText)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Clear row name")
+                    .accessibilityLabel(.homeAddRowA11YClearRowName)
                 }
             }
         } header: {
-            Text("Row Name")
+            Text(.homeAddRowRowName)
         } footer: {
             if entry.definition.presets.count > 1 && titleFollowsVariant {
-                Text("Updates automatically when you switch options until you type your own name.")
+                Text(.homeAddRowRowNameFooter)
             }
         }
     }
@@ -822,15 +836,19 @@ private struct IOSConfigureRecipeRowView: View {
     private var displayOptionsSection: some View {
         Section {
             Stepper(value: $itemLimit, in: 5...50, step: 5) {
-                LabeledContent("Items to Show", value: "\(itemLimit)")
+                LabeledContent {
+                    Text(verbatim: LocaleFormat.integer(itemLimit))
+                } label: {
+                    Text(.homeAddRowItemsToShow)
+                }
             }
 
-            Toggle("Hero Banner", isOn: $isHeroBanner)
+            Toggle(.homeAddRowHeroBanner, isOn: $isHeroBanner)
                 .tint(Color.siloSwitchOn)
         } header: {
-            Text("Display")
+            Text(.homeAddRowSectionDisplay)
         } footer: {
-            Text("Hero Banner highlights this row as a large featured banner on \(pageLabel).")
+            Text(.homeAddRowHeroBannerRecipeFooter(pageLabel))
         }
     }
 }
@@ -843,6 +861,7 @@ private struct IOSCollectionPickerView: View {
     let onFinished: () -> Void
 
     @State private var searchText = ""
+    @Environment(\.locale) private var locale
 
     private var trimmedQuery: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -876,22 +895,50 @@ private struct IOSCollectionPickerView: View {
                 .padding(.vertical, 24)
                 .listRowBackground(Color.clear)
             } else if filteredPersonal.isEmpty && filteredServer.isEmpty {
-                if !trimmedQuery.isEmpty {
+                let loadError = editor.personalCollectionsError ?? editor.serverCollectionsError
+                if let loadError, editor.personalCollections.isEmpty && editor.serverCollections.isEmpty {
+                    ContentUnavailableView {
+                        Label(.homeAddRowLoadCollectionsFailed, systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(verbatim: loadError)
+                    } actions: {
+                        Button(.commonRetry) {
+                            Task { await editor.loadPickerCatalogIfNeeded(force: true) }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                } else if !trimmedQuery.isEmpty {
                     ContentUnavailableView.search(text: trimmedQuery)
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 } else {
                     ContentUnavailableView(
-                        "No Collections",
+                        .homeAddRowNoCollectionsTitle,
                         systemImage: "square.stack",
-                        description: Text("Create a personal collection from Collections or any title's detail page.")
+                        description: Text(.homeAddRowNoCollectionsBody)
                     )
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
             } else {
+                if let error = editor.personalCollectionsError ?? editor.serverCollectionsError {
+                    Section {
+                        HStack(spacing: 10) {
+                            Label(error, systemImage: "exclamationmark.triangle")
+                                .font(.footnote)
+                                .foregroundStyle(Color.siloSecondaryText)
+                            Spacer()
+                            Button(.commonRetry) {
+                                Task { await editor.loadPickerCatalogIfNeeded(force: true) }
+                            }
+                            .font(.footnote.weight(.semibold))
+                        }
+                    }
+                }
                 if !filteredPersonal.isEmpty {
-                    Section("Your Collections") {
+                    Section(.homeAddRowSectionYourCollections) {
                         ForEach(filteredPersonal) { collection in
                             NavigationLink {
                                 IOSConfigureCollectionRowView(
@@ -903,11 +950,11 @@ private struct IOSCollectionPickerView: View {
                             } label: {
                                 CollectionListRowLabel(
                                     title: collection.name,
-                                    subtitle: itemCountLabel(collection.itemCount),
+                                    subtitle: itemCountLabel(collection.itemCount, locale: locale),
                                     posterUrl: collection.posterUrl,
                                     posterThumbhash: collection.posterThumbhash,
                                     badge: editor.isCollectionPresent(collectionId: collection.id, isUserCollection: true)
-                                        ? "On \(pageLabel)"
+                                        ? AppLanguage.string(.homeAddRowOnPageBadge(pageLabel), locale: locale)
                                         : nil
                                 )
                             }
@@ -916,7 +963,7 @@ private struct IOSCollectionPickerView: View {
                 }
 
                 if !filteredServer.isEmpty {
-                    Section("Server Collections") {
+                    Section(.homeAddRowSectionServerCollections) {
                         ForEach(filteredServer) { collection in
                             NavigationLink {
                                 IOSConfigureCollectionRowView(
@@ -928,11 +975,11 @@ private struct IOSCollectionPickerView: View {
                             } label: {
                                 CollectionListRowLabel(
                                     title: collection.title,
-                                    subtitle: serverCollectionSubtitle(collection),
+                                    subtitle: serverCollectionSubtitle(collection, locale: locale),
                                     posterUrl: collection.posterUrl,
                                     posterThumbhash: collection.posterThumbhash,
                                     badge: editor.isCollectionPresent(collectionId: collection.id, isUserCollection: false)
-                                        ? "On \(pageLabel)"
+                                        ? AppLanguage.string(.homeAddRowOnPageBadge(pageLabel), locale: locale)
                                         : nil
                                 )
                             }
@@ -951,12 +998,12 @@ private struct IOSCollectionPickerView: View {
         .searchable(
             text: $searchText,
             placement: .navigationBarDrawer(displayMode: .always),
-            prompt: "Search collections"
+            prompt: Text(.homeAddRowSearchCollectionsPrompt)
         )
         #else
-        .searchable(text: $searchText, prompt: "Search collections")
+        .searchable(text: $searchText, prompt: Text(.homeAddRowSearchCollectionsPrompt))
         #endif
-        .navigationTitle("A Collection")
+        .navigationTitle(Text(.homeAddRowACollectionTitle))
         .siloNavigationTitleDisplayMode(.inline)
     }
 }
@@ -990,9 +1037,9 @@ private enum PickedCollectionTarget {
         switch self {
         case .personal(let c):
             if let count = itemCountLabel(c.itemCount) {
-                return "Personal · \(count)"
+                return AppLanguage.string(.homeAddRowPersonalWithCount(count))
             }
-            return "Personal Collection"
+            return AppLanguage.string(.homeAddRowPersonalCollection)
         case .server(let c):
             return serverCollectionSubtitle(c)
         }
@@ -1073,13 +1120,13 @@ private struct IOSConfigureCollectionRowView: View {
                 .padding(.vertical, 4)
 
                 if isAlreadyPinned {
-                    Label("Already pinned on \(pageLabel).", systemImage: "info.circle")
+                    Label(.homeAddRowAlreadyPinnedNote(pageLabel), systemImage: "info.circle")
                         .font(.footnote)
                         .foregroundStyle(Color.siloSecondaryText)
                 }
             }
 
-            Section("Row Name") {
+            Section(.homeAddRowRowName) {
                 HStack {
                     TextField(collection.defaultTitle, text: $rowName)
                     if !rowName.isEmpty {
@@ -1096,15 +1143,19 @@ private struct IOSConfigureCollectionRowView: View {
 
             Section {
                 Stepper(value: $itemLimit, in: 5...50, step: 5) {
-                    LabeledContent("Items to Show", value: "\(itemLimit)")
+                    LabeledContent {
+                        Text(verbatim: LocaleFormat.integer(itemLimit))
+                    } label: {
+                        Text(.homeAddRowItemsToShow)
+                    }
                 }
 
-                Toggle("Hero Banner", isOn: $isHeroBanner)
+                Toggle(.homeAddRowHeroBanner, isOn: $isHeroBanner)
                     .tint(Color.siloSwitchOn)
             } header: {
-                Text("Display")
+                Text(.homeAddRowSectionDisplay)
             } footer: {
-                Text("Hero Banner highlights this collection as a large featured banner on \(pageLabel).")
+                Text(.homeAddRowHeroBannerCollectionFooter(pageLabel))
             }
         }
         #if os(macOS)
@@ -1113,11 +1164,11 @@ private struct IOSConfigureCollectionRowView: View {
         .siloGroupedListStyle()
         #endif
         .scrollDismissesKeyboard(.interactively)
-        .navigationTitle("Collection Row")
+        .navigationTitle(Text(.homeAddRowCollectionRowTitle))
         .siloNavigationTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Add") {
+                Button(.profilesAdd) {
                     confirmHaptic += 1
                     editor.addCollectionRow(
                         collectionId: collection.id,
@@ -1155,6 +1206,7 @@ private struct IOSCollectionPostersBuilderView: View {
     @State private var rowName = "Collections"
     @State private var selectedRefs: [SelectedRef] = []
     @State private var searchText = ""
+    @Environment(\.locale) private var locale
     @State private var selectionHaptic = 0
     @State private var confirmHaptic = 0
 
@@ -1182,9 +1234,9 @@ private struct IOSCollectionPostersBuilderView: View {
     var body: some View {
         List {
             if trimmedQuery.isEmpty {
-                Section("Row Name") {
+                Section(.homeAddRowRowName) {
                     HStack {
-                        TextField("Collections", text: $rowName)
+                        TextField(AppLanguage.string(.collectionsTitle, locale: locale), text: $rowName)
                         if !rowName.isEmpty {
                             Button {
                                 rowName = ""
@@ -1207,14 +1259,17 @@ private struct IOSCollectionPostersBuilderView: View {
                         }
                     } header: {
                         HStack {
-                            Text("Selected")
+                            Text(.playerMenuSelected)
                             Spacer()
-                            Text("\(selectedRefs.count) of \(maxCollections)")
+                            Text(.homeAddRowSelectedCountOfMax(
+                                LocaleFormat.integer(selectedRefs.count, locale: locale),
+                                LocaleFormat.integer(maxCollections, locale: locale)
+                            ))
                                 .font(.caption)
                                 .foregroundStyle(Color.siloSecondaryText)
                         }
                     } footer: {
-                        Text("Swipe left to remove, or tap arrows to adjust order.")
+                        Text(.homeAddRowSelectedReorderFooter)
                     }
                 }
             }
@@ -1230,28 +1285,56 @@ private struct IOSCollectionPostersBuilderView: View {
                 .padding(.vertical, 24)
                 .listRowBackground(Color.clear)
             } else if filteredPersonal.isEmpty && filteredServer.isEmpty {
-                if !trimmedQuery.isEmpty {
+                let loadError = editor.personalCollectionsError ?? editor.serverCollectionsError
+                if let loadError, editor.personalCollections.isEmpty && editor.serverCollections.isEmpty {
+                    ContentUnavailableView {
+                        Label(.homeAddRowLoadCollectionsFailed, systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(verbatim: loadError)
+                    } actions: {
+                        Button(.commonRetry) {
+                            Task { await editor.loadPickerCatalogIfNeeded(force: true) }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                } else if !trimmedQuery.isEmpty {
                     ContentUnavailableView.search(text: trimmedQuery)
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 } else {
                     ContentUnavailableView(
-                        "No Collections",
+                        .homeAddRowNoCollectionsTitle,
                         systemImage: "square.grid.2x2",
-                        description: Text("Create a personal collection or add library collections first.")
+                        description: Text(.homeAddRowNoCollectionsPostersBody)
                     )
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
             } else {
+                if let error = editor.personalCollectionsError ?? editor.serverCollectionsError {
+                    Section {
+                        HStack(spacing: 10) {
+                            Label(error, systemImage: "exclamationmark.triangle")
+                                .font(.footnote)
+                                .foregroundStyle(Color.siloSecondaryText)
+                            Spacer()
+                            Button(.commonRetry) {
+                                Task { await editor.loadPickerCatalogIfNeeded(force: true) }
+                            }
+                            .font(.footnote.weight(.semibold))
+                        }
+                    }
+                }
                 if !filteredPersonal.isEmpty {
-                    Section("Your Collections") {
+                    Section(.homeAddRowSectionYourCollections) {
                         ForEach(filteredPersonal) { collection in
                             let ref = SelectedRef(isUserCollection: true, collectionId: collection.id)
                             let isChosen = selectedSet.contains(ref)
                             selectableCollectionButton(
                                 title: collection.name,
-                                subtitle: itemCountLabel(collection.itemCount),
+                                subtitle: itemCountLabel(collection.itemCount, locale: locale),
                                 posterUrl: collection.posterUrl,
                                 posterThumbhash: collection.posterThumbhash,
                                 isChosen: isChosen,
@@ -1264,13 +1347,13 @@ private struct IOSCollectionPostersBuilderView: View {
                 }
 
                 if !filteredServer.isEmpty {
-                    Section("Server Collections") {
+                    Section(.homeAddRowSectionServerCollections) {
                         ForEach(filteredServer) { collection in
                             let ref = SelectedRef(isUserCollection: false, collectionId: collection.id)
                             let isChosen = selectedSet.contains(ref)
                             selectableCollectionButton(
                                 title: collection.title,
-                                subtitle: serverCollectionSubtitle(collection),
+                                subtitle: serverCollectionSubtitle(collection, locale: locale),
                                 posterUrl: collection.posterUrl,
                                 posterThumbhash: collection.posterThumbhash,
                                 isChosen: isChosen,
@@ -1293,16 +1376,16 @@ private struct IOSCollectionPostersBuilderView: View {
         .searchable(
             text: $searchText,
             placement: .navigationBarDrawer(displayMode: .always),
-            prompt: "Search collections"
+            prompt: Text(.homeAddRowSearchCollectionsPrompt)
         )
         #else
-        .searchable(text: $searchText, prompt: "Search collections")
+        .searchable(text: $searchText, prompt: Text(.homeAddRowSearchCollectionsPrompt))
         #endif
-        .navigationTitle("Row of Collections")
+        .navigationTitle(Text(.homeAddRowRowOfCollectionsTitle))
         .siloNavigationTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Add") {
+                Button(.profilesAdd) {
                     confirmHaptic += 1
                     editor.addCollectionPostersRow(
                         title: rowName,
@@ -1399,13 +1482,13 @@ private struct IOSCollectionPostersBuilderView: View {
     private func resolveRefInfo(_ ref: SelectedRef) -> (title: String, subtitle: String?, posterUrl: String?, posterThumbhash: String?) {
         if ref.isUserCollection,
            let col = editor.personalCollections.first(where: { $0.id == ref.collectionId }) {
-            return (col.name, "Personal", col.posterUrl, col.posterThumbhash)
+            return (col.name, AppLanguage.string(.homeAddRowPersonalCollection, locale: locale), col.posterUrl, col.posterThumbhash)
         }
         if !ref.isUserCollection,
            let col = editor.serverCollections.first(where: { $0.id == ref.collectionId }) {
             return (col.title, col.libraryName, col.posterUrl, col.posterThumbhash)
         }
-        return ("Collection", nil, nil, nil)
+        return (AppLanguage.string(.collectionsCollection, locale: locale), nil, nil, nil)
     }
 
     private func selectableCollectionButton(
@@ -1468,7 +1551,7 @@ private struct IOSLibraryFilterPickerView: View {
                     selectedIds.removeAll()
                 } label: {
                     HStack {
-                        Text("All Libraries")
+                        Text(.homeAddRowAllLibraries)
                             .foregroundStyle(Color.siloOnSurface)
                         Spacer()
                         if selectedIds.isEmpty {
@@ -1482,7 +1565,7 @@ private struct IOSLibraryFilterPickerView: View {
                 .buttonStyle(.plain)
             }
 
-            Section("Specific Libraries") {
+            Section(.homeAddRowSpecificLibraries) {
                 ForEach(libraries) { library in
                     let isSelected = selectedIds.contains(library.id)
                     Button {
@@ -1497,7 +1580,7 @@ private struct IOSLibraryFilterPickerView: View {
                             Image(systemName: symbol(for: library))
                                 .foregroundStyle(Color.siloSecondaryText)
                                 .frame(width: 22)
-                            Text(library.name)
+                            Text(verbatim: library.name)
                                 .foregroundStyle(Color.siloOnSurface)
                             Spacer()
                             if isSelected {
@@ -1517,7 +1600,7 @@ private struct IOSLibraryFilterPickerView: View {
         #else
         .siloGroupedListStyle()
         #endif
-        .navigationTitle("Libraries")
+        .navigationTitle(Text(.libraryLibraries))
         .siloNavigationTitleDisplayMode(.inline)
         #if os(iOS)
         .sensoryFeedback(.selection, trigger: hapticCount)
@@ -1566,7 +1649,7 @@ private struct IOSSeasonalThemesPickerView: View {
                     .buttonStyle(.plain)
                 }
             } footer: {
-                Text("Select at least one holiday for this row to rotate through.")
+                Text(.homeAddRowHolidaysPickerFooter)
             }
         }
         #if os(macOS)
@@ -1574,7 +1657,7 @@ private struct IOSSeasonalThemesPickerView: View {
         #else
         .siloGroupedListStyle()
         #endif
-        .navigationTitle("Holidays")
+        .navigationTitle(Text(.homeAddRowHolidays))
         .siloNavigationTitleDisplayMode(.inline)
         #if os(iOS)
         .sensoryFeedback(.selection, trigger: hapticCount)
@@ -1714,14 +1797,17 @@ private struct CollectionMiniPoster: View {
     }
 }
 
-private func itemCountLabel(_ count: Int?) -> String? {
+private func itemCountLabel(_ count: Int?, locale: Locale? = nil) -> String? {
     guard let count, count > 0 else { return nil }
-    return count == 1 ? "1 item" : "\(count) items"
+    let formatted = locale.map { LocaleFormat.groupedCount(count, locale: $0) } ?? LocaleFormat.groupedCount(count)
+    if let locale {
+        return AppLanguage.string(.collectionsItemCount(count: count, formatted), locale: locale)
+    }
+    return AppLanguage.string(.collectionsItemCount(count: count, formatted))
 }
 
-private func serverCollectionSubtitle(_ collection: HomeSectionsEditorModel.ServerCollectionOption) -> String {
-    if collection.itemCount > 0 {
-        let items = collection.itemCount == 1 ? "1 item" : "\(collection.itemCount) items"
+private func serverCollectionSubtitle(_ collection: HomeSectionsEditorModel.ServerCollectionOption, locale: Locale? = nil) -> String {
+    if let items = itemCountLabel(collection.itemCount, locale: locale) {
         return "\(collection.libraryName) · \(items)"
     }
     return collection.libraryName
@@ -1757,26 +1843,31 @@ private enum AddRowCatalog {
     struct KindMeta {
         let groupId: String
         let order: Int
-        let title: String
-        let subtitle: String
+        let titleResource: LocalizedStringResource
+        let subtitleResource: LocalizedStringResource
+
+        var title: String { AppLanguage.string(titleResource) }
+        var subtitle: String { AppLanguage.string(subtitleResource) }
     }
 
     struct HolidayTheme {
         let key: String
-        let title: String
+        let titleResource: LocalizedStringResource
         let symbol: String
+
+        var title: String { AppLanguage.string(titleResource) }
     }
 
     static let holidayThemes: [HolidayTheme] = [
-        HolidayTheme(key: "halloween", title: "Halloween", symbol: "moon.stars.fill"),
-        HolidayTheme(key: "christmas", title: "Christmas", symbol: "snowflake"),
-        HolidayTheme(key: "new_year", title: "New Year", symbol: "sparkles"),
-        HolidayTheme(key: "valentines", title: "Valentine's Day", symbol: "heart.fill"),
-        HolidayTheme(key: "st_patricks", title: "St. Patrick's Day", symbol: "leaf.fill"),
-        HolidayTheme(key: "easter", title: "Easter", symbol: "sun.max.fill"),
-        HolidayTheme(key: "thanksgiving", title: "Thanksgiving", symbol: "fork.knife"),
-        HolidayTheme(key: "summer_blockbuster", title: "Summer Blockbusters", symbol: "sun.horizon.fill"),
-        HolidayTheme(key: "saturday_morning", title: "Saturday Morning", symbol: "tv.fill"),
+        HolidayTheme(key: "halloween", titleResource: .homeAddRowHolidayHalloween, symbol: "moon.stars.fill"),
+        HolidayTheme(key: "christmas", titleResource: .homeAddRowHolidayChristmas, symbol: "snowflake"),
+        HolidayTheme(key: "new_year", titleResource: .homeAddRowHolidayNewYear, symbol: "sparkles"),
+        HolidayTheme(key: "valentines", titleResource: .homeAddRowHolidayValentines, symbol: "heart.fill"),
+        HolidayTheme(key: "st_patricks", titleResource: .homeAddRowHolidayStPatricks, symbol: "leaf.fill"),
+        HolidayTheme(key: "easter", titleResource: .homeAddRowHolidayEaster, symbol: "sun.max.fill"),
+        HolidayTheme(key: "thanksgiving", titleResource: .homeAddRowHolidayThanksgiving, symbol: "fork.knife"),
+        HolidayTheme(key: "summer_blockbuster", titleResource: .homeSectionSeasonalSummerBlockbusters, symbol: "sun.horizon.fill"),
+        HolidayTheme(key: "saturday_morning", titleResource: .homeAddRowHolidaySaturdayMorning, symbol: "tv.fill"),
     ]
 
     static let defaultHolidayThemeKeys: [String] = holidayThemes.map(\.key)
@@ -1804,146 +1895,146 @@ private enum AddRowCatalog {
         // Keep Watching
         "continue_watching": KindMeta(
             groupId: "keep", order: 0,
-            title: "Continue Watching",
-            subtitle: "Pick up movies, shows, or audiobooks"
+            titleResource: .homeSectionContinueWatching,
+            subtitleResource: .homeAddRowSubContinueWatching
         ),
         "next_in_series": KindMeta(
             groupId: "keep", order: 1,
-            title: "Next in Series",
-            subtitle: "The next audiobook in series you've finished"
+            titleResource: .homeRecipeNextInSeriesDefaultName,
+            subtitleResource: .homeAddRowSubNextInSeries
         ),
         "watchlist": KindMeta(
             groupId: "keep", order: 2,
-            title: "Watchlist",
-            subtitle: "Titles you saved to watch later"
+            titleResource: .detailWatchlist,
+            subtitleResource: .homeAddRowSubWatchlist
         ),
         "favorites": KindMeta(
             groupId: "keep", order: 3,
-            title: "Favorites",
-            subtitle: "Movies and shows you've favorited"
+            titleResource: .homeRecipeFavoritesDefaultName,
+            subtitleResource: .homeAddRowSubFavorites
         ),
 
         // What's New
         "recently_added": KindMeta(
             groupId: "new", order: 0,
-            title: "Recently Added",
-            subtitle: "Latest additions across your libraries"
+            titleResource: .homeSectionRecentlyAdded,
+            subtitleResource: .homeAddRowSubRecentlyAdded
         ),
         "recently_released": KindMeta(
             groupId: "new", order: 1,
-            title: "New Releases",
-            subtitle: "Recently released titles in your library"
+            titleResource: .homeRecipeRecentlyReleasedDefaultName,
+            subtitleResource: .homeAddRowSubNewReleases
         ),
         "new_to_library": KindMeta(
             groupId: "new", order: 2,
-            title: "New This Month",
-            subtitle: "Added to your library in the last 30 days"
+            titleResource: .homeAddRowRecipeNewThisMonth,
+            subtitleResource: .homeAddRowSubNewThisMonth
         ),
         "returning_shows": KindMeta(
             groupId: "new", order: 3,
-            title: "Returning Shows",
-            subtitle: "Shows you've watched with a new season"
+            titleResource: .homeSectionReturningShows,
+            subtitleResource: .homeAddRowSubReturningShows
         ),
 
         // Popular
         "trending_on_server": KindMeta(
             groupId: "popular", order: 0,
-            title: "Trending on Server",
-            subtitle: "24 hours, 7 days, or 30 days"
+            titleResource: .homeSectionTrendingOnServer,
+            subtitleResource: .homeAddRowSubTrendingOnServer
         ),
         "most_watched": KindMeta(
             groupId: "popular", order: 1,
-            title: "Most Watched",
-            subtitle: "This week or this month"
+            titleResource: .homeAddRowRecipeMostWatched,
+            subtitleResource: .homeAddRowSubMostWatched
         ),
         "trending_discover": KindMeta(
             groupId: "popular", order: 2,
-            title: "Trending Worldwide",
-            subtitle: "Today or this week from TMDB, matched to your library"
+            titleResource: .homeAddRowRecipeTrendingWorldwide,
+            subtitleResource: .homeAddRowSubTrendingWorldwide
         ),
         "profile_activity_feed": KindMeta(
             groupId: "popular", order: 3,
-            title: "What Others Just Watched",
-            subtitle: "Recent watches across other profiles"
+            titleResource: .homeRecipePaHouseholdName,
+            subtitleResource: .homeAddRowSubWhatOthersWatched
         ),
 
         // For You
         "recommended_for_you": KindMeta(
             groupId: "picked", order: 0,
-            title: "Recommended for You",
-            subtitle: "Personal picks from the recommendation engine"
+            titleResource: .homeSectionRecommendedForYou,
+            subtitleResource: .homeAddRowSubRecommendedForYou
         ),
         "because_you_watched": KindMeta(
             groupId: "picked", order: 1,
-            title: "Because You Watched",
-            subtitle: "Similar titles based on your most recent watch"
+            titleResource: .homeSectionBecauseYouWatched,
+            subtitleResource: .homeAddRowSubBecauseYouWatched
         ),
         "similar_users_liked": KindMeta(
             groupId: "picked", order: 2,
-            title: "Profiles Like You Enjoyed",
-            subtitle: "What similar profiles are loving"
+            titleResource: .homeSectionProfilesLikeYouEnjoyed,
+            subtitleResource: .homeAddRowSubProfilesLikeYou
         ),
         "taste_match": KindMeta(
             groupId: "picked", order: 3,
-            title: "Top Picks Today",
-            subtitle: "Best matches for your strongest taste"
+            titleResource: .homeSectionTopPicksToday,
+            subtitleResource: .homeAddRowSubTopPicksToday
         ),
 
         // Moods & Discovery
         "mood_collection": KindMeta(
             groupId: "moods", order: 0,
-            title: "Mood Picks",
-            subtitle: "Feel-good, sci-fi, comfort, thrillers & more"
+            titleResource: .homeAddRowRecipeMoodPicks,
+            subtitleResource: .homeAddRowSubMoodPicks
         ),
         "seasonal_themed": KindMeta(
             groupId: "moods", order: 1,
-            title: "Seasonal Picks",
-            subtitle: "Automatic holidays or Family Movie Night"
+            titleResource: .homeSectionSeasonalPicks,
+            subtitleResource: .homeAddRowSubSeasonalPicks
         ),
         "editorial_spotlight": KindMeta(
             groupId: "moods", order: 2,
-            title: "Spotlight",
-            subtitle: "Director, actor, studio, or the 80s"
+            titleResource: .homeAddRowRecipeSpotlight,
+            subtitleResource: .homeAddRowSubSpotlight
         ),
         "format_showcase": KindMeta(
             groupId: "moods", order: 3,
-            title: "4K & HDR Showcase",
-            subtitle: "4K, New in 4K, Dolby Vision, or HDR"
+            titleResource: .homeAddRowRecipeFormatShowcase,
+            subtitleResource: .homeAddRowSubFormatShowcase
         ),
         "hidden_gems": KindMeta(
             groupId: "moods", order: 4,
-            title: "Hidden Gems",
-            subtitle: "Highly rated titles watched twice or less"
+            titleResource: .homeSectionHiddenGems,
+            subtitleResource: .homeAddRowSubHiddenGems
         ),
         "critically_acclaimed": KindMeta(
             groupId: "moods", order: 5,
-            title: "Critically Acclaimed",
-            subtitle: "Rated 8.0+ on TMDB with 500+ votes"
+            titleResource: .homeRecipeCaImdbName,
+            subtitleResource: .homeAddRowSubCriticallyAcclaimed
         ),
         "forgotten_favorites": KindMeta(
             groupId: "moods", order: 6,
-            title: "Forgotten Favorites",
-            subtitle: "Great titles not watched in the past year"
+            titleResource: .homeRecipeFfDefaultName,
+            subtitleResource: .homeAddRowSubForgottenFavorites
         ),
         "genre_roulette": KindMeta(
             groupId: "moods", order: 7,
-            title: "Genre Roulette",
-            subtitle: "A different top-rated genre every week"
+            titleResource: .homeRecipeGenreRouletteWeeklyName,
+            subtitleResource: .homeAddRowSubGenreRoulette
         ),
         "random": KindMeta(
             groupId: "moods", order: 8,
-            title: "Surprise Me",
-            subtitle: "A random selection from your library"
+            titleResource: .homeRecipeRandomDefaultName,
+            subtitleResource: .homeAddRowSubSurpriseMe
         ),
         "short_watches": KindMeta(
             groupId: "moods", order: 9,
-            title: "Short & Sweet",
-            subtitle: "Movies 95 minutes or under"
+            titleResource: .homeRecipeShortWatchesDefaultName,
+            subtitleResource: .homeAddRowSubShortAndSweet
         ),
         "anniversaries": KindMeta(
             groupId: "moods", order: 10,
-            title: "Anniversaries",
-            subtitle: "Titles celebrating a milestone release anniversary"
+            titleResource: .homeRecipeAnniversariesDefaultName,
+            subtitleResource: .homeAddRowSubAnniversaries
         ),
     ]
 
@@ -2035,14 +2126,14 @@ private enum AddRowCatalog {
 
     static func variantSectionTitle(for sectionType: String) -> String {
         switch sectionType.lowercased() {
-        case "continue_watching": return "Kind"
-        case "trending_on_server": return "Time Window"
-        case "most_watched", "trending_discover": return "Period"
-        case "mood_collection": return "Mood"
-        case "seasonal_themed": return "Theme"
-        case "editorial_spotlight": return "Spotlight On"
-        case "format_showcase": return "Format"
-        default: return "Options"
+        case "continue_watching": AppLanguage.string(.homeAddRowControlKind)
+        case "trending_on_server": AppLanguage.string(.homeAddRowControlTimeWindow)
+        case "most_watched", "trending_discover": AppLanguage.string(.homeAddRowControlPeriod)
+        case "mood_collection": AppLanguage.string(.homeAddRowControlMood)
+        case "seasonal_themed": AppLanguage.string(.settingsManifestUiThemeLabel)
+        case "editorial_spotlight": AppLanguage.string(.homeAddRowControlSpotlightOn)
+        case "format_showcase": AppLanguage.string(.detailFactsFormat)
+        default: AppLanguage.string(.homeCustomizeOptionsTitle)
         }
     }
 

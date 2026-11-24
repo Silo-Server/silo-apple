@@ -198,4 +198,48 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertEqual(json["item_limit"] as? Int, 15)
         XCTAssertEqual((json["user_config"] as? [String: String])?["mood"], "date_night")
     }
+
+    @MainActor
+    func testReorderVisibleSlotsKeepsHiddenRowsAnchoredAndNoOpsLastToBottom() {
+        let a = makeRow(id: "sec-a", position: 0)
+        let h = makeRow(id: "sec-h", hidden: true, position: 1)
+        let b = makeRow(id: "sec-b", position: 2)
+
+        // Swapping visible rows A and B keeps hidden row H anchored at index 1.
+        let swapped = HomeSectionsEditorModel.reorderVisibleSlots(in: [a, h, b]) { visible in
+            visible.swapAt(0, 1)
+            return true
+        }
+        XCTAssertEqual(swapped?.map(\.id), ["sec-b", "sec-h", "sec-a"])
+
+        // Moving already-last visible row B to bottom returns nil (no-op).
+        let noop = HomeSectionsEditorModel.reorderVisibleSlots(in: [a, h, b]) { visible in
+            guard let index = visible.firstIndex(where: { $0.id == "sec-b" }),
+                  index < visible.count - 1 else { return false }
+            let row = visible.remove(at: index)
+            visible.append(row)
+            return true
+        }
+        XCTAssertNil(noop)
+    }
+
+    func testAddingCustomRowAfterHiddenAdminRowDoesNotPinAdminOrder() {
+        let a = makeRow(id: "sec-a", position: 0)
+        let h = makeRow(id: "sec-h", hidden: true, position: 1)
+        let b = makeRow(id: "sec-b", position: 2)
+        let custom = makeRow(id: "custom-1", isCustom: true, position: 3)
+
+        let overrides = ProfileHomeLayout.overrides(
+            rows: [a, h, b, custom],
+            baseline: [a, h, b],
+            saved: [APIv2SectionOverride(id: "ovr-h", sectionId: "sec-h", position: nil, hidden: true)],
+            newID: { "unused" }
+        )
+
+        let adminHidden = overrides.first { $0.sectionId == "sec-h" }
+        XCTAssertNil(adminHidden?.position)
+        XCTAssertNil(overrides.first { $0.sectionId == "sec-a" })
+        XCTAssertNil(overrides.first { $0.sectionId == "sec-b" })
+        XCTAssertEqual(overrides.first { $0.id == "custom-1" }?.position, 3)
+    }
 }

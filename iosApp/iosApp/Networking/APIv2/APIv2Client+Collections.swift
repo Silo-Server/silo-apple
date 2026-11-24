@@ -105,6 +105,22 @@ extension APIv2Client {
         return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(UserCollection.self, from: raw.data)
     }
 
+    /// `GET /api/v2/catalog/items/{id}/collections`: returns the IDs of all
+    /// collections (server and personal) that currently store `itemId`.
+    func catalogItemCollectionIds(
+        itemId: String,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws -> Set<String> {
+        struct Wire: Decodable {
+            struct Entry: Decodable { let id: String }
+            let items: [Entry]
+        }
+        let path = "/api/v2/catalog/items/\(try catalogPathSegment(itemId))/collections"
+        let raw = try await collectionRequest("GET", path: path, status: 200, auth: auth)
+        let decoded = try HTTPClient.makeJSONDecoder().decode(Wire.self, from: raw.data)
+        return Set(decoded.items.map(\.id))
+    }
+
     /// The display cards of a personal collection, read as catalog pages
     /// (`source=user_collection`). All pages keep the first page's owner and
     /// query; a partial list is never published as a complete collection.
