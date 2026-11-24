@@ -1,6 +1,13 @@
 import Foundation
 import Observation
 
+extension Notification.Name {
+    /// Posted with the affected collection's `String` ID when an item is added
+    /// to or removed from a personal collection, so an open `CollectionDetailView`
+    /// reloads its grid immediately.
+    static let collectionItemsDidChange = Notification.Name("collectionItemsDidChange")
+}
+
 /// Manages pinning a personal or server collection onto Home and Library pages,
 /// plus household sharing (`is_shared`) for personal collections.
 @Observable
@@ -572,6 +579,9 @@ final class AddToCollectionModel {
             }
             ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
             HomeSectionsEditorModel.refreshScope(.home)
+            if requestIdentity() == startIdentity {
+                NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
+            }
         } catch {
             if requestIdentity() == startIdentity {
                 let message = ErrorState(error).message
@@ -588,6 +598,7 @@ final class AddToCollectionModel {
                     // the server once all pending mutations settle.
                     ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
                     HomeSectionsEditorModel.refreshScope(.home)
+                    NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
                     needsReconciliation = true
                     pendingReconciliationError = message
                 }
@@ -690,6 +701,7 @@ final class AddToCollectionModel {
             }
             ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
             HomeSectionsEditorModel.refreshScope(.home)
+            NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
             result = .createdAndAdded
         } catch {
             guard requestIdentity() == startIdentity else {
@@ -703,6 +715,7 @@ final class AddToCollectionModel {
                 ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
                 ResponseCache.shared.remove(CacheKey.collections)
                 HomeSectionsEditorModel.refreshScope(.home)
+                NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
                 needsReconciliation = true
                 pendingReconciliationError = message
             }

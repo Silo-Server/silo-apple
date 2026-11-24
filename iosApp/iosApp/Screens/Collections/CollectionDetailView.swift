@@ -9,6 +9,7 @@ struct CollectionDetailView: View {
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
     @State private var error: ErrorState?
+    @State private var loadGeneration = 0
     @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
@@ -37,6 +38,10 @@ struct CollectionDetailView: View {
         }
         .refreshable {
             await loadItems()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .collectionItemsDidChange)) { note in
+            guard (note.object as? String) == collectionId else { return }
+            Task { await loadItems() }
         }
         .shuffleFailureAlert(shuffleLauncher)
         #if os(tvOS)
@@ -82,6 +87,10 @@ struct CollectionDetailView: View {
     }
 
     private func loadItems() async {
+        loadGeneration += 1
+        let myGen = loadGeneration
+        let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
+        let startToken = ResponseCache.shared.writeToken
         // Hydrate from cache so a return visit paints the previous grid
         // instantly while the silent revalidate runs.
         let cacheKey = CacheKey.collectionItems(collectionId)
@@ -92,16 +101,29 @@ struct CollectionDetailView: View {
         if items.isEmpty {
             isLoading = true
         }
+        defer {
+            if loadGeneration == myGen {
+                isLoading = false
+            }
+        }
         error = nil
         do {
             let response = try await SiloAPI.shared.collectionItems(collectionId: collectionId)
-            ResponseCache.shared.set(response, for: cacheKey)
+            guard !Task.isCancelled,
+                  loadGeneration == myGen,
+                  SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
+                  !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) else { return }
+            ResponseCache.shared.set(response, for: cacheKey, fetchedAt: startToken)
             items = response.items
         } catch let err {
+            guard !(err is CancellationError),
+                  !Task.isCancelled,
+                  loadGeneration == myGen,
+                  SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
+                  !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) else { return }
             if items.isEmpty {
                 self.error = ErrorState(err)
             }
         }
-        isLoading = false
     }
 }

@@ -1154,7 +1154,8 @@ struct IOSHomeSectionsSettingsView: View {
             if !(error is CancellationError),
                !Task.isCancelled,
                librariesLoadGeneration == myGen,
-               SeekIntervalPreferences.activeRequestIdentity() == startIdentity {
+               SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
+               !ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startToken) {
                 librariesError = ErrorState(error).message
             }
         }

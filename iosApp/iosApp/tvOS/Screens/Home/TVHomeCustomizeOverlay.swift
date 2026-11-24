@@ -158,6 +158,7 @@ struct TVHomeCustomizeOverlay: View {
             switch phase {
             case .loaded:
                 seedInitialHighlightIfNeeded()
+                normalizeHighlight()
                 reclaimCompositeFocus()
             case .failed:
                 highlighted = .footer(.retry)
