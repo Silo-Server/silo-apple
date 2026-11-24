@@ -210,8 +210,8 @@ struct MediaCard: View {
             personalState.reset()
         }
         .sheet(isPresented: $isShowingAddToCollection) {
-            if let contentId {
-                IOSAddToCollectionSheet(contentId: contentId, itemTitle: title)
+            if let targetId = addToCollectionTargetId {
+                IOSAddToCollectionSheet(contentId: targetId, itemTitle: title)
             }
         }
         .frame(width: cardWidth)
@@ -299,9 +299,17 @@ struct MediaCard: View {
 
     private var hasStateActions: Bool { hasPersonalActions || canSetWatched }
 
+    private var addToCollectionTargetId: String? {
+        guard hasPersonalActions else { return nil }
+        if let mediaType, SiloMediaType.isEpisode(mediaType) {
+            return seriesContext?.seriesContentId
+        }
+        return seriesContext?.seriesContentId ?? contentId
+    }
+
     private var stateMenu: MediaStateMenuItems {
         #if !os(tvOS)
-        let addToCollectionAction: (() -> Void)? = hasPersonalActions ? { isShowingAddToCollection = true } : nil
+        let addToCollectionAction: (() -> Void)? = addToCollectionTargetId != nil ? { isShowingAddToCollection = true } : nil
         #else
         let addToCollectionAction: (() -> Void)? = nil
         #endif

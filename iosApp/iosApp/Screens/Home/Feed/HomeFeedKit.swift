@@ -218,6 +218,16 @@ private struct HomeCardMenu: ViewModifier {
     /// matching `MediaCard`.
     private var hasPersonalActions: Bool { item.userState != nil }
 
+    /// Personal collections hold movies and series, not individual episodes;
+    /// map episode cards (Continue Watching / Next Up) to their parent series ID.
+    private var addToCollectionTargetId: String? {
+        guard hasPersonalActions else { return nil }
+        if SiloMediaType.isEpisode(item.type) {
+            return item.seriesId
+        }
+        return item.contentId
+    }
+
     private var hasAnyAction: Bool {
         hasPersonalActions || onSetWatched != nil || onRemoveFromContinueWatching != nil
     }
@@ -231,10 +241,12 @@ private struct HomeCardMenu: ViewModifier {
                     personalState.reset()
                 }
                 .sheet(isPresented: $isShowingAddToCollection) {
-                    IOSAddToCollectionSheet(
-                        contentId: item.contentId,
-                        itemTitle: SiloMediaType.isEpisode(item.type) ? (item.seriesTitle ?? item.title) : item.title
-                    )
+                    if let targetId = addToCollectionTargetId {
+                        IOSAddToCollectionSheet(
+                            contentId: targetId,
+                            itemTitle: SiloMediaType.isEpisode(item.type) ? (item.seriesTitle ?? item.title) : item.title
+                        )
+                    }
                 }
         } else {
             content
@@ -254,7 +266,7 @@ private struct HomeCardMenu: ViewModifier {
             onToggleWatchlist: hasPersonalActions ? toggleWatchlist : nil,
             onToggleNotInterested: MediaCardPersonalState.offersNotInterested(type: item.type, item.userState)
                 ? toggleNotInterested : nil,
-            onAddToCollection: hasPersonalActions ? { isShowingAddToCollection = true } : nil
+            onAddToCollection: addToCollectionTargetId != nil ? { isShowingAddToCollection = true } : nil
         )
 
         if let onRemoveFromContinueWatching {

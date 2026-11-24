@@ -320,7 +320,7 @@ struct TVSeriesDetailView: View {
                 .alert(
                     Text(.homeUpdateFailedTitle),
                     isPresented: Binding(
-                        get: { collectionsModel?.errorMessage != nil && collectionsModel?.hasLoaded == true },
+                        get: { collectionsModel?.errorMessage != nil && collectionsModel?.hasMutationError == true },
                         set: { if !$0 { collectionsModel?.clearError() } }
                     )
                 ) {

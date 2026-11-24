@@ -528,6 +528,10 @@ final class AddToCollectionModel {
     /// True after a collection creation request failed with an ambiguous outcome
     /// (response lost; server may have created it) until a list reread settles.
     private(set) var hasUncertainCreation = false
+    /// True when `errorMessage` came from a membership or creation mutation
+    /// (rather than an initial list load), so tvOS alerts stay visible even if
+    /// a follow-up reconciliation load fails and clears `hasLoaded`.
+    private(set) var hasMutationError = false
     private(set) var errorMessage: String?
 
     var hasPendingMutations: Bool { activeMutationCount > 0 }
@@ -576,8 +580,9 @@ final class AddToCollectionModel {
                 isLoading = false
             }
         }
-        if preservingError == nil {
+        if preservingError == nil && mutationFailureCount <= acknowledgedFailureCount {
             errorMessage = nil
+            hasMutationError = false
         }
 
         do {
@@ -602,7 +607,15 @@ final class AddToCollectionModel {
                       requestIdentity() == startIdentity else { return }
                 if searchFeatures.itemCollections {
                     async let collectionsTask = api.collections()
-                    async let membershipTask = api.catalogItemCollectionIds(itemId: contentId)
+                    async let membershipTask: Set<String> = {
+                        do {
+                            return try await api.catalogItemCollectionIds(itemId: contentId)
+                        } catch APIv2Error.httpStatus(404) {
+                            return []
+                        } catch APIv2Error.problem(let problem) where problem.status == 404 {
+                            return []
+                        }
+                    }()
                     let (fetchedCollections, fetchedMembers) = try await (collectionsTask, membershipTask)
                     response = fetchedCollections
                     memberCollectionIds = fetchedMembers
@@ -646,8 +659,12 @@ final class AddToCollectionModel {
             unconfirmedCollectionIds.removeAll()
             needsReconciliation = false
             pendingReconciliationError = nil
-            errorMessage = preservingError
-            if preservingError == nil {
+            let hasUnacknowledgedFailure = mutationFailureCount > acknowledgedFailureCount
+            if let preservingError {
+                errorMessage = preservingError
+            } else if !hasUnacknowledgedFailure {
+                errorMessage = nil
+                hasMutationError = false
                 acknowledgedFailureCount = mutationFailureCount
             }
         } catch {
@@ -665,12 +682,18 @@ final class AddToCollectionModel {
             }
             needsReconciliation = false
             pendingReconciliationError = nil
-            errorMessage = preservingError ?? ErrorState(error).message
+            let hasUnacknowledgedFailure = mutationFailureCount > acknowledgedFailureCount
+            if let preservingError {
+                errorMessage = preservingError
+            } else if !hasUnacknowledgedFailure || errorMessage == nil {
+                errorMessage = ErrorState(error).message
+            }
         }
     }
 
     func clearError() {
         errorMessage = nil
+        hasMutationError = false
         acknowledgedFailureCount = mutationFailureCount
     }
 
@@ -685,16 +708,19 @@ final class AddToCollectionModel {
                 mutationWaiters.append(continuation)
             }
         }
-        if mutationFailureCount > acknowledgedFailureCount || mutationFailureCount > failureCountAtTap {
+        if (mutationFailureCount > acknowledgedFailureCount || mutationFailureCount > failureCountAtTap),
+           errorMessage != nil {
             acknowledgedFailureCount = mutationFailureCount
             return false
         }
+        acknowledgedFailureCount = mutationFailureCount
         return true
     }
 
     private func beginMutation() {
         if activeMutationCount == 0 {
             errorMessage = nil
+            hasMutationError = false
             acknowledgedFailureCount = mutationFailureCount
         }
         activeMutationCount += 1
@@ -765,6 +791,7 @@ final class AddToCollectionModel {
                     let message = ErrorState(error).message
                     self.mutationFailureCount += 1
                     toggleError = message
+                    self.hasMutationError = true
                     self.errorMessage = message
                     if !APIv2MutationOutcome(error).mayHaveApplied {
                         if let idx = self.entries.firstIndex(where: { $0.id == collectionId }) {
@@ -846,6 +873,7 @@ final class AddToCollectionModel {
                 guard self.requestIdentity() == startIdentity else { return .failed }
                 let message = ErrorState(error).message
                 self.mutationFailureCount += 1
+                self.hasMutationError = true
                 self.errorMessage = message
                 return .failed
             }
@@ -864,6 +892,7 @@ final class AddToCollectionModel {
                 guard self.requestIdentity() == startIdentity else { return .failed }
                 let message = ErrorState(error).message
                 self.mutationFailureCount += 1
+                self.hasMutationError = true
                 self.errorMessage = message
                 if APIv2MutationOutcome(error).mayHaveApplied {
                     // POST may have created the collection on the server; reread
@@ -925,6 +954,7 @@ final class AddToCollectionModel {
                 let message = ErrorState(error).message
                 self.mutationFailureCount += 1
                 addError = message
+                self.hasMutationError = true
                 self.errorMessage = message
                 if APIv2MutationOutcome(error).mayHaveApplied {
                     ResponseCache.shared.remove(CacheKey.collectionItems(created.id))

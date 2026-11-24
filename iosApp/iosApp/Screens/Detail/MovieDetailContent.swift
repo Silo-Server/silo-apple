@@ -139,14 +139,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
         }) {
             IOSAddToCollectionSheet(contentId: detail.contentId, itemTitle: detail.title)
         }
-        #if os(iOS)
-        .onChange(of: isShowingAddToCollection) { _, showing in
-            if showing && !hasDeferredRefitForCollectionSheet {
-                hasDeferredRefitForCollectionSheet = true
-                router.itemDetailDeferredRefitCount += 1
-            }
-        }
-        #endif
     }
 
     // MARK: - Hero
@@ -339,6 +331,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
             fileId: watchPartyFileId, preview: WatchPartySelectedItem(previewing: detail))
         #endif
         Button {
+            #if os(iOS)
+            if !hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = true
+                router.itemDetailDeferredRefitCount += 1
+            }
+            #endif
             isShowingAddToCollection = true
         } label: {
             Label(.collectionsAddToMenuAction, systemImage: "folder.badge.plus")

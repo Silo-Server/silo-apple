@@ -488,20 +488,19 @@ final class ProfileHomeLayoutTests: XCTestCase {
         let first = Task {
             await editor.performQuickAction { $0.setHidden(true, id: "sec-a") }
         }
+        defer { stub.release() }
         await stub.waitUntilHeld()
 
         var secondMutationRan = false
-        var secondTask: Task<HomeSectionsEditorModel.QuickActionResult, Never>?
-        await withCheckedContinuation { continuation in
-            onNextIdentityRead = { continuation.resume() }
-            secondTask = Task {
-                await editor.performQuickAction { model in
-                    secondMutationRan = true
-                    return model.setHidden(true, id: "sec-a")
-                }
+        let secondEnqueued = expectation(description: "second quick action captured identity")
+        onNextIdentityRead = { secondEnqueued.fulfill() }
+        let second = Task {
+            await editor.performQuickAction { model in
+                secondMutationRan = true
+                return model.setHidden(true, id: "sec-a")
             }
         }
-        let second = try XCTUnwrap(secondTask)
+        await fulfillment(of: [secondEnqueued], timeout: 5.0)
 
         // Switch profile only after `second` has deterministically captured `profile-one`.
         currentIdentity = HTTPRequestIdentity(
@@ -830,14 +829,17 @@ final class ProfileHomeLayoutTests: XCTestCase {
         // Drag B above A while PUT #1 is pending -> draft [C, B, A].
         XCTAssertTrue(editor.swapVisibleDuringDrag(id: "sec-b", by: -1))
         XCTAssertEqual(editor.rows.map(\.id), ["sec-c", "sec-b", "sec-a"])
-        let dragB = editor.commitDraggedOrder()
 
+        // When PUT #1 is rejected before drop, the live preview immediately stops
+        // showing C at the top and shows [B, A, C] before commit.
         stub.release()
         await moveC.value
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-b", "sec-a", "sec-c"])
+
+        let dragB = editor.commitDraggedOrder()
         await dragB.value
 
-        // PUT #1 failed, so replaying the drag of B above A onto [A, B, C] must yield [B, A, C],
-        // NOT [C, B, A].
+        // Committing the drag yields the exact same order as the live preview.
         XCTAssertEqual(editor.rows.map(\.id), ["sec-b", "sec-a", "sec-c"])
     }
 

@@ -184,7 +184,7 @@ struct IOSHomeCustomizeView: View {
                     .padding(.bottom, 12)
                 }
 
-                let canEditRows = editor.phase == .loaded && !editor.isResetting
+                let canEditRows = editor.phase == .loaded && !editor.isResetting && !isFinishingDone
 
                 // Visible shelves — pure SwiftUI live drag-to-reorder (zero black drag square)
                 if editor.visibleRows.isEmpty {
@@ -597,8 +597,8 @@ struct IOSHomeCustomizeView: View {
                     .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            .disabled(editor.phase != .loaded || editor.isResetting)
-            .opacity(editor.phase == .loaded && !editor.isResetting ? 1 : 0.45)
+            .disabled(editor.phase != .loaded || editor.isResetting || isFinishingDone)
+            .opacity(editor.phase == .loaded && !editor.isResetting && !isFinishingDone ? 1 : 0.45)
 
             Button {
                 hapticCount += 1
@@ -612,6 +612,8 @@ struct IOSHomeCustomizeView: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
+            .disabled(isFinishingDone)
+            .opacity(isFinishingDone ? 0.45 : 1)
             .accessibilityLabel(.homeCustomizeOptions)
 
             Button {

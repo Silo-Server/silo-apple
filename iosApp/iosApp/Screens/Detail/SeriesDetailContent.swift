@@ -187,14 +187,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }) {
             IOSAddToCollectionSheet(contentId: detail.seriesId ?? detail.contentId, itemTitle: detail.title)
         }
-        #if os(iOS)
-        .onChange(of: isShowingAddToCollection) { _, showing in
-            if showing && !hasDeferredRefitForCollectionSheet {
-                hasDeferredRefitForCollectionSheet = true
-                router.itemDetailDeferredRefitCount += 1
-            }
-        }
-        #endif
         .onChange(of: hierarchyError) { _, error in
             if error != nil { pendingEpisodePlayRequest = nil }
         }
@@ -451,6 +443,12 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }
         .disabled(isUpdatingWatched)
         Button {
+            #if os(iOS)
+            if !hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = true
+                router.itemDetailDeferredRefitCount += 1
+            }
+            #endif
             isShowingAddToCollection = true
         } label: {
             Label(.collectionsAddToMenuAction, systemImage: "folder.badge.plus")

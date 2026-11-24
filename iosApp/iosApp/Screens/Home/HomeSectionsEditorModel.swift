@@ -32,19 +32,24 @@ final class HomeSectionsEditorModel {
 
     let scope: ProfileSectionsScope
 
+    private struct DragPlacement: Equatable {
+        let movedId: String
+        let anchorAfterId: String?
+        let anchorBeforeId: String?
+        let fallbackIndex: Int
+    }
+
     private(set) var phase: Phase = .loading
     /// Committed rows in display order, hidden rows included.
     private var committedRows: [APIv2ProfileSectionSetting] = []
-    /// Live drag-reorder visible row IDs, projected onto `committedRows` so
-    /// visibility or membership changes that settle during a drag are never overwritten.
-    private var dragDraftVisibleOrder: [String]?
-    /// The single row being dragged/grabbed so committing the drag replays only
-    /// that row's placement without restoring an earlier rejected reorder.
-    @ObservationIgnored private var draggedRowId: String?
+    /// Live single-row drag placement projected onto `committedRows` using the
+    /// same rule as `commitDraggedOrder()`, so an earlier rejected reorder never
+    /// lingers in either the drag preview or the committed save.
+    private var activeDragPlacement: DragPlacement?
     /// Every row of the profile in display order, hidden rows included.
     var rows: [APIv2ProfileSectionSetting] {
-        guard let order = dragDraftVisibleOrder else { return committedRows }
-        return Self.applyingVisibleOrder(order, to: committedRows)
+        guard let placement = activeDragPlacement else { return committedRows }
+        return Self.applyingDragPlacement(placement, to: committedRows)
     }
     private(set) var hasLoadedFromServer = false
     private(set) var saveError: String?
@@ -199,7 +204,7 @@ final class HomeSectionsEditorModel {
                 auth = layout.auth
                 saved = layout.saved
                 confirmedRows = layout.rows
-                dragDraftVisibleOrder = nil
+                activeDragPlacement = nil
                 hasLoadedFromServer = true
                 if saveFailureCount <= acknowledgedFailureCount {
                     saveError = nil
@@ -547,6 +552,28 @@ final class HomeSectionsEditorModel {
         return result
     }
 
+    private static func applyingDragPlacement(
+        _ placement: DragPlacement,
+        to base: [APIv2ProfileSectionSetting]
+    ) -> [APIv2ProfileSectionSetting] {
+        reorderVisibleSlots(in: base) { currentVisible in
+            guard let fromIndex = currentVisible.firstIndex(where: { $0.id == placement.movedId }) else {
+                return false
+            }
+            let row = currentVisible.remove(at: fromIndex)
+            if let anchorAfterId = placement.anchorAfterId,
+               let afterIndex = currentVisible.firstIndex(where: { $0.id == anchorAfterId }) {
+                currentVisible.insert(row, at: afterIndex)
+            } else if let anchorBeforeId = placement.anchorBeforeId,
+                      let beforeIndex = currentVisible.firstIndex(where: { $0.id == anchorBeforeId }) {
+                currentVisible.insert(row, at: beforeIndex + 1)
+            } else {
+                currentVisible.insert(row, at: min(placement.fallbackIndex, currentVisible.count))
+            }
+            return true
+        } ?? base
+    }
+
     /// Reorders visible rows inside a separate drag draft so sibling cards
     /// spring-swap at 120Hz without firing a save per crossed slot or leaking
     /// uncommitted order into queued saves. Call `commitDraggedOrder()` on drop
@@ -558,49 +585,33 @@ final class HomeSectionsEditorModel {
         guard let index = visible.firstIndex(where: { $0.id == id }),
               visible.indices.contains(index + offset) else { return false }
         visible.swapAt(index, index + offset)
-        draggedRowId = id
-        dragDraftVisibleOrder = visible.map(\.id)
+        let newIndex = index + offset
+        let anchorAfterId = newIndex + 1 < visible.count ? visible[newIndex + 1].id : nil
+        let anchorBeforeId = newIndex > 0 ? visible[newIndex - 1].id : nil
+        activeDragPlacement = DragPlacement(
+            movedId: id,
+            anchorAfterId: anchorAfterId,
+            anchorBeforeId: anchorBeforeId,
+            fallbackIndex: newIndex
+        )
         return true
     }
 
     /// Discards an active drag/grab draft without persisting it.
     func cancelDraggedOrder() {
-        dragDraftVisibleOrder = nil
-        draggedRowId = nil
+        activeDragPlacement = nil
     }
 
     /// Persists the final placement of the dragged row after a live drag or tvOS
-    /// grab ends (no-op if unchanged). Replays only the dragged row's placement
-    /// relative to its drop anchor so an earlier rejected reorder is never restored.
+    /// grab ends (no-op if unchanged). Uses the exact same single-row placement
+    /// rule as the live drag preview.
     @discardableResult
     func commitDraggedOrder() -> Task<Void, Never> {
-        guard let order = dragDraftVisibleOrder else { return Task {} }
-        let movedId = draggedRowId
-        dragDraftVisibleOrder = nil
-        draggedRowId = nil
-        guard let movedId, let movedIndex = order.firstIndex(of: movedId) else {
-            return applyEdit { rows in
-                let next = Self.applyingVisibleOrder(order, to: rows)
-                return next == rows ? nil : next
-            }
-        }
-        let anchorAfterId = movedIndex + 1 < order.count ? order[movedIndex + 1] : nil
-        let anchorBeforeId = movedIndex > 0 ? order[movedIndex - 1] : nil
+        guard let placement = activeDragPlacement else { return Task {} }
+        activeDragPlacement = nil
         return applyEdit { rows in
-            Self.reorderVisibleSlots(in: rows, transform: { currentVisible in
-                guard let fromIndex = currentVisible.firstIndex(where: { $0.id == movedId }) else { return false }
-                let row = currentVisible.remove(at: fromIndex)
-                if let anchorAfterId,
-                   let afterIndex = currentVisible.firstIndex(where: { $0.id == anchorAfterId }) {
-                    currentVisible.insert(row, at: afterIndex)
-                } else if let anchorBeforeId,
-                          let beforeIndex = currentVisible.firstIndex(where: { $0.id == anchorBeforeId }) {
-                    currentVisible.insert(row, at: beforeIndex + 1)
-                } else {
-                    currentVisible.insert(row, at: min(movedIndex, currentVisible.count))
-                }
-                return true
-            })
+            let next = Self.applyingDragPlacement(placement, to: rows)
+            return next == rows ? nil : next
         }
     }
 
@@ -661,30 +672,28 @@ final class HomeSectionsEditorModel {
         featured: Bool = false
     ) -> Task<Void, Never> {
         let nonEmptyConfig = (config?.isEmpty == false) ? config : nil
+        let matchesRequestedRecipe: (APIv2ProfileSectionSetting) -> Bool = { row in
+            Self.matchesRecipe(row, sectionType: sectionType, params: nonEmptyConfig ?? [:])
+                && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
+        }
         // Capture any currently matching hidden row to prefer on replay; keep
-        // the full Add intent so if an optimistic match rolls back, rebasing
-        // still creates the requested row.
+        // the full Add intent so if an optimistic match rolls back or mutates,
+        // rebasing rechecks it and falls back to normal lookup/creation.
         let preferredId: String? = (!featured && itemLimit == 20)
-            ? committedRows.first(where: { row in
-                row.hidden
-                    && Self.matchesRecipe(row, sectionType: sectionType, params: nonEmptyConfig ?? [:])
-                    && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
-            })?.id
+            ? committedRows.first(where: { $0.hidden && matchesRequestedRecipe($0) })?.id
             : nil
         let id = newID()
         return applyEdit { rows in
-            if let preferredId, let existingIdx = rows.firstIndex(where: { $0.id == preferredId }) {
+            if let preferredId,
+               let existingIdx = rows.firstIndex(where: { $0.id == preferredId }),
+               matchesRequestedRecipe(rows[existingIdx]) {
                 guard rows[existingIdx].hidden else { return nil }
                 var next = rows
                 next[existingIdx].hidden = false
                 return next
             }
             if !featured && itemLimit == 20,
-               let existingIdx = rows.firstIndex(where: { row in
-                   row.hidden
-                       && Self.matchesRecipe(row, sectionType: sectionType, params: nonEmptyConfig ?? [:])
-                       && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
-               }) {
+               let existingIdx = rows.firstIndex(where: { $0.hidden && matchesRequestedRecipe($0) }) {
                 var next = rows
                 next[existingIdx].hidden = false
                 return next
@@ -717,6 +726,14 @@ final class HomeSectionsEditorModel {
         itemLimit: Int = 20,
         featured: Bool = false
     ) -> Task<Void, Never> {
+        let matchesRequestedCollection: (APIv2ProfileSectionSetting) -> Bool = { row in
+            ProfileHomeLayout.matchingCollectionRow(
+                collectionId: collectionId,
+                isUserCollection: isUserCollection,
+                in: [row]
+            ) != nil
+                && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
+        }
         let preferredId: String? = {
             guard !featured && itemLimit == 20,
                   let existing = ProfileHomeLayout.matchingCollectionRow(
@@ -732,22 +749,16 @@ final class HomeSectionsEditorModel {
         }()
         let id = newID()
         return applyEdit { rows in
-            if let preferredId, let existingIdx = rows.firstIndex(where: { $0.id == preferredId }) {
+            if let preferredId,
+               let existingIdx = rows.firstIndex(where: { $0.id == preferredId }),
+               matchesRequestedCollection(rows[existingIdx]) {
                 guard rows[existingIdx].hidden else { return nil }
                 var next = rows
                 next[existingIdx].hidden = false
                 return next
             }
             if !featured && itemLimit == 20,
-               let existingIdx = rows.firstIndex(where: { row in
-                   row.hidden
-                       && ProfileHomeLayout.matchingCollectionRow(
-                           collectionId: collectionId,
-                           isUserCollection: isUserCollection,
-                           in: [row]
-                       ) != nil
-                       && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
-               }) {
+               let existingIdx = rows.firstIndex(where: { $0.hidden && matchesRequestedCollection($0) }) {
                 var next = rows
                 next[existingIdx].hidden = false
                 return next
@@ -887,7 +898,7 @@ final class HomeSectionsEditorModel {
         guard let auth, !isResetting, !isRefreshing, phase == .loaded else { return }
         let startIdentity = requestIdentity()
         isResetting = true
-        dragDraftVisibleOrder = nil
+        activeDragPlacement = nil
         // Invalidate concurrent reads without bumping `editGeneration`, so a
         // prior queued PUT that fails can still restore `confirmedRows` if DELETE
         // also fails.
@@ -909,7 +920,7 @@ final class HomeSectionsEditorModel {
                 self.committedRows = []
                 self.pendingEdits.removeAll()
                 self.pendingEditsIdentity = nil
-                self.dragDraftVisibleOrder = nil
+                self.activeDragPlacement = nil
                 self.hasLoadedFromServer = false
                 self.phase = .loading
                 self.saveError = nil
@@ -929,7 +940,7 @@ final class HomeSectionsEditorModel {
                 self.committedRows = []
                 self.pendingEdits.removeAll()
                 self.pendingEditsIdentity = nil
-                self.dragDraftVisibleOrder = nil
+                self.activeDragPlacement = nil
                 self.hasLoadedFromServer = false
                 self.phase = .loading
                 self.saveError = message
@@ -974,7 +985,7 @@ final class HomeSectionsEditorModel {
                     pendingEditsIdentity = nil
                     committedRows = layout.rows
                 }
-                dragDraftVisibleOrder = nil
+                activeDragPlacement = nil
                 hasLoadedFromServer = true
                 saveError = preservingError
                 phase = .loaded
@@ -1014,7 +1025,7 @@ final class HomeSectionsEditorModel {
         guard phase == .loaded, !isResetting,
               let next = transform(committedRows),
               next != committedRows else { return Task {} }
-        dragDraftVisibleOrder = nil
+        activeDragPlacement = nil
         committedRows = next
         if pendingSaveCount == 0 {
             saveError = nil
@@ -1087,7 +1098,7 @@ final class HomeSectionsEditorModel {
                 if pendingEdits.isEmpty {
                     committedRows = []
                 }
-                dragDraftVisibleOrder = nil
+                activeDragPlacement = nil
                 hasLoadedFromServer = false
                 phase = .loading
                 saveError = message
