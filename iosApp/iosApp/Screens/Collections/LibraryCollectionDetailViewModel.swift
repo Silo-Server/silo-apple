@@ -83,6 +83,7 @@ final class LibraryCollectionDetailViewModel {
             if requestGeneration == generation { isLoading = false }
         }
 
+        var publishedProvisionalFirstPage = false
         for attempt in 0..<2 {
             let startToken = ResponseCache.shared.writeToken
             var capturedOwner: CapturedOrdinaryRequestAuth?
@@ -185,6 +186,7 @@ final class LibraryCollectionDetailViewModel {
                         if resetsPage {
                             lastResetReplacedPageOne = true
                         }
+                        publishedProvisionalFirstPage = true
                     }
                 } while loaded.count < CatalogGrid.loadMoreLead
                     && nextPage != nil
@@ -192,6 +194,11 @@ final class LibraryCollectionDetailViewModel {
                     && fetchedPages < maxPagesPerBatch
 
                 if wasCacheInvalidated {
+                    if publishedProvisionalFirstPage {
+                        clearPage()
+                        lastResetReplacedPageOne = false
+                        publishedProvisionalFirstPage = false
+                    }
                     if attempt == 0 && (resetsPage || continuation == nil) { continue }
                     let retryError = ErrorState(URLError(.cannotLoadFromNetwork))
                     if !resetsPage && continuation != nil {
@@ -275,6 +282,11 @@ final class LibraryCollectionDetailViewModel {
                 }
                 if !isIdentityError,
                    ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) {
+                    if publishedProvisionalFirstPage {
+                        clearPage()
+                        lastResetReplacedPageOne = false
+                        publishedProvisionalFirstPage = false
+                    }
                     if attempt == 0 && (resetsPage || continuation == nil) { continue }
                     let retryError = ErrorState(URLError(.cannotLoadFromNetwork))
                     if !resetsPage && continuation != nil {

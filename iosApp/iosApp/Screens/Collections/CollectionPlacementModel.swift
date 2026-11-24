@@ -115,14 +115,15 @@ final class CollectionPlacementModel {
             }()
             : nil
 
-        async let sourceLibraryCollectionsRead: [LibraryCollection]? = (!isUserCollection && sourceLibraryId != nil)
+        async let sourceLibraryCollectionsRead: Result<[LibraryCollection], Error>? = (!isUserCollection && sourceLibraryId != nil)
             ? await {
                 guard let sourceLibraryId else { return nil }
-                return (try? await api.libraryCollections(libraryId: sourceLibraryId))?.collections
+                do { return .success(try await api.libraryCollections(libraryId: sourceLibraryId).collections) }
+                catch { return .failure(error) }
             }()
             : nil
 
-        let (homeResult, librariesResult, capabilitiesResult, editorResult, sourceLibraryCollections) = await (
+        let (homeResult, librariesResult, capabilitiesResult, editorResult, sourceLibraryCollectionsResult) = await (
             homeRead, librariesRead, capabilitiesRead, editorRead, sourceLibraryCollectionsRead
         )
         guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == startIdentity else { return }
@@ -190,7 +191,20 @@ final class CollectionPlacementModel {
 
         switch librariesResult {
         case .success(let librariesResponse):
-            libraryDiscoveryFailed = false
+            let sourceLibraryCollections: [LibraryCollection]?
+            let sourceLibraryDiscoveryFailed: Bool
+            switch sourceLibraryCollectionsResult {
+            case .success(let collections):
+                sourceLibraryCollections = collections
+                sourceLibraryDiscoveryFailed = false
+            case .failure:
+                sourceLibraryCollections = nil
+                sourceLibraryDiscoveryFailed = true
+            case .none:
+                sourceLibraryCollections = nil
+                sourceLibraryDiscoveryFailed = false
+            }
+            libraryDiscoveryFailed = sourceLibraryDiscoveryFailed
             let libraries = librariesResponse.libraries
             // Server/library collections only exist inside the libraries listed in
             // `library_ids` (defaulting to `sourceLibraryId` alone when omitted);
