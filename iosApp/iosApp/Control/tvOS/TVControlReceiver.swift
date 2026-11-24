@@ -125,7 +125,7 @@ final class TVControlReceiver {
             return
         }
         let serverId = RemotePlaybackIdentityManager.shared.effectiveServerId ?? server.id
-        let serverName = RemotePlaybackIdentityManager.shared.effectiveServerName ?? server.displayName
+        let serverName = RemotePlaybackIdentityManager.shared.effectiveSharedServerName ?? server.sharedName
         let serverIdentity = RemotePlaybackIdentityManager.shared.effectiveServerIdentity
         if listener != nil,
            advertisedServerId == serverId,
@@ -220,7 +220,7 @@ final class TVControlReceiver {
     private func refreshAdvertisement() {
         guard listener != nil,
               let serverId = RemotePlaybackIdentityManager.shared.effectiveServerId else { return }
-        let serverName = RemotePlaybackIdentityManager.shared.effectiveServerName ?? "Silo"
+        let serverName = RemotePlaybackIdentityManager.shared.effectiveSharedServerName ?? "Silo"
         listenerGeneration += 1
         listener?.cancel()
         listener = nil
@@ -1104,7 +1104,7 @@ final class TVControlReceiver {
             deviceName: device.name,
             deviceId: device.id,
             serverId: RemotePlaybackIdentityManager.shared.effectiveServerId,
-            serverName: RemotePlaybackIdentityManager.shared.effectiveServerName,
+            serverName: RemotePlaybackIdentityManager.shared.effectiveSharedServerName,
             supportedVersions: SiloControlProtocol.supportedVersions,
             serverIdentity: RemotePlaybackIdentityManager.shared.effectiveServerIdentity,
             features: SiloControlFeature.receiverFeatures

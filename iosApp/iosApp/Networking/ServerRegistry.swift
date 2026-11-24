@@ -12,7 +12,8 @@ import UIKit
 /// The registry stores one of these per remembered server. Its accounts and
 /// their tokens live in `AccountStore`, keyed by `id`, never in the entry
 /// itself, and so does the profile each account opens with. The display
-/// name is always server-administered through the advertised `fetchedName`.
+/// name is the current user's `nickname` when they gave one, else the
+/// advertised `fetchedName`.
 struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// Stable client-derived ID: base64url of the normalized URL; reversible
     /// via `url(forServerId:)`.
@@ -36,11 +37,28 @@ struct ServerEntry: Codable, Identifiable, Equatable, Hashable {
     /// it groups and matches servers but never authorizes anything by itself.
     var verifiedServerId: String?
 
-    /// Display label for lists/menus. Server-advertised name → URL.
+    /// The name the current user gave this server, if any. Never saved with
+    /// the entry: tvOS shares the server list between Apple TV users, so the
+    /// registry fills this in from the current user's ``ServerNickname``
+    /// records instead.
+    var nickname: String?
+
+    /// Display label for lists and menus: the nickname, then the
+    /// server-advertised name, then the URL.
     var displayName: String {
+        if let nickname, !nickname.isEmpty { return nickname }
         if let name = fetchedName, !name.isEmpty { return name }
         return url
     }
+
+    /// The server's advertised name, shown beside a nickname so the real
+    /// name is never hidden.
+    var serverName: String? { ServerIdentity.usable(fetchedName) }
+
+    /// The label sent to other devices (a TV's network advertisement, the
+    /// control handshake and handoff): the advertised name, then the URL.
+    /// Never the nickname, which is the current user's alone.
+    var sharedName: String { serverName ?? url }
 
     /// Read only while migrating the pre-profile-launch registry schema. New
     /// registry writes deliberately omit profile identity because the server
@@ -141,6 +159,10 @@ enum ServerRegistryError: LocalizedError {
 /// - **`AccountStore`**: each server's accounts and their tokens, read for
 ///   the active server by `TokenStore.switchActiveServer`.
 ///
+/// - **UserDefaults** (`siloServerNicknames.v1`): the current user's server
+///   nicknames, synced between their devices through iCloud key-value
+///   storage when `.shared` is given a ``ServerNicknameCloud``.
+///
 /// The registry is the single source of truth for URL + name.
 /// `AccountStore` is the single source of truth for accounts and tokens.
 /// They coordinate through `switchActiveServer` — the registry writes the
@@ -149,7 +171,14 @@ enum ServerRegistryError: LocalizedError {
 /// `AccountMigration`, which needs the server list.
 @Observable
 final class ServerRegistry {
-    static let shared = ServerRegistry()
+    static let shared: ServerRegistry = {
+        #if os(iOS) || os(tvOS)
+        ServerRegistry(nicknameCloud: UbiquitousServerNicknameCloud())
+        #else
+        // The Mac app has no iCloud entitlement yet, so its nicknames stay local.
+        ServerRegistry()
+        #endif
+    }()
 
     private let activeServerSnapshot = Mutex<String?>(nil)
 
@@ -162,6 +191,7 @@ final class ServerRegistry {
 
     static let defaultsKey = "siloServerRegistry.v1"
     static let migratedKey = "siloServerRegistry.migrated.v1"
+    static let nicknamesKey = "siloServerNicknames.v1"
     /// Pre-rename names of the two keys above; `adoptLegacyDefaultsKeys`
     /// moves them once.
     private static let legacyDefaultsKey = "continuumServerRegistry.v1"
@@ -184,6 +214,11 @@ final class ServerRegistry {
         }
     }
 
+    /// The current user's nicknames, one record per named registry id. Kept
+    /// in `defaults`, which is per user on tvOS, and mirrored onto `entries`
+    /// by `applyNicknames()`.
+    private var nicknameRecords: [ServerNickname] = []
+
     private let defaults: SharedDefaults
     private let keychain: SharedKeychain
     private let accounts: AccountStore
@@ -197,6 +232,7 @@ final class ServerRegistry {
     @ObservationIgnored private var initialized = false
     private let tokenStore: TokenStore
     private let httpClient: HTTPClient
+    private let nicknameCloud: ServerNicknameCloud?
     private let persistenceOverride: (([ServerEntry], String?) -> Bool)?
     /// Turns the server's push registration off (`ApplePushRegistrationCoordinator.unregister`).
     private let unregisterPush: @Sendable (String) async -> Void
@@ -211,6 +247,7 @@ final class ServerRegistry {
         persistenceOverride: (([ServerEntry], String?) -> Bool)? = nil,
         tokenStore: TokenStore = .shared,
         httpClient: HTTPClient = .shared,
+        nicknameCloud: ServerNicknameCloud? = nil,
         unregisterPush: @escaping @Sendable (String) async -> Void = { serverID in
             #if os(iOS)
             await ApplePushRegistrationCoordinator.shared.unregister(serverID: serverID)
@@ -229,6 +266,7 @@ final class ServerRegistry {
         self.persistenceOverride = persistenceOverride
         self.tokenStore = tokenStore
         self.httpClient = httpClient
+        self.nicknameCloud = nicknameCloud
         self.unregisterPush = unregisterPush
         self.restorePush = restorePush
         Self.adoptLegacyDefaultsKeys(defaults)
@@ -236,7 +274,14 @@ final class ServerRegistry {
         migrateLegacyIfNeeded()
         migrateLegacyProfileMappingsIfNeeded()
         migrateAccountsIfNeeded()
+        // Before merging, so a merged address's nickname moves with it.
+        loadNicknames()
         mergeDuplicateServers()
+        moveNicknamesOfMergedServers()
+        reconcileNicknames()
+        nicknameCloud?.onExternalChange = { [weak self] accountChanged in
+            self?.reconcileNicknames(accountChanged: accountChanged)
+        }
         let initialActiveServerId = activeServerId
         activeServerSnapshot.withLock { $0 = initialActiveServerId }
         observeForegroundForDuplicateServerProof()
@@ -330,6 +375,9 @@ final class ServerRegistry {
         }
         let survivors = mergeDuplicateServersAfterLaunch(preferring: isExistingEntry ? nil : merged.id)
         scheduleDuplicateServerProof()
+        // A merged entry is rebuilt without its nickname, and a new one may
+        // already have been named on another device.
+        reconcileNicknames()
         return self.entry(with: survivors[merged.id] ?? merged.id)
     }
 
@@ -379,7 +427,204 @@ final class ServerRegistry {
         }
         mergeDuplicateServersAfterLaunch()
         scheduleDuplicateServerProof()
+        // The identity can match a name given to another address of this
+        // server.
+        reconcileNicknames()
         return true
+    }
+
+    // MARK: - Nicknames
+
+    /// Names a saved server for the current user, on this device and (through
+    /// iCloud) their others. A nil or blank name goes back to the name the
+    /// server advertises.
+    @discardableResult
+    func rename(serverId: String, to name: String?) -> Bool {
+        guard let entry = self.entry(with: serverId) else { return false }
+        // Saving the name already shown changes nothing. Writing it would
+        // turn a name copied from another address into this address's own,
+        // or record an explicit "no name" that blocks such a copy.
+        if ServerNickname.normalized(name) == entry.nickname { return true }
+        // Newer than every name this address already has, even one stamped
+        // by a device whose clock runs ahead; otherwise the merge below would
+        // put that older name back over this edit.
+        let synced = nicknameCloud.flatMap { ServerNicknameSync.addressRecord(for: entry, in: $0.load()) }
+        let newestKnown = (nicknameRecords.filter { $0.serverId == entry.id } + [synced].compactMap { $0 })
+            .map(\.updatedAt)
+            .max()
+        let record = ServerNickname(
+            serverId: entry.id,
+            verifiedServerId: entry.verifiedServerId,
+            name: ServerNickname.normalized(name),
+            updatedAt: max(Date(), newestKnown?.addingTimeInterval(0.001) ?? .distantPast)
+        )
+        guard saveNicknames(nicknameRecords.filter { $0.serverId != entry.id } + [record]) else {
+            return false
+        }
+        reconcileNicknames()
+        return true
+    }
+
+    private func loadNicknames() {
+        guard let data = defaults.data(forKey: Self.nicknamesKey) else { return }
+        do {
+            nicknameRecords = try JSONDecoder().decode([ServerNickname].self, from: data)
+        } catch {
+            Self.logger.error("Nickname decode failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func saveNicknames(_ records: [ServerNickname]) -> Bool {
+        guard let data = try? JSONEncoder().encode(records) else { return false }
+        defaults.set(data, forKey: Self.nicknamesKey)
+        guard defaults.data(forKey: Self.nicknamesKey) == data else { return false }
+        nicknameRecords = records
+        return true
+    }
+
+    /// Carries a merged-away address's nickname to the entry that absorbed
+    /// it, as `merge` carries its advertised name, unless that entry has a
+    /// name of its own or a newer copy. The moved name is a copy: never published, and it
+    /// gives way to a synced name for the surviving address. Without it a
+    /// device with no iCloud store (the Mac) would lose the name.
+    private func moveNickname(from droppedId: String, to survivor: ServerEntry) {
+        guard let record = nicknameRecords.first(where: { $0.serverId == droppedId }) else { return }
+        var records = nicknameRecords.filter { $0.serverId != droppedId }
+        // The survivor's own name stays; a copy gives way to a newer name.
+        let existing = records.first { $0.serverId == survivor.id }
+        if record.name != nil,
+           existing.map({ $0.inheritedFrom != nil && record.updatedAt > $0.updatedAt }) ?? true {
+            records.removeAll { $0.serverId == survivor.id }
+            var moved = record
+            moved.serverId = survivor.id
+            moved.verifiedServerId = ServerIdentity.usable(survivor.verifiedServerId) ?? record.verifiedServerId
+            moved.inheritedFrom = record.inheritedFrom ?? droppedId
+            records.append(moved)
+        }
+        // Shown from memory when the save fails, as reconcileNicknames does.
+        if !saveNicknames(records) {
+            nicknameRecords = records
+        }
+        applyNicknames()
+    }
+
+    /// Moves the records of addresses merged away while this user wasn't
+    /// using the app, which on tvOS includes another Apple TV user's session
+    /// (the server list is shared, nicknames are not), as `merge` would have.
+    private func moveNicknamesOfMergedServers() {
+        let saved = Set(entries.map(\.id))
+        for record in nicknameRecords where !saved.contains(record.serverId) {
+            guard let survivorId = MergedServerIds.survivor(of: record.serverId),
+                  let survivor = entries.first(where: { $0.id == survivorId }) else { continue }
+            moveNickname(from: record.serverId, to: survivor)
+        }
+    }
+
+    /// Copies each entry's nickname from the local records onto `entries`.
+    private func applyNicknames() {
+        for index in entries.indices {
+            let nickname = nicknameRecords.first { $0.serverId == entries[index].id }?.name
+            if entries[index].nickname != nickname {
+                entries[index].nickname = nickname
+            }
+        }
+    }
+
+    /// Brings the local and synced nicknames together for every saved server.
+    ///
+    /// - A synced record for the server's own address replaces a copied name,
+    ///   and replaces an explicit local name when it is newer.
+    /// - A record for another address of the same deployment names a server
+    ///   that has no name and replaces an older copy, but never an explicit
+    ///   name for this address.
+    /// - An explicit local name the synced copy lacks, or holds an older
+    ///   version of, is written back, so two devices renaming at once both
+    ///   keep their change. A deployment identity learned after the rename is
+    ///   added to that record. Copies are never written back.
+    /// - After an iCloud account change the local names belonged to the
+    ///   previous account, so they are dropped rather than written into the
+    ///   new account's store.
+    ///
+    /// Removing a server never touches the synced copy, so its name comes
+    /// back if it is added again.
+    private func reconcileNicknames(accountChanged: Bool = false) {
+        var local = accountChanged ? [] : nicknameRecords
+        // A copied name belongs to the deployment it came from. Once the
+        // address reports another deployment, the copy no longer applies,
+        // with or without an iCloud store.
+        for entry in entries {
+            guard let identity = ServerIdentity.usable(entry.verifiedServerId) else { continue }
+            local.removeAll {
+                $0.serverId == entry.id && $0.inheritedFrom != nil && $0.verifiedServerId != identity
+            }
+        }
+        guard let nicknameCloud else {
+            if local != nicknameRecords, !saveNicknames(local) {
+                nicknameRecords = local
+            }
+            applyNicknames()
+            return
+        }
+        let synced = nicknameCloud.load()
+        for entry in entries {
+            let mine = local.first { $0.serverId == entry.id }
+            var adopted: ServerNickname?
+            if let theirs = ServerNicknameSync.addressRecord(for: entry, in: synced) {
+                // On a tie the synced record wins, so two devices that stamped
+                // different names with the same time still agree.
+                if mine.map({ $0.inheritedFrom != nil || theirs.updatedAt >= $0.updatedAt }) ?? true {
+                    adopted = ServerNickname(
+                        serverId: entry.id,
+                        verifiedServerId: entry.verifiedServerId,
+                        name: theirs.name,
+                        updatedAt: theirs.updatedAt
+                    )
+                }
+            } else if let theirs = ServerNicknameSync.deploymentRecord(for: entry, in: synced) {
+                if mine.map({ $0.inheritedFrom != nil && theirs.updatedAt > $0.updatedAt }) ?? true {
+                    adopted = ServerNickname(
+                        serverId: entry.id,
+                        verifiedServerId: entry.verifiedServerId,
+                        name: theirs.name,
+                        updatedAt: theirs.updatedAt,
+                        inheritedFrom: theirs.serverId
+                    )
+                }
+            }
+            guard let adopted, adopted != mine else { continue }
+            local.removeAll { $0.serverId == entry.id }
+            local.append(adopted)
+        }
+        if local != nicknameRecords, !saveNicknames(local) {
+            // Shown and published from memory regardless: after an account
+            // change the previous account's names must not stay in use, or
+            // the loop below would write them into the new account's store.
+            nicknameRecords = local
+        }
+        applyNicknames()
+
+        var published = synced
+        for entry in entries {
+            guard var mine = nicknameRecords.first(where: { $0.serverId == entry.id }),
+                  mine.inheritedFrom == nil else { continue }
+            let theirs = ServerNicknameSync.addressRecord(for: entry, in: published)
+            let identity = ServerIdentity.usable(entry.verifiedServerId)
+            let isNewer = mine.updatedAt > (theirs?.updatedAt ?? .distantPast)
+            // Fills in a missing identity but never replaces one: two devices
+            // disagreeing about one address would rewrite it back and forth.
+            let addsIdentity = identity != nil
+                && theirs?.verifiedServerId == nil
+                && theirs?.updatedAt == mine.updatedAt
+                && theirs?.name == mine.name
+            guard isNewer || addsIdentity else { continue }
+            // A device that hasn't learned the identity keeps the synced one,
+            // or the server's other addresses would stop finding this name.
+            mine.verifiedServerId = identity ?? ServerIdentity.usable(theirs?.verifiedServerId)
+            published = ServerNicknameSync.publishing(mine, into: published)
+        }
+        if published != synced {
+            nicknameCloud.save(published)
+        }
     }
 
     /// The saved server that belongs to the deployment `verifiedServerId`,
@@ -573,6 +818,7 @@ final class ServerRegistry {
             return false
         }
         ServerMerge.removeLeftovers(plan, from: dropped, stillSaved: entries)
+        moveNickname(from: dropped.id, to: survivor)
         launchPreferences.clearRememberedProfile(forAccounts: plan.removed.map(\.account.localAccountId))
         recordRegistryEvent(phase: "mergeServer", outcome: "succeeded", reason: "sameDeployment")
         return true
@@ -906,6 +1152,9 @@ final class ServerRegistry {
         // the server is neither half-removed nor silently signed out.
         func rollBackRemoval(reason: String) async {
             entries = previousEntries
+            // A sync during the await skipped the removed entry, so read
+            // the synced names again rather than reapply the snapshot's.
+            reconcileNicknames()
             activeServerId = previousActiveServerID
             // The rollback is itself a durable write. When it fails after the
             // registry removal was already persisted, the in-memory entry is
@@ -962,6 +1211,12 @@ final class ServerRegistry {
             await tokenStore.switchActiveServer(serverId: activeServerId ?? "")
         }
         launchPreferences.clearRememberedProfile(forAccounts: removedAccounts)
+        // Only this device forgets the nickname. The synced copy keeps it for
+        // the user's other devices, and brings it back if the server is added
+        // here again.
+        if nicknameRecords.contains(where: { $0.serverId == serverId }) {
+            _ = saveNicknames(nicknameRecords.filter { $0.serverId != serverId })
+        }
         // Branding is cached by address; another saved entry for the same
         // address still uses it.
         if let removedURL = previousEntries.first(where: { $0.id == serverId })?.url,

@@ -123,8 +123,16 @@ final class RemotePlaybackIdentityManager {
         activeIdentity?.serverId ?? ServerRegistry.shared.activeServerId
     }
 
+    /// The effective server's name as this TV shows it, including the
+    /// current user's nickname.
     var effectiveServerName: String? {
         activeIdentity?.serverName ?? ServerRegistry.shared.activeServer?.displayName
+    }
+
+    /// The effective server's name as other devices see it: never the
+    /// current user's nickname (see ``ServerEntry/sharedName``).
+    var effectiveSharedServerName: String? {
+        activeIdentity?.serverName ?? ServerRegistry.shared.activeServer?.sharedName
     }
 
     /// The deployment identity behind the effective server, when known.

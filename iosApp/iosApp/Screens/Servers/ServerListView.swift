@@ -3,8 +3,8 @@ import SwiftUI
 /// Picker + management UI for the set of saved Silo servers.
 ///
 /// Shared between iOS and tvOS with minor platform-specific tweaks:
-/// - iOS: Navigation `List` with swipe-to-delete.
-/// - tvOS: focusable read-only server summary with a separate remove action.
+/// - iOS: Navigation `List` with swipe and context-menu rename and remove.
+/// - tvOS: focusable server summary with separate rename and remove actions.
 ///
 /// Switching a server asks the `AppRouter` to re-evaluate auth state so
 /// the user lands on login or profile-select for the new server (or on
@@ -12,6 +12,7 @@ import SwiftUI
 struct ServerListView: View {
     @Environment(AppRouter.self) private var router
     @State private var registry = ServerRegistry.shared
+    @State private var renameTarget: ServerEntry?
     @State private var isResolvingServer = false
     #if os(tvOS)
     @State private var removeTarget: ServerEntry?
@@ -22,7 +23,7 @@ struct ServerListView: View {
         #if os(tvOS)
         ZStack {
             tvOSContent
-                .disabled(removeTarget != nil || isResolvingServer)
+                .disabled(removeTarget != nil || renameTarget != nil || isResolvingServer)
 
             if let entry = removeTarget {
                 TVSettingsConfirmationOverlay(
@@ -35,9 +36,16 @@ struct ServerListView: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 .zIndex(1)
             }
+
+            if let entry = renameTarget {
+                TVServerRenameOverlay(entry: entry, dismiss: { dismissRename(for: entry) })
+                    .transition(.opacity)
+                    .zIndex(1)
+            }
         }
         .background(SettingsBackdrop())
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: removeTarget)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: renameTarget)
         #else
         // Removing asks through the app's shared confirmation
         // (`AccountRemovalConfirmationModifier`), which names the accounts
@@ -46,6 +54,7 @@ struct ServerListView: View {
             .disabled(isResolvingServer)
             .navigationTitle(Text(.serversTitle))
             .siloNavigationTitleDisplayMode(.inline)
+            .serverRenameAlert($renameTarget)
         #endif
     }
 
@@ -98,7 +107,7 @@ struct ServerListView: View {
                 .buttonStyle(TVSettingsPaneRowStyle())
                 .focused($focusedRow, equals: .add)
 
-                TVSettingsFooter(.serversManageRemoveHint)
+                TVSettingsFooter(.serversManageRenameRemoveHint)
             }
             .frame(maxWidth: 1080, alignment: .leading)
             .padding(.bottom, 64)
@@ -128,9 +137,21 @@ struct ServerListView: View {
             .focused($focusedRow, equals: .server(entry.id))
             .accessibilityHint(
                 Text(entry.id == registry.activeServerId
-                    ? LocalizedStringResource.serversRowHintCurrent
-                    : .serversRowHintSwitch)
+                    ? LocalizedStringResource.serversRowCurrentHint
+                    : .serversRowSwitchHint)
             )
+
+            Button {
+                renameTarget = entry
+            } label: {
+                Image(systemName: "pencil")
+                    .font(.system(size: 24, weight: .semibold))
+                    .frame(maxWidth: .infinity, minHeight: 49)
+            }
+            .buttonStyle(TVSettingsPaneRowStyle())
+            .frame(width: 92)
+            .focused($focusedRow, equals: .rename(entry.id))
+            .accessibilityLabel(Text(.serversRenameAudio(entry.displayName)))
 
             Button {
                 removeTarget = entry
@@ -148,8 +169,17 @@ struct ServerListView: View {
 
     private enum TVRow: Hashable {
         case server(String)
+        case rename(String)
         case remove(String)
         case add
+    }
+
+    private func dismissRename(for entry: ServerEntry) {
+        renameTarget = nil
+        Task { @MainActor in
+            await Task.yield()
+            focusedRow = .rename(entry.id)
+        }
     }
 
     private func dismissRemoveConfirmation(for entry: ServerEntry) {
@@ -172,7 +202,6 @@ struct ServerListView: View {
                 Text(.serversSavedHeader)
                     .foregroundColor(.siloSecondaryText)
             }
-            .listRowBackground(Color.siloGroupedCell)
 
             Section {
                 Button {
@@ -180,9 +209,11 @@ struct ServerListView: View {
                 } label: {
                     Label(.serversAddServer, systemImage: "plus")
                         .foregroundColor(.siloOnSurface)
+                        .serverCard()
                 }
+                .buttonStyle(.plain)
+                .serverCardRow()
             }
-            .listRowBackground(Color.siloGroupedCell)
         }
         .settingsListChrome()
     }
@@ -200,7 +231,7 @@ struct ServerListView: View {
                         .font(.siloSubheadline)
                         .foregroundColor(.siloOnSurface)
                         .lineLimit(1)
-                    Text(entry.url)
+                    Text(entry.listDetail)
                         .font(.siloCaption)
                         .foregroundColor(.siloSecondaryText)
                         .lineLimit(2)
@@ -220,11 +251,33 @@ struct ServerListView: View {
                         .foregroundColor(.siloOnSurface)
                 }
             }
-            .contentShape(Rectangle())
+            .serverCard()
         }
         .buttonStyle(.plain)
+        .serverCardRow()
         .accessibilityValue(entry.id == registry.activeServerId ? Text(.serversActive) : Text(verbatim: ""))
+        // Explicit tints: the app-wide white tint otherwise wins over the
+        // destructive role and leaves a white glyph on a white button.
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                Task { await router.confirmRemoveServer(entry.id) }
+            } label: {
+                Label(.serversRemove, systemImage: "trash")
+            }
+            .tint(.siloError)
+            Button {
+                renameTarget = entry
+            } label: {
+                Label(.serversRenameAction, systemImage: "pencil")
+            }
+            .tint(.siloFieldTint)
+        }
+        .contextMenu {
+            Button {
+                renameTarget = entry
+            } label: {
+                Label(.serversRenameAction, systemImage: "pencil")
+            }
             Button(role: .destructive) {
                 Task { await router.confirmRemoveServer(entry.id) }
             } label: {
@@ -301,7 +354,7 @@ private struct TVServerSummaryLabel: View {
                 Text(entry.displayName)
                     .font(.system(size: 26, weight: .medium))
                     .lineLimit(1)
-                Text(entry.url)
+                Text(entry.listDetail)
                     .font(.system(size: 19))
                     .opacity(0.62)
                     .lineLimit(1)
@@ -326,6 +379,38 @@ private struct TVServerSummaryLabel: View {
     }
 }
 #endif
+
+#if !os(tvOS)
+private extension View {
+    /// The row's card, drawn inside the row rather than as the list row
+    /// background. A swipe then slides the whole card across; a row
+    /// background stays put while the text slides out from under it.
+    func serverCard() -> some View {
+        padding(.horizontal, 16)
+            .padding(.vertical, 13)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.siloGroupedCell, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+    }
+
+    /// Clears the list's own row chrome around a ``serverCard()``, with a gap
+    /// between the cards of several saved servers.
+    func serverCardRow() -> some View {
+        padding(.vertical, 4)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+    }
+}
+#endif
+
+private extension ServerEntry {
+    /// The address, after the server's own name when a nickname hides it.
+    var listDetail: String {
+        guard nickname != nil, let serverName else { return url }
+        return "\(serverName) · \(url)"
+    }
+}
 
 /// "Connected on your local network" under the active server while its
 /// requests use the local route; the icon sits inline so the text starts

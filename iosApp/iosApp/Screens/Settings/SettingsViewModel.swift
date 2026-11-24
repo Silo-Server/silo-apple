@@ -304,20 +304,26 @@ final class SettingsViewModel {
     }
 
     /// Account card subtitle: the username when the title is not already
-    /// showing it, and the server host.
+    /// showing it, and the server: the user's nickname for it, else its host.
     var accountSubtitleLine: String {
-        let host = serverHost
+        let server = serverLabel
         let username = userInfo?.username
-        switch (username, host) {
-        case let (user?, host?) where !user.isEmpty && user != displayName:
-            return "\(user) · \(host)"
-        case let (_, host?):
-            return host
+        switch (username, server) {
+        case let (user?, server?) where !user.isEmpty && user != displayName:
+            return "\(user) · \(server)"
+        case let (_, server?):
+            return server
         case let (user?, _) where !user.isEmpty && user != displayName:
             return user
         default:
             return AppLanguage.string(.settingsAccountTapToSwitch)
         }
+    }
+
+    /// The user's nickname for the active server, else its host. Without a
+    /// nickname the host tells servers apart; most advertise the default name.
+    private var serverLabel: String? {
+        ServerRegistry.shared.activeServer?.nickname ?? serverHost
     }
 
     private var serverHost: String? {
