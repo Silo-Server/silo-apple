@@ -109,7 +109,7 @@ extension SettingKey {
 
     /// The manifest revision that added `playback.next_up_enabled` (Show Next
     /// Up Off).
-    static let nextUpEnabledRevision = 30
+    static let nextUpEnabledRevision = 31
 
     /// Whether sending this key depends on the server's manifest revision
     /// because the key is newer than ``minimumServerRevision``: an older

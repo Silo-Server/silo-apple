@@ -181,7 +181,7 @@ extension SettingKey {
 
     /// `playback.next_up_enabled` (Show Next Up Off), read in the
     /// revision-gated batch with the cellular pair once the server reports
-    /// revision 30.
+    /// revision 31.
     static let playerNextUpSettings: [SettingKey] = [.playbackNextUpEnabled]
 }
 
