@@ -4073,6 +4073,14 @@ class PlayerViewModel {
         !settings.showsNextUp && shuffleState == nil && !isWatchPartyPlayback
     }
 
+    /// The prompt window that counts an item as finished. With Show Next Up
+    /// off there is no prompt, so only the end (or a credits skip) finishes
+    /// it, as with Next Up at the end; a Next Up the viewer opens by hand
+    /// doesn't.
+    private var completionPromptSeconds: Int {
+        closesAtEndInsteadOfNextUp ? 0 : settings.nextUpPromptSeconds
+    }
+
     private func beginNextUpPostroll(
         videoEnded: Bool,
         source: NextUpPresentationSource = .automatic
@@ -4633,7 +4641,7 @@ class PlayerViewModel {
             hasReachedEndOfFile: finishedAtEndOfFile,
             currentTime: progressReportPosition,
             duration: duration,
-            promptSeconds: settings.nextUpPromptSeconds,
+            promptSeconds: completionPromptSeconds,
             skippedCredits: skippedCreditsToEnd,
             endedPrematurely: endedPrematurely
         )
@@ -9832,7 +9840,7 @@ class PlayerViewModel {
             hasReachedEndOfFile: finishedAtEndOfFile,
             currentTime: reportedPosition,
             duration: duration,
-            promptSeconds: settings.nextUpPromptSeconds,
+            promptSeconds: completionPromptSeconds,
             skippedCredits: skippedCreditsToEnd,
             endedPrematurely: endedPrematurely
         )
@@ -9964,7 +9972,7 @@ class PlayerViewModel {
                 hasReachedEndOfFile: finishedAtEndOfFile,
                 currentTime: currentTime,
                 duration: duration,
-                promptSeconds: settings.nextUpPromptSeconds,
+                promptSeconds: completionPromptSeconds,
                 skippedCredits: skippedCreditsToEnd,
                 endedPrematurely: endedPrematurely
             )

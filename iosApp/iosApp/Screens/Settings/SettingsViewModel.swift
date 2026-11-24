@@ -868,7 +868,7 @@ final class SettingsViewModel {
                 return
             }
             guard let seconds = Int(tag) else { return }
-            if !settings.nextUpEnabled || settings.offersNextUpOff { settings.setNextUpEnabled(true) }
+            if settings.offersNextUpOff { settings.setNextUpEnabled(true) }
             nextUpPromptSeconds = seconds
         }
     }

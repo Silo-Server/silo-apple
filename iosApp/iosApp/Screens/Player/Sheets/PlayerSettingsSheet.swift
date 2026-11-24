@@ -363,13 +363,16 @@ struct PlayerSettingsSheet: View {
                     Text(.playerSettingsSpeed)
                 }
 
-                Toggle(isOn: Binding(
-                    get: { viewModel.settings.autoPlayNextEpisode },
-                    set: { viewModel.settings.setAutoPlayNextEpisode($0) }
-                )) {
-                    Text(.settingsControlAutoplay)
+                // Hidden while Show Next Up Off keeps anything from playing on.
+                if viewModel.nextUpOffersAutoPlay {
+                    Toggle(isOn: Binding(
+                        get: { viewModel.settings.autoPlayNextEpisode },
+                        set: { viewModel.settings.setAutoPlayNextEpisode($0) }
+                    )) {
+                        Text(.settingsControlAutoplay)
+                    }
+                    .tint(.siloSwitchOn)
                 }
-                .tint(.siloSwitchOn)
             }
 
             sleepTimerPicker
