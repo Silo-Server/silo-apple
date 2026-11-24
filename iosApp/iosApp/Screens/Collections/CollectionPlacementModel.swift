@@ -10,7 +10,12 @@ final class CollectionPlacementModel {
         let libraryId: Int
         let libraryName: String
         var isPinned: Bool
+        var hasLoaded: Bool = true
         var id: Int { libraryId }
+    }
+
+    var hasFailedLibraryPlacement: Bool {
+        libraryPlacements.contains { !$0.hasLoaded }
     }
 
     let collectionId: String
@@ -142,7 +147,8 @@ final class CollectionPlacementModel {
                     placements.append(LibraryPlacement(
                         libraryId: lib.id,
                         libraryName: lib.name,
-                        isPinned: pinned
+                        isPinned: pinned,
+                        hasLoaded: layout != nil
                     ))
                 }
             }
@@ -192,7 +198,8 @@ final class CollectionPlacementModel {
     func toggleLibraryPin(libraryId: Int) async {
         guard !isLoading,
               !updatingLibraryIds.contains(libraryId),
-              let idx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) else { return }
+              let idx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }),
+              libraryPlacements[idx].hasLoaded else { return }
         let startIdentity = requestIdentity()
         libraryMutationGeneration[libraryId, default: 0] += 1
         updatingLibraryIds.insert(libraryId)
@@ -471,6 +478,7 @@ final class AddToCollectionModel {
         entries[index].itemCount = max(0, entries[index].itemCount + (nextIn ? 1 : -1))
 
         var toggleError: String?
+        var shouldReconcileUnknownOutcome = false
         do {
             if nextIn {
                 try await api.addItemToCollection(collectionId: collectionId, itemId: contentId, position: 0)
@@ -481,13 +489,28 @@ final class AddToCollectionModel {
             HomeSectionsEditorModel.refreshScope(.home)
         } catch {
             if requestIdentity() == startIdentity {
-                if let idx = entries.firstIndex(where: { $0.id == collectionId }) {
-                    entries[idx].containsItem = wasIn
-                    entries[idx].itemCount = max(0, entries[idx].itemCount + (wasIn ? 1 : -1))
-                }
+                let isDefiniteClientRejection: Bool = {
+                    if case APIv2Error.httpStatus(let code) = error {
+                        return (400..<500).contains(code)
+                    }
+                    return false
+                }()
                 let message = ErrorState(error).message
                 toggleError = message
                 errorMessage = message
+                if isDefiniteClientRejection {
+                    if let idx = entries.firstIndex(where: { $0.id == collectionId }) {
+                        entries[idx].containsItem = wasIn
+                        entries[idx].itemCount = max(0, entries[idx].itemCount + (wasIn ? 1 : -1))
+                    }
+                } else {
+                    // The server may have committed the membership change before
+                    // the response was lost; invalidate caches and reconcile from
+                    // the server instead of presenting an unconfirmed rollback.
+                    ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
+                    HomeSectionsEditorModel.refreshScope(.home)
+                    shouldReconcileUnknownOutcome = true
+                }
             }
         }
 
@@ -496,10 +519,12 @@ final class AddToCollectionModel {
         mutationGeneration += 1
         busyCollectionIds.remove(collectionId)
 
-        // If this toggle invalidated an in-flight recovery reload while the full
-        // list was still incomplete, schedule a fresh reload so existing collections
-        // and Retry state reconcile cleanly.
-        if !hasLoaded, requestIdentity() == startIdentity {
+        if shouldReconcileUnknownOutcome, requestIdentity() == startIdentity {
+            await load(preservingEntry: nil, preservingError: toggleError)
+        } else if !hasLoaded, requestIdentity() == startIdentity {
+            // If this toggle invalidated an in-flight recovery reload while the full
+            // list was still incomplete, schedule a fresh reload so existing collections
+            // and Retry state reconcile cleanly.
             await load(preservingEntry: currentEntry, preservingError: toggleError)
         }
     }

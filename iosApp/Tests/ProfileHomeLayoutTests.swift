@@ -200,7 +200,7 @@ final class ProfileHomeLayoutTests: XCTestCase {
     }
 
     @MainActor
-    func testReorderVisibleSlotsKeepsHiddenRowsAnchoredAndNoOpsLastToBottom() {
+    func testReorderVisibleSlotsKeepsHiddenRowsAnchored() {
         let a = makeRow(id: "sec-a", position: 0)
         let h = makeRow(id: "sec-h", hidden: true, position: 1)
         let b = makeRow(id: "sec-b", position: 2)
@@ -211,16 +211,50 @@ final class ProfileHomeLayoutTests: XCTestCase {
             return true
         }
         XCTAssertEqual(swapped?.map(\.id), ["sec-b", "sec-h", "sec-a"])
+    }
 
-        // Moving already-last visible row B to bottom returns nil (no-op).
-        let noop = HomeSectionsEditorModel.reorderVisibleSlots(in: [a, h, b]) { visible in
-            guard let index = visible.firstIndex(where: { $0.id == "sec-b" }),
-                  index < visible.count - 1 else { return false }
-            let row = visible.remove(at: index)
-            visible.append(row)
-            return true
-        }
-        XCTAssertNil(noop)
+    @MainActor
+    func testMoveToBottomOnLastVisibleRowIsNoOpAndSendsNoSave() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "layout-test")
+        await tokens.setServerUrl("https://layout.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "layout-test",
+            serverURL: "https://layout.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+
+        let settingsJSON = """
+        {"items":[
+          {"id":"sec-a","section_type":"recently_added","title":"A","default_title":"A","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":0},
+          {"id":"sec-h","section_type":"recently_added","title":"H","default_title":"H","featured":false,"item_limit":20,"hidden":true,"is_custom":false,"customized":true,"position":1},
+          {"id":"sec-b","section_type":"recently_added","title":"B","default_title":"B","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":2}
+        ]}
+        """
+        let overridesJSON = #"{"items":[{"id":"ovr-h","section_id":"sec-h","hidden":true,"removed":false,"section_type":"","title":"","is_user_added":false,"user_section_type":"","user_title":""}]}"#
+        stub.reply(path: "/api/v2/profile/sections/settings", 200, settingsJSON)
+        stub.reply(path: "/api/v2/profile/sections", 200, overridesJSON)
+
+        let editor = HomeSectionsEditorModel(scope: .home, api: api, requestIdentity: { identity })
+        let loaded = await editor.load()
+        XCTAssertTrue(loaded)
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-a", "sec-h", "sec-b"])
+
+        let requestCountAfterLoad = stub.requests.count
+        await editor.moveToBottom(id: "sec-b").value
+
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-a", "sec-h", "sec-b"])
+        XCTAssertEqual(stub.requests.count, requestCountAfterLoad)
     }
 
     func testAddingCustomRowAfterHiddenAdminRowDoesNotPinAdminOrder() throws {
@@ -247,18 +281,25 @@ final class ProfileHomeLayoutTests: XCTestCase {
     @MainActor
     func testApplyingVisibleOrderPreservesRestoredVisibilityAndHiddenSlots() {
         let a = makeRow(id: "sec-a", position: 0)
-        let h = makeRow(id: "sec-h", hidden: true, position: 1)
-        let b = makeRow(id: "sec-b", position: 2)
-        let c = makeRow(id: "sec-c", position: 3)
+        let c = makeRow(id: "sec-c", position: 1)
+        let h = makeRow(id: "sec-h", hidden: true, position: 2)
+        let b = makeRow(id: "sec-b", position: 3)
+        let d = makeRow(id: "sec-d", position: 4)
 
-        // Simulates hiding C (failed -> C restored in committedRows) while B was dragged above A.
-        let reconciled = HomeSectionsEditorModel.applyingVisibleOrder(
-            ["sec-b", "sec-a"],
-            to: [a, h, b, c]
+        // Simulates hiding C (failed -> C restored at index 1 in committedRows) while D was dragged and returned.
+        let noop = HomeSectionsEditorModel.applyingVisibleOrder(
+            ["sec-a", "sec-b", "sec-d"],
+            to: [a, c, h, b, d]
         )
+        XCTAssertEqual(noop.map(\.id), ["sec-a", "sec-c", "sec-h", "sec-b", "sec-d"])
 
-        XCTAssertEqual(reconciled.map(\.id), ["sec-b", "sec-h", "sec-a", "sec-c"])
-        XCTAssertEqual(reconciled.map(\.hidden), [false, true, false, false])
+        // Dragging D above B reorders only the drafted rows while keeping restored C and hidden H anchored.
+        let reordered = HomeSectionsEditorModel.applyingVisibleOrder(
+            ["sec-a", "sec-d", "sec-b"],
+            to: [a, c, h, b, d]
+        )
+        XCTAssertEqual(reordered.map(\.id), ["sec-a", "sec-c", "sec-h", "sec-d", "sec-b"])
+        XCTAssertEqual(reordered.map(\.hidden), [false, false, true, false, false])
     }
 
     @MainActor

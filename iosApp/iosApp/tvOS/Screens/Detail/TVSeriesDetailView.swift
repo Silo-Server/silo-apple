@@ -1166,7 +1166,8 @@ struct TVSeriesDetailView: View {
                             TVActionPopoverItem(
                                 id: "col:close",
                                 title: AppLanguage.string(.commonBack, locale: locale),
-                                systemImage: "chevron.left"
+                                systemImage: "chevron.left",
+                                navigatesBack: true
                             ),
                         ]
                     }
@@ -1223,7 +1224,7 @@ struct TVSeriesDetailView: View {
                     let model = AddToCollectionModel(contentId: targetId)
                     collectionsModel = model
                     Task { await model.load() }
-                } else if let model = collectionsModel, !model.hasLoaded, !model.isLoading {
+                } else if let model = collectionsModel, !model.isLoading, !model.isCreating, model.busyCollectionIds.isEmpty {
                     Task { await model.load() }
                 }
             },

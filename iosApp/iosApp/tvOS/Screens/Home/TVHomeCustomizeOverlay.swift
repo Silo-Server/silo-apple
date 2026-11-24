@@ -1023,6 +1023,7 @@ struct TVAddRowModal: View {
     @State private var selectedTab: SourceTab = .recipes
     @State private var addedKeys = Set<String>()
     @FocusState private var focusedTab: SourceTab?
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 26) {
@@ -1202,7 +1203,9 @@ struct TVAddRowModal: View {
                         || addedKeys.contains("user:\(collection.id)")
                     collectionCard(
                         title: collection.name,
-                        subtitle: collection.itemCount.map { $0 == 1 ? "1 item" : "\($0) items" },
+                        subtitle: collection.itemCount.map {
+                            AppLanguage.string(.collectionsItemCount(count: $0, LocaleFormat.groupedCount($0, locale: locale)), locale: locale)
+                        },
                         posterUrl: collection.posterUrl,
                         posterThumbhash: collection.posterThumbhash,
                         isAdded: isAdded
@@ -1267,7 +1270,7 @@ struct TVAddRowModal: View {
                         collectionCard(
                             title: collection.title,
                             subtitle: collection.itemCount > 0
-                                ? "\(collection.libraryName) · \(collection.itemCount) items"
+                                ? "\(collection.libraryName) · \(AppLanguage.string(.collectionsItemCount(count: collection.itemCount, LocaleFormat.groupedCount(collection.itemCount, locale: locale)), locale: locale))"
                                 : collection.libraryName,
                             posterUrl: collection.posterUrl,
                             posterThumbhash: collection.posterThumbhash,

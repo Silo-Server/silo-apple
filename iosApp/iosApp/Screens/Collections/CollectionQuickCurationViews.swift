@@ -136,7 +136,7 @@ struct CollectionPinActionBar: View {
                     }
                     .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
 
-                    if !model.hasLoadedHome && !model.isLoading {
+                    if (!model.hasLoadedHome || model.hasFailedLibraryPlacement) && !model.isLoading {
                         Button {
                             Task { await model.load() }
                         } label: {
@@ -151,10 +151,12 @@ struct CollectionPinActionBar: View {
                         } label: {
                             Label(
                                 placement.libraryName,
-                                systemImage: placement.isPinned ? "checkmark.circle.fill" : "circle"
+                                systemImage: placement.hasLoaded
+                                    ? (placement.isPinned ? "checkmark.circle.fill" : "circle")
+                                    : "exclamationmark.triangle"
                             )
                         }
-                        .disabled(model.isLoading || model.updatingLibraryIds.contains(placement.libraryId))
+                        .disabled(model.isLoading || !placement.hasLoaded || model.updatingLibraryIds.contains(placement.libraryId))
                     }
                 }
 
@@ -169,6 +171,7 @@ struct CollectionPinActionBar: View {
                                 systemImage: model.isShared ? "checkmark.circle.fill" : "person.2"
                             )
                         }
+                        .disabled(model.isLoading || model.isUpdatingShare)
                     }
                 }
             } label: {
@@ -227,7 +230,7 @@ struct CollectionPinActionBar: View {
                             isEnabled: !model.isLoading && model.hasLoadedHome && !model.isUpdatingHome
                         ),
                     ]
-                    if !model.hasLoadedHome && !model.isLoading {
+                    if (!model.hasLoadedHome || model.hasFailedLibraryPlacement) && !model.isLoading {
                         items.append(TVActionPopoverItem(
                             id: "retry",
                             title: AppLanguage.string(.commonRetry, locale: locale),
@@ -238,10 +241,12 @@ struct CollectionPinActionBar: View {
                         items.append(TVActionPopoverItem(
                             id: "lib:\(placement.libraryId)",
                             title: placement.libraryName,
-                            detail: placement.isPinned ? AppLanguage.string(.collectionsPinPinnedOnLibrary, locale: locale) : nil,
-                            systemImage: "film.stack",
-                            isSelected: placement.isPinned,
-                            isEnabled: !model.isLoading && !model.updatingLibraryIds.contains(placement.libraryId)
+                            detail: placement.hasLoaded && placement.isPinned
+                                ? AppLanguage.string(.collectionsPinPinnedOnLibrary, locale: locale)
+                                : nil,
+                            systemImage: placement.hasLoaded ? "film.stack" : "exclamationmark.triangle",
+                            isSelected: placement.hasLoaded && placement.isPinned,
+                            isEnabled: !model.isLoading && placement.hasLoaded && !model.updatingLibraryIds.contains(placement.libraryId)
                         ))
                     }
                     if model.isUserCollection && model.canToggleShare {
@@ -254,7 +259,7 @@ struct CollectionPinActionBar: View {
                             ),
                             systemImage: "person.2",
                             isSelected: model.isShared,
-                            isEnabled: !model.isUpdatingShare,
+                            isEnabled: !model.isLoading && !model.isUpdatingShare,
                             startsSection: true
                         ))
                     }

@@ -293,10 +293,8 @@ final class HomeSectionsEditorModel {
             allSucceeded = false
         }
 
-        if allSucceeded {
-            hasLoadedPickerCatalog = true
-            pickerCatalogIdentity = startIdentity
-        }
+        hasLoadedPickerCatalog = allSucceeded
+        pickerCatalogIdentity = allSucceeded ? startIdentity : nil
     }
 
     // MARK: - Queries
@@ -380,27 +378,27 @@ final class HomeSectionsEditorModel {
     }
 
     /// Projects a dragged visible-row ID order onto `base` without altering
-    /// visibility, membership, or hidden-row slot positions.
+    /// visibility, membership, hidden-row slots, or rows restored after drag began.
     static func applyingVisibleOrder(
         _ orderedVisibleIds: [String],
         to base: [APIv2ProfileSectionSetting]
     ) -> [APIv2ProfileSectionSetting] {
-        let visibleIndices = base.indices.filter { !base[$0].hidden }
-        let currentVisible = visibleIndices.map { base[$0] }
-        let byId = Dictionary(uniqueKeysWithValues: currentVisible.map { ($0.id, $0) })
+        let draftSet = Set(orderedVisibleIds)
+        // Reorder only the visible slots currently occupied by IDs in the draft
+        // so rows restored since the drag started (e.g. a reverted hide) stay
+        // anchored at their current indices.
+        let targetSlots = base.indices.filter { !base[$0].hidden && draftSet.contains(base[$0].id) }
+        let byId = Dictionary(uniqueKeysWithValues: targetSlots.map { (base[$0].id, base[$0]) })
         var placed = Set<String>()
         var reordered: [APIv2ProfileSectionSetting] = []
-        reordered.reserveCapacity(currentVisible.count)
+        reordered.reserveCapacity(targetSlots.count)
         for id in orderedVisibleIds {
             if let row = byId[id], placed.insert(id).inserted {
                 reordered.append(row)
             }
         }
-        for row in currentVisible where placed.insert(row.id).inserted {
-            reordered.append(row)
-        }
         var result = base
-        for (slot, row) in zip(visibleIndices, reordered) {
+        for (slot, row) in zip(targetSlots, reordered) {
             result[slot] = row
         }
         return result
@@ -599,7 +597,10 @@ final class HomeSectionsEditorModel {
         let startIdentity = requestIdentity()
         isResetting = true
         dragDraftVisibleOrder = nil
-        editGeneration += 1
+        // Invalidate concurrent reads without bumping `editGeneration`, so a
+        // prior queued PUT that fails can still restore `confirmedRows` if DELETE
+        // also fails.
+        loadGeneration += 1
         let previous = saveChain
         let task = Task { @MainActor in
             await previous?.value
@@ -610,6 +611,7 @@ final class HomeSectionsEditorModel {
                 guard !Task.isCancelled, self.requestIdentity() == startIdentity else { return }
                 // Invalidate pre-reset state immediately once the server accepts DELETE
                 // so a failed reload can never resend pre-reset overrides.
+                self.editGeneration += 1
                 self.saved = []
                 self.confirmedRows = []
                 self.committedRows = []
@@ -641,25 +643,39 @@ final class HomeSectionsEditorModel {
                 isRefreshing = false
             }
         }
-        do {
-            let layout = try await api.profileLayout(scope: scope)
-            guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == expectedIdentity else { return }
-            auth = layout.auth
-            saved = layout.saved
-            committedRows = layout.rows
-            dragDraftVisibleOrder = nil
-            confirmedRows = layout.rows
-            hasLoadedFromServer = true
-            saveError = nil
-            phase = .loaded
-        } catch {
-            guard !(error is CancellationError),
-                  !Task.isCancelled,
-                  loadGeneration == myLoadGen,
-                  requestIdentity() == expectedIdentity else { return }
-            let message = ErrorState(error).message
-            phase = .failed(message)
-            saveError = message
+        for attempt in 0..<3 {
+            let startCacheToken = ResponseCache.shared.writeToken
+            do {
+                let layout = try await api.profileLayout(scope: scope)
+                guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == expectedIdentity else { return }
+                if ResponseCache.shared.wasInvalidated(scopeCacheKey, after: startCacheToken) {
+                    if attempt < 2 {
+                        continue
+                    }
+                    let message = ErrorState(URLError(.cannotLoadFromNetwork)).message
+                    phase = .failed(message)
+                    saveError = message
+                    return
+                }
+                auth = layout.auth
+                saved = layout.saved
+                committedRows = layout.rows
+                dragDraftVisibleOrder = nil
+                confirmedRows = layout.rows
+                hasLoadedFromServer = true
+                saveError = nil
+                phase = .loaded
+                return
+            } catch {
+                guard !(error is CancellationError),
+                      !Task.isCancelled,
+                      loadGeneration == myLoadGen,
+                      requestIdentity() == expectedIdentity else { return }
+                let message = ErrorState(error).message
+                phase = .failed(message)
+                saveError = message
+                return
+            }
         }
     }
 
@@ -1041,6 +1057,20 @@ final class HomePreferencesModel {
                     self.uncertainConfirmedKeys.insert(scope)
                 }
                 return
+            } catch let held as ProfileSettingsWriter.HeldChange {
+                // Automatic retries were exhausted and the server may already
+                // hold the new value; mark the key uncertain, lock only this
+                // key, and reconcile from the server instead of reverting to
+                // a potentially stale confirmed baseline.
+                guard self.keyGeneration[scope] == generation,
+                      self.isAuthorizedForWrite(key, identity: identity) else { return }
+                let message = ErrorState(held).message
+                self.errorMessage = message
+                self.uncertainConfirmedKeys.insert(scope)
+                self.reconcilingKeys.insert(scope)
+                Task { @MainActor [weak self] in
+                    await self?.load(preservingError: message)
+                }
             } catch {
                 guard self.keyGeneration[scope] == generation,
                       self.isAuthorizedForWrite(key, identity: identity) else { return }
