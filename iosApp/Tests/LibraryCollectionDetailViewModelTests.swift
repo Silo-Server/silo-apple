@@ -253,4 +253,26 @@ final class LibraryCollectionDetailViewModelTests: XCTestCase {
         XCTAssertNil(model.paginationError)
         XCTAssertFalse(model.hasMore)
     }
+
+    func testEmptyRegularCollectionRefreshKeepsLoadedStateAndSurfacesInlineRefreshError() async throws {
+        let handler = StubURLProtocol.Handler()
+        handler.expect(StubURLProtocol.any) { _ in Self.page([], type: "movie") }
+        handler.expect(StubURLProtocol.any) { _ in throw URLError(.networkConnectionLost) }
+        let (api, tokens) = try await client(handler)
+        let model = LibraryCollectionDetailViewModel(api: api, tokens: tokens)
+        XCTAssertFalse(model.hasLoadedOnce)
+
+        await load(model, scope: .movie)
+        XCTAssertTrue(model.hasLoadedOnce)
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertFalse(model.hasMore)
+        XCTAssertNil(model.error)
+
+        let seqBeforeRefresh = model.pageSequence
+        await load(model, scope: .movie, reset: true)
+        XCTAssertTrue(model.hasLoadedOnce)
+        XCTAssertNil(model.error)
+        XCTAssertNotNil(model.refreshError)
+        XCTAssertEqual(model.pageSequence, seqBeforeRefresh)
+    }
 }

@@ -610,7 +610,13 @@ final class AddToCollectionModel {
         }
 
         do {
-            let capabilities = try await api.collectionCapabilitiesIfSupported()
+            let capabilities: APIv2CollectionCapabilities?
+            do {
+                capabilities = try await api.collectionCapabilitiesIfSupported()
+            } catch {
+                guard Self.isRecoverableProbeError(error) else { throw error }
+                capabilities = nil
+            }
             guard !Task.isCancelled,
                   loadGeneration == myLoadGen,
                   pendingMutations == 0,
@@ -626,20 +632,25 @@ final class AddToCollectionModel {
                 usesContainsField = true
             } else {
                 usesContainsField = false
-                let searchFeatures = try await api.catalogSearchFeatures()
+                let supportsItemCollections: Bool
+                do {
+                    supportsItemCollections = try await api.catalogSearchFeatures().itemCollections
+                } catch {
+                    guard Self.isRecoverableProbeError(error) else { throw error }
+                    supportsItemCollections = false
+                }
                 guard !Task.isCancelled,
                       loadGeneration == myLoadGen,
                       pendingMutations == 0,
                       mutationGeneration == startMutationGen,
                       requestIdentity() == startIdentity else { return }
-                if searchFeatures.itemCollections {
+                if supportsItemCollections {
                     async let collectionsTask = api.collections()
                     async let membershipTask: Set<String>? = {
                         do {
                             return try await api.catalogItemCollectionIds(itemId: contentId)
-                        } catch APIv2Error.httpStatus(404) {
-                            return nil
-                        } catch APIv2Error.problem(let problem) where problem.status == 404 {
+                        } catch {
+                            guard Self.isRecoverableProbeError(error) else { throw error }
                             return nil
                         }
                     }()
@@ -686,8 +697,14 @@ final class AddToCollectionModel {
             hasLoaded = true
             loadErrorMessage = nil
             hasUncertainCreation = false
-            unconfirmedCollectionIds.removeAll()
-            needsReconciliation = false
+            // Only unlock previously unconfirmed rows whose membership was
+            // actually confirmed by this read (or that no longer exist).
+            let loadedIds = Set(loaded.map(\.id))
+            let confirmedIds = Set(loaded.compactMap { $0.containsItem != nil ? $0.id : nil })
+            unconfirmedCollectionIds = unconfirmedCollectionIds.filter { id in
+                loadedIds.contains(id) && !confirmedIds.contains(id)
+            }
+            needsReconciliation = !unconfirmedCollectionIds.isEmpty
             pendingReconciliationError = nil
             let hasUnacknowledgedFailure = mutationFailureCount > acknowledgedFailureCount
             if let preservingError {
@@ -1070,6 +1087,14 @@ final class AddToCollectionModel {
     @discardableResult
     func createAndAdd(name: String) async -> CreateResult {
         await startCreateAndAdd(name: name).value
+    }
+
+    nonisolated private static func isRecoverableProbeError(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if case HTTPError.requestIdentityChanged = error { return false }
+        if case HTTPError.authorityChanged = error { return false }
+        if UpdateRequirement(error) != nil { return false }
+        return true
     }
 
     private static func authMatchesIdentity(

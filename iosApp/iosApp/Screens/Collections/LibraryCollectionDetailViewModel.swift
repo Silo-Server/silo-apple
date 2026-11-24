@@ -6,6 +6,8 @@ import Foundation
 final class LibraryCollectionDetailViewModel {
     private(set) var items: [BrowseItem] = []
     private(set) var isLoading = false
+    private(set) var hasLoadedOnce = false
+    private(set) var pageSequence = 0
     private(set) var error: ErrorState?
     private(set) var refreshError: ErrorState?
     private(set) var paginationError: ErrorState?
@@ -100,6 +102,9 @@ final class LibraryCollectionDetailViewModel {
                 items = cached.response.items
                 totalItems = cached.response.totalExact == false ? nil : cached.response.total
                 hasMore = cached.response.hasMore ?? false
+                if !items.isEmpty {
+                    hasLoadedOnce = true
+                }
             }
 
             // Cached rows have no live cursor. Their next load starts at page one.
@@ -168,6 +173,8 @@ final class LibraryCollectionDetailViewModel {
             }
             continuation = page.continuation
             hasMore = page.continuation != nil
+            hasLoadedOnce = true
+            pageSequence += 1
             error = nil
             paginationError = nil
             if replacedPageOne {
@@ -236,6 +243,8 @@ final class LibraryCollectionDetailViewModel {
                 }
                 continuation = lastValidatedPage.continuation
                 hasMore = lastValidatedPage.continuation != nil
+                hasLoadedOnce = true
+                pageSequence += 1
                 self.error = nil
                 if validatedReplacedPageOne {
                     self.refreshError = nil
@@ -244,7 +253,7 @@ final class LibraryCollectionDetailViewModel {
                 self.paginationError = ErrorState(effectiveError)
                 return false
             }
-            if items.isEmpty {
+            if items.isEmpty && (!hasLoadedOnce || isIdentityError || kind != .regular) {
                 self.error = ErrorState(effectiveError)
             } else if resetsPage {
                 self.refreshError = ErrorState(effectiveError)
@@ -257,6 +266,7 @@ final class LibraryCollectionDetailViewModel {
 
     private func clearPage() {
         items = []
+        hasLoadedOnce = false
         continuation = nil
         totalItems = nil
         hasMore = true

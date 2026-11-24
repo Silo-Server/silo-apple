@@ -913,8 +913,20 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertNil(case2CollectionsReq.query["contains_item"])
         XCTAssertFalse(case2Requests.contains { $0.path == "/api/v2/catalog/items/movie-99/collections" })
 
-        // 3) Unconfirmed row after failed create-and-add + failed reconciliation stays locked until Retry succeeds.
-        stub.reply(path: "/api/v2/collections/capabilities", 500, #"{"error":{"code":"internal","message":"down"}}"#)
+        // 3) Recoverable capability probe failures (e.g. 503) still load the personal
+        //    collection list with unknown membership instead of blocking the picker.
+        stub.reply(path: "/api/v2/collections/capabilities", 503, #"{"error":{"code":"unavailable","message":"degraded"}}"#)
+        stub.reply(path: "/api/v2/catalog/search/capabilities", 503, #"{"error":{"code":"unavailable","message":"degraded"}}"#)
+        let degradedModel = AddToCollectionModel(contentId: "movie-99", api: api, requestIdentity: { identity })
+        await degradedModel.load()
+        XCTAssertTrue(degradedModel.hasLoaded)
+        XCTAssertEqual(degradedModel.entries.map(\.id), ["own-1"])
+        XCTAssertNil(degradedModel.entries.first?.containsItem)
+
+        // 4) Unconfirmed row after failed load + uncertain toggle stays locked even when
+        //    a degraded reload loads the list without confirmed membership, and unlocks
+        //    only once Retry confirms membership from the server.
+        stub.reply(path: "/api/v2/collections", 500, #"{"error":{"code":"internal","message":"down"}}"#)
         let recoveryModel = AddToCollectionModel(contentId: "movie-99", api: api, requestIdentity: { identity })
         await recoveryModel.load()
         XCTAssertFalse(recoveryModel.hasLoaded)
@@ -926,7 +938,8 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertEqual(recoveryModel.entries.map(\.id), ["new-1"])
 
         // Removing fails with uncertain outcome (no response / network error -> mayHaveApplied)
-        // while reconciliation also fails.
+        // while reconciliation fails on /api/v2/collections.
+        stub.reply(path: "/api/v2/collections", 500, #"{"error":{"code":"internal","message":"down"}}"#)
         stub.sequence(path: "/api/v2/collections/new-1/items/movie-99", [.failure(URLError(.networkConnectionLost))])
         await recoveryModel.toggle(collectionId: "new-1")
         XCTAssertTrue(recoveryModel.unconfirmedCollectionIds.contains("new-1"))
@@ -935,7 +948,19 @@ final class ProfileHomeLayoutTests: XCTestCase {
         await recoveryModel.toggle(collectionId: "new-1")
         XCTAssertEqual(stub.requests.count, requestsBeforeBlockedTap)
 
-        // Retry load succeeds and unlocks the row.
+        // Degraded Retry (collections succeeds, capability probes still 503): list loads
+        // with unknown membership, but "new-1" stays locked until membership is confirmed.
+        stub.reply(path: "/api/v2/collections", 200, """
+        {"items":[
+          {"id":"new-1","name":"Weekend","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"}
+        ],"groups":[]}
+        """)
+        await recoveryModel.load()
+        XCTAssertTrue(recoveryModel.hasLoaded)
+        XCTAssertNil(recoveryModel.entries.first?.containsItem)
+        XCTAssertTrue(recoveryModel.unconfirmedCollectionIds.contains("new-1"))
+
+        // Confirmed Retry succeeds and unlocks the row.
         stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":true,"contains_item":true}"#)
         stub.reply(path: "/api/v2/collections", 200, """
         {"items":[
@@ -944,6 +969,7 @@ final class ProfileHomeLayoutTests: XCTestCase {
         """)
         await recoveryModel.load()
         XCTAssertTrue(recoveryModel.hasLoaded)
+        XCTAssertEqual(recoveryModel.entries.first?.containsItem, false)
         XCTAssertTrue(recoveryModel.unconfirmedCollectionIds.isEmpty)
     }
 
@@ -1050,6 +1076,67 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertEqual(updated.map(\.id), ["custom-y"])
         XCTAssertEqual(updated.first?.position, 2)
     }
+
+    @MainActor
+    func testHomePreferencesReconcilesWhenRefusalFollowsEarlierRetryableFailure() async throws {
+        let identity = HTTPRequestIdentity(
+            serverId: "prefs-retry-refusal",
+            serverURL: "https://prefs.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+        let scopedTransport = FakeHomePreferencesTransport()
+        let writeTransport = FakeHomePreferencesWriteTransport()
+        let writer = ProfileSettingsWriter(
+            transport: writeTransport,
+            retryPolicy: .init(maximumAutomaticRetries: 2, base: .milliseconds(1), maximum: .milliseconds(1)),
+            sleep: { _ in }
+        )
+        let model = HomePreferencesModel(
+            transport: scopedTransport,
+            writer: writer,
+            requestIdentity: { identity }
+        )
+
+        await model.load()
+        XCTAssertFalse(model.hideWatchedItems)
+
+        // 1) A first-attempt refusal (403) with no prior retryable failure rolls back cleanly.
+        writeTransport.queuedErrors = [
+            SettingsAPIError.server(status: 403, code: "forbidden", message: "Denied"),
+        ]
+        model.setHideWatchedItems(true)
+        for _ in 0..<100 {
+            if !model.isSaving && model.errorMessage != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(model.hideWatchedItems)
+        XCTAssertFalse(model.hasReconcilingKeys)
+
+        // 2) An earlier retryable failure (response lost — server applied `true`) followed
+        //    by a refusal (403) on retry must report uncertainty and reconcile from the server
+        //    instead of rolling back to `false`.
+        scopedTransport.hideWatchedItems = true
+        writeTransport.queuedErrors = [
+            SettingsAPIError.transport(description: "response lost"),
+            SettingsAPIError.server(status: 403, code: "forbidden", message: "Denied"),
+        ]
+        let writesBefore = writeTransport.writtenValues.count
+        model.setHideWatchedItems(true)
+        for _ in 0..<100 {
+            if writeTransport.writtenValues.count >= writesBefore + 2,
+               !model.isSaving,
+               !model.hasReconcilingKeys,
+               model.errorMessage != nil {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(writeTransport.writtenValues.count, writesBefore + 2)
+        XCTAssertTrue(model.hideWatchedItems)
+        XCTAssertFalse(model.hasReconcilingKeys)
+        XCTAssertNotNil(model.errorMessage)
+    }
 }
 
 @MainActor
@@ -1105,6 +1192,7 @@ private final class FakeHomePreferencesTransport: ProfileScopedSettingTransport,
 @MainActor
 private final class FakeHomePreferencesWriteTransport: ProfileSettingsTransport, @unchecked Sendable {
     private(set) var writtenValues: [SettingJSONValue] = []
+    var queuedErrors: [Error] = []
     private var shouldHoldNext = false
     private var released = false
     private var onHeldHandler: (() -> Void)?
@@ -1157,8 +1245,12 @@ private final class FakeHomePreferencesWriteTransport: ProfileSettingsTransport,
         if hold {
             await waitUntilReleased()
         }
-        await MainActor.run {
+        let nextError: Error? = await MainActor.run {
             writtenValues.append(value)
+            return queuedErrors.isEmpty ? nil : queuedErrors.removeFirst()
+        }
+        if let nextError {
+            throw nextError
         }
     }
 

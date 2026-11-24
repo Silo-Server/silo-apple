@@ -8,6 +8,7 @@ struct CollectionDetailView: View {
 
     @State private var items: [BrowseItem] = []
     @State private var isLoading = false
+    @State private var hasLoadedOnce = false
     @State private var error: ErrorState?
     @State private var refreshError: ErrorState?
     @State private var loadGeneration = 0
@@ -23,7 +24,7 @@ struct CollectionDetailView: View {
         Group {
             if items.isEmpty, let error {
                 ErrorView(state: error, onRetry: { scheduleReload(delay: nil) })
-            } else if items.isEmpty && isLoading {
+            } else if items.isEmpty && !hasLoadedOnce {
                 Color.clear
             } else {
                 gridContent
@@ -108,12 +109,21 @@ struct CollectionDetailView: View {
                 .padding(.top, SiloTheme.smallPadding)
             }
             if items.isEmpty {
-                EmptyStateView(
-                    icon: "square.stack",
-                    title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
-                    subtitle: AppLanguage.string(.collectionsEmptyItemsHint, locale: locale)
-                )
-                .padding(.top, SiloTheme.largePadding)
+                if isLoading {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .padding(.vertical, SiloTheme.largePadding)
+                } else {
+                    EmptyStateView(
+                        icon: "square.stack",
+                        title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
+                        subtitle: AppLanguage.string(.collectionsEmptyItemsHint, locale: locale)
+                    )
+                    .padding(.top, SiloTheme.largePadding)
+                }
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     CatalogGrid(
@@ -155,6 +165,9 @@ struct CollectionDetailView: View {
         if items.isEmpty,
            let cached: CatalogResponse = ResponseCache.shared.get(cacheKey) {
             items = cached.items
+            if !items.isEmpty {
+                hasLoadedOnce = true
+            }
         }
         if items.isEmpty {
             isLoading = true
@@ -175,6 +188,7 @@ struct CollectionDetailView: View {
                   !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) else { return }
             ResponseCache.shared.set(response, for: cacheKey, fetchedAt: startToken)
             items = response.items
+            hasLoadedOnce = true
             error = nil
             refreshError = nil
             hasPendingInvalidation = false
@@ -185,7 +199,7 @@ struct CollectionDetailView: View {
                   invalidationGeneration == startInvalidationGen,
                   SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
                   !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) else { return }
-            if items.isEmpty {
+            if items.isEmpty && !hasLoadedOnce {
                 self.error = ErrorState(err)
             } else {
                 self.refreshError = ErrorState(err)

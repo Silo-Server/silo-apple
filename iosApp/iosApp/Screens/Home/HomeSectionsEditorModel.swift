@@ -1741,12 +1741,13 @@ final class HomePreferencesModel {
                 }
                 return
             } catch let held as ProfileSettingsWriter.HeldChange {
-                // Automatic retries were exhausted and the server may already
-                // hold the new value; record uncertainty even if a newer write
+                // Automatic retries were exhausted (or a later refusal followed
+                // an earlier retryable failure) and the server may already hold
+                // the new value; record uncertainty even if a newer write
                 // superseded this generation, and lock + reconcile if latest.
                 self.uncertainConfirmedKeys.insert(scope)
                 guard self.keyGeneration[scope] == generation else { return }
-                let message = ErrorState(held).message
+                let message = ErrorState(held.cause).message
                 self.reconcilingKeys.insert(scope)
                 if self.requestIdentity() == identity {
                     self.writeFailureCount += 1

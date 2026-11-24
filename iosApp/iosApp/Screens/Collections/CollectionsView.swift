@@ -801,7 +801,7 @@ struct LibraryCollectionDetailView: View {
         Group {
             if viewModel.items.isEmpty, let error = viewModel.error {
                 ErrorView(state: error, onRetry: { scheduleReload(delay: nil) })
-            } else if viewModel.items.isEmpty && viewModel.isLoading {
+            } else if viewModel.items.isEmpty && !viewModel.hasLoadedOnce {
                 Color.clear
             } else if !viewModel.items.isEmpty || kind == nil || kind == .regular {
                 content
@@ -815,7 +815,7 @@ struct LibraryCollectionDetailView: View {
                         onMoveUp: nil
                     )
                     #endif
-                    .task(id: "\(viewModel.items.count)-\(viewModel.hasMore)-\(viewModel.isLoading)") {
+                    .task(id: "\(viewModel.items.count)-\(viewModel.hasMore)-\(viewModel.pageSequence)-\(viewModel.paginationError == nil)-\(viewModel.refreshError == nil)") {
                         await loadMoreIfNeeded()
                     }
             } else if let paginationError = viewModel.paginationError {
@@ -920,12 +920,21 @@ struct LibraryCollectionDetailView: View {
                 }
 
                 if viewModel.items.isEmpty && !viewModel.hasMore && viewModel.paginationError == nil {
-                    EmptyStateView(
-                        icon: "square.stack.3d.up.fill",
-                        title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
-                        subtitle: AppLanguage.string(.collectionsEmptyItemsBody, locale: locale)
-                    )
-                    .padding(.top, SiloTheme.largePadding)
+                    if viewModel.isLoading {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
+                        }
+                        .padding(.vertical, SiloTheme.largePadding)
+                    } else {
+                        EmptyStateView(
+                            icon: "square.stack.3d.up.fill",
+                            title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
+                            subtitle: AppLanguage.string(.collectionsEmptyItemsBody, locale: locale)
+                        )
+                        .padding(.top, SiloTheme.largePadding)
+                    }
                 } else if viewModel.items.isEmpty && viewModel.hasMore && viewModel.paginationError == nil {
                     HStack {
                         Spacer()
@@ -941,7 +950,7 @@ struct LibraryCollectionDetailView: View {
                         Spacer()
                     }
                     .padding(.vertical, SiloTheme.largePadding)
-                    .task(id: "\(viewModel.items.count)-\(viewModel.hasMore)-\(viewModel.isLoading)") {
+                    .task(id: "\(viewModel.items.count)-\(viewModel.hasMore)-\(viewModel.pageSequence)-\(viewModel.paginationError == nil)-\(viewModel.refreshError == nil)") {
                         await loadMoreIfNeeded()
                     }
                 } else {
