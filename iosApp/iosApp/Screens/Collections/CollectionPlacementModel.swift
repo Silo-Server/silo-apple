@@ -79,7 +79,10 @@ final class CollectionPlacementModel {
         let startIdentity = requestIdentity()
         let startHomeGen = homeMutationGeneration
         let startShareGen = shareMutationGeneration
-        let startTitleGen = titleGeneration
+        if isUserCollection {
+            titleGeneration += 1
+        }
+        let myTitleGen = titleGeneration
         let startLibGens = libraryMutationGeneration
         isLoading = true
         defer {
@@ -129,8 +132,7 @@ final class CollectionPlacementModel {
             case .success(let editor):
                 collectionVersion = editor.version
                 let canonicalName = editor.value.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !canonicalName.isEmpty && titleGeneration == startTitleGen {
-                    titleGeneration += 1
+                if !canonicalName.isEmpty && titleGeneration == myTitleGen {
                     collectionTitle = canonicalName
                 }
                 isShared = editor.value.isShared ?? false
@@ -428,18 +430,18 @@ final class CollectionPlacementModel {
         }
         if isUserCollection {
             let startIdentity = requestIdentity()
-            let startTitleGen = titleGeneration
+            titleGeneration += 1
+            let myTitleGen = titleGeneration
             let editor = try? await api.collectionEditor(id: collectionId)
             guard !Task.isCancelled, requestIdentity() == startIdentity else {
                 throw CancellationError()
             }
-            if titleGeneration != startTitleGen, let existing = collectionTitle, !existing.isEmpty {
+            if titleGeneration != myTitleGen, let existing = collectionTitle, !existing.isEmpty {
                 return existing
             }
             if let canonicalName = editor?.value.name.trimmingCharacters(in: .whitespacesAndNewlines),
                !canonicalName.isEmpty {
-                if titleGeneration == startTitleGen {
-                    titleGeneration += 1
+                if titleGeneration == myTitleGen {
                     collectionTitle = canonicalName
                 }
                 return canonicalName

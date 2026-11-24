@@ -126,7 +126,6 @@ class CollectionsViewModel {
         loadGeneration += 1
         let myGen = loadGeneration
         let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
-        let startToken = ResponseCache.shared.writeToken
         if collections.isEmpty && groups.isEmpty {
             isLoading = true
         } else {
@@ -140,30 +139,47 @@ class CollectionsViewModel {
         }
         error = nil
         async let support: Void = refreshGroupSupport()
-        do {
-            let response: CollectionsResponse = try await api.collections()
-            guard !Task.isCancelled,
-                  loadGeneration == myGen,
-                  SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
-                  !ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startToken) else {
-                await support
-                return
-            }
-            ResponseCache.shared.set(response, for: CacheKey.collections, fetchedAt: startToken)
-            collections = response.collections ?? []
-            groups = sortGroups(response.groups ?? [])
-            rebuildSections()
-        } catch let err {
-            guard !(err is CancellationError),
-                  !Task.isCancelled,
-                  loadGeneration == myGen,
-                  SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
-                  !ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startToken) else {
-                await support
-                return
-            }
-            if collections.isEmpty && groups.isEmpty {
-                self.error = ErrorState(err)
+        for attempt in 0..<3 {
+            let startToken = ResponseCache.shared.writeToken
+            do {
+                let response: CollectionsResponse = try await api.collections()
+                guard !Task.isCancelled,
+                      loadGeneration == myGen,
+                      SeekIntervalPreferences.activeRequestIdentity() == startIdentity else {
+                    await support
+                    return
+                }
+                if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startToken) {
+                    if attempt < 2 {
+                        continue
+                    }
+                    if collections.isEmpty && groups.isEmpty {
+                        self.error = ErrorState(URLError(.cannotLoadFromNetwork))
+                    }
+                    await support
+                    return
+                }
+                ResponseCache.shared.set(response, for: CacheKey.collections, fetchedAt: startToken)
+                collections = response.collections ?? []
+                groups = sortGroups(response.groups ?? [])
+                rebuildSections()
+                break
+            } catch let err {
+                guard !(err is CancellationError),
+                      !Task.isCancelled,
+                      loadGeneration == myGen,
+                      SeekIntervalPreferences.activeRequestIdentity() == startIdentity else {
+                    await support
+                    return
+                }
+                if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startToken),
+                   attempt < 2 {
+                    continue
+                }
+                if collections.isEmpty && groups.isEmpty {
+                    self.error = ErrorState(err)
+                }
+                break
             }
         }
         await support

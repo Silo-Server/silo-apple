@@ -8,6 +8,7 @@ final class LibraryCollectionDetailViewModel {
     private(set) var isLoading = false
     private(set) var error: ErrorState?
     private(set) var refreshError: ErrorState?
+    private(set) var paginationError: ErrorState?
     private(set) var hasMore = true
     private(set) var totalItems: Int?
 
@@ -67,6 +68,7 @@ final class LibraryCollectionDetailViewModel {
         let startToken = ResponseCache.shared.writeToken
         isLoading = true
         error = nil
+        paginationError = nil
         if resetsPage {
             refreshError = nil
         }
@@ -94,62 +96,95 @@ final class LibraryCollectionDetailViewModel {
             }
 
             // Cached rows have no live cursor. Their next load starts at page one.
-            let nextPage = resetsPage ? nil : continuation
-            let page: CatalogListPage
-            if let nextPage {
-                page = try await api.nextCatalogPage(nextPage)
-            } else {
-                var query = APIv2CatalogQuery.collectionItems(
-                    kind: kind, collectionId: collectionId, limit: 60
-                )
-                query.type = mediaScope?.rawValue
-                if mediaScope != nil { query.libraryId = String(libraryId) }
-                page = try await api.catalogPage(query)
-            }
-            let stillOwnsRequest = await api.isCurrentOwner(requestOwner)
-            guard requestGeneration == generation,
-                  invalidationGeneration == startInvalidation,
-                  !Task.isCancelled,
-                  !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
-            guard stillOwnsRequest else { throw HTTPError.requestIdentityChanged }
+            var nextPage = resetsPage ? nil : continuation
+            var replacedPageOne = nextPage == nil
+            var seenIds = replacedPageOne ? Set<String>() : Set(items.map(\.id))
+            var loaded: [BrowseItem] = []
+            var restarts = 0
+            var page: CatalogListPage
+            // Accumulate distinct cards across pages until enough new items
+            // are available to move CatalogGrid's load-more trigger onto a new
+            // card, or until the continuation is exhausted.
+            repeat {
+                if let currentPage = nextPage {
+                    page = try await api.nextCatalogPage(currentPage)
+                } else {
+                    var query = APIv2CatalogQuery.collectionItems(
+                        kind: kind, collectionId: collectionId, limit: 60
+                    )
+                    query.type = mediaScope?.rawValue
+                    if mediaScope != nil { query.libraryId = String(libraryId) }
+                    page = try await api.catalogPage(query)
+                }
+                let stillOwnsRequest = await api.isCurrentOwner(requestOwner)
+                guard requestGeneration == generation,
+                      invalidationGeneration == startInvalidation,
+                      !Task.isCancelled,
+                      !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
+                guard stillOwnsRequest else { throw HTTPError.requestIdentityChanged }
 
-            let replacedPageOne = nextPage == nil || page.startsOver
+                if page.startsOver {
+                    restarts += 1
+                    replacedPageOne = true
+                    loaded = []
+                    seenIds = []
+                }
+                for item in page.response.items where seenIds.insert(item.id).inserted {
+                    loaded.append(item)
+                }
+                nextPage = page.continuation
+            } while loaded.count < CatalogGrid.loadMoreLead && nextPage != nil && restarts < 2
+
             if !replacedPageOne {
-                items.append(contentsOf: page.response.items)
+                items.append(contentsOf: loaded)
             } else {
-                items = page.response.items
-                ResponseCache.shared.set(CachedPage(owner: requestOwner, response: page.response),
+                items = loaded
+                let cachedResponse = CatalogResponse(
+                    items: loaded,
+                    total: page.response.total,
+                    totalExact: page.response.totalExact,
+                    hasMore: page.continuation != nil
+                )
+                ResponseCache.shared.set(CachedPage(owner: requestOwner, response: cachedResponse),
                                          for: requested.cacheKey, fetchedAt: startToken)
             }
-            totalItems = page.response.totalExact == false ? nil : page.response.total
+            if replacedPageOne || page.response.totalExact != false {
+                totalItems = page.response.totalExact == false ? nil : page.response.total
+            }
             continuation = page.continuation
             hasMore = page.continuation != nil
             error = nil
+            paginationError = nil
             if replacedPageOne {
                 refreshError = nil
             }
             return true
         } catch {
-            let stillOwnsRequest: Bool
+            var effectiveError = error
             if let capturedOwner {
-                stillOwnsRequest = await api.isCurrentOwner(capturedOwner)
+                let stillOwnsRequest = await api.isCurrentOwner(capturedOwner)
+                guard requestGeneration == generation,
+                      invalidationGeneration == startInvalidation,
+                      !Task.isCancelled,
+                      !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
+                if !stillOwnsRequest {
+                    effectiveError = HTTPError.requestIdentityChanged
+                }
             } else {
-                stillOwnsRequest = false
+                guard requestGeneration == generation,
+                      invalidationGeneration == startInvalidation,
+                      !Task.isCancelled,
+                      !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
+                effectiveError = HTTPError.requestIdentityChanged
             }
-            guard requestGeneration == generation,
-                  invalidationGeneration == startInvalidation,
-                  !Task.isCancelled,
-                  !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
-            if !stillOwnsRequest {
-                clearPage()
-                return false
-            }
-            if case HTTPError.requestIdentityChanged = error { clearPage() }
-            if case HTTPError.authorityChanged = error { clearPage() }
+            if case HTTPError.requestIdentityChanged = effectiveError { clearPage() }
+            if case HTTPError.authorityChanged = effectiveError { clearPage() }
             if items.isEmpty {
-                self.error = ErrorState(error)
+                self.error = ErrorState(effectiveError)
             } else if resetsPage {
-                self.refreshError = ErrorState(error)
+                self.refreshError = ErrorState(effectiveError)
+            } else {
+                self.paginationError = ErrorState(effectiveError)
             }
             return false
         }
@@ -160,5 +195,7 @@ final class LibraryCollectionDetailViewModel {
         continuation = nil
         totalItems = nil
         hasMore = true
+        refreshError = nil
+        paginationError = nil
     }
 }

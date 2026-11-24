@@ -914,6 +914,23 @@ struct LibraryCollectionDetailView: View {
                         Task { await loadMoreIfNeeded() }
                     }
                 )
+
+                if let paginationError = viewModel.paginationError {
+                    HStack(spacing: 10) {
+                        Label(paginationError.message, systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(Color.siloSecondaryText)
+                            .lineLimit(2)
+                        Spacer(minLength: 8)
+                        Button(.commonRetry) {
+                            Task { await loadItems(reset: false) }
+                        }
+                        .font(.footnote.weight(.semibold))
+                        #if os(tvOS)
+                        .buttonStyle(.bordered)
+                        #endif
+                    }
+                }
             }
             .padding(.horizontal, SiloTheme.padding)
             .padding(.top, SiloTheme.smallPadding)
@@ -930,7 +947,10 @@ struct LibraryCollectionDetailView: View {
     }
 
     private func loadMoreIfNeeded() async {
-        guard viewModel.hasMore, !viewModel.isLoading else { return }
+        guard viewModel.hasMore,
+              !viewModel.isLoading,
+              viewModel.refreshError == nil,
+              viewModel.paginationError == nil else { return }
         await loadItems(reset: false)
     }
 
