@@ -364,6 +364,11 @@ final class ServerNicknameTests: XCTestCase {
 
         XCTAssertEqual(registry.entries.map(\.id), [survivor.id], "the proven duplicate merged in init")
         XCTAssertEqual(registry.entry(with: survivor.id)?.displayName, "Home")
+
+        // The moved name is a copy, so it goes once the address reports
+        // another deployment, without an iCloud store too.
+        XCTAssertTrue(registry.updateVerifiedServerId(for: survivor.id, verifiedServerId: "deployment-2"))
+        XCTAssertEqual(registry.entry(with: survivor.id)?.displayName, "Silo")
     }
 
     func testANameIsCutToTheLengthLimit() throws {

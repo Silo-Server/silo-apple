@@ -528,22 +528,26 @@ final class ServerRegistry {
     /// Removing a server never touches the synced copy, so its name comes
     /// back if it is added again.
     private func reconcileNicknames(accountChanged: Bool = false) {
+        var local = accountChanged ? [] : nicknameRecords
+        // A copied name belongs to the deployment it came from. Once the
+        // address reports another deployment, the copy no longer applies,
+        // with or without an iCloud store.
+        for entry in entries {
+            guard let identity = ServerIdentity.usable(entry.verifiedServerId) else { continue }
+            local.removeAll {
+                $0.serverId == entry.id && $0.inheritedFrom != nil && $0.verifiedServerId != identity
+            }
+        }
         guard let nicknameCloud else {
+            if local != nicknameRecords, !saveNicknames(local) {
+                nicknameRecords = local
+            }
             applyNicknames()
             return
         }
         let synced = nicknameCloud.load()
-        var local = accountChanged ? [] : nicknameRecords
         for entry in entries {
-            var mine = local.first { $0.serverId == entry.id }
-            // A copied name belongs to the deployment it came from. Once the
-            // address reports another deployment, the copy no longer applies.
-            if let copy = mine, copy.inheritedFrom != nil,
-               let identity = ServerIdentity.usable(entry.verifiedServerId),
-               copy.verifiedServerId != identity {
-                local.removeAll { $0.serverId == entry.id }
-                mine = nil
-            }
+            let mine = local.first { $0.serverId == entry.id }
             var adopted: ServerNickname?
             if let theirs = ServerNicknameSync.addressRecord(for: entry, in: synced) {
                 if mine.map({ $0.inheritedFrom != nil || theirs.updatedAt > $0.updatedAt }) ?? true {
