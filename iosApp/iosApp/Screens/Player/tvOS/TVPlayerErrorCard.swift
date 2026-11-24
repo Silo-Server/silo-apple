@@ -19,6 +19,7 @@ struct TVPlayerErrorCard: View {
 
     @FocusState private var focusedTarget: FocusTarget?
     @Namespace private var focusNamespace
+    @Environment(\.scenePhase) private var scenePhase
 
     private var initialFocusTarget: FocusTarget {
         retryTitle == nil ? .goBack : .retry
@@ -84,6 +85,16 @@ struct TVPlayerErrorCard: View {
             Task { @MainActor in
                 await Task.yield()
                 focusedTarget = initialFocusTarget
+            }
+        }
+        // A Watch Party player stays open through TV sleep, which drops
+        // focus, and the card does not reappear to seed it again. With
+        // nothing focused, Menu cannot reach the player shell either.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            // A turn later, once focus has reattached to the scene.
+            DispatchQueue.main.async {
+                if focusedTarget == nil { focusedTarget = initialFocusTarget }
             }
         }
     }
