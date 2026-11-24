@@ -129,50 +129,58 @@ final class HomeSectionsEditorModel {
         loadGeneration += 1
         let myLoadGen = loadGeneration
         let startIdentity = requestIdentity()
-        let startCacheToken = ResponseCache.shared.writeToken
-        if !hasLoadedFromServer {
-            phase = .loading
-            saveError = nil
-        }
+        phase = .loading
+        saveError = nil
         isRefreshing = true
         defer {
             if loadGeneration == myLoadGen {
                 isRefreshing = false
             }
         }
-        do {
-            let layout = try await api.profileLayout(scope: scope)
-            guard !Task.isCancelled,
-                  loadGeneration == myLoadGen,
-                  generation == editGeneration,
-                  requestIdentity() == startIdentity,
-                  !ResponseCache.shared.wasInvalidated(scopeCacheKey, after: startCacheToken) || !hasLoadedFromServer else {
-                return false
-            }
-            auth = layout.auth
-            saved = layout.saved
-            committedRows = layout.rows
-            dragDraftVisibleOrder = nil
-            confirmedRows = layout.rows
-            hasLoadedFromServer = true
-            saveError = nil
-            phase = .loaded
-            return true
-        } catch {
-            guard !(error is CancellationError),
-                  !Task.isCancelled,
-                  loadGeneration == myLoadGen,
-                  generation == editGeneration,
-                  requestIdentity() == startIdentity else { return false }
-            let message = ErrorState(error).message
-            if !hasLoadedFromServer {
+        // Retry if another surface invalidates this scope's cache while the
+        // read is in flight, so even an initial load never publishes a stale
+        // pre-invalidation layout.
+        for attempt in 0..<3 {
+            let startCacheToken = ResponseCache.shared.writeToken
+            do {
+                let layout = try await api.profileLayout(scope: scope)
+                guard !Task.isCancelled,
+                      loadGeneration == myLoadGen,
+                      generation == editGeneration,
+                      requestIdentity() == startIdentity else {
+                    return false
+                }
+                if ResponseCache.shared.wasInvalidated(scopeCacheKey, after: startCacheToken) {
+                    if attempt < 2 {
+                        continue
+                    }
+                    let message = ErrorState(URLError(.cannotLoadFromNetwork)).message
+                    phase = .failed(message)
+                    saveError = message
+                    return false
+                }
+                auth = layout.auth
+                saved = layout.saved
+                committedRows = layout.rows
+                dragDraftVisibleOrder = nil
+                confirmedRows = layout.rows
+                hasLoadedFromServer = true
+                saveError = nil
+                phase = .loaded
+                return true
+            } catch {
+                guard !(error is CancellationError),
+                      !Task.isCancelled,
+                      loadGeneration == myLoadGen,
+                      generation == editGeneration,
+                      requestIdentity() == startIdentity else { return false }
+                let message = ErrorState(error).message
                 phase = .failed(message)
                 saveError = message
-            } else {
-                saveError = message
+                return false
             }
-            return false
         }
+        return false
     }
 
     /// Loads recipes, personal collections, and server collections for the `+ Add Row` picker.
@@ -1006,6 +1014,11 @@ final class HomePreferencesModel {
                 let message = ErrorState(error).message
                 self.errorMessage = message
                 if self.uncertainConfirmedKeys.contains(key) {
+                    // Lock edits for this identity until a fresh capability probe
+                    // and authoritative effective-values read reconcile the server state.
+                    self.isAuthorized = false
+                    self.supportedKeys = []
+                    self.loadedIdentity = nil
                     Task { @MainActor [weak self] in
                         await self?.load(preservingError: message)
                     }

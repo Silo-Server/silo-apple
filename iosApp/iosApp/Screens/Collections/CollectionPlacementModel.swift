@@ -374,6 +374,7 @@ final class AddToCollectionModel {
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var mutationGeneration = 0
     @ObservationIgnored private var pendingMutations = 0
+    @ObservationIgnored private var entryGeneration: [String: Int] = [:]
 
     init(
         contentId: String,
@@ -459,6 +460,7 @@ final class AddToCollectionModel {
         let startIdentity = requestIdentity()
         pendingMutations += 1
         mutationGeneration += 1
+        entryGeneration[collectionId, default: 0] += 1
         busyCollectionIds.insert(collectionId)
         defer {
             pendingMutations = max(0, pendingMutations - 1)
@@ -500,7 +502,11 @@ final class AddToCollectionModel {
         isCreating = true
         errorMessage = nil
 
+        var createdCollectionId: String?
         let finishMutation = {
+            if let createdCollectionId {
+                self.busyCollectionIds.remove(createdCollectionId)
+            }
             self.pendingMutations = max(0, self.pendingMutations - 1)
             self.mutationGeneration += 1
             self.isCreating = false
@@ -521,6 +527,11 @@ final class AddToCollectionModel {
             return .failed
         }
 
+        createdCollectionId = created.id
+        busyCollectionIds.insert(created.id)
+        let myEntryGen = entryGeneration[created.id, default: 0] + 1
+        entryGeneration[created.id] = myEntryGen
+
         let baseCount = created.itemCount ?? 0
         var createdEntry = Entry(collection: created, containsItem: false, itemCount: baseCount)
         if !entries.contains(where: { $0.id == created.id }) {
@@ -535,10 +546,12 @@ final class AddToCollectionModel {
                 finishMutation()
                 return .failed
             }
-            createdEntry.containsItem = true
-            createdEntry.itemCount = max(1, baseCount + 1)
-            if let idx = entries.firstIndex(where: { $0.id == created.id }) {
-                entries[idx] = createdEntry
+            if entryGeneration[created.id] == myEntryGen {
+                createdEntry.containsItem = true
+                createdEntry.itemCount = max(1, baseCount + 1)
+                if let idx = entries.firstIndex(where: { $0.id == created.id }) {
+                    entries[idx] = createdEntry
+                }
             }
             ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
             HomeSectionsEditorModel.refreshScope(.home)
