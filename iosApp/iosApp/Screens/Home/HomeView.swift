@@ -430,8 +430,8 @@ struct HomeView: View {
             onSetWatched: setWatched,
             onMoveToTop: {
                 Task {
-                    await homeEditor.load()
-                    guard homeEditor.phase == .loaded else {
+                    let loaded = await homeEditor.load()
+                    guard loaded, homeEditor.phase == .loaded else {
                         if let message = homeEditor.saveError {
                             viewModel.presentActionError(message: message)
                         }
@@ -447,8 +447,8 @@ struct HomeView: View {
             },
             onHideRow: {
                 Task {
-                    await homeEditor.load()
-                    guard homeEditor.phase == .loaded else {
+                    let loaded = await homeEditor.load()
+                    guard loaded, homeEditor.phase == .loaded else {
                         if let message = homeEditor.saveError {
                             viewModel.presentActionError(message: message)
                         }

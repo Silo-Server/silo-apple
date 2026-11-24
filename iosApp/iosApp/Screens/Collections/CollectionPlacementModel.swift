@@ -82,20 +82,22 @@ final class CollectionPlacementModel {
 
         switch homeResult {
         case .success(let home):
-            if homeMutationGeneration == startHomeGen {
+            if !isUpdatingHome && homeMutationGeneration == startHomeGen {
                 isPinnedOnHome = ProfileHomeLayout.pinnedCollectionRow(
                     collectionId: collectionId,
                     isUserCollection: isUserCollection,
                     in: home.rows
                 ) != nil
+                hasLoadedHome = true
             }
-            hasLoadedHome = true
         case .failure(let error):
-            hasLoadedHome = false
-            errorMessage = ErrorState(error).message
+            if !isUpdatingHome && homeMutationGeneration == startHomeGen {
+                hasLoadedHome = false
+                errorMessage = ErrorState(error).message
+            }
         }
 
-        if let editor, shareMutationGeneration == startShareGen {
+        if let editor, !isUpdatingShare && shareMutationGeneration == startShareGen {
             collectionVersion = editor.version
             isShared = editor.value.isShared ?? false
             canToggleShare = true
@@ -125,7 +127,7 @@ final class CollectionPlacementModel {
                 guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == startIdentity else { return }
                 for lib in relevant {
                     let layout = fetched[lib.id]?.1
-                    if libraryMutationGeneration[lib.id] != startLibGens[lib.id],
+                    if updatingLibraryIds.contains(lib.id) || libraryMutationGeneration[lib.id] != startLibGens[lib.id],
                        let existing = libraryPlacements.first(where: { $0.libraryId == lib.id }) {
                         placements.append(existing)
                         continue
@@ -158,7 +160,10 @@ final class CollectionPlacementModel {
         let startIdentity = requestIdentity()
         homeMutationGeneration += 1
         isUpdatingHome = true
-        defer { isUpdatingHome = false }
+        defer {
+            homeMutationGeneration += 1
+            isUpdatingHome = false
+        }
         errorMessage = nil
 
         let targetPinned = !isPinnedOnHome
@@ -191,7 +196,10 @@ final class CollectionPlacementModel {
         let startIdentity = requestIdentity()
         libraryMutationGeneration[libraryId, default: 0] += 1
         updatingLibraryIds.insert(libraryId)
-        defer { updatingLibraryIds.remove(libraryId) }
+        defer {
+            libraryMutationGeneration[libraryId, default: 0] += 1
+            updatingLibraryIds.remove(libraryId)
+        }
         errorMessage = nil
 
         let targetPinned = !libraryPlacements[idx].isPinned
@@ -223,8 +231,12 @@ final class CollectionPlacementModel {
         guard isUserCollection, !isLoading, !isUpdatingShare else { return }
         let startIdentity = requestIdentity()
         shareMutationGeneration += 1
+        let myShareGen = shareMutationGeneration
         isUpdatingShare = true
-        defer { isUpdatingShare = false }
+        defer {
+            shareMutationGeneration += 1
+            isUpdatingShare = false
+        }
         errorMessage = nil
 
         let targetShared = !isShared
@@ -239,17 +251,18 @@ final class CollectionPlacementModel {
                 version = editor.version
             }
             let updated = try await api.setCollectionShared(version, isShared: targetShared)
-            guard requestIdentity() == startIdentity else { return }
+            guard requestIdentity() == startIdentity, shareMutationGeneration == myShareGen else { return }
             isShared = updated.isShared ?? targetShared
             // Re-read editor to hold the fresh ETag for subsequent toggles.
             if let fresh = try? await api.collectionEditor(id: collectionId),
-               requestIdentity() == startIdentity {
+               requestIdentity() == startIdentity,
+               shareMutationGeneration == myShareGen {
                 collectionVersion = fresh.version
-            } else {
+            } else if requestIdentity() == startIdentity, shareMutationGeneration == myShareGen {
                 collectionVersion = nil
             }
         } catch {
-            guard requestIdentity() == startIdentity else { return }
+            guard requestIdentity() == startIdentity, shareMutationGeneration == myShareGen else { return }
             isShared = !targetShared
             collectionVersion = nil
             errorMessage = ErrorState(error).message
@@ -350,10 +363,17 @@ final class AddToCollectionModel {
     private(set) var isCreating = false
     private(set) var errorMessage: String?
 
+    enum CreateResult: Equatable {
+        case createdAndAdded
+        case createdOnly
+        case failed
+    }
+
     @ObservationIgnored private let api: SiloAPI
     @ObservationIgnored private let requestIdentity: @MainActor () -> HTTPRequestIdentity?
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var mutationGeneration = 0
+    @ObservationIgnored private var pendingMutations = 0
 
     init(
         contentId: String,
@@ -366,6 +386,10 @@ final class AddToCollectionModel {
     }
 
     func load() async {
+        await load(preservingEntry: nil, preservingError: nil)
+    }
+
+    private func load(preservingEntry fallbackEntry: Entry?, preservingError: String?) async {
         loadGeneration += 1
         let myLoadGen = loadGeneration
         let startMutationGen = mutationGeneration
@@ -376,7 +400,9 @@ final class AddToCollectionModel {
                 isLoading = false
             }
         }
-        errorMessage = nil
+        if preservingError == nil {
+            errorMessage = nil
+        }
 
         do {
             async let collectionsTask = api.collections()
@@ -384,6 +410,7 @@ final class AddToCollectionModel {
             let (response, memberCollectionIds) = try await (collectionsTask, membershipTask)
             guard !Task.isCancelled,
                   loadGeneration == myLoadGen,
+                  pendingMutations == 0,
                   mutationGeneration == startMutationGen,
                   requestIdentity() == startIdentity else { return }
 
@@ -392,22 +419,33 @@ final class AddToCollectionModel {
                 return kind == "manual" || kind.isEmpty
             }
 
-            entries = manual.map { col in
+            var loaded = manual.map { col in
                 Entry(
                     collection: col,
                     containsItem: memberCollectionIds.contains(col.id),
                     itemCount: col.itemCount ?? 0
                 )
             }
+            if let fallbackEntry, !loaded.contains(where: { $0.id == fallbackEntry.id }) {
+                loaded.insert(fallbackEntry, at: 0)
+            }
+            entries = loaded
             hasLoaded = true
+            errorMessage = preservingError
         } catch {
             guard !(error is CancellationError),
                   !Task.isCancelled,
                   loadGeneration == myLoadGen,
+                  pendingMutations == 0,
+                  mutationGeneration == startMutationGen,
                   requestIdentity() == startIdentity else { return }
-            hasLoaded = false
-            entries = []
-            errorMessage = ErrorState(error).message
+            if hasLoaded {
+                hasLoaded = false
+                entries = fallbackEntry.map { [$0] } ?? []
+            } else if let fallbackEntry, !entries.contains(where: { $0.id == fallbackEntry.id }) {
+                entries.insert(fallbackEntry, at: 0)
+            }
+            errorMessage = preservingError ?? ErrorState(error).message
         }
     }
 
@@ -416,13 +454,17 @@ final class AddToCollectionModel {
     }
 
     func toggle(collectionId: String) async {
-        guard hasLoaded,
-              !busyCollectionIds.contains(collectionId),
+        guard !busyCollectionIds.contains(collectionId),
               let index = entries.firstIndex(where: { $0.id == collectionId }) else { return }
         let startIdentity = requestIdentity()
+        pendingMutations += 1
         mutationGeneration += 1
         busyCollectionIds.insert(collectionId)
-        defer { busyCollectionIds.remove(collectionId) }
+        defer {
+            pendingMutations = max(0, pendingMutations - 1)
+            mutationGeneration += 1
+            busyCollectionIds.remove(collectionId)
+        }
         errorMessage = nil
 
         let wasIn = entries[index].containsItem
@@ -449,28 +491,77 @@ final class AddToCollectionModel {
     }
 
     @discardableResult
-    func createAndAdd(name: String) async -> Bool {
+    func createAndAdd(name: String) async -> CreateResult {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isCreating else { return false }
+        guard !trimmed.isEmpty, !isCreating else { return .failed }
         let startIdentity = requestIdentity()
+        pendingMutations += 1
         mutationGeneration += 1
         isCreating = true
-        defer { isCreating = false }
         errorMessage = nil
 
+        let finishMutation = {
+            self.pendingMutations = max(0, self.pendingMutations - 1)
+            self.mutationGeneration += 1
+            self.isCreating = false
+        }
+
+        let created: UserCollection
         do {
-            let created = try await api.createCollection(name: trimmed)
+            created = try await api.createCollection(name: trimmed)
+        } catch {
+            finishMutation()
+            guard requestIdentity() == startIdentity else { return .failed }
+            errorMessage = ErrorState(error).message
+            return .failed
+        }
+
+        guard requestIdentity() == startIdentity else {
+            finishMutation()
+            return .failed
+        }
+
+        let baseCount = created.itemCount ?? 0
+        var createdEntry = Entry(collection: created, containsItem: false, itemCount: baseCount)
+        if !entries.contains(where: { $0.id == created.id }) {
+            entries.insert(createdEntry, at: 0)
+        }
+
+        let result: CreateResult
+        var addError: String?
+        do {
             try await api.addItemToCollection(collectionId: created.id, itemId: contentId, position: 0)
-            guard requestIdentity() == startIdentity else { return false }
-            entries.insert(Entry(collection: created, containsItem: true, itemCount: 1), at: 0)
-            hasLoaded = true
+            guard requestIdentity() == startIdentity else {
+                finishMutation()
+                return .failed
+            }
+            createdEntry.containsItem = true
+            createdEntry.itemCount = max(1, baseCount + 1)
+            if let idx = entries.firstIndex(where: { $0.id == created.id }) {
+                entries[idx] = createdEntry
+            }
             ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
             HomeSectionsEditorModel.refreshScope(.home)
-            return true
+            result = .createdAndAdded
         } catch {
-            guard requestIdentity() == startIdentity else { return false }
-            errorMessage = ErrorState(error).message
-            return false
+            guard requestIdentity() == startIdentity else {
+                finishMutation()
+                return .failed
+            }
+            let message = ErrorState(error).message
+            addError = message
+            errorMessage = message
+            result = .createdOnly
         }
+
+        finishMutation()
+
+        // If creation overlapped or followed an incomplete initial load, reload
+        // the full collection list before treating the picker as loaded while
+        // preserving the newly created entry and any add-item error.
+        if !hasLoaded {
+            await load(preservingEntry: createdEntry, preservingError: addError)
+        }
+        return result
     }
 }

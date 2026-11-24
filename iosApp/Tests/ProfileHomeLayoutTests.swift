@@ -223,7 +223,7 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertNil(noop)
     }
 
-    func testAddingCustomRowAfterHiddenAdminRowDoesNotPinAdminOrder() {
+    func testAddingCustomRowAfterHiddenAdminRowDoesNotPinAdminOrder() throws {
         let a = makeRow(id: "sec-a", position: 0)
         let h = makeRow(id: "sec-h", hidden: true, position: 1)
         let b = makeRow(id: "sec-b", position: 2)
@@ -236,10 +236,65 @@ final class ProfileHomeLayoutTests: XCTestCase {
             newID: { "unused" }
         )
 
-        let adminHidden = overrides.first { $0.sectionId == "sec-h" }
-        XCTAssertNil(adminHidden?.position)
+        let adminHidden = try XCTUnwrap(overrides.first { $0.sectionId == "sec-h" })
+        XCTAssertTrue(adminHidden.hidden)
+        XCTAssertNil(adminHidden.position)
         XCTAssertNil(overrides.first { $0.sectionId == "sec-a" })
         XCTAssertNil(overrides.first { $0.sectionId == "sec-b" })
         XCTAssertEqual(overrides.first { $0.id == "custom-1" }?.position, 3)
+    }
+
+    @MainActor
+    func testApplyingVisibleOrderPreservesRestoredVisibilityAndHiddenSlots() {
+        let a = makeRow(id: "sec-a", position: 0)
+        let h = makeRow(id: "sec-h", hidden: true, position: 1)
+        let b = makeRow(id: "sec-b", position: 2)
+        let c = makeRow(id: "sec-c", position: 3)
+
+        // Simulates hiding C (failed -> C restored in committedRows) while B was dragged above A.
+        let reconciled = HomeSectionsEditorModel.applyingVisibleOrder(
+            ["sec-b", "sec-a"],
+            to: [a, h, b, c]
+        )
+
+        XCTAssertEqual(reconciled.map(\.id), ["sec-b", "sec-h", "sec-a", "sec-c"])
+        XCTAssertEqual(reconciled.map(\.hidden), [false, true, false, false])
+    }
+
+    @MainActor
+    func testMoveVisibleToTopKeepsHiddenRowsAnchored() {
+        let a = makeRow(id: "sec-a", position: 0)
+        let h = makeRow(id: "sec-h", hidden: true, position: 1)
+        let b = makeRow(id: "sec-b", position: 2)
+
+        let moved = HomeSectionsEditorModel.reorderVisibleSlots(in: [a, h, b]) { visible in
+            guard let visibleIndex = visible.firstIndex(where: { $0.id == "sec-b" }),
+                  visibleIndex > 0 else { return false }
+            let row = visible.remove(at: visibleIndex)
+            visible.insert(row, at: 0)
+            return true
+        }
+
+        XCTAssertEqual(moved?.map(\.id), ["sec-b", "sec-h", "sec-a"])
+        XCTAssertEqual(moved?.map(\.hidden), [false, true, false])
+    }
+
+    @MainActor
+    func testRecipePresenceDistinguishesUnfilteredFromFilteredRows() {
+        let filteredWatchlist = makeRow(
+            id: "wl-movies",
+            type: "watchlist",
+            config: ["media_type": .string("movie")]
+        )
+        let unfilteredWatchlist = makeRow(
+            id: "wl-all",
+            type: "watchlist",
+            config: nil
+        )
+
+        XCTAssertFalse(HomeSectionsEditorModel.matchesRecipe(filteredWatchlist, sectionType: "watchlist", params: [:]))
+        XCTAssertTrue(HomeSectionsEditorModel.matchesRecipe(filteredWatchlist, sectionType: "watchlist", params: ["media_type": .string("movie")]))
+        XCTAssertTrue(HomeSectionsEditorModel.matchesRecipe(unfilteredWatchlist, sectionType: "watchlist", params: [:]))
+        XCTAssertFalse(HomeSectionsEditorModel.matchesRecipe(unfilteredWatchlist, sectionType: "watchlist", params: ["media_type": .string("movie")]))
     }
 }

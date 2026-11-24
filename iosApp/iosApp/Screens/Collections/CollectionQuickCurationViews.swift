@@ -319,7 +319,7 @@ struct IOSAddToCollectionSheet: View {
                             Spacer()
                         }
                         .padding(.vertical, 12)
-                    } else if !model.hasLoaded && model.errorMessage != nil {
+                    } else if !model.hasLoaded && model.entries.isEmpty && model.errorMessage != nil {
                         Button(.commonRetry) {
                             Task { await model.load() }
                         }
@@ -394,12 +394,21 @@ struct IOSAddToCollectionSheet: View {
         let name = newCollectionName
         let capturedGeneration = nameEditGeneration
         Task {
-            let ok = await model.createAndAdd(name: name)
-            if ok {
+            let result = await model.createAndAdd(name: name)
+            switch result {
+            case .createdAndAdded:
                 hapticCount += 1
                 if nameEditGeneration == capturedGeneration {
                     newCollectionName = ""
                 }
+            case .createdOnly:
+                // The collection now exists in the list below; clear the field so
+                // tapping Create again doesn't post a duplicate empty collection.
+                if nameEditGeneration == capturedGeneration {
+                    newCollectionName = ""
+                }
+            case .failed:
+                break
             }
         }
     }

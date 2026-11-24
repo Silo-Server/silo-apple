@@ -63,7 +63,7 @@ final class ResponseCache {
         set(value, for: key)
     }
 
-    private func wasInvalidated(_ key: String, after token: UInt64) -> Bool {
+    func wasInvalidated(_ key: String, after token: UInt64) -> Bool {
         if let invalidated = keyInvalidations[key], invalidated > token { return true }
         return prefixInvalidations.contains { key.hasPrefix($0.key) && $0.value > token }
     }

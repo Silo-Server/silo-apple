@@ -248,6 +248,7 @@ struct LibrariesTabView: View {
         .onAppear { syncActiveCustomizableLibrary() }
         .onChange(of: selectedTab) { syncActiveCustomizableLibrary() }
         .onChange(of: activeLibrary?.id) { syncActiveCustomizableLibrary() }
+        .onChange(of: activeLibrary?.name) { syncActiveCustomizableLibrary() }
         .onDisappear { router.activeCustomizableLibrary = nil }
         #endif
         .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) {

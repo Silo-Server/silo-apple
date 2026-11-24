@@ -143,7 +143,7 @@ struct TVHomeCustomizeOverlay: View {
             }
         }
         .task {
-            async let layoutLoad: Void = editor.load()
+            async let layoutLoad = editor.load()
             async let prefsLoad: Void = preferences.load()
             _ = await (layoutLoad, prefsLoad)
             seedInitialHighlightIfNeeded()
@@ -1233,26 +1233,40 @@ struct TVAddRowModal: View {
                 .foregroundStyle(.white.opacity(0.6))
                 .padding(.top, 40)
         } else {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
-                ForEach(editor.serverCollections) { collection in
-                    let isAdded = editor.isCollectionPresent(collectionId: collection.id, isUserCollection: false)
-                        || addedKeys.contains("lib:\(collection.id)")
-                    collectionCard(
-                        title: collection.title,
-                        subtitle: collection.itemCount > 0
-                            ? "\(collection.libraryName) · \(collection.itemCount) items"
-                            : collection.libraryName,
-                        posterUrl: collection.posterUrl,
-                        posterThumbhash: collection.posterThumbhash,
-                        isAdded: isAdded
-                    ) {
-                        guard !isAdded else { return }
-                        addedKeys.insert("lib:\(collection.id)")
-                        editor.addCollectionRow(
-                            collectionId: collection.id,
+            VStack(alignment: .leading, spacing: 20) {
+                if let error = editor.serverCollectionsError {
+                    HStack(spacing: 16) {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 20))
+                            .foregroundStyle(.white.opacity(0.75))
+                        Spacer()
+                        Button(.commonRetry) {
+                            Task { await editor.loadPickerCatalogIfNeeded(force: true) }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
+                    ForEach(editor.serverCollections) { collection in
+                        let isAdded = editor.isCollectionPresent(collectionId: collection.id, isUserCollection: false)
+                            || addedKeys.contains("lib:\(collection.id)")
+                        collectionCard(
                             title: collection.title,
-                            isUserCollection: false
-                        )
+                            subtitle: collection.itemCount > 0
+                                ? "\(collection.libraryName) · \(collection.itemCount) items"
+                                : collection.libraryName,
+                            posterUrl: collection.posterUrl,
+                            posterThumbhash: collection.posterThumbhash,
+                            isAdded: isAdded
+                        ) {
+                            guard !isAdded else { return }
+                            addedKeys.insert("lib:\(collection.id)")
+                            editor.addCollectionRow(
+                                collectionId: collection.id,
+                                title: collection.title,
+                                isUserCollection: false
+                            )
+                        }
                     }
                 }
             }

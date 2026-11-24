@@ -72,7 +72,7 @@ struct IOSHomeCustomizeView: View {
             dragOffsetY = 0
             isHiddenExpanded = false
             editor.seedPreviewRowsIfEmpty(from: loadedSections, locale: locale)
-            async let layoutLoad: Void = editor.load()
+            async let layoutLoad = editor.load()
             async let catalogPrewarm: Void = editor.loadPickerCatalogIfNeeded()
             _ = await (layoutLoad, catalogPrewarm)
         }
@@ -990,6 +990,8 @@ struct IOSHomeSectionsSettingsView: View {
     ]
     @State private var libraries: [Library] = []
     @State private var loadedSectionsByScope: [ProfileSectionsScope: [ResolvedSection]] = [:]
+    @State private var librariesLoadGeneration = 0
+    @State private var artworkLoadGeneration: [ProfileSectionsScope: Int] = [:]
     @Environment(\.dismiss) private var dismiss
     @Environment(\.locale) private var locale
 
@@ -1101,11 +1103,16 @@ struct IOSHomeSectionsSettingsView: View {
     }
 
     private func loadLibrariesAndCurrentArtwork() async {
+        librariesLoadGeneration += 1
+        let myGen = librariesLoadGeneration
         let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
+        let startToken = ResponseCache.shared.writeToken
         async let homeArtwork: Void = loadArtwork(for: .home)
         if let response = try? await StartupContentPrefetcher.fetchUserLibraries(),
            !Task.isCancelled,
-           SeekIntervalPreferences.activeRequestIdentity() == startIdentity {
+           librariesLoadGeneration == myGen,
+           SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
+           !ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startToken) {
             libraries = response.libraries
         }
         await homeArtwork
@@ -1113,24 +1120,37 @@ struct IOSHomeSectionsSettingsView: View {
 
     private func loadArtwork(for scope: ProfileSectionsScope) async {
         if loadedSectionsByScope[scope] != nil { return }
+        let myGen = (artworkLoadGeneration[scope] ?? 0) + 1
+        artworkLoadGeneration[scope] = myGen
         let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
-        let startToken = ResponseCache.shared.writeToken
-        switch scope {
-        case .home:
-            if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.homeSections) {
-                loadedSectionsByScope[.home] = cached.sections
-            } else if let read = try? await SiloAPI.shared.homeSections(),
-                      !Task.isCancelled,
-                      SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
-                      ResponseCache.shared.writeToken == startToken {
-                loadedSectionsByScope[.home] = read.response.sections
+        let cacheKey: String = switch scope {
+        case .home: CacheKey.homeSections
+        case .library(let libraryId): CacheKey.librarySections(libraryId)
+        }
+        for _ in 0..<2 {
+            let startToken = ResponseCache.shared.writeToken
+            let sections: [ResolvedSection]?
+            switch scope {
+            case .home:
+                if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.homeSections) {
+                    sections = cached.sections
+                } else {
+                    sections = (try? await SiloAPI.shared.homeSections())?.response.sections
+                }
+            case .library(let libraryId):
+                if let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.librarySections(libraryId)) {
+                    sections = cached.sections
+                } else {
+                    sections = (try? await SiloAPI.shared.librarySections(libraryId: libraryId))?.response.sections
+                }
             }
-        case .library(let libraryId):
-            if let read = try? await SiloAPI.shared.librarySections(libraryId: libraryId),
-               !Task.isCancelled,
-               SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
-               ResponseCache.shared.writeToken == startToken {
-                loadedSectionsByScope[scope] = read.response.sections
+            guard !Task.isCancelled,
+                  artworkLoadGeneration[scope] == myGen,
+                  SeekIntervalPreferences.activeRequestIdentity() == startIdentity else { return }
+            guard let sections else { return }
+            if !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) {
+                loadedSectionsByScope[scope] = sections
+                return
             }
         }
     }
