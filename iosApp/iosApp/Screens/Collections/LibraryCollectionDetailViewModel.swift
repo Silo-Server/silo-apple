@@ -77,6 +77,9 @@ final class LibraryCollectionDetailViewModel {
         }
 
         var capturedOwner: CapturedOrdinaryRequestAuth?
+        var validatedReplacedPageOne = resetsPage || continuation == nil
+        var validatedLoaded: [BrowseItem] = []
+        var lastValidatedPage: CatalogListPage?
         do {
             guard let requestOwner = await tokens.captureOrdinaryRequestAuth() else {
                 throw HTTPError.requestIdentityChanged
@@ -98,6 +101,7 @@ final class LibraryCollectionDetailViewModel {
             // Cached rows have no live cursor. Their next load starts at page one.
             var nextPage = resetsPage ? nil : continuation
             var replacedPageOne = nextPage == nil
+            validatedReplacedPageOne = replacedPageOne
             var seenIds = replacedPageOne ? Set<String>() : Set(items.map(\.id))
             var loaded: [BrowseItem] = []
             var restarts = 0
@@ -126,12 +130,15 @@ final class LibraryCollectionDetailViewModel {
                 if page.startsOver {
                     restarts += 1
                     replacedPageOne = true
+                    validatedReplacedPageOne = true
                     loaded = []
                     seenIds = []
                 }
                 for item in page.response.items where seenIds.insert(item.id).inserted {
                     loaded.append(item)
                 }
+                validatedLoaded = loaded
+                lastValidatedPage = page
                 nextPage = page.continuation
             } while loaded.count < CatalogGrid.loadMoreLead && nextPage != nil && restarts < 2
 
@@ -161,6 +168,7 @@ final class LibraryCollectionDetailViewModel {
             return true
         } catch {
             var effectiveError = error
+            var ownerStillValid = false
             if let capturedOwner {
                 let stillOwnsRequest = await api.isCurrentOwner(capturedOwner)
                 guard requestGeneration == generation,
@@ -169,6 +177,8 @@ final class LibraryCollectionDetailViewModel {
                       !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
                 if !stillOwnsRequest {
                     effectiveError = HTTPError.requestIdentityChanged
+                } else {
+                    ownerStillValid = true
                 }
             } else {
                 guard requestGeneration == generation,
@@ -179,6 +189,38 @@ final class LibraryCollectionDetailViewModel {
             }
             if case HTTPError.requestIdentityChanged = effectiveError { clearPage() }
             if case HTTPError.authorityChanged = effectiveError { clearPage() }
+            // If an earlier page in this batch already succeeded and ownership is
+            // still intact, publish those validated cards and surface a retryable
+            // pagination error on the failed continuation instead of discarding them.
+            if ownerStillValid,
+               let lastValidatedPage,
+               let capturedOwner,
+               !validatedLoaded.isEmpty {
+                if !validatedReplacedPageOne {
+                    items.append(contentsOf: validatedLoaded)
+                } else {
+                    items = validatedLoaded
+                    let cachedResponse = CatalogResponse(
+                        items: validatedLoaded,
+                        total: lastValidatedPage.response.total,
+                        totalExact: lastValidatedPage.response.totalExact,
+                        hasMore: lastValidatedPage.continuation != nil
+                    )
+                    ResponseCache.shared.set(CachedPage(owner: capturedOwner, response: cachedResponse),
+                                             for: requested.cacheKey, fetchedAt: startToken)
+                }
+                if validatedReplacedPageOne || lastValidatedPage.response.totalExact != false {
+                    totalItems = lastValidatedPage.response.totalExact == false ? nil : lastValidatedPage.response.total
+                }
+                continuation = lastValidatedPage.continuation
+                hasMore = lastValidatedPage.continuation != nil
+                self.error = nil
+                if validatedReplacedPageOne {
+                    self.refreshError = nil
+                }
+                self.paginationError = ErrorState(effectiveError)
+                return false
+            }
             if items.isEmpty {
                 self.error = ErrorState(effectiveError)
             } else if resetsPage {

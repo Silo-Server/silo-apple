@@ -1364,6 +1364,7 @@ final class HomePreferencesModel {
             let byKey = response.byKey
             var resolvedKeys = Set<SettingKey>()
             var deferredToDispatch: [(SettingKey, DeferredWrite)] = []
+            var reconciledConfirmedValueChanged = false
 
             func isUntouched(_ key: SettingKey) -> Bool {
                 let scope = KeyScope(identity: identity, key: key)
@@ -1376,8 +1377,12 @@ final class HomePreferencesModel {
                 resolvedKeys.insert(.uiNextUpMode)
                 if isUntouched(.uiNextUpMode) {
                     let serverVal = byKey[.uiNextUpMode]?.value.stringValue.flatMap(NextUpMode.init(rawValue:)) ?? .combined
-                    confirmedNextUpMode = serverVal
                     let scope = KeyScope(identity: identity, key: .uiNextUpMode)
+                    if (reconcilingKeys.contains(scope) || uncertainConfirmedKeys.contains(scope))
+                        && confirmedNextUpMode != serverVal {
+                        reconciledConfirmedValueChanged = true
+                    }
+                    confirmedNextUpMode = serverVal
                     uncertainConfirmedKeys.remove(scope)
                     reconcilingKeys.remove(scope)
                     if let deferred = deferredWrites.removeValue(forKey: scope),
@@ -1392,8 +1397,12 @@ final class HomePreferencesModel {
                 resolvedKeys.insert(.uiNextUpNewReleasesFirst)
                 if isUntouched(.uiNextUpNewReleasesFirst) {
                     let serverVal = byKey[.uiNextUpNewReleasesFirst]?.value.boolValue ?? false
-                    confirmedNewReleasesFirst = serverVal
                     let scope = KeyScope(identity: identity, key: .uiNextUpNewReleasesFirst)
+                    if (reconcilingKeys.contains(scope) || uncertainConfirmedKeys.contains(scope))
+                        && confirmedNewReleasesFirst != serverVal {
+                        reconciledConfirmedValueChanged = true
+                    }
+                    confirmedNewReleasesFirst = serverVal
                     uncertainConfirmedKeys.remove(scope)
                     reconcilingKeys.remove(scope)
                     if let deferred = deferredWrites.removeValue(forKey: scope),
@@ -1408,8 +1417,12 @@ final class HomePreferencesModel {
                 resolvedKeys.insert(.homeHideWatchedItems)
                 if isUntouched(.homeHideWatchedItems) {
                     let serverVal = byKey[.homeHideWatchedItems]?.value.boolValue ?? false
-                    confirmedHideWatchedItems = serverVal
                     let scope = KeyScope(identity: identity, key: .homeHideWatchedItems)
+                    if (reconcilingKeys.contains(scope) || uncertainConfirmedKeys.contains(scope))
+                        && confirmedHideWatchedItems != serverVal {
+                        reconciledConfirmedValueChanged = true
+                    }
+                    confirmedHideWatchedItems = serverVal
                     uncertainConfirmedKeys.remove(scope)
                     reconcilingKeys.remove(scope)
                     if let deferred = deferredWrites.removeValue(forKey: scope),
@@ -1430,6 +1443,9 @@ final class HomePreferencesModel {
             loadedIdentity = identity
             supportedKeys = resolvedKeys
             isAuthorized = !resolvedKeys.isEmpty
+            if reconciledConfirmedValueChanged {
+                HomeSectionsEditorModel.refreshScope(.home)
+            }
             let hadNewerWriteFailure = writeFailureCount != startWriteFailureCount
             if !hadNewerWriteFailure {
                 errorMessage = preservingError

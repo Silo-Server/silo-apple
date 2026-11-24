@@ -1173,6 +1173,9 @@ struct TVSeriesDetailView: View {
                     }
                     var rows = model.entries.map { entry in
                         let isUnconfirmed = model.unconfirmedCollectionIds.contains(entry.id)
+                        let systemImage: String = isUnconfirmed
+                            ? "exclamationmark.triangle"
+                            : (entry.containsItem == nil ? "folder.badge.plus" : "folder")
                         return TVActionPopoverItem(
                             id: "col:\(entry.id)",
                             title: entry.collection.name,
@@ -1180,8 +1183,8 @@ struct TVSeriesDetailView: View {
                                 .collectionsItemCount(count: entry.itemCount, LocaleFormat.groupedCount(entry.itemCount, locale: locale)),
                                 locale: locale
                             ),
-                            systemImage: isUnconfirmed ? "exclamationmark.triangle" : "folder",
-                            isSelected: !isUnconfirmed && entry.containsItem,
+                            systemImage: systemImage,
+                            isSelected: !isUnconfirmed && entry.containsItem == true,
                             isEnabled: !model.busyCollectionIds.contains(entry.id) && !isUnconfirmed
                         )
                     }

@@ -369,18 +369,30 @@ struct IOSAddToCollectionSheet: View {
                         } else {
                             ForEach(model.entries) { entry in
                                 let isUnconfirmed = model.unconfirmedCollectionIds.contains(entry.id)
+                                let iconName: String = {
+                                    if isUnconfirmed { return "exclamationmark.triangle" }
+                                    switch entry.containsItem {
+                                    case true?: return "checkmark.circle.fill"
+                                    case false?: return "circle"
+                                    case nil: return "plus.circle"
+                                    }
+                                }()
+                                let iconColor: Color = {
+                                    if isUnconfirmed { return .siloSecondaryText }
+                                    switch entry.containsItem {
+                                    case true?: return .green
+                                    case false?: return .siloSecondaryText
+                                    case nil: return .accentColor
+                                    }
+                                }()
                                 Button {
                                     hapticCount += 1
                                     model.startToggle(collectionId: entry.id)
                                 } label: {
                                     HStack(spacing: 12) {
-                                        Image(systemName: isUnconfirmed
-                                            ? "exclamationmark.triangle"
-                                            : (entry.containsItem ? "checkmark.circle.fill" : "circle"))
+                                        Image(systemName: iconName)
                                             .font(.title3)
-                                            .foregroundStyle(isUnconfirmed
-                                                ? Color.siloSecondaryText
-                                                : (entry.containsItem ? Color.green : Color.siloSecondaryText))
+                                            .foregroundStyle(iconColor)
 
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(verbatim: entry.collection.name)
@@ -403,8 +415,11 @@ struct IOSAddToCollectionSheet: View {
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(isFinishing || model.busyCollectionIds.contains(entry.id) || isUnconfirmed)
-                                .accessibilityValue(Text(entry.containsItem ? LocalizedStringResource.detailActionOn : .detailActionOff))
-                                .accessibilityAddTraits(entry.containsItem ? [.isSelected] : [])
+                                .accessibilityValue(
+                                    entry.containsItem.map { Text($0 ? LocalizedStringResource.detailActionOn : .detailActionOff) }
+                                        ?? Text(.collectionsAddToMenuAction)
+                                )
+                                .accessibilityAddTraits(entry.containsItem == true ? [.isSelected] : [])
                             }
                             if !model.hasLoaded && !model.isLoading && model.errorMessage == nil {
                                 Button(.commonRetry) {

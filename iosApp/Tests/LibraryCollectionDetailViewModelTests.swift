@@ -226,4 +226,31 @@ final class LibraryCollectionDetailViewModelTests: XCTestCase {
         XCTAssertNil(model.paginationError)
         XCTAssertFalse(model.hasMore)
     }
+
+    func testPartialFirstPageIsPreservedWhenSecondPageFailsDuringAccumulation() async throws {
+        let handler = StubURLProtocol.Handler()
+        handler.expect(StubURLProtocol.any) { _ in
+            Self.page("only-one", type: "movie", cursor: "c2")
+        }
+        handler.expect(StubURLProtocol.any) { request in
+            XCTAssertEqual(request.query["cursor"], "c2")
+            throw URLError(.networkConnectionLost)
+        }
+        handler.expect(StubURLProtocol.any) { request in
+            XCTAssertEqual(request.query["cursor"], "c2")
+            return Self.page("second-one", type: "movie")
+        }
+        let (api, tokens) = try await client(handler)
+        let model = LibraryCollectionDetailViewModel(api: api, tokens: tokens)
+        await load(model, scope: .movie)
+        XCTAssertEqual(model.items.map(\.contentId), ["only-one"])
+        XCTAssertNil(model.error)
+        XCTAssertNotNil(model.paginationError)
+        XCTAssertTrue(model.hasMore)
+
+        await load(model, scope: .movie, reset: false)
+        XCTAssertEqual(model.items.map(\.contentId), ["only-one", "second-one"])
+        XCTAssertNil(model.paginationError)
+        XCTAssertFalse(model.hasMore)
+    }
 }

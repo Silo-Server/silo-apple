@@ -368,6 +368,10 @@ final class CollectionPlacementModel {
                 let editor = try await api.collectionEditor(id: collectionId)
                 version = editor.version
             }
+            guard Self.authMatchesIdentity(version.auth, startIdentity) else {
+                isShared = !targetShared
+                return
+            }
             let updated = try await api.setCollectionShared(version, isShared: targetShared)
             guard requestIdentity() == startIdentity, shareMutationGeneration == myShareGen else { return }
             isShared = updated.isShared ?? targetShared
@@ -483,6 +487,15 @@ final class CollectionPlacementModel {
         }
         return AppLanguage.string(.collectionsCollection)
     }
+
+    private static func authMatchesIdentity(
+        _ auth: CapturedOrdinaryRequestAuth,
+        _ expected: HTTPRequestIdentity?
+    ) -> Bool {
+        guard let expected else { return true }
+        return auth.account.serverId == expected.serverId
+            && auth.profileId == expected.profileId
+    }
 }
 
 // MARK: - Add to Collection Model
@@ -495,7 +508,10 @@ final class CollectionPlacementModel {
 final class AddToCollectionModel {
     struct Entry: Identifiable, Hashable {
         let collection: UserCollection
-        var containsItem: Bool
+        /// `nil` when the server advertises neither `contains_item` nor
+        /// `item_collections`, so existing membership is unknown and the row
+        /// acts as add-only instead of claiming the item is absent.
+        var containsItem: Bool?
         var itemCount: Int
 
         var id: String { collection.id }
@@ -552,6 +568,7 @@ final class AddToCollectionModel {
     @ObservationIgnored private var needsReconciliation = false
     @ObservationIgnored private var pendingReconciliationError: String?
     @ObservationIgnored private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored var onMutationWaiterRegistered: (@MainActor () -> Void)?
     @ObservationIgnored private var mutationFailureCount = 0
     @ObservationIgnored private var acknowledgedFailureCount = 0
 
@@ -595,10 +612,13 @@ final class AddToCollectionModel {
 
             let response: CollectionsResponse
             let memberCollectionIds: Set<String>?
+            let usesContainsField: Bool
             if capabilities?.supportsContainsItem == true {
                 response = try await api.collections(containsItem: contentId)
                 memberCollectionIds = nil
+                usesContainsField = true
             } else {
+                usesContainsField = false
                 let searchFeatures = try await api.catalogSearchFeatures()
                 guard !Task.isCancelled,
                       loadGeneration == myLoadGen,
@@ -607,13 +627,13 @@ final class AddToCollectionModel {
                       requestIdentity() == startIdentity else { return }
                 if searchFeatures.itemCollections {
                     async let collectionsTask = api.collections()
-                    async let membershipTask: Set<String> = {
+                    async let membershipTask: Set<String>? = {
                         do {
                             return try await api.catalogItemCollectionIds(itemId: contentId)
                         } catch APIv2Error.httpStatus(404) {
-                            return []
+                            return nil
                         } catch APIv2Error.problem(let problem) where problem.status == 404 {
-                            return []
+                            return nil
                         }
                     }()
                     let (fetchedCollections, fetchedMembers) = try await (collectionsTask, membershipTask)
@@ -621,7 +641,7 @@ final class AddToCollectionModel {
                     memberCollectionIds = fetchedMembers
                 } else {
                     response = try await api.collections()
-                    memberCollectionIds = []
+                    memberCollectionIds = nil
                 }
             }
             guard !Task.isCancelled,
@@ -638,11 +658,13 @@ final class AddToCollectionModel {
             }
 
             var loaded = manual.map { col in
-                let isMember: Bool
-                if let memberCollectionIds {
+                let isMember: Bool?
+                if usesContainsField {
+                    isMember = col.contains
+                } else if let memberCollectionIds {
                     isMember = memberCollectionIds.contains(col.id)
                 } else {
-                    isMember = col.contains ?? false
+                    isMember = nil
                 }
                 return Entry(
                     collection: col,
@@ -706,6 +728,7 @@ final class AddToCollectionModel {
         while activeMutationCount > 0 {
             await withCheckedContinuation { continuation in
                 mutationWaiters.append(continuation)
+                onMutationWaiterRegistered?()
             }
         }
         if (mutationFailureCount > acknowledgedFailureCount || mutationFailureCount > failureCountAtTap),
@@ -750,9 +773,17 @@ final class AddToCollectionModel {
 
         let wasIn = entries[index].containsItem
         let previousItemCount = entries[index].itemCount
-        let nextIn = !wasIn
-        entries[index].containsItem = nextIn
-        entries[index].itemCount = max(0, previousItemCount + (nextIn ? 1 : -1))
+        let nextIn: Bool
+        if let wasIn {
+            nextIn = !wasIn
+            entries[index].containsItem = nextIn
+            entries[index].itemCount = max(0, previousItemCount + (nextIn ? 1 : -1))
+        } else {
+            // Membership was unknown (server lacks lookup capabilities): perform an
+            // idempotent add without claiming prior count accuracy.
+            nextIn = true
+            entries[index].containsItem = true
+        }
 
         return Task { @MainActor in
             defer { self.endMutation() }

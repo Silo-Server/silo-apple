@@ -805,6 +805,13 @@ struct LibraryCollectionDetailView: View {
                 Color.clear
             } else if !viewModel.items.isEmpty || kind == nil || kind == .regular {
                 content
+            } else if viewModel.hasMore && viewModel.paginationError == nil {
+                ProgressView()
+                    .task {
+                        await loadMoreIfNeeded()
+                    }
+            } else if let paginationError = viewModel.paginationError {
+                ErrorView(state: paginationError, onRetry: { Task { await loadItems(reset: false) } })
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up.fill",
@@ -904,13 +911,23 @@ struct LibraryCollectionDetailView: View {
                     }
                 }
 
-                if viewModel.items.isEmpty {
+                if viewModel.items.isEmpty && !viewModel.hasMore && viewModel.paginationError == nil {
                     EmptyStateView(
                         icon: "square.stack.3d.up.fill",
                         title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
                         subtitle: AppLanguage.string(.collectionsEmptyItemsBody, locale: locale)
                     )
                     .padding(.top, SiloTheme.largePadding)
+                } else if viewModel.items.isEmpty && viewModel.hasMore && viewModel.paginationError == nil {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .padding(.vertical, SiloTheme.largePadding)
+                    .task {
+                        await loadMoreIfNeeded()
+                    }
                 } else {
                     CatalogGrid(
                         items: viewModel.items,

@@ -631,12 +631,19 @@ final class ProfileHomeLayoutTests: XCTestCase {
         stub.hold(path: itemPath)
 
         let failedToggle = model.startToggle(collectionId: "col-1")
+        defer { stub.release() }
         // Synchronous registration guarantees Done sees the pending mutation immediately,
         // even before the scheduled Task body reaches its first network suspension.
         XCTAssertTrue(model.hasPendingMutations)
         await stub.waitUntilHeld()
 
+        let failureWaiterRegistered = expectation(description: "Done registered mutation waiter on failure")
+        model.onMutationWaiterRegistered = {
+            model.onMutationWaiterRegistered = nil
+            failureWaiterRegistered.fulfill()
+        }
         let waitOnFailure = Task { await model.waitForPendingMutations() }
+        await fulfillment(of: [failureWaiterRegistered], timeout: 5.0)
         stub.release()
 
         await failedToggle.value
@@ -655,7 +662,13 @@ final class ProfileHomeLayoutTests: XCTestCase {
         let succeededToggle = model.startToggle(collectionId: "col-1")
         XCTAssertTrue(model.hasPendingMutations)
         await stub.waitUntilHeld()
+        let successWaiterRegistered = expectation(description: "Done registered mutation waiter on success")
+        model.onMutationWaiterRegistered = {
+            model.onMutationWaiterRegistered = nil
+            successWaiterRegistered.fulfill()
+        }
         let waitOnSuccess = Task { await model.waitForPendingMutations() }
+        await fulfillment(of: [successWaiterRegistered], timeout: 5.0)
         stub.release()
 
         await succeededToggle.value
@@ -889,6 +902,7 @@ final class ProfileHomeLayoutTests: XCTestCase {
         await olderModel.load()
         XCTAssertTrue(olderModel.hasLoaded)
         XCTAssertEqual(olderModel.entries.map(\.id), ["own-1"])
+        XCTAssertNil(olderModel.entries.first?.containsItem)
         XCTAssertFalse(stub.requests.contains { $0.path == "/api/v2/catalog/items/movie-99/collections" })
 
         // 3) Unconfirmed row after failed create-and-add + failed reconciliation stays locked until Retry succeeds.
