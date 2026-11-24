@@ -51,16 +51,14 @@ re-opens the overlay.
   - else if the overlay is visible, hide the overlay first
   - else dismiss the player entirely
 
-With the overlay hidden, D-pad Down opens the HUD on the Info tab.
-
 Inside the overlay itself:
 
-- the transport row's options button opens the HUD on the tab last shown,
-  which is Info after a Down
+- D-pad Down from the scrubber opens the HUD
+- D-pad Down from the transport row opens the HUD
 - transport buttons are kept inside a `focusSection()` so left/right movement
   stays inside the cluster
 
-When the HUD closes, focus returns to the scrubber.
+When the HUD closes, focus is restored to the transport `options` button.
 
 ## 4. Scrubber behavior
 
@@ -141,7 +139,6 @@ The Video tab exposes:
 - aspect / video gravity
 - HDR passthrough toggle
 - auto-play-next toggle
-- sleep timer (kept in a Watch Party, where speed and auto-play-next are hidden)
 
 Route-gated controls appear only when the current backend actually supports
 them:
