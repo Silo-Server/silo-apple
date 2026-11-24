@@ -26,9 +26,14 @@ enum StartupContentPrefetcher {
     private static let profiles = SharedFetch<[UserProfile]>()
     private static let homeSections = SharedFetch<APIv2HomeSectionsRead>()
     private static let recommendations = SharedFetch<SectionsResponse>()
+    private struct UserLibrariesSnapshot {
+        let response: LibrariesResponse
+        let revision: Int
+    }
+
     /// Most screens read the library list as they appear; reuse a result this
     /// fresh instead of repeating the request at launch.
-    private static let userLibraries = SharedFetch<LibrariesResponse>(reuseWindow: .seconds(15))
+    private static let userLibraries = SharedFetch<UserLibrariesSnapshot>(reuseWindow: .seconds(15))
     private(set) static var userLibrariesRevision = 0
     private static var librarySections: [Int: SharedFetch<APIv2LibrarySectionsRead>] = [:]
     private static var browseFirstPages: [String: SharedFetch<CatalogListPage>] = [:]
@@ -48,6 +53,7 @@ enum StartupContentPrefetcher {
         homeSections.reset()
         recommendations.reset()
         userLibraries.reset()
+        userLibrariesRevision += 1
         librarySections.values.forEach { $0.reset() }
         librarySections.removeAll()
         librarySectionsGeneration.removeAll()
@@ -378,16 +384,17 @@ enum StartupContentPrefetcher {
         }
     }
 
-    static func fetchUserLibrariesWithRevision(reusingRecent: Bool = true) async throws -> (response: LibrariesResponse, revision: Int) {
-        let response = try await fetchUserLibraries(reusingRecent: reusingRecent)
-        return (response, userLibrariesRevision)
-    }
-
     /// The libraries the active profile browses: every library it can open,
     /// less the ones it hid from navigation (`ui.disabled_library_ids`).
     /// `reusingRecent: false` is for an explicit refresh by the user.
     static func fetchUserLibraries(reusingRecent: Bool = true) async throws -> LibrariesResponse {
-        if reusingRecent, let recent = userLibraries.recentValue() { return recent }
+        try await fetchUserLibrariesWithRevision(reusingRecent: reusingRecent).response
+    }
+
+    static func fetchUserLibrariesWithRevision(reusingRecent: Bool = true) async throws -> (response: LibrariesResponse, revision: Int) {
+        if reusingRecent, let recent = userLibraries.recentValue() {
+            return (recent.response, recent.revision)
+        }
         let generation = profileScopedGeneration
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("user_libraries", isOriginator: !userLibraries.isInFlight)
@@ -395,26 +402,27 @@ enum StartupContentPrefetcher {
         let task = userLibraries.join {
             async let hidden = HiddenLibraryPreference.hiddenLibraryIds()
             let response = try await SiloAPI.shared.libraries()
-            return LibrariesResponse(
+            let visible = LibrariesResponse(
                 libraries: HiddenLibraryPreference.visibleLibraries(response.libraries, hiding: await hidden)
             )
+            userLibrariesRevision += 1
+            return UserLibrariesSnapshot(response: visible, revision: userLibrariesRevision)
         }
         let writeToken = userLibraries.writeToken
         do {
-            let response = try await task.value
+            let snapshot = try await task.value
             try validateProfileScopedGeneration(generation)
             // Only the first caller to resume announces the refresh; waiters
             // that joined the same request would repeat it.
-            let isFirstToLand = userLibraries.finish(task, value: response)
+            let isFirstToLand = userLibraries.finish(task, value: snapshot)
             #if os(iOS) || os(tvOS)
             probe.finish(error: nil)
             #endif
-            ResponseCache.shared.set(response, for: CacheKey.userLibraries, fetchedAt: writeToken)
+            ResponseCache.shared.set(snapshot.response, for: CacheKey.userLibraries, fetchedAt: writeToken)
             if isFirstToLand {
-                userLibrariesRevision += 1
-                NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: response)
+                NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: snapshot.response)
             }
-            return response
+            return (snapshot.response, snapshot.revision)
         } catch {
             userLibraries.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
