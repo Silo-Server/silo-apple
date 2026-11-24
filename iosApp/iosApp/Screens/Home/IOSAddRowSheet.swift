@@ -982,7 +982,7 @@ private struct IOSCollectionPickerView: View {
                                     subtitle: serverCollectionSubtitle(collection, locale: locale),
                                     posterUrl: collection.posterUrl,
                                     posterThumbhash: collection.posterThumbhash,
-                                    badge: editor.isCollectionPresent(collectionId: collection.id, isUserCollection: collection.isUserCollection)
+                                    badge: editor.isCollectionPresent(collectionId: collection.collectionId, isUserCollection: collection.isUserCollection)
                                         ? AppLanguage.string(.homeAddRowOnPageBadge(pageLabel), locale: locale)
                                         : nil
                                 )
@@ -1021,7 +1021,7 @@ private enum PickedCollectionTarget {
     var id: String {
         switch self {
         case .personal(let c): return c.id
-        case .server(let c): return c.id
+        case .server(let c): return c.collectionId
         }
     }
 
@@ -1359,7 +1359,7 @@ private struct IOSCollectionPostersBuilderView: View {
                 if !filteredServer.isEmpty {
                     Section(.homeAddRowSectionServerCollections) {
                         ForEach(filteredServer) { collection in
-                            let ref = SelectedRef(isUserCollection: collection.isUserCollection, collectionId: collection.id)
+                            let ref = SelectedRef(isUserCollection: collection.isUserCollection, collectionId: collection.collectionId)
                             let isChosen = selectedSet.contains(ref)
                             selectableCollectionButton(
                                 title: collection.title,
@@ -1494,7 +1494,7 @@ private struct IOSCollectionPostersBuilderView: View {
            let col = editor.personalCollections.first(where: { $0.id == ref.collectionId }) {
             return (col.name, AppLanguage.string(.homeAddRowPersonalCollection, locale: locale), col.posterUrl, col.posterThumbhash)
         }
-        if let col = editor.serverCollections.first(where: { $0.id == ref.collectionId && $0.isUserCollection == ref.isUserCollection }) {
+        if let col = editor.serverCollections.first(where: { $0.collectionId == ref.collectionId && $0.isUserCollection == ref.isUserCollection }) {
             return (col.title, col.libraryName, col.posterUrl, col.posterThumbhash)
         }
         return (AppLanguage.string(.collectionsCollection, locale: locale), nil, nil, nil)

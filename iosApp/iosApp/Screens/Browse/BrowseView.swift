@@ -673,6 +673,10 @@ struct LibraryRecommendedView: View {
     var mediaScope: LibraryVideoScope? = nil
 
     @State private var viewModel = LibraryRecommendedViewModel()
+    @State private var isVisible = false
+    @State private var hasPendingRefresh = false
+    @State private var refreshInvalidationGen = 0
+    @State private var refreshTask: Task<Void, Never>?
     #if !os(tvOS)
     @State private var isCustomizing = false
     @State private var libraryEditor: HomeSectionsEditorModel?
@@ -748,17 +752,44 @@ struct LibraryRecommendedView: View {
             isCustomizing = false
             libraryEditor = HomeSectionsEditorModel(scope: .library(libraryId))
             #endif
-            await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
+            refreshTask?.cancel()
+            refreshTask = nil
+            await runFencedLoad()
         }
         .refreshable {
-            await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
+            refreshTask?.cancel()
+            refreshTask = nil
+            await runFencedLoad()
             pageDidRefresh?()
+        }
+        .onAppear {
+            isVisible = true
+            if hasPendingRefresh {
+                scheduleRefresh(delay: nil)
+            }
+        }
+        .onDisappear {
+            isVisible = false
+            refreshTask?.cancel()
+            refreshTask = nil
         }
         // The Libraries tab keeps this page alive under its others, so a
         // title marked watched elsewhere would otherwise keep its old card
         // in Continue Watching and Next Up. Home reloads on the same signal.
-        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
-            Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) }
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { note in
+            if let targetLibraryId = note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.libraryId] as? Int,
+               targetLibraryId != libraryId {
+                return
+            }
+            refreshInvalidationGen += 1
+            hasPendingRefresh = true
+            if isVisible {
+                let isCollectionEdit = note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.collectionId] != nil
+                scheduleRefresh(delay: isCollectionEdit ? .milliseconds(350) : nil)
+            } else {
+                refreshTask?.cancel()
+                refreshTask = nil
+            }
         }
         #if !os(tvOS)
         .onReceive(NotificationCenter.default.publisher(for: .libraryCustomizeRequested)) { note in
@@ -771,6 +802,25 @@ struct LibraryRecommendedView: View {
             }
         }
         #endif
+    }
+
+    private func scheduleRefresh(delay: Duration?) {
+        refreshTask?.cancel()
+        refreshTask = Task {
+            if let delay {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled else { return }
+            }
+            await runFencedLoad()
+        }
+    }
+
+    private func runFencedLoad() async {
+        let startGen = refreshInvalidationGen
+        await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
+        if !Task.isCancelled, refreshInvalidationGen == startGen, viewModel.error == nil {
+            hasPendingRefresh = false
+        }
     }
 
     private var content: some View {

@@ -173,6 +173,8 @@ struct LibrariesTabView: View {
     /// header's count again.
     @State private var countRefreshes = 0
     @State private var isDockVisible = false
+    @State private var isPageVisible = false
+    @State private var customizerOwnerToken = UUID()
     @Environment(PageDockHost.self) private var dockHost: PageDockHost?
     @Environment(SiloControlClient.self) private var siloControl
     @Environment(AudioPlaybackStore.self) private var audioStore
@@ -245,11 +247,17 @@ struct LibrariesTabView: View {
             applyLibrarySelection()
         }
         #if os(iOS)
-        .onAppear { syncActiveCustomizableLibrary() }
+        .onAppear {
+            isPageVisible = true
+            syncActiveCustomizableLibrary()
+        }
         .onChange(of: selectedTab) { syncActiveCustomizableLibrary() }
         .onChange(of: activeLibrary?.id) { syncActiveCustomizableLibrary() }
         .onChange(of: activeLibrary?.name) { syncActiveCustomizableLibrary() }
-        .onDisappear { router.activeCustomizableLibrary = nil }
+        .onDisappear {
+            isPageVisible = false
+            clearOwnedCustomizableLibrary()
+        }
         #endif
         .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) {
             notification in
@@ -284,11 +292,19 @@ struct LibrariesTabView: View {
 
     #if os(iOS)
     private func syncActiveCustomizableLibrary() {
+        guard isPageVisible else { return }
         if selectedTab == .recommended, let activeLibrary {
+            router.activeCustomizableLibraryOwner = customizerOwnerToken
             router.activeCustomizableLibrary = (id: activeLibrary.id, name: activeLibrary.name)
         } else {
-            router.activeCustomizableLibrary = nil
+            clearOwnedCustomizableLibrary()
         }
+    }
+
+    private func clearOwnedCustomizableLibrary() {
+        guard router.activeCustomizableLibraryOwner == customizerOwnerToken else { return }
+        router.activeCustomizableLibraryOwner = nil
+        router.activeCustomizableLibrary = nil
     }
     #endif
 

@@ -652,7 +652,7 @@ final class AddToCollectionModel {
                     try await self.api.removeItemFromCollection(collectionId: collectionId, itemId: self.contentId)
                 }
                 ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
-                HomeSectionsEditorModel.refreshAllSectionScopes()
+                HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
                 if self.requestIdentity() == startIdentity {
                     NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
                 }
@@ -672,7 +672,7 @@ final class AddToCollectionModel {
                         // the response was lost; invalidate caches and reconcile from
                         // the server once all pending mutations settle.
                         ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
-                        HomeSectionsEditorModel.refreshAllSectionScopes()
+                        HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
                         NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
                         self.needsReconciliation = true
                         self.pendingReconciliationError = message
@@ -784,7 +784,7 @@ final class AddToCollectionModel {
                     }
                 }
                 ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
-                HomeSectionsEditorModel.refreshAllSectionScopes()
+                HomeSectionsEditorModel.refreshCollectionMembership(collectionId: created.id)
                 NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
                 result = .createdAndAdded
             } catch {
@@ -799,7 +799,7 @@ final class AddToCollectionModel {
                 if APIv2MutationOutcome(error).mayHaveApplied {
                     ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
                     ResponseCache.shared.remove(CacheKey.collections)
-                    HomeSectionsEditorModel.refreshAllSectionScopes()
+                    HomeSectionsEditorModel.refreshCollectionMembership(collectionId: created.id)
                     NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
                     self.needsReconciliation = true
                     self.pendingReconciliationError = message

@@ -539,7 +539,15 @@ struct TVHomeCustomizeOverlay: View {
             switch action {
             case .retry:
                 guard !editor.isRefreshing else { return }
-                Task { await editor.load() }
+                Task {
+                    async let layoutLoad = editor.load()
+                    if editor.scope == .home {
+                        async let prefsLoad: Void = preferences.load()
+                        _ = await (layoutLoad, prefsLoad)
+                    } else {
+                        _ = await layoutLoad
+                    }
+                }
             case .addRow:
                 guard editor.phase == .loaded, !editor.isResetting else { return }
                 isShowingAddRow = true
@@ -552,6 +560,11 @@ struct TVHomeCustomizeOverlay: View {
                 }
             case .options:
                 guard !editor.isResetting else { return }
+                if editor.scope == .home,
+                   !preferences.isLoading,
+                   (!preferences.isAuthorized || preferences.hasReconcilingKeys || preferences.errorMessage != nil) {
+                    Task { await preferences.load() }
+                }
                 isShowingOptions = true
             case .done:
                 finishAndClose()
@@ -682,6 +695,15 @@ struct TVHomeCustomizeOverlay: View {
     private func homeOptionsItems() -> [TVActionPopoverItem] {
         var items: [TVActionPopoverItem] = []
         if editor.scope == .home {
+            if !preferences.isLoading
+                && (!preferences.isAuthorized || preferences.hasReconcilingKeys || preferences.errorMessage != nil) {
+                items.append(TVActionPopoverItem(
+                    id: "retry-preferences",
+                    title: AppLanguage.string(.commonRetry, locale: locale),
+                    detail: preferences.errorMessage,
+                    systemImage: "arrow.clockwise"
+                ))
+            }
             items.append(TVActionPopoverItem(
                 id: "next-up-mode",
                 title: "Next Up Mode",
@@ -736,7 +758,9 @@ struct TVHomeCustomizeOverlay: View {
     }
 
     private func handleHomeOptionSelect(_ item: TVActionPopoverItem) {
-        if item.id.hasPrefix("nextup:"),
+        if item.id == "retry-preferences" {
+            Task { await preferences.load() }
+        } else if item.id.hasPrefix("nextup:"),
            let mode = HomePreferencesModel.NextUpMode(rawValue: String(item.id.dropFirst(7))) {
             preferences.setNextUpMode(mode)
             closeHomeOptions()
@@ -1308,8 +1332,8 @@ struct TVAddRowModal: View {
                 }
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
                     ForEach(editor.serverCollections) { collection in
-                        let key = "\(collection.isUserCollection ? "user" : "lib"):\(collection.id)"
-                        let isAdded = editor.isCollectionPresent(collectionId: collection.id, isUserCollection: collection.isUserCollection)
+                        let key = collection.id
+                        let isAdded = editor.isCollectionPresent(collectionId: collection.collectionId, isUserCollection: collection.isUserCollection)
                             || addedKeys.contains(key)
                         collectionCard(
                             title: collection.title,
@@ -1323,13 +1347,13 @@ struct TVAddRowModal: View {
                             guard !isAdded else { return }
                             addedKeys.insert(key)
                             let task = editor.addCollectionRow(
-                                collectionId: collection.id,
+                                collectionId: collection.collectionId,
                                 title: collection.title,
                                 isUserCollection: collection.isUserCollection
                             )
                             Task {
                                 await task.value
-                                if !editor.isCollectionPresent(collectionId: collection.id, isUserCollection: collection.isUserCollection) {
+                                if !editor.isCollectionPresent(collectionId: collection.collectionId, isUserCollection: collection.isUserCollection) {
                                     addedKeys.remove(key)
                                 }
                             }

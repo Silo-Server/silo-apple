@@ -18,7 +18,7 @@ final class HomeSectionsEditorModel {
     }
 
     struct ServerCollectionOption: Identifiable, Hashable, Sendable {
-        let id: String
+        let collectionId: String
         let title: String
         let libraryId: Int
         let libraryName: String
@@ -26,6 +26,8 @@ final class HomeSectionsEditorModel {
         let posterUrl: String?
         let posterThumbhash: String?
         let isUserCollection: Bool
+
+        var id: String { "\(isUserCollection ? "user" : "lib"):\(collectionId)" }
     }
 
     let scope: ProfileSectionsScope
@@ -311,7 +313,7 @@ final class HomeSectionsEditorModel {
                                 // group remain addable and serialize as `user_collection_id`.
                                 let mapped = response.collections.map { col in
                                     ServerCollectionOption(
-                                        id: col.id,
+                                        collectionId: col.id,
                                         title: col.name,
                                         libraryId: library.id,
                                         libraryName: library.name,
@@ -344,11 +346,10 @@ final class HomeSectionsEditorModel {
                 var seen = Set<String>()
                 nextServerCollections = collected
                     .filter { option in
-                        if option.isUserCollection && ownPersonalIds.contains(option.id) {
+                        if option.isUserCollection && ownPersonalIds.contains(option.collectionId) {
                             return false
                         }
-                        let dedupeKey = "\(option.isUserCollection ? "user" : "lib"):\(option.id)"
-                        return seen.insert(dedupeKey).inserted
+                        return seen.insert(option.id).inserted
                     }
                     .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
                 if libraryErrors > 0 {
@@ -463,14 +464,29 @@ final class HomeSectionsEditorModel {
         }
     }
 
-    /// Slides a visible row by `offset` (e.g. -1 up, +1 down) within visible slots.
+    /// Slides a visible row by `offset` (e.g. -1 up, +1 down) within visible slots,
+    /// capturing the intended neighbor row so a replay after an earlier rejected
+    /// save never substitutes a different neighbor at the same offset.
     @discardableResult
     func moveVisible(id: String, by offset: Int) -> Task<Void, Never> {
-        applyEdit { rows in
-            Self.reorderVisibleSlots(in: rows, transform: { visible in
-                guard let index = visible.firstIndex(where: { $0.id == id }),
-                      visible.indices.contains(index + offset) else { return false }
-                visible.swapAt(index, index + offset)
+        let visible = visibleRows
+        guard let index = visible.firstIndex(where: { $0.id == id }),
+              visible.indices.contains(index + offset) else { return Task {} }
+        let targetId = visible[index + offset].id
+        let movingDown = offset > 0
+        return applyEdit { rows in
+            Self.reorderVisibleSlots(in: rows, transform: { currentVisible in
+                guard let fromIndex = currentVisible.firstIndex(where: { $0.id == id }),
+                      let targetIndex = currentVisible.firstIndex(where: { $0.id == targetId }) else { return false }
+                if movingDown {
+                    guard fromIndex < targetIndex else { return false }
+                    let row = currentVisible.remove(at: fromIndex)
+                    currentVisible.insert(row, at: targetIndex)
+                } else {
+                    guard fromIndex > targetIndex else { return false }
+                    let row = currentVisible.remove(at: fromIndex)
+                    currentVisible.insert(row, at: targetIndex)
+                }
                 return true
             })
         }
@@ -778,6 +794,11 @@ final class HomeSectionsEditorModel {
                 return QuickActionResult(succeeded: false, errorMessage: message)
             }
             await mutation(self).value
+            var gen: Int
+            repeat {
+                gen = self.editGeneration
+                await self.saveChain?.value
+            } while gen != self.editGeneration || self.pendingSaveCount > 0
             guard self.requestIdentity() == requestedIdentity else {
                 return QuickActionResult(succeeded: false, errorMessage: nil)
             }
@@ -1031,25 +1052,36 @@ final class HomeSectionsEditorModel {
         }
     }
 
+    enum RefreshNotificationKey {
+        static let libraryId = "libraryId"
+        static let collectionId = "collectionId"
+    }
+
     static func refreshScope(_ scope: ProfileSectionsScope) {
         StartupContentPrefetcher.invalidateHomeSectionsInFlight()
         ResponseCache.shared.remove(CacheKey.homeSections)
+        var userInfo: [AnyHashable: Any]? = nil
         if case .library(let libraryId) = scope {
             StartupContentPrefetcher.invalidateLibrarySectionsInFlight(libraryId: libraryId)
             ResponseCache.shared.remove(CacheKey.librarySections(libraryId))
+            userInfo = [RefreshNotificationKey.libraryId: libraryId]
         }
-        NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil, userInfo: userInfo)
     }
 
-    /// Invalidates Home and all Library section reads/caches (for example when
-    /// collection membership changes and that collection may be pinned on Home
-    /// or any Library page), then notifies mounted feeds to reload.
-    static func refreshAllSectionScopes() {
+    /// Invalidates Home and all Library section reads/caches when collection
+    /// membership changes and notifies mounted feeds (which coalesce or defer
+    /// reloads when off-screen).
+    static func refreshCollectionMembership(collectionId: String) {
         StartupContentPrefetcher.invalidateHomeSectionsInFlight()
         StartupContentPrefetcher.invalidateAllLibrarySectionsInFlight()
         ResponseCache.shared.remove(CacheKey.homeSections)
         ResponseCache.shared.removeAll(withPrefix: "library:")
-        NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
+        NotificationCenter.default.post(
+            name: .homeSectionsShouldRefresh,
+            object: nil,
+            userInfo: [RefreshNotificationKey.collectionId: collectionId]
+        )
     }
 }
 
@@ -1091,9 +1123,10 @@ final class HomePreferencesModel {
     private(set) var isLoading = false
     private(set) var isSaving = false
     private(set) var queuedWriteCount = 0
+    private(set) var recoveryLoadCount = 0
     private(set) var errorMessage: String?
 
-    var hasPendingWrites: Bool { queuedWriteCount > 0 }
+    var hasPendingWrites: Bool { queuedWriteCount > 0 || recoveryLoadCount > 0 }
     /// True only after both the contract capability probe and the effective-values
     /// read succeeded for the current server and profile.
     private struct KeyScope: Hashable {
@@ -1230,6 +1263,10 @@ final class HomePreferencesModel {
                 }
             case .failed(let err):
                 errorMessage = preservingError ?? ErrorState(err).message
+                if deferredWrites.contains(where: { $0.key.identity == identity })
+                    || reconcilingKeys.contains(where: { $0.identity == identity }) {
+                    writeFailureCount += 1
+                }
             case .available:
                 break
             }
@@ -1325,7 +1362,7 @@ final class HomePreferencesModel {
             supportedKeys = resolvedKeys
             isAuthorized = !resolvedKeys.isEmpty
             errorMessage = preservingError
-            if preservingError == nil {
+            if preservingError == nil && deferredToDispatch.isEmpty {
                 acknowledgedFailureCount = writeFailureCount
             }
 
@@ -1343,9 +1380,7 @@ final class HomePreferencesModel {
                 return reconcilingKeys.contains(scope) && pendingWrites[scope, default: 0] == 0
             }
             if needsReconciliation {
-                Task { @MainActor [weak self] in
-                    await self?.load(preservingError: preservingError)
-                }
+                scheduleRecoveryLoad(preservingError: preservingError)
             }
         } catch {
             guard !(error is CancellationError), !Task.isCancelled, loadSequence == sequence, requestIdentity() == identity else { return }
@@ -1353,6 +1388,10 @@ final class HomePreferencesModel {
             supportedKeys = []
             loadedIdentity = nil
             errorMessage = preservingError ?? ErrorState(error).message
+            if deferredWrites.contains(where: { $0.key.identity == identity })
+                || reconcilingKeys.contains(where: { $0.identity == identity }) {
+                writeFailureCount += 1
+            }
         }
     }
 
@@ -1437,12 +1476,13 @@ final class HomePreferencesModel {
         )
     }
 
-    /// Waits for any queued preference writes to settle before closing Options.
+    /// Waits for any queued preference writes (including recovery loads and
+    /// retried deferred writes) to settle before closing Options.
     /// Returns `false` once when any unacknowledged write failed so the user
     /// sees `errorMessage`; a subsequent Done tap with no new failure closes cleanly.
     func waitForPendingWrites() async -> Bool {
         let failureCountAtTap = writeFailureCount
-        while queuedWriteCount > 0 {
+        while queuedWriteCount > 0 || recoveryLoadCount > 0 {
             await withCheckedContinuation { continuation in
                 writeWaiters.append(continuation)
             }
@@ -1454,6 +1494,28 @@ final class HomePreferencesModel {
         return true
     }
 
+    private func resumeWriteWaitersIfIdle() {
+        guard queuedWriteCount == 0, recoveryLoadCount == 0, !writeWaiters.isEmpty else { return }
+        let waiters = writeWaiters
+        writeWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    private func scheduleRecoveryLoad(preservingError: String?) {
+        recoveryLoadCount += 1
+        Task { @MainActor [weak self] in
+            defer {
+                if let self {
+                    self.recoveryLoadCount = max(0, self.recoveryLoadCount - 1)
+                    self.resumeWriteWaitersIfIdle()
+                }
+            }
+            await self?.load(preservingError: preservingError)
+        }
+    }
+
     private func enqueueWrite(
         key: SettingKey,
         value: SettingJSONValue,
@@ -1463,7 +1525,7 @@ final class HomePreferencesModel {
         let generation = keyGeneration[scope, default: 0] + 1
         keyGeneration[scope] = generation
         deferredWrites.removeValue(forKey: scope)
-        if queuedWriteCount == 0 {
+        if queuedWriteCount == 0 && recoveryLoadCount == 0 {
             errorMessage = nil
             acknowledgedFailureCount = writeFailureCount
         }
@@ -1474,26 +1536,20 @@ final class HomePreferencesModel {
             await previous?.value
             guard let self else { return }
             var dispatched = false
-            var scheduleRecoveryLoad = false
+            var shouldScheduleRecoveryLoad = false
             defer {
                 self.pendingWrites[scope] = max(0, self.pendingWrites[scope, default: 0] - 1)
                 if dispatched {
                     self.settledWrites[scope, default: 0] += 1
                 }
+                if shouldScheduleRecoveryLoad, self.requestIdentity() == identity {
+                    // Increment `recoveryLoadCount` before decrementing `queuedWriteCount`
+                    // so Done never observes an idle gap before the recovery load retries
+                    // an owed deferred write.
+                    self.scheduleRecoveryLoad(preservingError: self.errorMessage)
+                }
                 self.queuedWriteCount = max(0, self.queuedWriteCount - 1)
-                if self.queuedWriteCount == 0, !self.writeWaiters.isEmpty {
-                    let waiters = self.writeWaiters
-                    self.writeWaiters.removeAll()
-                    for waiter in waiters {
-                        waiter.resume()
-                    }
-                }
-                if scheduleRecoveryLoad, self.requestIdentity() == identity {
-                    let preservedError = self.errorMessage
-                    Task { @MainActor [weak self] in
-                        await self?.load(preservingError: preservedError)
-                    }
-                }
+                self.resumeWriteWaitersIfIdle()
             }
             // Skip obsolete writes superseded while waiting.
             guard self.keyGeneration[scope] == generation else { return }
@@ -1510,7 +1566,7 @@ final class HomePreferencesModel {
                 )
                 self.reconcilingKeys.insert(scope)
                 if self.requestIdentity() == identity {
-                    scheduleRecoveryLoad = true
+                    shouldScheduleRecoveryLoad = true
                 }
                 return
             }
@@ -1538,7 +1594,7 @@ final class HomePreferencesModel {
                 guard self.isAuthorizedForWrite(key, identity: identity) else {
                     self.reconcilingKeys.insert(scope)
                     if self.requestIdentity() == identity {
-                        scheduleRecoveryLoad = true
+                        shouldScheduleRecoveryLoad = true
                     }
                     return
                 }
@@ -1556,7 +1612,7 @@ final class HomePreferencesModel {
                 guard self.keyGeneration[scope] == generation else { return }
                 self.reconcilingKeys.insert(scope)
                 if self.requestIdentity() == identity {
-                    scheduleRecoveryLoad = true
+                    shouldScheduleRecoveryLoad = true
                 }
                 return
             } catch let held as ProfileSettingsWriter.HeldChange {
@@ -1570,7 +1626,7 @@ final class HomePreferencesModel {
                 if self.requestIdentity() == identity {
                     self.writeFailureCount += 1
                     self.errorMessage = message
-                    scheduleRecoveryLoad = true
+                    shouldScheduleRecoveryLoad = true
                 }
             } catch {
                 guard self.keyGeneration[scope] == generation else { return }
@@ -1589,7 +1645,7 @@ final class HomePreferencesModel {
                     // before an authoritative reload reconciles it.
                     self.reconcilingKeys.insert(scope)
                     if self.requestIdentity() == identity {
-                        scheduleRecoveryLoad = true
+                        shouldScheduleRecoveryLoad = true
                     }
                 } else {
                     self.revertToConfirmed(for: key)

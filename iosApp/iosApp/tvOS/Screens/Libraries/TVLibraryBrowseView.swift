@@ -29,6 +29,10 @@ struct TVLibraryBrowseView: View {
     @State private var sectionsError: ErrorState? = nil
     @State private var scopeIncomplete = false
     @State private var loadGeneration = 0
+    @State private var isVisible = false
+    @State private var hasPendingRefresh = false
+    @State private var refreshInvalidationGen = 0
+    @State private var refreshTask: Task<Void, Never>?
 
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
@@ -91,6 +95,43 @@ struct TVLibraryBrowseView: View {
         .environment(\.browseLibraryId, library.id)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await loadContent() }
+        .onAppear {
+            isVisible = true
+            if hasPendingRefresh {
+                scheduleRefresh(delay: nil)
+            }
+        }
+        .onDisappear {
+            isVisible = false
+            refreshTask?.cancel()
+            refreshTask = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { note in
+            if let targetLibraryId = note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.libraryId] as? Int,
+               targetLibraryId != library.id {
+                return
+            }
+            refreshInvalidationGen += 1
+            hasPendingRefresh = true
+            if isVisible {
+                let isCollectionEdit = note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.collectionId] != nil
+                scheduleRefresh(delay: isCollectionEdit ? .milliseconds(350) : nil)
+            } else {
+                refreshTask?.cancel()
+                refreshTask = nil
+            }
+        }
+    }
+
+    private func scheduleRefresh(delay: Duration?) {
+        refreshTask?.cancel()
+        refreshTask = Task {
+            if let delay {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled else { return }
+            }
+            await loadContent()
+        }
     }
 
     private var emptyHint: some View {
@@ -123,6 +164,7 @@ struct TVLibraryBrowseView: View {
     private func loadContent() async {
         loadGeneration += 1
         let requestGeneration = loadGeneration
+        let startRefreshGen = refreshInvalidationGen
         defer {
             if requestGeneration == loadGeneration { isLoadingSections = false }
         }
@@ -160,20 +202,28 @@ struct TVLibraryBrowseView: View {
                                              next: page.continuation, startsOver: page.startsOver)
                 }
                 guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
-                guard requestGeneration == loadGeneration, !Task.isCancelled else { return }
+                guard requestGeneration == loadGeneration,
+                      refreshInvalidationGen == startRefreshGen,
+                      !Task.isCancelled else { return }
                 sections = scoped.map(\.section)
                 scopeIncomplete = scoped.contains { $0.incomplete }
+                hasPendingRefresh = false
                 if let scopedCacheKey {
                     ResponseCache.shared.set((sections: sections, incomplete: scopeIncomplete), for: scopedCacheKey)
                 }
             } else {
                 let read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: library.id)
                 guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
-                guard requestGeneration == loadGeneration, !Task.isCancelled else { return }
+                guard requestGeneration == loadGeneration,
+                      refreshInvalidationGen == startRefreshGen,
+                      !Task.isCancelled else { return }
                 sections = read.response.sections
+                hasPendingRefresh = false
             }
         } catch {
-            guard requestGeneration == loadGeneration, !Task.isCancelled else { return }
+            guard requestGeneration == loadGeneration,
+                  refreshInvalidationGen == startRefreshGen,
+                  !Task.isCancelled else { return }
             if error is CancellationError { return }
             if case HTTPError.requestIdentityChanged = error { sections = [] }
             if case HTTPError.authorityChanged = error { sections = [] }

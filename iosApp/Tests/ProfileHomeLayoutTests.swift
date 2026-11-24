@@ -700,6 +700,65 @@ final class ProfileHomeLayoutTests: XCTestCase {
         let putRequests = stub.requests.filter { $0.method == "PUT" && $0.path == "/api/v2/profile/sections" }
         XCTAssertEqual(putRequests.count, 1)
     }
+
+    @MainActor
+    func testReplayingQueuedMovePreservesOriginalSwapTargetWhenFirstPutFails() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "move-replay-test")
+        await tokens.setServerUrl("https://move.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "move-replay-test",
+            serverURL: "https://move.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+
+        let settingsJSON = """
+        {"items":[
+          {"id":"sec-a","section_type":"recently_added","title":"A","default_title":"A","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":0},
+          {"id":"sec-b","section_type":"recently_added","title":"B","default_title":"B","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":1},
+          {"id":"sec-c","section_type":"recently_added","title":"C","default_title":"C","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":2}
+        ]}
+        """
+        stub.reply(path: "/api/v2/profile/sections/settings", 200, settingsJSON)
+        stub.reply(path: "/api/v2/profile/sections", 200, #"{"items":[]}"#)
+
+        let editor = HomeSectionsEditorModel(scope: .home, api: api, requestIdentity: { identity })
+        let loaded = await editor.load()
+        XCTAssertTrue(loaded)
+
+        // PUT #1 (moving A down past B) is definitely rejected (500).
+        stub.sequence(path: "/api/v2/profile/sections", [
+            .json(500, #"{"error":{"code":"internal","message":"failed"}}"#),
+            .json(200, "{}"),
+        ])
+        stub.hold(path: "/api/v2/profile/sections")
+
+        // Move A down -> optimistic [B, A, C]
+        let move1 = editor.moveVisible(id: "sec-a", by: 1)
+        await stub.waitUntilHeld()
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-b", "sec-a", "sec-c"])
+
+        // While PUT #1 is in flight, move B down (intended to cross A -> [A, B, C]).
+        let move2 = editor.moveVisible(id: "sec-b", by: 1)
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-a", "sec-b", "sec-c"])
+
+        stub.release()
+        await move1.value
+        await move2.value
+
+        // When PUT #1 fails, replaying move2 onto [A, B, C] must NOT swap B with C.
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-a", "sec-b", "sec-c"])
+    }
 }
 
 @MainActor
