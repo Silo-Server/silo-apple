@@ -47,7 +47,7 @@ struct TVLibraryBrowseView: View {
 
     var body: some View {
         Group {
-            if isLoadingSections && sections.isEmpty {
+            if isLoadingSections && contentSections.isEmpty {
                 TVLibraryBrowseLoadingView(libraryName: library.name)
                     .tvPageFocusOwner(
                         focusRequest: focusRequest,
@@ -55,7 +55,7 @@ struct TVLibraryBrowseView: View {
                         accessibilityLabel: AppLanguage.string(.libraryLoadingNamed(library.name), locale: locale),
                         onMoveUp: onMoveUp
                     )
-            } else if let error = sectionsError, sections.isEmpty {
+            } else if let error = sectionsError, contentSections.isEmpty {
                 ErrorView(state: error, onRetry: { Task { await loadContent() } })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if contentSections.isEmpty {
@@ -223,7 +223,7 @@ struct TVLibraryBrowseView: View {
                     if invalidated {
                         hasPendingRefresh = true
                         if isVisible && attempt == 0 { continue }
-                        if isVisible && sections.isEmpty {
+                        if isVisible && contentSections.isEmpty {
                             sectionsError = ErrorState(
                                 statusCode: nil,
                                 message: AppLanguage.string(.statusErrorGeneric, locale: locale)
@@ -252,7 +252,7 @@ struct TVLibraryBrowseView: View {
                     if ResponseCache.shared.wasInvalidated(baseCacheKey, after: startToken) {
                         hasPendingRefresh = true
                         if isVisible && attempt == 0 { continue }
-                        if isVisible && sections.isEmpty {
+                        if isVisible && contentSections.isEmpty {
                             sectionsError = ErrorState(
                                 statusCode: nil,
                                 message: AppLanguage.string(.statusErrorGeneric, locale: locale)
@@ -297,7 +297,7 @@ struct TVLibraryBrowseView: View {
                 if invalidated {
                     hasPendingRefresh = true
                     if isVisible && attempt == 0 { continue }
-                    if isVisible && sections.isEmpty {
+                    if isVisible && contentSections.isEmpty {
                         sectionsError = ErrorState(
                             statusCode: nil,
                             message: AppLanguage.string(.statusErrorGeneric, locale: locale)
@@ -306,7 +306,7 @@ struct TVLibraryBrowseView: View {
                     return
                 }
                 sectionsError = ErrorState(error)
-                scopeIncomplete = mediaScope != nil && !sections.isEmpty
+                scopeIncomplete = mediaScope != nil && !contentSections.isEmpty
                 return
             }
         }
