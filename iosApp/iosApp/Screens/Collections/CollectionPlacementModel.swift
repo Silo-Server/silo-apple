@@ -15,7 +15,7 @@ final class CollectionPlacementModel {
     }
 
     var hasFailedLibraryPlacement: Bool {
-        libraryPlacements.contains { !$0.hasLoaded }
+        libraryDiscoveryFailed || libraryPlacements.contains { !$0.hasLoaded }
     }
 
     let collectionId: String
@@ -26,6 +26,7 @@ final class CollectionPlacementModel {
     private(set) var isPinnedOnHome = false
     private(set) var hasLoadedHome = false
     private(set) var libraryPlacements: [LibraryPlacement] = []
+    private(set) var libraryDiscoveryFailed = false
     private(set) var isShared = false
     private(set) var canToggleShare = false
     private(set) var isLoading = false
@@ -77,12 +78,15 @@ final class CollectionPlacementModel {
             do { return .success(try await api.profileLayout(scope: .home)) }
             catch { return .failure(error) }
         }()
-        async let librariesRead: LibrariesResponse? = try? await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: true)
+        async let librariesRead: Result<LibrariesResponse, Error> = {
+            do { return .success(try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: true)) }
+            catch { return .failure(error) }
+        }()
         async let editorRead: CollectionEditor<UserCollection>? = isUserCollection
             ? (try? await api.collectionEditor(id: collectionId))
             : nil
 
-        let (homeResult, librariesResponse, editor) = await (homeRead, librariesRead, editorRead)
+        let (homeResult, librariesResult, editor) = await (homeRead, librariesRead, editorRead)
         guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == startIdentity else { return }
 
         switch homeResult {
@@ -108,7 +112,10 @@ final class CollectionPlacementModel {
             canToggleShare = true
         }
 
-        if let libraries = librariesResponse?.libraries {
+        switch librariesResult {
+        case .success(let librariesResponse):
+            libraryDiscoveryFailed = false
+            let libraries = librariesResponse.libraries
             // For a server collection, surface its own library first (plus other video libraries).
             let relevant: [Library]
             if let sourceLibraryId, let owning = libraries.first(where: { $0.id == sourceLibraryId }) {
@@ -154,6 +161,8 @@ final class CollectionPlacementModel {
             }
             guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == startIdentity else { return }
             libraryPlacements = placements
+        case .failure:
+            libraryDiscoveryFailed = true
         }
     }
 
@@ -369,11 +378,15 @@ final class AddToCollectionModel {
     private(set) var isLoading = false
     private(set) var busyCollectionIds = Set<String>()
     private(set) var isCreating = false
+    /// True after a collection creation request failed with an ambiguous outcome
+    /// (response lost; server may have created it) until a list reread settles.
+    private(set) var hasUncertainCreation = false
     private(set) var errorMessage: String?
 
     enum CreateResult: Equatable {
         case createdAndAdded
         case createdOnly
+        case uncertain
         case failed
     }
 
@@ -383,6 +396,8 @@ final class AddToCollectionModel {
     @ObservationIgnored private var mutationGeneration = 0
     @ObservationIgnored private var pendingMutations = 0
     @ObservationIgnored private var entryGeneration: [String: Int] = [:]
+    @ObservationIgnored private var needsReconciliation = false
+    @ObservationIgnored private var pendingReconciliationError: String?
 
     init(
         contentId: String,
@@ -440,6 +455,9 @@ final class AddToCollectionModel {
             }
             entries = loaded
             hasLoaded = true
+            hasUncertainCreation = false
+            needsReconciliation = false
+            pendingReconciliationError = nil
             errorMessage = preservingError
         } catch {
             guard !(error is CancellationError),
@@ -454,6 +472,8 @@ final class AddToCollectionModel {
             } else if let fallbackEntry, !entries.contains(where: { $0.id == fallbackEntry.id }) {
                 entries.insert(fallbackEntry, at: 0)
             }
+            needsReconciliation = false
+            pendingReconciliationError = nil
             errorMessage = preservingError ?? ErrorState(error).message
         }
     }
@@ -478,7 +498,6 @@ final class AddToCollectionModel {
         entries[index].itemCount = max(0, entries[index].itemCount + (nextIn ? 1 : -1))
 
         var toggleError: String?
-        var shouldReconcileUnknownOutcome = false
         do {
             if nextIn {
                 try await api.addItemToCollection(collectionId: collectionId, itemId: contentId, position: 0)
@@ -489,16 +508,10 @@ final class AddToCollectionModel {
             HomeSectionsEditorModel.refreshScope(.home)
         } catch {
             if requestIdentity() == startIdentity {
-                let isDefiniteClientRejection: Bool = {
-                    if case APIv2Error.httpStatus(let code) = error {
-                        return (400..<500).contains(code)
-                    }
-                    return false
-                }()
                 let message = ErrorState(error).message
                 toggleError = message
                 errorMessage = message
-                if isDefiniteClientRejection {
+                if !APIv2MutationOutcome(error).mayHaveApplied {
                     if let idx = entries.firstIndex(where: { $0.id == collectionId }) {
                         entries[idx].containsItem = wasIn
                         entries[idx].itemCount = max(0, entries[idx].itemCount + (wasIn ? 1 : -1))
@@ -506,10 +519,11 @@ final class AddToCollectionModel {
                 } else {
                     // The server may have committed the membership change before
                     // the response was lost; invalidate caches and reconcile from
-                    // the server instead of presenting an unconfirmed rollback.
+                    // the server once all pending mutations settle.
                     ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
                     HomeSectionsEditorModel.refreshScope(.home)
-                    shouldReconcileUnknownOutcome = true
+                    needsReconciliation = true
+                    pendingReconciliationError = message
                 }
             }
         }
@@ -519,9 +533,10 @@ final class AddToCollectionModel {
         mutationGeneration += 1
         busyCollectionIds.remove(collectionId)
 
-        if shouldReconcileUnknownOutcome, requestIdentity() == startIdentity {
-            await load(preservingEntry: nil, preservingError: toggleError)
-        } else if !hasLoaded, requestIdentity() == startIdentity {
+        guard pendingMutations == 0, requestIdentity() == startIdentity else { return }
+        if needsReconciliation {
+            await load(preservingEntry: nil, preservingError: pendingReconciliationError ?? toggleError)
+        } else if !hasLoaded {
             // If this toggle invalidated an in-flight recovery reload while the full
             // list was still incomplete, schedule a fresh reload so existing collections
             // and Retry state reconcile cleanly.
@@ -532,7 +547,7 @@ final class AddToCollectionModel {
     @discardableResult
     func createAndAdd(name: String) async -> CreateResult {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isCreating else { return .failed }
+        guard !trimmed.isEmpty, !isCreating, !hasUncertainCreation else { return .failed }
         let startIdentity = requestIdentity()
         pendingMutations += 1
         mutationGeneration += 1
@@ -559,7 +574,19 @@ final class AddToCollectionModel {
         } catch {
             releaseMutationAccounting()
             guard requestIdentity() == startIdentity else { return .failed }
-            errorMessage = ErrorState(error).message
+            let message = ErrorState(error).message
+            errorMessage = message
+            if APIv2MutationOutcome(error).mayHaveApplied {
+                // POST may have created the collection on the server; reread
+                // the list before allowing another POST to prevent duplicates.
+                hasUncertainCreation = true
+                needsReconciliation = true
+                pendingReconciliationError = message
+                if pendingMutations == 0 {
+                    await load(preservingEntry: nil, preservingError: message)
+                }
+                return .uncertain
+            }
             return .failed
         }
 
@@ -605,6 +632,10 @@ final class AddToCollectionModel {
             let message = ErrorState(error).message
             addError = message
             errorMessage = message
+            if APIv2MutationOutcome(error).mayHaveApplied {
+                needsReconciliation = true
+                pendingReconciliationError = message
+            }
             result = .createdOnly
         }
 
@@ -612,8 +643,12 @@ final class AddToCollectionModel {
         // apply, while `isCreating` stays true (via defer) until this call returns.
         releaseMutationAccounting()
 
-        if !hasLoaded {
-            await load(preservingEntry: createdEntry, preservingError: addError)
+        if pendingMutations == 0 {
+            if needsReconciliation {
+                await load(preservingEntry: nil, preservingError: pendingReconciliationError ?? addError)
+            } else if !hasLoaded {
+                await load(preservingEntry: createdEntry, preservingError: addError)
+            }
         }
         return result
     }

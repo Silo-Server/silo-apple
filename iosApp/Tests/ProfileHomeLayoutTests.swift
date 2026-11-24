@@ -327,6 +327,11 @@ final class ProfileHomeLayoutTests: XCTestCase {
             type: "watchlist",
             config: ["media_type": .string("movie")]
         )
+        let libraryRestrictedWatchlist = makeRow(
+            id: "wl-movies-lib7",
+            type: "watchlist",
+            config: ["media_type": .string("movie"), "filter_library_ids": .array([.int(7)])]
+        )
         let unfilteredWatchlist = makeRow(
             id: "wl-all",
             type: "watchlist",
@@ -335,6 +340,12 @@ final class ProfileHomeLayoutTests: XCTestCase {
 
         XCTAssertFalse(HomeSectionsEditorModel.matchesRecipe(filteredWatchlist, sectionType: "watchlist", params: [:]))
         XCTAssertTrue(HomeSectionsEditorModel.matchesRecipe(filteredWatchlist, sectionType: "watchlist", params: ["media_type": .string("movie")]))
+        XCTAssertFalse(HomeSectionsEditorModel.matchesRecipe(libraryRestrictedWatchlist, sectionType: "watchlist", params: ["media_type": .string("movie")]))
+        XCTAssertTrue(HomeSectionsEditorModel.matchesRecipe(
+            libraryRestrictedWatchlist,
+            sectionType: "watchlist",
+            params: ["media_type": .string("movie"), "filter_library_ids": .array([.int(7)])]
+        ))
         XCTAssertTrue(HomeSectionsEditorModel.matchesRecipe(unfilteredWatchlist, sectionType: "watchlist", params: [:]))
         XCTAssertFalse(HomeSectionsEditorModel.matchesRecipe(unfilteredWatchlist, sectionType: "watchlist", params: ["media_type": .string("movie")]))
     }

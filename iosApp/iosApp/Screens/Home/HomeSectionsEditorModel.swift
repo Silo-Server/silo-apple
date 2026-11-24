@@ -127,6 +127,7 @@ final class HomeSectionsEditorModel {
             generation = editGeneration
             await saveChain?.value
         } while generation != editGeneration
+        guard !Task.isCancelled else { return false }
         loadGeneration += 1
         let myLoadGen = loadGeneration
         let startIdentity = requestIdentity()
@@ -306,8 +307,9 @@ final class HomeSectionsEditorModel {
         params: [String: SettingJSONValue]
     ) -> Bool {
         guard row.sectionType.lowercased() == sectionType.lowercased() else { return false }
-        if params.isEmpty { return row.config == nil || row.config?.isEmpty == true }
-        return params.allSatisfy { key, val in row.config?[key] == val }
+        let rowConfig = (row.config?.isEmpty == false) ? row.config : nil
+        let targetConfig = params.isEmpty ? nil : params
+        return rowConfig == targetConfig
     }
 
     func isRecipeTypePresent(sectionType: String) -> Bool {
@@ -494,11 +496,8 @@ final class HomeSectionsEditorModel {
         if !featured && itemLimit == 20,
            let existingIdx = committedRows.firstIndex(where: { row in
                row.hidden
-                   && row.sectionType.lowercased() == sectionType.lowercased()
+                   && Self.matchesRecipe(row, sectionType: sectionType, params: nonEmptyConfig ?? [:])
                    && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
-                   && (nonEmptyConfig == nil
-                       ? (row.config == nil || row.config?.isEmpty == true)
-                       : nonEmptyConfig!.allSatisfy { row.config?[$0.key] == $0.value })
            }) {
             return setHidden(false, id: committedRows[existingIdx].id)
         }
@@ -751,12 +750,29 @@ final class HomeSectionsEditorModel {
             Self.refreshScope(scope)
         } catch {
             guard requestIdentity() == startIdentity else { return }
-            // Only revert committedRows if no newer edit superseded this save,
-            // and never clobber an active drag draft.
-            if editGeneration == sentGeneration {
-                committedRows = confirmedRows
+            let message = ErrorState(error).message
+            if APIv2MutationOutcome(error).mayHaveApplied {
+                // PUT may have committed on the server before the response was
+                // lost; clear the stale baseline and reconcile from the server
+                // so a subsequent edit cannot replace a committed custom row.
+                editGeneration += 1
+                saved = []
+                confirmedRows = []
+                committedRows = []
+                dragDraftVisibleOrder = nil
+                hasLoadedFromServer = false
+                phase = .loading
+                saveError = message
+                Self.refreshScope(scope)
+                await reloadAfterReset(expectedIdentity: startIdentity, preservingError: message)
+            } else {
+                // Definite rejection: restore confirmedRows unless a newer edit
+                // superseded this save, without clobbering an active drag draft.
+                if editGeneration == sentGeneration {
+                    committedRows = confirmedRows
+                }
+                saveError = message
             }
-            saveError = ErrorState(error).message
         }
     }
 
@@ -1087,6 +1103,7 @@ final class HomePreferencesModel {
                     key,
                     value: value,
                     profileId: identity.profileId,
+                    requestIdentity: identity,
                     isLatest: { [weak self] in
                         self?.keyGeneration[scope] == generation
                             && self?.isAuthorizedForWrite(key, identity: identity) == true
@@ -1107,14 +1124,16 @@ final class HomePreferencesModel {
                 return
             } catch let held as ProfileSettingsWriter.HeldChange {
                 // Automatic retries were exhausted and the server may already
-                // hold the new value; mark the key uncertain, lock only this
-                // key, and reconcile from the server instead of reverting to
-                // a potentially stale confirmed baseline.
+                // hold the new value; record uncertainty even if a newer write
+                // superseded this generation, and lock + reconcile immediately
+                // if this write is still the latest.
+                if self.requestIdentity() == identity, self.loadedIdentity == identity {
+                    self.uncertainConfirmedKeys.insert(scope)
+                }
                 guard self.keyGeneration[scope] == generation,
                       self.isAuthorizedForWrite(key, identity: identity) else { return }
                 let message = ErrorState(held).message
                 self.errorMessage = message
-                self.uncertainConfirmedKeys.insert(scope)
                 self.reconcilingKeys.insert(scope)
                 Task { @MainActor [weak self] in
                     await self?.load(preservingError: message)

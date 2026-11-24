@@ -315,10 +315,11 @@ struct IOSAddToCollectionSheet: View {
                         TextField(AppLanguage.string(.collectionsCreateTitle, locale: locale), text: $newCollectionName)
                             .submitLabel(.done)
                             .onSubmit(createCollection)
+                            .disabled(model.isCreating || model.hasUncertainCreation)
                         if !newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             Button(.collectionsGroupCreate, action: createCollection)
                                 .font(.subheadline.weight(.semibold))
-                                .disabled(model.isCreating)
+                                .disabled(model.isCreating || model.hasUncertainCreation)
                         }
                     }
                 } header: {
@@ -333,7 +334,7 @@ struct IOSAddToCollectionSheet: View {
                             Label(error, systemImage: "exclamationmark.triangle")
                                 .font(.footnote)
                                 .foregroundStyle(Color.siloSecondaryText)
-                            if !model.hasLoaded {
+                            if !model.hasLoaded || model.hasUncertainCreation {
                                 Button(.commonRetry) {
                                     Task { await model.load() }
                                 }
@@ -442,9 +443,10 @@ struct IOSAddToCollectionSheet: View {
                 if nameEditGeneration == capturedGeneration {
                     newCollectionName = ""
                 }
-            case .createdOnly:
-                // The collection now exists in the list below; clear the field so
-                // tapping Create again doesn't post a duplicate empty collection.
+            case .createdOnly, .uncertain:
+                // Either the collection now exists in the list below or the POST
+                // outcome was uncertain and reconciled; clear the field so tapping
+                // Create again cannot post a duplicate collection.
                 if nameEditGeneration == capturedGeneration {
                     newCollectionName = ""
                 }

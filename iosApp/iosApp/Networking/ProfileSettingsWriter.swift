@@ -24,6 +24,23 @@ import OSLog
 protocol ProfileSettingsTransport: AnyObject, Sendable {
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse
     func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        profileId: String?,
+        requestIdentity: HTTPRequestIdentity?
+    ) async throws
+}
+
+extension ProfileSettingsTransport {
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        profileId: String?,
+        requestIdentity: HTTPRequestIdentity?
+    ) async throws {
+        try await putValue(key: key, value: value, profileId: profileId)
+    }
 }
 
 /// The production transport: the canonical endpoints on ``SiloAPI``.
@@ -40,6 +57,21 @@ final class SiloProfileSettingsTransport: ProfileSettingsTransport {
 
     func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws {
         try await api.putValue(key: key, scope: .profile, value: value, profileId: profileId)
+    }
+
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        profileId: String?,
+        requestIdentity: HTTPRequestIdentity?
+    ) async throws {
+        try await api.putValue(
+            key: key,
+            scope: .profile,
+            value: value,
+            profileId: profileId,
+            requestIdentity: requestIdentity
+        )
     }
 }
 
@@ -178,13 +210,19 @@ final class ProfileSettingsWriter: Sendable {
         _ key: SettingKey,
         value: SettingJSONValue,
         profileId: String? = nil,
+        requestIdentity: HTTPRequestIdentity? = nil,
         isLatest: @escaping @MainActor () -> Bool = { true }
     ) async throws {
         var failedAttempts = 0
         while true {
             let failure: SettingsAPIError
             do {
-                try await transport.putValue(key: key, value: value, profileId: profileId)
+                try await transport.putValue(
+                    key: key,
+                    value: value,
+                    profileId: profileId,
+                    requestIdentity: requestIdentity
+                )
                 return
             } catch {
                 failure = SettingsAPIError.from(error, key: key.rawValue, scope: .profile)
