@@ -19,13 +19,12 @@ struct HomeView: View {
     /// loads never yank focus.
     var isTopMenuFocused: Bool = false
     var onTopMenuFocusRequest: (() -> Void)? = nil
-    /// tvOS-only: incremented when "Customize Home" is chosen from the Profile
-    /// dropdown to enter Skyline Grab & Slide mode in place.
-    var customizeHomeRequest: Int = 0
 
     @State private var viewModel = HomeViewModel()
+    #if !os(tvOS)
     @State private var isCustomizingHome = false
     @State private var homeEditor = HomeSectionsEditorModel(scope: .home)
+    #endif
     @State private var watchStateRefresh: Task<Void, Never>?
     @State private var watchStateRefreshPending = false
     @State private var hasObservedWatchState = false
@@ -86,76 +85,51 @@ struct HomeView: View {
         #if os(tvOS)
         // The shared Skyline feed uses the same layout component as the
         // library Browse tabs; Home supplies only the server-resolved Home rows.
-        ZStack {
-            Group {
-                if !viewModel.sections.isEmpty {
-                    TVSkylineSectionFeed(
-                        sections: viewModel.sections,
-                        focusRequest: homeFocusRequest,
-                        detailReturnFocusRequest: detailReturnFocusRequest,
-                        isTopMenuFocused: isTopMenuFocused,
-                        onTopMenuFocusRequest: onTopMenuFocusRequest,
-                        onItemTap: navigateToDetail,
-                        onExploreAll: { section in
-                            router.navigate(to: .sectionCatalog(SectionCatalogTarget(section, scope: .home)))
-                        },
-                        onRemoveFromContinueWatching: dismissContinueWatching,
-                        onSetWatched: setWatched
-                    )
-                } else if let error = viewModel.error {
-                    ErrorView(
-                        state: error,
-                        onRetry: { Task { await viewModel.loadSections() } },
-                        onManageServers: { router.navigate(to: .serverList) }
-                    )
-                } else if viewModel.isLoading {
-                    Color.clear
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .tvPageFocusOwner(
-                            focusRequest: homeFocusRequest,
-                            isTopMenuFocused: isTopMenuFocused,
-                            accessibilityLabel: AppLanguage.string(.homeLoading, locale: locale),
-                            onMoveUp: onTopMenuFocusRequest
-                        )
-                } else {
-                    EmptyStateView(
-                        icon: "play.rectangle.on.rectangle",
-                        title: AppLanguage.string(.homeEmpty, locale: locale),
-                        subtitle: AppLanguage.string(.homeEmptyBody, locale: locale)
-                    )
+        Group {
+            if !viewModel.sections.isEmpty {
+                TVSkylineSectionFeed(
+                    sections: viewModel.sections,
+                    focusRequest: homeFocusRequest,
+                    detailReturnFocusRequest: detailReturnFocusRequest,
+                    isTopMenuFocused: isTopMenuFocused,
+                    onTopMenuFocusRequest: onTopMenuFocusRequest,
+                    onItemTap: navigateToDetail,
+                    onExploreAll: { section in
+                        router.navigate(to: .sectionCatalog(SectionCatalogTarget(section, scope: .home)))
+                    },
+                    onRemoveFromContinueWatching: dismissContinueWatching,
+                    onSetWatched: setWatched
+                )
+            } else if let error = viewModel.error {
+                ErrorView(
+                    state: error,
+                    onRetry: { Task { await viewModel.loadSections() } },
+                    onManageServers: { router.navigate(to: .serverList) }
+                )
+            } else if viewModel.isLoading {
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .tvPageFocusOwner(
                         focusRequest: homeFocusRequest,
                         isTopMenuFocused: isTopMenuFocused,
-                        accessibilityLabel: AppLanguage.string(.homeEmpty, locale: locale),
+                        accessibilityLabel: AppLanguage.string(.homeLoading, locale: locale),
                         onMoveUp: onTopMenuFocusRequest
                     )
-                }
-            }
-            .disabled(isCustomizingHome)
-
-            if isCustomizingHome {
-                TVHomeCustomizeOverlay(
-                    editor: homeEditor,
-                    loadedSections: viewModel.sections,
-                    onDone: {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            isCustomizingHome = false
-                        }
-                        Task { await viewModel.loadSections() }
-                    }
+            } else {
+                EmptyStateView(
+                    icon: "play.rectangle.on.rectangle",
+                    title: AppLanguage.string(.homeEmpty, locale: locale),
+                    subtitle: AppLanguage.string(.homeEmptyBody, locale: locale)
                 )
-                .transition(.opacity)
-                .zIndex(5)
+                .tvPageFocusOwner(
+                    focusRequest: homeFocusRequest,
+                    isTopMenuFocused: isTopMenuFocused,
+                    accessibilityLabel: AppLanguage.string(.homeEmpty, locale: locale),
+                    onMoveUp: onTopMenuFocusRequest
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .preference(key: TVPagePanelOpenKey.self, value: isCustomizingHome)
-        .onChange(of: customizeHomeRequest) { _, request in
-            guard request > 0 else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isCustomizingHome = true
-            }
-        }
         // Runs on every appear, so returning from the player refreshes
         // Continue Watching.
         .task {

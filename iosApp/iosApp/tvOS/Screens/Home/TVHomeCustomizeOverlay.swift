@@ -215,7 +215,7 @@ struct TVHomeCustomizeOverlay: View {
             footerBar
         }
         .padding(.horizontal, SiloTheme.Skyline.safeAreaX)
-        .padding(.top, 126)
+        .padding(.top, 52)
         .padding(.bottom, 44)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .contentShape(Rectangle())

@@ -76,7 +76,6 @@ private struct TVRootPage: View, Equatable {
     private let pill: TVLibraryPill
     let focusRequest: Int
     let detailReturnFocusRequest: Int
-    let customizeHomeRequest: Int
     let menuOwnsFocus: Bool
     let topMenuFocusRelay: TVTopMenuFocusRelay
 
@@ -86,7 +85,6 @@ private struct TVRootPage: View, Equatable {
         selectedPill: Binding<TVLibraryPill>,
         focusRequest: Int,
         detailReturnFocusRequest: Int,
-        customizeHomeRequest: Int,
         menuOwnsFocus: Bool,
         topMenuFocusRelay: TVTopMenuFocusRelay
     ) {
@@ -96,7 +94,6 @@ private struct TVRootPage: View, Equatable {
         pill = selectedPill.wrappedValue
         self.focusRequest = focusRequest
         self.detailReturnFocusRequest = detailReturnFocusRequest
-        self.customizeHomeRequest = customizeHomeRequest
         self.menuOwnsFocus = menuOwnsFocus
         self.topMenuFocusRelay = topMenuFocusRelay
     }
@@ -107,7 +104,6 @@ private struct TVRootPage: View, Equatable {
             && lhs.pill == rhs.pill
             && lhs.focusRequest == rhs.focusRequest
             && lhs.detailReturnFocusRequest == rhs.detailReturnFocusRequest
-            && lhs.customizeHomeRequest == rhs.customizeHomeRequest
             && lhs.menuOwnsFocus == rhs.menuOwnsFocus
             && lhs.topMenuFocusRelay === rhs.topMenuFocusRelay
     }
@@ -120,8 +116,7 @@ private struct TVRootPage: View, Equatable {
                 homeFocusRequest: focusRequest,
                 detailReturnFocusRequest: detailReturnFocusRequest,
                 isTopMenuFocused: menuOwnsFocus,
-                onTopMenuFocusRequest: requestTopMenuFocus,
-                customizeHomeRequest: customizeHomeRequest
+                onTopMenuFocusRequest: requestTopMenuFocus
             )
         case .root(.recommendations):
             RecommendationsView(
@@ -283,8 +278,6 @@ struct TVMainTabView: View {
     /// (`TVPagePanelOpenKey`), so Up from the panel's first row stays in the
     /// panel. An explicit bar claim (`focusTopMenuIfVisible`) lifts it.
     @State private var isBarLockedByPagePanel = false
-    /// Incremented when "Customize Home" is triggered from the Profile menu.
-    @State private var customizeHomeRequest = 0
     /// True while a route pushed *from the bar* (search, profile/For You
     /// panel items) is on the stack. When the stack pops back to root,
     /// focus returns to the bar — the explicit "next owner" choice
@@ -712,7 +705,6 @@ struct TVMainTabView: View {
             selectedPill: selectedPill,
             focusRequest: contentFocusRequest,
             detailReturnFocusRequest: detailReturnFocusRequest,
-            customizeHomeRequest: customizeHomeRequest,
             menuOwnsFocus: menuOwnsFocus,
             topMenuFocusRelay: topMenuFocusRelay
         )
@@ -946,12 +938,6 @@ struct TVMainTabView: View {
                 })
             },
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
-            onCustomizeHome: {
-                closePanel(then: {
-                    selectRoot(.home)
-                    customizeHomeRequest += 1
-                })
-            },
             onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
