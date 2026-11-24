@@ -4003,10 +4003,11 @@ final class DownloadManager {
     /// With an `owner`, nothing is recorded once its scope is gone.
     /// `sampledAt` is when the position was read; the queued event carries
     /// it. `latchesCompleted` keeps an item finished once it was; a book
-    /// played again after finishing passes false.
+    /// played again after finishing passes false. `queuedPosition` is the
+    /// position the server receives, when it differs from the local one.
     func recordOfflineProgress(mediaItemId: String, position: Double, duration: Double, completed: Bool,
                                owner: ProgressOwner? = nil, sampledAt: Date = Date(),
-                               latchesCompleted: Bool = true) {
+                               latchesCompleted: Bool = true, queuedPosition: Double? = nil) {
         guard owner.map(isCurrent) ?? true,
               let now = updateLocalProgress(mediaItemId: mediaItemId, position: position, duration: duration,
                                             completed: completed, at: sampledAt, latchesCompleted: latchesCompleted)
@@ -4016,7 +4017,7 @@ final class DownloadManager {
         OfflineProgressQueue.record(
             &queue,
             mediaItemId: mediaItemId,
-            position: position,
+            position: queuedPosition ?? position,
             duration: duration,
             at: now
         )

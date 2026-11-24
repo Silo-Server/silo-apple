@@ -81,6 +81,9 @@ enum APIv2CatalogRead {
         let tvdbId: String?
         let `type`: String
         let userData: WatchRollup?
+        /// The acting profile's own rating, 1 to 10 (stars times two); absent
+        /// when unrated.
+        let userRating: Int?
         let userState: CatalogItemUserState?
         let versions: [FileVersion]
         let videos: [ItemVideoInfo]?

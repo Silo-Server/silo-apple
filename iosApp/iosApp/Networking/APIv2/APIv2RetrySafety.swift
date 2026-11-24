@@ -192,6 +192,10 @@ enum APIv2MutationCatalog {
         .init("DELETE", "/api/v2/favorites/{item_id}", .nonRetryable),
         .init("POST", "/api/v2/watched/{id}", .nonRetryable),
         .init("DELETE", "/api/v2/watched/{id}", .nonRetryable),
+        // Ratings: a replay repeats the rating timestamp and the
+        // recommendation refresh.
+        .init("PUT", "/api/v2/ratings/{item_id}", .nonRetryable),
+        .init("DELETE", "/api/v2/ratings/{item_id}", .nonRetryable),
         // Downloads
         .init("POST", "/api/v2/downloads", .nonRetryable),
         .init("POST", "/api/v2/downloads/subscriptions", .nonRetryable),

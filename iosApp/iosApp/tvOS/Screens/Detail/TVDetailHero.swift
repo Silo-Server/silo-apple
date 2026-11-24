@@ -95,6 +95,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// before the genre labels. The row stays on one line: entries that
     /// don't fit drop from the end.
     var ratings: [DisplayRating] = []
+    /// The viewer's own rating, shown after the external ratings and before
+    /// the genres. It is in every candidate row, so the genres and then the
+    /// external ratings give way before it does. On a series page it is the
+    /// series' rating even while the line shows an episode's facts.
+    var personalRating: TVHeroPersonalRating? = nil
     /// Optional credit line ("Starring …" / "Directed by …") under the synopsis.
     let starringText: String?
     /// Non-interactive playback readout shown directly below the credits. It
@@ -367,7 +372,8 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
 
     @ViewBuilder
     private var factsRow: some View {
-        if !factsLine.isEmpty || !ratings.isEmpty || !sourceTokens.isEmpty || !ratingChips.isEmpty {
+        if !factsLine.isEmpty || !ratings.isEmpty || personalRating != nil
+            || !sourceTokens.isEmpty || !ratingChips.isEmpty {
             HStack(spacing: 14) {
                 if hasLeadingFacts {
                     // The row never wraps. When the ratings don't all fit,
@@ -381,7 +387,9 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 }
 
                 ForEach(Array(sourceTokens.enumerated()), id: \.offset) { index, token in
-                    if !factsLine.isEmpty || !ratings.isEmpty || index > 0 { metadataDivider }
+                    if !factsLine.isEmpty || !ratings.isEmpty || personalRating != nil || index > 0 {
+                        metadataDivider
+                    }
                     Text(token)
                         .font(.system(size: 24, weight: .medium))
                         .foregroundColor(Color.white.opacity(0.90))
@@ -395,7 +403,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     }
 
     private var hasLeadingFacts: Bool {
-        !ratingChips.isEmpty || !factsLine.isEmpty || !ratings.isEmpty
+        !ratingChips.isEmpty || !factsLine.isEmpty || !ratings.isEmpty || personalRating != nil
     }
 
     /// Every rating first, then one fewer at a time. A single empty row
@@ -421,6 +429,11 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 if !factsLine.isEmpty || index > 0 { metadataDivider }
                 RatingEntryView(rating: rating, size: 24)
                     .foregroundColor(.white)
+            }
+
+            if let personalRating {
+                if !factsLine.isEmpty || !shown.isEmpty { metadataDivider }
+                TVHeroPersonalRatingEntry(rating: personalRating, size: 24)
             }
         }
     }
@@ -469,6 +482,55 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
             .font(.system(size: 23, weight: .regular))
             .foregroundColor(Color.white.opacity(0.70))
             .lineLimit(1)
+    }
+}
+
+// MARK: - Personal rating entry
+
+/// The viewer's rating on the hero's metadata line.
+struct TVHeroPersonalRating: Equatable {
+    /// 1 to 10.
+    let score: Int
+    let isSeries: Bool
+
+    /// Nil when unrated, so the line has no entry.
+    init?(score: Int?, isSeries: Bool) {
+        guard let score, score > 0 else { return nil }
+        self.score = score
+        self.isSeries = isSeries
+    }
+}
+
+/// "You ★ 4.5", or "Your series rating ★ 4.5", styled like an external
+/// score: the label dimmed, the value bold, the star in the rating accent.
+private struct TVHeroPersonalRatingEntry: View {
+    let rating: TVHeroPersonalRating
+    let size: CGFloat
+
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        let score = RatingScore(rating.score)
+        let value = score.display(locale: locale)
+        HStack(alignment: .firstTextBaseline, spacing: (size * 0.35).rounded()) {
+            Text(rating.isSeries ? .detailRatingYourSeriesRating : .detailRatingYou)
+                .font(.system(size: (size * 0.87).rounded(), weight: .semibold))
+                .opacity(0.72)
+            HStack(alignment: .firstTextBaseline, spacing: (size * 0.25).rounded()) {
+                RatingStarView(fill: .full, size: (size * 0.8).rounded(), outline: .siloRatingStar)
+                    // Sit the star on the baseline, as tall as the digits.
+                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] - size * 0.06 }
+                Text(value)
+                    .font(.system(size: size, weight: .bold).monospacedDigit())
+            }
+        }
+        .foregroundColor(.white)
+        .lineLimit(1)
+        .fixedSize()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(
+            rating.isSeries ? .detailRatingA11YYoursSeries(value) : .detailRatingA11YYours(value)
+        ))
     }
 }
 

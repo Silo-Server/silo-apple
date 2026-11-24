@@ -1103,6 +1103,12 @@ class PlayerViewModel {
     private var seekIntervalRefreshTask: Task<Void, Never>?
     private var freshLoadTask: Task<Void, Never>?
     private var freshLoadGeneration: UInt64 = 0
+    /// `freshLoadGeneration` when the control socket was bound to its session.
+    /// A fresh load leaves that session at once, while
+    /// `activePlaybackSessionId` keeps naming it until the replacement is
+    /// prepared, so a paused-timeout refusal the socket reports after that
+    /// belongs to the viewing the player already left.
+    private var realtimeBindingGeneration: UInt64?
     /// True while `freshLoadTask` is the sole owner of a load failure's
     /// outcome. Aether publishes its typed failure before the load throws, so
     /// without this the direct-play and offline paths surface the same
@@ -1245,6 +1251,23 @@ class PlayerViewModel {
     /// the reclaim sheet — the same way an online session would, and so a
     /// Series page moves past an episode the server now counts as watched.
     private static let defaultWatchedFraction: Double = 0.9
+
+    /// Where the playing file's end credits start, nil when it has none.
+    /// Reaching them finishes the item, as the server judges a streamed stop.
+    private var endCreditsStart: Double? {
+        markerTimeline.endCreditsStart(
+            duration: duration,
+            isEpisode: currentWatchDetail.map { SiloMediaType.isEpisode($0.type) } ?? false
+        )
+    }
+
+    /// Whether stopping at `position` finishes the item: past the default
+    /// watched threshold, or into its end credits.
+    private static func reachesWatched(position: Double, duration: Double, endCreditsStart: Double?) -> Bool {
+        guard duration.isFinite, duration > 0 else { return false }
+        if position / duration > defaultWatchedFraction { return true }
+        return endCreditsStart.map { position >= $0 } ?? false
+    }
 
     /// Cached external subtitle URLs returned by the server; added to the
     /// player once the file has loaded.
@@ -1714,6 +1737,14 @@ class PlayerViewModel {
             eventHandler: { [weak self] event in
                 guard let self else { return }
                 await self.handleRealtimeEvent(event)
+            },
+            pausedTimeoutHandler: { [weak self] sessionId in
+                // A refusal about a session this player already moved on
+                // from, or is replacing in a fresh load, must not end the
+                // playback that replaces it.
+                guard let self, sessionId == self.activePlaybackSessionId,
+                      self.realtimeBindingGeneration == self.freshLoadGeneration else { return }
+                self.leaveServerEndedSession(reason: .pausedTimeout)
             }
         )
         // Mirror websocket connectivity so the synchronous subtitle-AI
@@ -3076,6 +3107,7 @@ class PlayerViewModel {
         if !keepsPlaying { showProtocolV3ReplanLoading() }
         streamLoadGeneration &+= 1
         let currentStreamLoadGeneration = streamLoadGeneration
+        let replanFreshLoadGeneration = freshLoadGeneration
         let qualityChange = viewerQualityChange ? sendViewerQualityChange() : nil
         protocolV3ReplanIsReport = keepsPlaying
         protocolV3ReplanTask = Task { @MainActor [weak self] in
@@ -3424,7 +3456,10 @@ class PlayerViewModel {
                 }
                 if previousSessionId != prepared.session.sessionId {
                     await self.realtimeClient.unbind()
-                    await self.bindRealtimeControl(sessionId: prepared.session.sessionId)
+                    await self.bindRealtimeControl(
+                        sessionId: prepared.session.sessionId,
+                        freshLoadGeneration: replanFreshLoadGeneration
+                    )
                 }
             } catch is CancellationError {
                 // Same rule as the fresh-load arm: an abandoned replan load
@@ -3520,8 +3555,8 @@ class PlayerViewModel {
                 Self.logger.error(
                     "Protocol V3 replan failed: \(MediaLogRedactor.sanitize(error), privacy: .public)"
                 )
-                if PlaybackSessionBridge.isPlaybackSessionEnded(error) {
-                    self.leaveServerEndedSession()
+                if let endReason = PlaybackSessionBridge.serverEndReason(error) {
+                    self.leaveServerEndedSession(reason: endReason)
                     return
                 }
                 if self.reconnectCycle.isActive {
@@ -6702,7 +6737,10 @@ class PlayerViewModel {
                     // committed session. Binding before Aether accepts the
                     // candidate can leave commands attached to a rolled-back
                     // session after a failed load.
-                    await self.bindRealtimeControl(sessionId: session.sessionId)
+                    await self.bindRealtimeControl(
+                        sessionId: session.sessionId,
+                        freshLoadGeneration: currentFreshLoadGeneration
+                    )
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
                 }
@@ -7308,8 +7346,8 @@ class PlayerViewModel {
     /// session, or give up.
     private func continueReconnect(after error: Error, step: PlaybackReconnectPolicy.Step) {
         guard !isDisposed, reconnectCycle.isActive else { return }
-        if PlaybackSessionBridge.isPlaybackSessionEnded(error) {
-            leaveServerEndedSession()
+        if let endReason = PlaybackSessionBridge.serverEndReason(error) {
+            leaveServerEndedSession(reason: endReason)
             return
         }
         isLoading = false
@@ -9797,11 +9835,16 @@ class PlayerViewModel {
             endedPrematurely: endedPrematurely
         )
         recordCurrentPlaybackMutation()
-        // The server counts an episode watched past its threshold, which is
-        // often before the Next Up prompt. Leaving during the credits must
-        // still move the Series page on to the next episode.
-        let crossedWatchedThreshold = duration.isFinite && duration > 0
-            && reportedPosition / duration > Self.defaultWatchedFraction
+        // The server counts an episode watched past its threshold or once it
+        // reaches the end credits, which is often before the Next Up prompt.
+        // Leaving during the credits must still move the Series page on to
+        // the next episode. Read before the teardown below clears the markers.
+        let finalEndCreditsStart = endCreditsStart
+        let crossedWatchedThreshold = Self.reachesWatched(
+            position: reportedPosition,
+            duration: duration,
+            endCreditsStart: finalEndCreditsStart
+        )
         SeriesPlaybackReturnInbox.publish(
             seriesPlaybackReturn(completed: currentItemCompleted || crossedWatchedThreshold),
             generation: seriesReturnGeneration
@@ -9930,7 +9973,8 @@ class PlayerViewModel {
                 self.recordOfflineProgress(
                     context: offline,
                     position: finalOfflinePosition,
-                    markCompleted: endedNaturally
+                    markCompleted: endedNaturally,
+                    endCreditsStart: finalEndCreditsStart
                 )
             }
         }
@@ -10020,9 +10064,14 @@ class PlayerViewModel {
     }
 
     /// Binds the control socket to a committed session under the owner and
-    /// installation that started it.
-    private func bindRealtimeControl(sessionId: String) async {
-        guard let authority = await sessionBridge.committedProtocolV3Authority(sessionId: sessionId) else { return }
+    /// installation that started it, for the fresh load `generation` names.
+    /// A caller a newer fresh load overtook, while it was suspended, binds
+    /// nothing: that load binds its own session.
+    private func bindRealtimeControl(sessionId: String, freshLoadGeneration generation: UInt64) async {
+        guard generation == freshLoadGeneration,
+              let authority = await sessionBridge.committedProtocolV3Authority(sessionId: sessionId),
+              generation == freshLoadGeneration else { return }
+        realtimeBindingGeneration = generation
         await realtimeClient.bind(sessionId: sessionId, authority: authority)
     }
 
@@ -10282,19 +10331,25 @@ class PlayerViewModel {
     }
 
     /// The server ended this session for good: an administrator stopped it
-    /// while the player could not be told over the control socket. Leave the
-    /// way an administrator stop does, instead of renewing into a new session.
-    func leaveServerEndedSession() {
+    /// while the player could not be told over the control socket, or it
+    /// stayed paused past the server's limit. Leave the way an administrator
+    /// stop does, instead of renewing into a new session, and say which.
+    func leaveServerEndedSession(reason: PlaybackServerEndReason) {
         guard !isDisposed, !serverEndedSessionHandled else { return }
         serverEndedSessionHandled = true
         cancelReconnect()
         aetherPlaybackController.pause()
-        showNotice(
-            title: AppLanguage.string(.playerNoticeAdminStoppedTitle),
-            message: AppLanguage.string(.playerNoticeAdminEnded),
-            tone: .warning,
-            duration: 1.2
-        )
+        let title: String
+        let message: String
+        switch reason {
+        case .administrator:
+            title = AppLanguage.string(.playerNoticeAdminStoppedTitle)
+            message = AppLanguage.string(.playerNoticeAdminEnded)
+        case .pausedTimeout:
+            title = AppLanguage.string(.playerNoticePausedTimeoutTitle)
+            message = AppLanguage.string(.playerNoticePausedTimeout)
+        }
+        showNotice(title: title, message: message, tone: .warning, duration: 1.2)
         requestRemoteDismiss(after: 0.8)
     }
 
@@ -11342,12 +11397,12 @@ class PlayerViewModel {
                     position: self.progressReportPosition,
                     isPaused: !self.isPlaying
                 )
-                if result == .sessionEnded {
+                if case .sessionEnded(let reason) = result {
                     // A new load or renewal cancels this loop when it moves
                     // to another session. A late answer about the old one
                     // must not end the playback that replaced it.
                     if !Task.isCancelled {
-                        self.leaveServerEndedSession()
+                        self.leaveServerEndedSession(reason: reason)
                     }
                     return
                 }
@@ -11367,23 +11422,51 @@ class PlayerViewModel {
     /// `position` lets the terminal flushes (EOF, player close) pin the
     /// end-state instead of relying on the last observed tick; `markCompleted`
     /// force-latches watched on natural end even when the file's duration
-    /// never resolved.
+    /// never resolved. `endCreditsStart` is for a write after teardown has
+    /// cleared the markers; without it the live markers apply.
     private func recordOfflineProgress(
         context: OfflinePlaybackContext,
         position: Double? = nil,
-        markCompleted: Bool = false
+        markCompleted: Bool = false,
+        endCreditsStart capturedEndCreditsStart: Double? = nil
     ) {
         let position = position ?? currentTime
         guard position.isFinite, position >= 0 else { return }
         let duration = duration.isFinite && duration > 0 ? duration : 0
-        let watched = markCompleted
-            || (duration > 0 && position / duration > Self.defaultWatchedFraction)
+        let sample = Self.offlineProgressSample(
+            position: position,
+            duration: duration,
+            markCompleted: markCompleted,
+            endCreditsStart: capturedEndCreditsStart ?? endCreditsStart
+        )
         DownloadManager.shared.recordOfflineProgress(
             mediaItemId: context.mediaItemId,
             position: position,
             duration: duration,
-            completed: watched
+            completed: sample.completed,
+            queuedPosition: sample.queuedPosition
         )
+    }
+
+    /// How one offline sample is recorded: whether the item counts as
+    /// watched on this device, and the position queued for the server.
+    /// `/sync/progress` doesn't say which file played, so the server judges
+    /// synced progress by its percentage alone. Progress into the credits
+    /// goes up at the end, which the server stores as watched, as it does a
+    /// streamed stop there. Below the credits the real position goes up, so
+    /// the server's own threshold applies rather than this player's default.
+    /// Internal for tests.
+    static func offlineProgressSample(
+        position: Double,
+        duration: Double,
+        markCompleted: Bool,
+        endCreditsStart: Double?
+    ) -> (completed: Bool, queuedPosition: Double) {
+        let creditsStart = duration > 0 ? endCreditsStart : nil
+        let reachedCredits = creditsStart.map { position >= $0 } ?? false
+        let completed = markCompleted
+            || reachesWatched(position: position, duration: duration, endCreditsStart: creditsStart)
+        return (completed, reachedCredits ? duration : position)
     }
 
     /// Duration the transport overlay stays on-screen after the last user
