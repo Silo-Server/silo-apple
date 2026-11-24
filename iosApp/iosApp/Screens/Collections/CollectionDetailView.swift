@@ -207,10 +207,17 @@ struct CollectionDetailView: View {
                   invalidationGeneration == startInvalidationGen,
                   SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
                   !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) else { return }
-            if items.isEmpty && !hasLoadedOnce {
-                self.error = ErrorState(err)
+            let errorState = ErrorState(err)
+            if errorState.isNotFound || (items.isEmpty && !hasLoadedOnce) {
+                if errorState.isNotFound {
+                    items = []
+                    hasLoadedOnce = false
+                    hasPendingInvalidation = false
+                    ResponseCache.shared.remove(cacheKey)
+                }
+                self.error = errorState
             } else {
-                self.refreshError = ErrorState(err)
+                self.refreshError = errorState
                 self.hasPendingInvalidation = true
             }
         }

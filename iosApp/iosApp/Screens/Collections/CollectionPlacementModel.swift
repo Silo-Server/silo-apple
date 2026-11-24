@@ -578,7 +578,15 @@ final class AddToCollectionModel {
     private(set) var activeMutationCount = 0
     /// True after a collection creation request failed with an ambiguous outcome
     /// (response lost; server may have created it) until a list reread settles.
-    private(set) var hasUncertainCreation = false
+    /// Normalized names of collections whose `POST /api/v2/collections` failed
+    /// ambiguously (`mayHaveApplied`), mapped to how many collections with that
+    /// name were already visible before the POST. Because collection creation
+    /// is not idempotent, creation stays blocked until a subsequent list read
+    /// observes a higher count for that name (confirming the earlier POST
+    /// settled) or the active account/profile changes.
+    private(set) var uncertainCreationBaselineCounts: [String: Int] = [:]
+    @ObservationIgnored private var uncertainCreationIdentity: HTTPRequestIdentity?
+    var hasUncertainCreation: Bool { !uncertainCreationBaselineCounts.isEmpty }
     /// True when `errorMessage` came from a membership or creation mutation
     /// (rather than an initial list load), so tvOS alerts stay visible even if
     /// a follow-up reconciliation load fails and clears `hasLoaded`.
@@ -758,7 +766,23 @@ final class AddToCollectionModel {
             entriesIdentity = startIdentity
             hasLoaded = true
             loadErrorMessage = nil
-            hasUncertainCreation = false
+            if uncertainCreationIdentity != startIdentity {
+                uncertainCreationBaselineCounts.removeAll()
+                uncertainCreationIdentity = nil
+            } else if !uncertainCreationBaselineCounts.isEmpty {
+                var loadedCounts: [String: Int] = [:]
+                for entry in loaded {
+                    let normalized = entry.collection.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    loadedCounts[normalized, default: 0] += 1
+                }
+                for (name, baselineCount) in uncertainCreationBaselineCounts
+                where (loadedCounts[name] ?? 0) > baselineCount {
+                    uncertainCreationBaselineCounts.removeValue(forKey: name)
+                }
+                if uncertainCreationBaselineCounts.isEmpty {
+                    uncertainCreationIdentity = nil
+                }
+            }
             // Only unlock previously unconfirmed rows whose membership was
             // actually confirmed by this read (or that no longer exist).
             let loadedIds = Set(loaded.map(\.id))
@@ -1121,7 +1145,19 @@ final class AddToCollectionModel {
                     // POST may have created the collection on the server; invalidate
                     // cached list and reread before allowing another POST to prevent duplicates.
                     ResponseCache.shared.remove(CacheKey.collections)
-                    self.hasUncertainCreation = true
+                    if self.uncertainCreationIdentity != startIdentity {
+                        self.uncertainCreationBaselineCounts.removeAll()
+                    }
+                    self.uncertainCreationIdentity = startIdentity
+                    let normalized = trimmed.lowercased()
+                    if self.uncertainCreationBaselineCounts[normalized] == nil {
+                        let existingCount = self.entriesIdentity == startIdentity
+                            ? self.entries.filter {
+                                $0.collection.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
+                            }.count
+                            : 0
+                        self.uncertainCreationBaselineCounts[normalized] = existingCount
+                    }
                     self.needsReconciliation = true
                     self.pendingReconciliationError = message
                     if self.pendingMutations == 0 {

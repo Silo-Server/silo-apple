@@ -703,8 +703,7 @@ final class ProfilePrefsEditor {
                             }
                             failures[identity] = refusal.cause
                         } else if boundProfileId == write.profileId,
-                                  requestIdentity() == startRequestIdentity,
-                                  editGenerations[write.key, default: 0] == startEditGen {
+                                  requestIdentity() == startRequestIdentity {
                             failures.removeValue(forKey: identity)
                             reconciliationHoldGeneration += 1
                             reconciliationHolds[reconciliationScope] = reconciliationHoldGeneration
@@ -998,11 +997,14 @@ final class ProfilePrefsEditor {
                     saveState = nil
                 }
             } else if boundProfileId == write.profileId,
-                      requestIdentity() == startRequestIdentity,
-                      editGenerations[ProfileSettingKeys.metadataLanguage, default: 0] == startEditGen {
+                      requestIdentity() == startRequestIdentity {
                 reconciliationHoldGeneration += 1
                 reconciliationHolds[reconciliationScope] = reconciliationHoldGeneration
-                saveState = .held
+                if editGenerations[ProfileSettingKeys.metadataLanguage, default: 0] == startEditGen {
+                    saveState = .held
+                } else if pendingMetadataWrite == nil {
+                    saveState = nil
+                }
             } else if pendingMetadataWrite == nil {
                 saveState = nil
             }

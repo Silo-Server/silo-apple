@@ -38,6 +38,7 @@ enum ProfileHomeLayout {
 
         let ordered = sharedOrder(rows, baseline) != sharedOrder(baseline, rows)
             || saved.contains { !$0.sectionId.isEmpty && $0.position != nil }
+        let rowListChanged = rows.map(\.id) != baseline.map(\.id)
 
         var used = Set<Int>()
         var result: [APIv2SectionOverride] = []
@@ -72,7 +73,9 @@ enum ProfileHomeLayout {
             used.insert(index)
             var override = saved[index]
             if override.id.isEmpty { override.id = newID() }
-            if ordered || row.isCustom { override.position = position }
+            if ordered || (row.isCustom && (rowListChanged || override.position == nil)) {
+                override.position = position
+            }
             override.hidden = row.hidden
             result.append(override)
         }

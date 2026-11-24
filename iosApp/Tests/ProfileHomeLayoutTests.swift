@@ -1539,6 +1539,77 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertEqual(createModel.entries.map(\.id), ["existing-1"])
         XCTAssertTrue(createModel.hasMutationError)
         XCTAssertNotNil(createModel.errorMessage)
+
+        // 3) Ambiguous create timeout keeps hasUncertainCreation set across a successful
+        //    reread that does not yet include the collection, then clears it once the
+        //    collection appears.
+        stub.sequence(path: "/api/v2/collections", [
+            .failure(URLError(.timedOut)),
+            .json(200, """
+            {"items":[
+              {"id":"existing-1","name":"Existing","collection_type":"manual","item_count":3,"creator_profile_id":"profile-one"}
+            ],"groups":[]}
+            """),
+            .json(200, """
+            {"items":[
+              {"id":"existing-1","name":"Existing","collection_type":"manual","item_count":3,"creator_profile_id":"profile-one"},
+              {"id":"late-1","name":"Late Night","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"}
+            ],"groups":[]}
+            """),
+        ])
+        let uncertainResult = await createModel.createAndAdd(name: "Late Night")
+        XCTAssertEqual(uncertainResult, .uncertain)
+        XCTAssertTrue(createModel.hasUncertainCreation)
+
+        let postCountBeforeBlockedCreate = stub.requests.filter { $0.method == "POST" && $0.path == "/api/v2/collections" }.count
+        let blockedRetry = await createModel.createAndAdd(name: "Late Night")
+        XCTAssertEqual(blockedRetry, .failed)
+        XCTAssertEqual(stub.requests.filter { $0.method == "POST" && $0.path == "/api/v2/collections" }.count, postCountBeforeBlockedCreate)
+
+        await createModel.load()
+        XCTAssertFalse(createModel.hasUncertainCreation)
+    }
+
+    func testHidingAdminRowPreservesSavedCustomRowPosition() {
+        let adminA = APIv2ProfileSectionSetting(
+            id: "sec-a", sectionType: "recently_added", title: "Recently Added",
+            defaultTitle: "Recently Added", featured: false, itemLimit: 20,
+            hidden: false, isCustom: false, customized: false, position: 0
+        )
+        let custom1 = APIv2ProfileSectionSetting(
+            id: "ov-custom-1", sectionType: "collection", title: "My Picks",
+            defaultTitle: "My Picks", featured: false, itemLimit: 20,
+            hidden: false, isCustom: true, customized: true, position: 10,
+            config: ["user_collection_id": .string("col-1")]
+        )
+        let adminB = APIv2ProfileSectionSetting(
+            id: "sec-b", sectionType: "trending", title: "Trending",
+            defaultTitle: "Trending", featured: false, itemLimit: 20,
+            hidden: false, isCustom: false, customized: false, position: 20
+        )
+        let saved: [APIv2SectionOverride] = [
+            APIv2SectionOverride(
+                id: "ov-custom-1", sectionId: "", position: 10, hidden: false,
+                featured: nil, itemLimit: 20, isUserAdded: true,
+                userSectionType: "collection", userTitle: "My Picks",
+                userConfig: ["user_collection_id": .string("col-1")]
+            ),
+        ]
+        var hiddenAdminA = adminA
+        hiddenAdminA.hidden = true
+
+        let overrides = ProfileHomeLayout.overrides(
+            rows: [hiddenAdminA, custom1, adminB],
+            baseline: [adminA, custom1, adminB],
+            saved: saved,
+            newID: { "new-ov" }
+        )
+
+        let customOverride = overrides.first { $0.id == "ov-custom-1" }
+        XCTAssertEqual(customOverride?.position, 10)
+        let adminOverride = overrides.first { $0.sectionId == "sec-a" }
+        XCTAssertEqual(adminOverride?.hidden, true)
+        XCTAssertNil(adminOverride?.position)
     }
 
     @MainActor
