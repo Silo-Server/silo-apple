@@ -17,8 +17,10 @@ extension APIv2Client {
     }
 
     /// The acting profile's collections and the account's groups.
-    func personalCollections(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PersonalCollections {
-        let raw = try await collectionRequest("GET", path: "/api/v2/collections", status: 200, auth: auth)
+    /// Pass `containsItem` only when `getCollectionCapabilities` advertises `contains_item`.
+    func personalCollections(containsItem: String? = nil, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PersonalCollections {
+        let query = containsItem.map { ["contains_item": $0] } ?? [:]
+        let raw = try await collectionRequest("GET", path: "/api/v2/collections", query: query, status: 200, auth: auth)
         let list = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2PersonalCollections.self, from: raw.data)
         guard list.page?.hasMore != true else { throw APIv2Error.incompleteCollection }
         return list

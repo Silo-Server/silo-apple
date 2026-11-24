@@ -335,7 +335,7 @@ struct IOSAddToCollectionSheet: View {
                             Label(error, systemImage: "exclamationmark.triangle")
                                 .font(.footnote)
                                 .foregroundStyle(Color.siloSecondaryText)
-                            if !model.hasLoaded || model.hasUncertainCreation {
+                            if !model.hasLoaded || model.hasUncertainCreation || !model.unconfirmedCollectionIds.isEmpty {
                                 Button(.commonRetry) {
                                     Task { await model.load() }
                                 }
@@ -368,14 +368,19 @@ struct IOSAddToCollectionSheet: View {
                             }
                         } else {
                             ForEach(model.entries) { entry in
+                                let isUnconfirmed = model.unconfirmedCollectionIds.contains(entry.id)
                                 Button {
                                     hapticCount += 1
                                     model.startToggle(collectionId: entry.id)
                                 } label: {
                                     HStack(spacing: 12) {
-                                        Image(systemName: entry.containsItem ? "checkmark.circle.fill" : "circle")
+                                        Image(systemName: isUnconfirmed
+                                            ? "exclamationmark.triangle"
+                                            : (entry.containsItem ? "checkmark.circle.fill" : "circle"))
                                             .font(.title3)
-                                            .foregroundStyle(entry.containsItem ? Color.green : Color.siloSecondaryText)
+                                            .foregroundStyle(isUnconfirmed
+                                                ? Color.siloSecondaryText
+                                                : (entry.containsItem ? Color.green : Color.siloSecondaryText))
 
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(verbatim: entry.collection.name)
@@ -394,9 +399,10 @@ struct IOSAddToCollectionSheet: View {
                                         }
                                     }
                                     .contentShape(Rectangle())
+                                    .opacity(isUnconfirmed ? 0.55 : 1)
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(isFinishing || model.busyCollectionIds.contains(entry.id))
+                                .disabled(isFinishing || model.busyCollectionIds.contains(entry.id) || isUnconfirmed)
                                 .accessibilityValue(Text(entry.containsItem ? LocalizedStringResource.detailActionOn : .detailActionOff))
                                 .accessibilityAddTraits(entry.containsItem ? [.isSelected] : [])
                             }

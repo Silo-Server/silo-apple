@@ -1645,6 +1645,17 @@ struct UserCollection: Codable, Identifiable {
     let posterThumbhash: String?
     let includeInServerCollections: Bool?
     var isShared: Bool? = nil
+    var creatorProfileId: String? = nil
+    var profileId: String? = nil
+    var contains: Bool? = nil
+
+    /// True when the acting profile created this collection and can mutate it.
+    /// Older servers without `creator_profile_id` only return the acting profile's own collections.
+    func isOwnedBy(profileId activeProfileId: String?) -> Bool {
+        guard let creator = creatorProfileId, !creator.isEmpty else { return true }
+        guard let activeProfileId, !activeProfileId.isEmpty else { return false }
+        return creator == activeProfileId
+    }
 }
 
 /// A user-defined grouping bucket for personal collections: the v2

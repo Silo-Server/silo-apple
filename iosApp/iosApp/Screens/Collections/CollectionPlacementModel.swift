@@ -100,6 +100,12 @@ final class CollectionPlacementModel {
             do { return .success(try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: true)) }
             catch { return .failure(error) }
         }()
+        async let capabilitiesRead: Result<APIv2CollectionCapabilities?, Error>? = isUserCollection
+            ? await {
+                do { return .success(try await api.collectionCapabilitiesIfSupported()) }
+                catch { return .failure(error) }
+            }()
+            : nil
         async let editorRead: Result<CollectionEditor<UserCollection>, Error>? = isUserCollection
             ? await {
                 do { return .success(try await api.collectionEditor(id: collectionId)) }
@@ -107,7 +113,9 @@ final class CollectionPlacementModel {
             }()
             : nil
 
-        let (homeResult, librariesResult, editorResult) = await (homeRead, librariesRead, editorRead)
+        let (homeResult, librariesResult, capabilitiesResult, editorResult) = await (
+            homeRead, librariesRead, capabilitiesRead, editorRead
+        )
         guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == startIdentity else { return }
 
         switch homeResult {
@@ -127,18 +135,44 @@ final class CollectionPlacementModel {
             }
         }
 
-        if let editorResult, !isUpdatingShare && shareMutationGeneration == startShareGen {
-            switch editorResult {
-            case .success(let editor):
-                collectionVersion = editor.version
+        if let editorResult {
+            if case .success(let editor) = editorResult {
                 let canonicalName = editor.value.name.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !canonicalName.isEmpty && titleGeneration == myTitleGen {
                     collectionTitle = canonicalName
                 }
-                isShared = editor.value.isShared ?? false
-                canToggleShare = true
-                shareLoadFailed = false
-            case .failure:
+            }
+        }
+
+        if isUserCollection, !isUpdatingShare && shareMutationGeneration == startShareGen {
+            switch capabilitiesResult {
+            case .success(let capabilities):
+                if capabilities?.supportsLoginSharing == true {
+                    switch editorResult {
+                    case .success(let editor):
+                        collectionVersion = editor.version
+                        isShared = editor.value.isShared ?? false
+                        let activeProfileId = startIdentity?.profileId
+                        let isCreator: Bool
+                        if let creator = editor.value.creatorProfileId, !creator.isEmpty {
+                            isCreator = activeProfileId != nil && creator == activeProfileId
+                        } else {
+                            isCreator = false
+                        }
+                        canToggleShare = isCreator
+                        shareLoadFailed = false
+                    case .failure, .none:
+                        collectionVersion = nil
+                        canToggleShare = false
+                        shareLoadFailed = true
+                    }
+                } else {
+                    collectionVersion = nil
+                    isShared = false
+                    canToggleShare = false
+                    shareLoadFailed = false
+                }
+            case .failure, .none:
                 collectionVersion = nil
                 canToggleShare = false
                 shareLoadFailed = true
@@ -312,7 +346,7 @@ final class CollectionPlacementModel {
     }
 
     func toggleShared() async {
-        guard isUserCollection, !isLoading, !isUpdatingShare else { return }
+        guard isUserCollection, canToggleShare, !isLoading, !isUpdatingShare else { return }
         let startIdentity = requestIdentity()
         shareMutationGeneration += 1
         let myShareGen = shareMutationGeneration
@@ -486,6 +520,9 @@ final class AddToCollectionModel {
     private(set) var hasLoaded = false
     private(set) var isLoading = false
     private(set) var busyCollectionIds = Set<String>()
+    /// Rows whose last membership write had an uncertain outcome and could not
+    /// be reconciled yet; kept disabled until a reload confirms server state.
+    private(set) var unconfirmedCollectionIds = Set<String>()
     private(set) var isCreating = false
     private(set) var activeMutationCount = 0
     /// True after a collection creation request failed with an ambiguous outcome
@@ -544,24 +581,59 @@ final class AddToCollectionModel {
         }
 
         do {
-            async let collectionsTask = api.collections()
-            async let membershipTask = api.catalogItemCollectionIds(itemId: contentId)
-            let (response, memberCollectionIds) = try await (collectionsTask, membershipTask)
+            let capabilities = try await api.collectionCapabilitiesIfSupported()
             guard !Task.isCancelled,
                   loadGeneration == myLoadGen,
                   pendingMutations == 0,
                   mutationGeneration == startMutationGen,
                   requestIdentity() == startIdentity else { return }
 
+            let response: CollectionsResponse
+            let memberCollectionIds: Set<String>?
+            if capabilities?.supportsContainsItem == true {
+                response = try await api.collections(containsItem: contentId)
+                memberCollectionIds = nil
+            } else {
+                let searchFeatures = try await api.catalogSearchFeatures()
+                guard !Task.isCancelled,
+                      loadGeneration == myLoadGen,
+                      pendingMutations == 0,
+                      mutationGeneration == startMutationGen,
+                      requestIdentity() == startIdentity else { return }
+                if searchFeatures.itemCollections {
+                    async let collectionsTask = api.collections()
+                    async let membershipTask = api.catalogItemCollectionIds(itemId: contentId)
+                    let (fetchedCollections, fetchedMembers) = try await (collectionsTask, membershipTask)
+                    response = fetchedCollections
+                    memberCollectionIds = fetchedMembers
+                } else {
+                    response = try await api.collections()
+                    memberCollectionIds = []
+                }
+            }
+            guard !Task.isCancelled,
+                  loadGeneration == myLoadGen,
+                  pendingMutations == 0,
+                  mutationGeneration == startMutationGen,
+                  requestIdentity() == startIdentity else { return }
+
+            let activeProfileId = startIdentity?.profileId
             let manual = (response.collections ?? []).filter { col in
                 let kind = (col.collectionType ?? "manual").lowercased()
-                return kind == "manual" || kind.isEmpty
+                return (kind == "manual" || kind.isEmpty)
+                    && col.isOwnedBy(profileId: activeProfileId)
             }
 
             var loaded = manual.map { col in
-                Entry(
+                let isMember: Bool
+                if let memberCollectionIds {
+                    isMember = memberCollectionIds.contains(col.id)
+                } else {
+                    isMember = col.contains ?? false
+                }
+                return Entry(
                     collection: col,
-                    containsItem: memberCollectionIds.contains(col.id),
+                    containsItem: isMember,
                     itemCount: col.itemCount ?? 0
                 )
             }
@@ -571,6 +643,7 @@ final class AddToCollectionModel {
             entries = loaded
             hasLoaded = true
             hasUncertainCreation = false
+            unconfirmedCollectionIds.removeAll()
             needsReconciliation = false
             pendingReconciliationError = nil
             errorMessage = preservingError
@@ -640,6 +713,7 @@ final class AddToCollectionModel {
     @discardableResult
     func startToggle(collectionId: String) -> Task<Void, Never> {
         guard !busyCollectionIds.contains(collectionId),
+              !unconfirmedCollectionIds.contains(collectionId),
               let index = entries.firstIndex(where: { $0.id == collectionId }) else { return Task {} }
         beginMutation()
         let startIdentity = requestIdentity()
@@ -706,6 +780,7 @@ final class AddToCollectionModel {
                         ResponseCache.shared.remove(CacheKey.collections)
                         HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
                         NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
+                        self.unconfirmedCollectionIds.insert(collectionId)
                         self.needsReconciliation = true
                         self.pendingReconciliationError = message
                     }
@@ -857,6 +932,7 @@ final class AddToCollectionModel {
                     ResponseCache.shared.remove(CacheKey.collections)
                     HomeSectionsEditorModel.refreshCollectionMembership(collectionId: created.id)
                     NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
+                    self.unconfirmedCollectionIds.insert(created.id)
                     self.needsReconciliation = true
                     self.pendingReconciliationError = message
                 }

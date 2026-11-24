@@ -380,7 +380,11 @@ class CollectionsViewModel {
                     itemCount: c.itemCount,
                     posterUrl: c.posterUrl,
                     posterThumbhash: c.posterThumbhash,
-                    includeInServerCollections: c.includeInServerCollections
+                    includeInServerCollections: c.includeInServerCollections,
+                    isShared: c.isShared,
+                    creatorProfileId: c.creatorProfileId,
+                    profileId: c.profileId,
+                    contains: c.contains
                 )
             }
             rebuildSections()

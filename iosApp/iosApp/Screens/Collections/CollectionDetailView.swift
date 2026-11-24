@@ -21,18 +21,12 @@ struct CollectionDetailView: View {
 
     var body: some View {
         Group {
-            if !items.isEmpty {
-                gridContent
-            } else if let error {
+            if items.isEmpty, let error {
                 ErrorView(state: error, onRetry: { scheduleReload(delay: nil) })
-            } else if isLoading {
+            } else if items.isEmpty && isLoading {
                 Color.clear
             } else {
-                EmptyStateView(
-                    icon: "square.stack",
-                    title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
-                    subtitle: AppLanguage.string(.collectionsEmptyItemsHint, locale: locale)
-                )
+                gridContent
             }
         }
         .siloPageBackground()
@@ -77,7 +71,7 @@ struct CollectionDetailView: View {
     private var gridContent: some View {
         ScrollView {
             HStack(spacing: 12) {
-                if ShuffleFeatureStore.shared.supports(.userCollection) {
+                if !items.isEmpty && ShuffleFeatureStore.shared.supports(.userCollection) {
                     ShuffleButton(isStarting: shuffleLauncher.isStarting) {
                         shuffleLauncher.start(ShuffleScopeRequest(kind: .userCollection, id: collectionId), router: router)
                     }
@@ -113,19 +107,28 @@ struct CollectionDetailView: View {
                 .padding(.horizontal, SiloTheme.padding)
                 .padding(.top, SiloTheme.smallPadding)
             }
-            VStack(alignment: .leading, spacing: 0) {
-                CatalogGrid(
-                    items: items,
-                    isLoading: false,
-                    hasMore: false,
-                    forcesThreeColumnsOnPhone: true,
-                    onItemTap: { item in
-                        router.navigate(to: .itemDetail(browseItem: item))
-                    },
-                    onLoadMore: {}
+            if items.isEmpty {
+                EmptyStateView(
+                    icon: "square.stack",
+                    title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
+                    subtitle: AppLanguage.string(.collectionsEmptyItemsHint, locale: locale)
                 )
+                .padding(.top, SiloTheme.largePadding)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    CatalogGrid(
+                        items: items,
+                        isLoading: false,
+                        hasMore: false,
+                        forcesThreeColumnsOnPhone: true,
+                        onItemTap: { item in
+                            router.navigate(to: .itemDetail(browseItem: item))
+                        },
+                        onLoadMore: {}
+                    )
+                }
+                .padding(SiloTheme.padding)
             }
-            .padding(SiloTheme.padding)
         }
     }
 

@@ -799,12 +799,12 @@ struct LibraryCollectionDetailView: View {
 
     var body: some View {
         Group {
-            if !viewModel.items.isEmpty {
-                content
-            } else if let error = viewModel.error {
+            if viewModel.items.isEmpty, let error = viewModel.error {
                 ErrorView(state: error, onRetry: { scheduleReload(delay: nil) })
-            } else if viewModel.isLoading {
+            } else if viewModel.items.isEmpty && viewModel.isLoading {
                 Color.clear
+            } else if !viewModel.items.isEmpty || kind == nil || kind == .regular {
+                content
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up.fill",
@@ -863,7 +863,7 @@ struct LibraryCollectionDetailView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
                 HStack(spacing: 12) {
-                    if offersShuffle {
+                    if !viewModel.items.isEmpty && offersShuffle {
                         ShuffleButton(isStarting: shuffleLauncher.isStarting) {
                             shuffleLauncher.start(ShuffleScopeRequest(kind: shuffleKind, id: collectionId), router: router)
                         }
@@ -876,9 +876,11 @@ struct LibraryCollectionDetailView: View {
                             sourceLibraryId: libraryId
                         )
                     }
-                    Text(countLabel)
-                        .font(.siloCaption)
-                        .foregroundColor(.siloSecondaryText)
+                    if !viewModel.items.isEmpty {
+                        Text(countLabel)
+                            .font(.siloCaption)
+                            .foregroundColor(.siloSecondaryText)
+                    }
                 }
                 #if os(tvOS)
                 // Up from any grid column reaches Shuffle & Pin to Home.
@@ -902,18 +904,27 @@ struct LibraryCollectionDetailView: View {
                     }
                 }
 
-                CatalogGrid(
-                    items: viewModel.items,
-                    isLoading: viewModel.isLoading,
-                    hasMore: viewModel.hasMore,
-                    forcesThreeColumnsOnPhone: true,
-                    onItemTap: { item in
-                        router.navigate(to: .itemDetail(browseItem: item))
-                    },
-                    onLoadMore: {
-                        Task { await loadMoreIfNeeded() }
-                    }
-                )
+                if viewModel.items.isEmpty {
+                    EmptyStateView(
+                        icon: "square.stack.3d.up.fill",
+                        title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
+                        subtitle: AppLanguage.string(.collectionsEmptyItemsBody, locale: locale)
+                    )
+                    .padding(.top, SiloTheme.largePadding)
+                } else {
+                    CatalogGrid(
+                        items: viewModel.items,
+                        isLoading: viewModel.isLoading,
+                        hasMore: viewModel.hasMore,
+                        forcesThreeColumnsOnPhone: true,
+                        onItemTap: { item in
+                            router.navigate(to: .itemDetail(browseItem: item))
+                        },
+                        onLoadMore: {
+                            Task { await loadMoreIfNeeded() }
+                        }
+                    )
+                }
 
                 if let paginationError = viewModel.paginationError {
                     HStack(spacing: 10) {

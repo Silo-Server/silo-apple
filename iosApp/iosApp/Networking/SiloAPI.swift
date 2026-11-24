@@ -563,20 +563,34 @@ actor SiloAPI {
 
     /// The acting profile's collections and the account's groups. A list read
     /// for one profile is never returned once the session acts as another.
-    func collections() async throws -> CollectionsResponse {
+    func collections(containsItem: String? = nil) async throws -> CollectionsResponse {
         let auth = try await detailReadAuth()
-        let list = try await apiV2Client.personalCollections(auth: auth)
+        let list = try await apiV2Client.personalCollections(containsItem: containsItem, auth: auth)
         let response = CollectionsResponse(collections: list.items, groups: list.groups)
         try await requireCurrentOwner(auth)
         return response
     }
 
-    /// Whether the acting account's store supports collection groups.
+    /// Whether the acting account's store supports collection groups, sharing, and `contains_item`.
     func collectionCapabilities() async throws -> APIv2CollectionCapabilities {
         let auth = try await detailReadAuth()
         let capabilities = try await apiV2Client.collectionCapabilities(auth: auth)
         try await requireCurrentOwner(auth)
         return capabilities
+    }
+
+    /// Reads collection capabilities, returning `nil` only when the server does
+    /// not expose the capabilities route (v1-only or 404). Any other failure throws.
+    func collectionCapabilitiesIfSupported() async throws -> APIv2CollectionCapabilities? {
+        do {
+            return try await collectionCapabilities()
+        } catch let error as APIv2Error {
+            switch error {
+            case .serverUpdateRequired, .httpStatus(404): return nil
+            case .problem(let problem) where problem.status == 404: return nil
+            default: throw error
+            }
+        }
     }
 
     /// Every display card in a personal collection, read as catalog pages.

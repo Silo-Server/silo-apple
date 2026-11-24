@@ -165,7 +165,9 @@ final class HomeSectionsEditorModel {
         let myLoadGen = loadGeneration
         let startIdentity = requestIdentity()
         phase = .loading
-        saveError = nil
+        if saveFailureCount <= acknowledgedFailureCount {
+            saveError = nil
+        }
         isRefreshing = true
         defer {
             if loadGeneration == myLoadGen {
@@ -199,7 +201,9 @@ final class HomeSectionsEditorModel {
                 confirmedRows = layout.rows
                 dragDraftVisibleOrder = nil
                 hasLoadedFromServer = true
-                saveError = nil
+                if saveFailureCount <= acknowledgedFailureCount {
+                    saveError = nil
+                }
                 phase = .loaded
                 if pendingEditsIdentity == startIdentity, !pendingEdits.isEmpty {
                     let rebased = Self.reapply(pendingEdits, to: layout.rows)
@@ -1288,6 +1292,7 @@ final class HomePreferencesModel {
             errorMessage = nil
         }
 
+        let startWriteFailureCount = writeFailureCount
         let capturedGenerations = Dictionary(uniqueKeysWithValues: Self.preferenceKeys.map { key in
             let scope = KeyScope(identity: identity, key: key)
             return (key, keyGeneration[scope, default: 0])
@@ -1313,7 +1318,9 @@ final class HomePreferencesModel {
                     reconcilingKeys.remove(scope)
                 }
             case .failed(let err):
-                errorMessage = preservingError ?? ErrorState(err).message
+                if writeFailureCount == startWriteFailureCount {
+                    errorMessage = preservingError ?? ErrorState(err).message
+                }
                 if deferredWrites.contains(where: { $0.key.identity == identity })
                     || reconcilingKeys.contains(where: { $0.identity == identity }) {
                     writeFailureCount += 1
@@ -1412,9 +1419,12 @@ final class HomePreferencesModel {
             loadedIdentity = identity
             supportedKeys = resolvedKeys
             isAuthorized = !resolvedKeys.isEmpty
-            errorMessage = preservingError
-            if preservingError == nil && deferredToDispatch.isEmpty {
-                acknowledgedFailureCount = writeFailureCount
+            let hadNewerWriteFailure = writeFailureCount != startWriteFailureCount
+            if !hadNewerWriteFailure {
+                errorMessage = preservingError
+                if preservingError == nil && deferredToDispatch.isEmpty {
+                    acknowledgedFailureCount = writeFailureCount
+                }
             }
 
             for (key, deferred) in deferredToDispatch {
@@ -1431,14 +1441,19 @@ final class HomePreferencesModel {
                 return reconcilingKeys.contains(scope) && pendingWrites[scope, default: 0] == 0
             }
             if needsReconciliation {
-                scheduleRecoveryLoad(for: identity, preservingError: preservingError)
+                scheduleRecoveryLoad(
+                    for: identity,
+                    preservingError: hadNewerWriteFailure ? errorMessage : preservingError
+                )
             }
         } catch {
             guard !(error is CancellationError), !Task.isCancelled, loadSequence == sequence, requestIdentity() == identity else { return }
             isAuthorized = false
             supportedKeys = []
             loadedIdentity = nil
-            errorMessage = preservingError ?? ErrorState(error).message
+            if writeFailureCount == startWriteFailureCount {
+                errorMessage = preservingError ?? ErrorState(error).message
+            }
             if deferredWrites.contains(where: { $0.key.identity == identity })
                 || reconcilingKeys.contains(where: { $0.identity == identity }) {
                 writeFailureCount += 1

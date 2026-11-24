@@ -1171,19 +1171,27 @@ struct TVSeriesDetailView: View {
                             ),
                         ]
                     }
-                    return model.entries.map { entry in
-                        TVActionPopoverItem(
+                    var rows = model.entries.map { entry in
+                        let isUnconfirmed = model.unconfirmedCollectionIds.contains(entry.id)
+                        return TVActionPopoverItem(
                             id: "col:\(entry.id)",
                             title: entry.collection.name,
                             detail: AppLanguage.string(
                                 .collectionsItemCount(count: entry.itemCount, LocaleFormat.groupedCount(entry.itemCount, locale: locale)),
                                 locale: locale
                             ),
-                            systemImage: "folder",
-                            isSelected: entry.containsItem,
-                            isEnabled: !model.busyCollectionIds.contains(entry.id)
+                            systemImage: isUnconfirmed ? "exclamationmark.triangle" : "folder",
+                            isSelected: !isUnconfirmed && entry.containsItem,
+                            isEnabled: !model.busyCollectionIds.contains(entry.id) && !isUnconfirmed
                         )
                     }
+                    if !model.unconfirmedCollectionIds.isEmpty && !model.isLoading {
+                        rows.insert(
+                            TVActionPopoverItem(id: "col:retry", title: AppLanguage.string(.commonRetry, locale: locale), systemImage: "arrow.clockwise"),
+                            at: 0
+                        )
+                    }
+                    return rows
                 }()
                 let emptyCollectionsHint: String? = {
                     guard let model = collectionsModel,

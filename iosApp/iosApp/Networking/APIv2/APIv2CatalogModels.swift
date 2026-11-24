@@ -46,6 +46,9 @@ struct APIv2CatalogSearchCapabilities: Decodable {
     /// Searching and opening box sets is supported (`searchCatalogBoxSets`,
     /// `getCatalogBoxSet`). Older servers omit it.
     let boxSets: Bool?
+    /// Reading the collections that hold a title (`GET /api/v2/catalog/items/{id}/collections`)
+    /// is supported. Older servers omit it.
+    let itemCollections: Bool?
 
     var isAvailable: Bool { allowed && state == "available" }
 }
@@ -61,18 +64,27 @@ struct CatalogSearchFeatures: Equatable {
     /// The server searches box sets. It lists only those of libraries with
     /// box sets in search, so this alone decides whether to ask.
     var boxSets = false
+    /// `GET /api/v2/catalog/items/{id}/collections` is supported.
+    var itemCollections = false
 
-    init(peopleMediaScope: Bool = false, videoWithEpisodesScope: Bool = false, boxSets: Bool = false) {
+    init(
+        peopleMediaScope: Bool = false,
+        videoWithEpisodesScope: Bool = false,
+        boxSets: Bool = false,
+        itemCollections: Bool = false
+    ) {
         self.peopleMediaScope = peopleMediaScope
         self.videoWithEpisodesScope = videoWithEpisodesScope
         self.boxSets = boxSets
+        self.itemCollections = itemCollections
     }
 
     init(_ capabilities: APIv2CatalogSearchCapabilities) {
         self.init(
             peopleMediaScope: capabilities.peopleMediaScope == true,
             videoWithEpisodesScope: capabilities.videoWithEpisodesScope == true,
-            boxSets: capabilities.boxSets == true
+            boxSets: capabilities.boxSets == true,
+            itemCollections: capabilities.itemCollections == true
         )
     }
 }

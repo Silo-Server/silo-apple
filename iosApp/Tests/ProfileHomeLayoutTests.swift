@@ -609,11 +609,11 @@ final class ProfileHomeLayoutTests: XCTestCase {
 
         let collectionsJSON = """
         {"items":[
-          {"id":"col-1","name":"Favorites","collection_type":"manual","item_count":2}
+          {"id":"col-1","name":"Favorites","collection_type":"manual","item_count":2,"creator_profile_id":"profile-one","contains":false}
         ],"groups":[]}
         """
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":true,"contains_item":true}"#)
         stub.reply(path: "/api/v2/collections", 200, collectionsJSON)
-        stub.reply(path: "/api/v2/catalog/items/movie-42/collections", 200, #"{"items":[]}"#)
 
         let model = AddToCollectionModel(
             contentId: "movie-42",
@@ -839,6 +839,173 @@ final class ProfileHomeLayoutTests: XCTestCase {
         // PUT #1 failed, so replaying the drag of B above A onto [A, B, C] must yield [B, A, C],
         // NOT [C, B, A].
         XCTAssertEqual(editor.rows.map(\.id), ["sec-b", "sec-a", "sec-c"])
+    }
+
+    @MainActor
+    func testAddToCollectionGatesMembershipOnCapabilitiesFiltersForeignSharedAndLocksUnconfirmedRows() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "cap-test")
+        await tokens.setServerUrl("https://cap.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "cap-test",
+            serverURL: "https://cap.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+
+        // 1) Server advertises contains_item: single /api/v2/collections?contains_item= read,
+        //    no /api/v2/catalog/items/{id}/collections call, and other profiles' shared collections excluded.
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":true,"contains_item":true}"#)
+        stub.reply(path: "/api/v2/collections", 200, """
+        {"items":[
+          {"id":"own-1","name":"Mine","collection_type":"manual","item_count":3,"is_shared":true,"creator_profile_id":"profile-one","contains":true},
+          {"id":"other-1","name":"Partner Shared","collection_type":"manual","item_count":5,"is_shared":true,"creator_profile_id":"profile-two"}
+        ],"groups":[]}
+        """)
+
+        let model = AddToCollectionModel(contentId: "movie-99", api: api, requestIdentity: { identity })
+        await model.load()
+        XCTAssertTrue(model.hasLoaded)
+        XCTAssertEqual(model.entries.map(\.id), ["own-1"])
+        XCTAssertEqual(model.entries.first?.containsItem, true)
+        XCTAssertFalse(stub.requests.contains { $0.path == "/api/v2/catalog/items/movie-99/collections" })
+
+        // 2) Server lacks both contains_item and item_collections: skips membership route
+        //    and still loads the personal collection list.
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":false,"contains_item":false}"#)
+        stub.reply(path: "/api/v2/catalog/search/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"item_collections":false}"#)
+        let olderModel = AddToCollectionModel(contentId: "movie-99", api: api, requestIdentity: { identity })
+        await olderModel.load()
+        XCTAssertTrue(olderModel.hasLoaded)
+        XCTAssertEqual(olderModel.entries.map(\.id), ["own-1"])
+        XCTAssertFalse(stub.requests.contains { $0.path == "/api/v2/catalog/items/movie-99/collections" })
+
+        // 3) Unconfirmed row after failed create-and-add + failed reconciliation stays locked until Retry succeeds.
+        stub.reply(path: "/api/v2/collections/capabilities", 500, #"{"error":{"code":"internal","message":"down"}}"#)
+        let recoveryModel = AddToCollectionModel(contentId: "movie-99", api: api, requestIdentity: { identity })
+        await recoveryModel.load()
+        XCTAssertFalse(recoveryModel.hasLoaded)
+
+        stub.reply(path: "/api/v2/collections", 201, #"{"id":"new-1","name":"Weekend","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"}"#)
+        stub.reply(path: "/api/v2/collections/new-1/items/movie-99", 204, "")
+        let created = await recoveryModel.createAndAdd(name: "Weekend")
+        XCTAssertEqual(created, .createdAndAdded)
+        XCTAssertEqual(recoveryModel.entries.map(\.id), ["new-1"])
+
+        // Removing fails with uncertain outcome (no response / network error -> mayHaveApplied)
+        // while reconciliation also fails.
+        stub.sequence(path: "/api/v2/collections/new-1/items/movie-99", [.failure(URLError(.networkConnectionLost))])
+        await recoveryModel.toggle(collectionId: "new-1")
+        XCTAssertTrue(recoveryModel.unconfirmedCollectionIds.contains("new-1"))
+
+        let requestsBeforeBlockedTap = stub.requests.count
+        await recoveryModel.toggle(collectionId: "new-1")
+        XCTAssertEqual(stub.requests.count, requestsBeforeBlockedTap)
+
+        // Retry load succeeds and unlocks the row.
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":true,"contains_item":true}"#)
+        stub.reply(path: "/api/v2/collections", 200, """
+        {"items":[
+          {"id":"new-1","name":"Weekend","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one","contains":false}
+        ],"groups":[]}
+        """)
+        await recoveryModel.load()
+        XCTAssertTrue(recoveryModel.hasLoaded)
+        XCTAssertTrue(recoveryModel.unconfirmedCollectionIds.isEmpty)
+    }
+
+    @MainActor
+    func testCollectionPlacementGatesSharingOnLoginSharingAndCreator() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "share-gate-test")
+        await tokens.setServerUrl("https://share.example")
+        await tokens.setProfileId("profile-owner")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "share-gate-test",
+            serverURL: "https://share.example",
+            profileId: "profile-owner",
+            clientFamily: "ios"
+        )
+
+        stub.reply(path: "/api/v2/profile/sections/settings", 200, #"{"items":[]}"#)
+        stub.reply(path: "/api/v2/profile/sections", 200, #"{"items":[]}"#)
+
+        // 1) login_sharing false -> Share hidden without shareLoadFailed.
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":false}"#)
+        stub.sequence(path: "/api/v2/collections/col-1", [
+            .json(
+                200,
+                #"{"id":"col-1","name":"Mine","collection_type":"manual","is_shared":false,"creator_profile_id":"profile-owner"}"#,
+                headers: ["ETag": #""v1""#]
+            ),
+        ])
+        let noSharingModel = CollectionPlacementModel(
+            collectionId: "col-1",
+            title: "Mine",
+            isUserCollection: true,
+            api: api,
+            requestIdentity: { identity }
+        )
+        await noSharingModel.load()
+        XCTAssertFalse(noSharingModel.canToggleShare)
+        XCTAssertFalse(noSharingModel.shareLoadFailed)
+
+        // 2) login_sharing true but another profile is creator -> Share hidden.
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":true}"#)
+        stub.sequence(path: "/api/v2/collections/col-1", [
+            .json(
+                200,
+                #"{"id":"col-1","name":"Shared By Other","collection_type":"manual","is_shared":true,"creator_profile_id":"profile-other"}"#,
+                headers: ["ETag": #""v1""#]
+            ),
+        ])
+        let viewerModel = CollectionPlacementModel(
+            collectionId: "col-1",
+            title: "Shared By Other",
+            isUserCollection: true,
+            api: api,
+            requestIdentity: { identity }
+        )
+        await viewerModel.load()
+        XCTAssertFalse(viewerModel.canToggleShare)
+        XCTAssertFalse(viewerModel.shareLoadFailed)
+
+        // 3) login_sharing true and acting profile is creator -> Share enabled.
+        stub.sequence(path: "/api/v2/collections/col-1", [
+            .json(
+                200,
+                #"{"id":"col-1","name":"Mine","collection_type":"manual","is_shared":true,"creator_profile_id":"profile-owner"}"#,
+                headers: ["ETag": #""v2""#]
+            ),
+        ])
+        let ownerModel = CollectionPlacementModel(
+            collectionId: "col-1",
+            title: "Mine",
+            isUserCollection: true,
+            api: api,
+            requestIdentity: { identity }
+        )
+        await ownerModel.load()
+        XCTAssertTrue(ownerModel.canToggleShare)
+        XCTAssertTrue(ownerModel.isShared)
+        XCTAssertFalse(ownerModel.shareLoadFailed)
     }
 }
 
