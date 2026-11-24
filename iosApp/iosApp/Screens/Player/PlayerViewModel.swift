@@ -4219,14 +4219,19 @@ class PlayerViewModel {
     /// The sleep timer ran out. A party member leaves the room, which closes
     /// the player. Otherwise playback pauses, and an Up Next countdown stops
     /// too: after the end there is nothing to pause, and the countdown would
-    /// start the next episode. Play Now still works.
+    /// start the next episode. Play Now still works. The pause counts as a
+    /// Pause press, so a load or replan already under way starts paused
+    /// instead of playing.
     func sleepTimerDidExpire() {
         if isWatchPartyPlayback {
             cleanup()
             return
         }
         if showNextUpScreen { cancelNextUpAutoPlay() }
-        aetherPlaybackController.pause()
+        noteViewerTransportCommand(play: false)
+        if !holdPlayIntentForFreshLoad(false) {
+            aetherPlaybackController.pause()
+        }
     }
 
     /// Up Next offers Keep Watching before the end, and after a source that
