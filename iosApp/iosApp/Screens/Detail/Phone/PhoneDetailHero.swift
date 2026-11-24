@@ -634,14 +634,14 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     // MARK: - Split page parts
 
-    /// The sidebar of a split page: title, facts, and actions, aligned to
-    /// the leading edge of the glass panel the page draws around them.
+    /// The sidebar of a split page: title, facts, and actions, centred in
+    /// the glass panel the page draws around them, as on the iPhone.
     private var paneSidebar: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 16) {
             // Smaller than the compact logo: the sidebar is narrow and shares
             // the display's height with the facts, actions, and selectors.
-            titleBlock(textAlignment: .leading, logoHeight: 84)
-            metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: true)
+            titleBlock(textAlignment: .center, logoHeight: 84)
+            metadataBlock(alignment: .center, textAlignment: .center, isCompact: true)
             actions()
                 .padding(.top, 2)
         }
