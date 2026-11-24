@@ -83,6 +83,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     var isProvisional = false
     /// The artwork the seed drew, kept on screen while `detail`'s loads.
     var seedArtwork: DetailSeedArtwork? = nil
+    /// The viewer's own rating of the whole series, never an episode; nil
+    /// draws no rating control.
+    var ratingSlot: PhoneRatingSlot? = nil
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
@@ -215,6 +218,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             pane: pane,
             fallbackArtworkUrl: seedArtwork?.hero,
             fallbackPosterUrl: seedArtwork?.poster,
+            // A card seed's rating is unknown until the detail loads.
+            personalRating: isProvisional ? nil : ratingSlot,
             actions: { actionStack },
             // Match MovieDetailContent exactly through the playback controls:
             // Play/actions, show overview and credits, translation affordance,

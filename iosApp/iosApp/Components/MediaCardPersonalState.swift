@@ -201,6 +201,7 @@ final class MediaCardPersonalState {
         case .favorite: favoriteOverride
         case .watchlist: watchlistOverride
         case .notInterested: notInterestedOverride
+        case .rating: nil
         }
     }
 
@@ -210,6 +211,7 @@ final class MediaCardPersonalState {
         case .favorite: favoriteOverride = value
         case .watchlist: watchlistOverride = value
         case .notInterested: notInterestedOverride = value
+        case .rating: break
         }
     }
 }

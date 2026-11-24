@@ -461,7 +461,10 @@ struct TVItemDetailView: View {
                 },
                 synopsisStatus: viewModel.descriptionTranslationStatus,
                 isTranslatingEpisodes: viewModel.isTranslatingSeasonEpisodes,
-                onTranslateDescription: translateDescriptionAction
+                onTranslateDescription: translateDescriptionAction,
+                userRating: viewModel.userRating,
+                canRate: viewModel.canRate,
+                onSetRating: { score in Task { await viewModel.setRating(score) } }
             )
             .task(id: activeSeriesEpisodeContentId) {
                 guard let id = activeSeriesEpisodeContentId else { return }
@@ -572,7 +575,10 @@ struct TVItemDetailView: View {
                     router.openRelatedTitle(contentId: id)
                 },
                 synopsisStatus: viewModel.descriptionTranslationStatus,
-                onTranslateDescription: translateDescriptionAction
+                onTranslateDescription: translateDescriptionAction,
+                userRating: viewModel.userRating,
+                canRate: viewModel.canRate,
+                onSetRating: { score in Task { await viewModel.setRating(score) } }
             )
         }
     }

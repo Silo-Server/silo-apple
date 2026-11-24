@@ -870,6 +870,13 @@ struct ItemDetail: Codable {
     /// its series'. `var` with a default for the same memberwise-initializer
     /// reason as `videos`.
     var themes: ThemeSongSet? = nil
+    /// The viewer's own rating from the v2 detail read (`user_rating`), 1 to
+    /// 10 where 7 is 3.5 stars; nil when unrated or without a profile. The
+    /// server's value at fetch time: a title page shows
+    /// `ItemDetailViewModel.userRating`, which also carries unconfirmed
+    /// edits. `var` with a default for the same memberwise-initializer reason
+    /// as `videos`.
+    var userRating: Int? = nil
 }
 
 extension ItemDetail {

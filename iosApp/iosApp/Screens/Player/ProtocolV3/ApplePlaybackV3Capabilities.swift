@@ -49,15 +49,18 @@ enum ApplePlaybackV3Capabilities {
         PlaybackProtocolV3.softwareVideoDecodeFeature,
         PlaybackProtocolV3.embeddedSubtitlesFeature,
         PlaybackProtocolV3.hlsSubtitleRenditionsFeature,
-        PlaybackProtocolV3.hlsRemuxSubtitleRenditionsFeature
+        PlaybackProtocolV3.hlsRemuxSubtitleRenditionsFeature,
+        PlaybackProtocolV3.pausedTimeoutFeature
     ]
 
     /// Audiobooks currently restart sessions at part boundaries and do not
     /// retain enough plan identity to request seek re-anchors in place. Their
     /// capability snapshot is audio-only, so it must not opt into the
-    /// software-video planner contract either.
+    /// software-video planner contract either. The server never ends an
+    /// audiobook for staying paused, so it does not claim that answer.
     static let audiobookFeatures = features.filter {
         $0 != PlaybackProtocolV3.seekReanchorFeature
+            && $0 != PlaybackProtocolV3.pausedTimeoutFeature
             && $0 != PlaybackProtocolV3.softwareVideoDecodeFeature
             && $0 != PlaybackProtocolV3.embeddedSubtitlesFeature
             && $0 != PlaybackProtocolV3.hlsSubtitleRenditionsFeature
