@@ -67,6 +67,9 @@ final class HomeSectionsEditorModel {
     private(set) var saveError: String?
     private(set) var isSaving = false
     private(set) var isResetting = false
+    var canEditLayout: Bool {
+        phase == .loaded && !isResetting
+    }
     var canResetToServerDefault: Bool {
         auth != nil && !isResetting && !isRefreshing && phase == .loaded
     }

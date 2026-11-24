@@ -458,6 +458,7 @@ private struct IOSConfigureRecipeRowView: View {
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button(.profilesAdd) {
+                    guard editor.canEditLayout else { return }
                     confirmHaptic += 1
                     editor.addRecipeRow(
                         sectionType: entry.definition.type,
@@ -469,7 +470,7 @@ private struct IOSConfigureRecipeRowView: View {
                     onFinished()
                 }
                 .fontWeight(.semibold)
-                .disabled(!canSubmit)
+                .disabled(!canSubmit || !editor.canEditLayout)
             }
         }
         #if os(iOS)
@@ -1179,6 +1180,7 @@ private struct IOSConfigureCollectionRowView: View {
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button(.profilesAdd) {
+                    guard editor.canEditLayout else { return }
                     confirmHaptic += 1
                     editor.addCollectionRow(
                         collectionId: collection.id,
@@ -1190,6 +1192,7 @@ private struct IOSConfigureCollectionRowView: View {
                     onFinished()
                 }
                 .fontWeight(.semibold)
+                .disabled(!editor.canEditLayout)
             }
         }
         #if os(iOS)
@@ -1396,6 +1399,7 @@ private struct IOSCollectionPostersBuilderView: View {
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button(.profilesAdd) {
+                    guard editor.canEditLayout else { return }
                     confirmHaptic += 1
                     editor.addCollectionPostersRow(
                         title: rowName,
@@ -1404,7 +1408,7 @@ private struct IOSCollectionPostersBuilderView: View {
                     onFinished()
                 }
                 .fontWeight(.semibold)
-                .disabled(selectedRefs.isEmpty)
+                .disabled(selectedRefs.isEmpty || !editor.canEditLayout)
             }
         }
         #if os(iOS)

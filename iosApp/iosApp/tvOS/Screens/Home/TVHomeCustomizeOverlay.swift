@@ -1374,7 +1374,7 @@ struct TVAddRowModal: View {
                         let isAdded = editor.isRecipePresent(sectionType: def.type, params: preset.defaultParams)
                             || addedKeys.contains(preset.key)
                         Button {
-                            guard !isAdded else { return }
+                            guard !isAdded, editor.canEditLayout else { return }
                             let key = preset.key
                             addedKeys.insert(key)
                             let task = editor.addRecipeRow(
@@ -1478,7 +1478,7 @@ struct TVAddRowModal: View {
                             posterThumbhash: collection.posterThumbhash,
                             isAdded: isAdded
                         ) {
-                            guard !isAdded else { return }
+                            guard !isAdded, editor.canEditLayout else { return }
                             let key = "user:\(collection.id)"
                             addedKeys.insert(key)
                             let task = editor.addCollectionRow(
@@ -1546,7 +1546,7 @@ struct TVAddRowModal: View {
                             posterThumbhash: collection.posterThumbhash,
                             isAdded: isAdded
                         ) {
-                            guard !isAdded else { return }
+                            guard !isAdded, editor.canEditLayout else { return }
                             addedKeys.insert(key)
                             let task = editor.addCollectionRow(
                                 collectionId: collection.collectionId,
