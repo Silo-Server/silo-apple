@@ -184,13 +184,21 @@ struct TVLibraryBrowseView: View {
         }
         isLoadingSections = true
         sectionsError = nil
+        let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
         for attempt in 0..<2 {
             let startToken = ResponseCache.shared.writeToken
+            var capturedAuth: CapturedOrdinaryRequestAuth?
             do {
                 if let mediaScope {
                     let read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: library.id)
+                    capturedAuth = read.auth
                     let visibleRows = read.response.sections.filter { !$0.isFeatured }
+                    let isStillCurrent: @Sendable () async -> Bool = { @MainActor in
+                        requestGeneration == loadGeneration && refreshInvalidationGen == startRefreshGen
+                    }
                     let scoped = try await mediaScope.refillSections(visibleRows) { [libraryID = library.id] (row: ResolvedSection, cursor: APIv2CatalogContinuation?) in
+                        try Task.checkCancellation()
+                        guard await isStillCurrent() else { throw CancellationError() }
                         guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
                         let page: CatalogListPage
                         if let cursor { page = try await SiloAPI.shared.nextCatalogPage(cursor) }
@@ -200,6 +208,8 @@ struct TVLibraryBrowseView: View {
                             query.libraryId = String(libraryID); query.sectionId = row.id; query.limit = 100
                             page = try await SiloAPI.shared.catalogPage(query)
                         }
+                        try Task.checkCancellation()
+                        guard await isStillCurrent() else { throw CancellationError() }
                         guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
                         return LibraryScopedPage(items: page.response.items.map { SectionItem(browseItem: $0) },
                                                  next: page.continuation, startsOver: page.startsOver)
@@ -234,6 +244,7 @@ struct TVLibraryBrowseView: View {
                     return
                 } else {
                     let read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: library.id)
+                    capturedAuth = read.auth
                     guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
                     guard requestGeneration == loadGeneration,
                           refreshInvalidationGen == startRefreshGen,
@@ -258,8 +269,42 @@ struct TVLibraryBrowseView: View {
                       refreshInvalidationGen == startRefreshGen,
                       !Task.isCancelled else { return }
                 if error is CancellationError { return }
-                if case HTTPError.requestIdentityChanged = error { sections = [] }
-                if case HTTPError.authorityChanged = error { sections = [] }
+                let ownerChanged: Bool
+                if let capturedAuth {
+                    ownerChanged = !(await SiloAPI.shared.isCurrentOwner(capturedAuth))
+                } else {
+                    ownerChanged = SeekIntervalPreferences.activeRequestIdentity() != startIdentity
+                }
+                guard requestGeneration == loadGeneration,
+                      refreshInvalidationGen == startRefreshGen,
+                      !Task.isCancelled else { return }
+                let isIdentityError: Bool
+                if case HTTPError.requestIdentityChanged = error {
+                    isIdentityError = true
+                } else if case HTTPError.authorityChanged = error {
+                    isIdentityError = true
+                } else {
+                    isIdentityError = ownerChanged
+                }
+                if isIdentityError {
+                    sections = []
+                    sectionsError = ErrorState(HTTPError.requestIdentityChanged)
+                    scopeIncomplete = false
+                    return
+                }
+                let invalidated = ResponseCache.shared.wasInvalidated(baseCacheKey, after: startToken)
+                    || (scopedCacheKey.map { ResponseCache.shared.wasInvalidated($0, after: startToken) } ?? false)
+                if invalidated {
+                    hasPendingRefresh = true
+                    if isVisible && attempt == 0 { continue }
+                    if isVisible && sections.isEmpty {
+                        sectionsError = ErrorState(
+                            statusCode: nil,
+                            message: AppLanguage.string(.statusErrorGeneric, locale: locale)
+                        )
+                    }
+                    return
+                }
                 sectionsError = ErrorState(error)
                 scopeIncomplete = mediaScope != nil && !sections.isEmpty
                 return
