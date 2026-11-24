@@ -185,11 +185,16 @@ final class AetherPlaybackController {
     /// whose engine reports a constant 0 that would read as silence, or no
     /// load.
     private(set) var upstreamBytesFetched: Int64?
-    /// On server HLS, the rate AVPlayer's access log reports for the item, in
-    /// kbps, as of the latest telemetry: what it received from the engine's
-    /// relay, which passes the origin's bytes on as they arrive. Nil on
-    /// other routes and before anything arrived.
-    private(set) var relayThroughputKbps: Int?
+    /// On server HLS, the engine relay's running totals of the media bytes it
+    /// received from the origin and of the time they spent arriving, each
+    /// segment timed from its first byte to its last, as of the latest
+    /// telemetry, with the load whose relay counted them. Nil on other routes
+    /// and without a relay.
+    ///
+    /// Not AVPlayer's access log: it times each request on the loopback hop
+    /// from when it was sent, so a segment the server answers only once its
+    /// encoder has written it reads the encode as a slow link.
+    private(set) var relayMediaTransfer: RelayPlanThroughput.Totals?
 
     /// Another reader of the load's source may be receiving beside the one
     /// `upstreamBytesFetched` counts. An embedded subtitle the engine decodes
@@ -1377,14 +1382,12 @@ final class AetherPlaybackController {
                 let serverHLS = activeSpec?.options.nativeRemoteHLS == true
                 let hasReader = !serverHLS && activeSpec?.options.audioOnly != true
                 upstreamBytesFetched = hasReader ? telemetry?.demuxerBytesFetched : nil
-                relayThroughputKbps = serverHLS
-                    ? telemetry?.networkThroughputMbps.flatMap { mbps in
-                        // Clamped first: converting NaN or an overflow traps.
-                        mbps.isFinite
-                            ? UpstreamReadMeter.reportable(kbps: Int64(min(max(mbps, 0), 1_000_000) * 1_000))
-                            : nil
-                    }
-                    : nil
+                if serverHLS, let load = activeLoadEpoch, let bytes = telemetry?.relayMediaReceivedBytes,
+                   let receivingMs = telemetry?.relayMediaReceivingMs {
+                    relayMediaTransfer = .init(load: load.rawValue, bytes: bytes, receivingMs: receivingMs)
+                } else {
+                    relayMediaTransfer = nil
+                }
                 publish(.telemetryChanged)
             }
             .store(in: &subscriptions)

@@ -424,10 +424,6 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
             coordinator.state == .confirmMatch(tvName: "Living Room", serverName: "Home", serverHost: "a.example",
                                                accountName: "laura", code: "4821-7730", matchWords: "warm pony")
         }
-        // Worded as on Android and the web /activate card.
-        XCTAssertEqual(CompanionPairingCard.olderTVLine(matchWords: "warm pony"), "Older TV apps show WARM PONY instead.")
-        XCTAssertNil(CompanionPairingCard.olderTVLine(matchWords: nil))
-        XCTAssertNil(CompanionPairingCard.olderTVLine(matchWords: " "))
         await coordinator.cancel()
     }
 

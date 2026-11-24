@@ -57,6 +57,12 @@ enum PlaybackProtocolV3 {
     /// `hls_rendition`, and switching among them keeps the stream. /api/v2
     /// only, attempt-sticky, and sent only to a server that advertises it.
     static let hlsSubtitleRenditionsAllFeature = "hls_subtitle_renditions_all_v1"
+    /// The server may end a video session that stays paused too long and
+    /// answer its progress, replan or control ticket with 410
+    /// `playback_session_paused_timeout` instead of the administrator's
+    /// `playback_session_ended`, so the player can say why it left.
+    /// Attempt-sticky; a client without it still gets the administrator answer.
+    static let pausedTimeoutFeature = "paused_timeout_v1"
     static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
     /// Native v2 only. The server accepts `bandwidth_estimate_source` and
     /// `learned_limit` on a start or replan whose `client_features` names it,

@@ -546,6 +546,8 @@ private struct ItemDetailPhoneContent: View {
     @State private var offlinePlayChoice: OfflinePlayChoice?
     @State private var unreachablePlayRequest: UnreachablePlayRequest?
     @State private var detailScrollState = PhoneDetailScrollState()
+    /// The movie or series rating control's open row, draft and Undo toast.
+    @State private var ratingController = PhoneRatingController()
     /// Whether a movie or series page lays out as a split; see `supportsScrollGlassChrome`.
     @State private var isSplitPage = false
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -610,6 +612,13 @@ private struct ItemDetailPhoneContent: View {
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
         .descriptionTranslation(viewModel)
+        .phoneRatingPage(ratingController, savedScore: RatingScore(server: viewModel.userRating)) { score in
+            Task { await viewModel.setRating(score) }
+        }
+        .onChange(of: viewModel.detail?.contentId) { _, _ in
+            // A draft belongs to the title it was started on.
+            ratingController.cancel()
+        }
         .themeMusic(
             viewModel.detail?.themes,
             seasonContentId: isSeriesPage ? viewModel.selectedSeason?.contentId : nil,
@@ -619,8 +628,8 @@ private struct ItemDetailPhoneContent: View {
                 || (isSeriesPage && viewModel.seasons.isEmpty
                     && viewModel.isLoadingSeriesHierarchy)
         )
-        .onChange(of: PlaybackConnection.shared.isMetered) { wasMetered, _ in
-            reconcileTracksAfterConnectionChange(wasMetered: wasMetered)
+        .onChange(of: PlaybackConnection.shared.tier) { previousTier, _ in
+            reconcileTracksAfterConnectionChange(previousTier: previousTier)
         }
         .task(id: contentId) {
             // Returning from the player restarts this task. Keep the episode
@@ -968,6 +977,16 @@ private struct ItemDetailPhoneContent: View {
     }
     #endif
 
+    /// The rating control for a loaded movie or series page.
+    private var ratingSlot: PhoneRatingSlot? {
+        guard viewModel.canRate else { return nil }
+        return PhoneRatingSlot(
+            score: RatingScore(server: viewModel.userRating),
+            isWatched: viewModel.isWatched,
+            controller: ratingController
+        )
+    }
+
     @ViewBuilder
     private func content(for detail: ItemDetail) -> some View {
         if detail.isAudiobook {
@@ -1110,6 +1129,7 @@ private struct ItemDetailPhoneContent: View {
                 scrollState: detailScrollState,
                 isProvisional: viewModel.isDetailProvisional,
                 seedArtwork: viewModel.seedArtwork,
+                ratingSlot: ratingSlot,
                 belowOverview: { translationView(for: detail) }
             )
             .task(id: playbackEpisode(for: detail)?.contentId) {
@@ -1195,6 +1215,7 @@ private struct ItemDetailPhoneContent: View {
                 scrollState: detailScrollState,
                 isProvisional: viewModel.isDetailProvisional,
                 seedArtwork: viewModel.seedArtwork,
+                ratingSlot: ratingSlot,
                 belowOverview: { translationView(for: detail) }
             )
         }
@@ -1222,7 +1243,7 @@ private struct ItemDetailPhoneContent: View {
             shownWith: detail.userData,
             startsWith: watchState,
             resumePosition: resumePosition,
-            preferredQualityId: detailQuality(onMeteredNetwork: nil),
+            preferredQualityId: detailQuality(for: nil),
             startFromBeginning: startFromBeginning,
             audioTrackIndex: preferredAudioTrackIndex,
             subtitleTrackIndex: preferredSubtitleTrackIndex,
@@ -1250,7 +1271,7 @@ private struct ItemDetailPhoneContent: View {
             shownWith: nextUpWatchDetail.userData,
             startsWith: watchState,
             resumePosition: resumePosition,
-            preferredQualityId: detailQuality(onMeteredNetwork: nil),
+            preferredQualityId: detailQuality(for: nil),
             startFromBeginning: startFromBeginning,
             audioTrackIndex: preferredNextUpAudioTrackIndex,
             subtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
@@ -1366,12 +1387,12 @@ private struct ItemDetailPhoneContent: View {
         }
     }
 
-    /// The connection moved between Wi-Fi and mobile data, which can change
-    /// Auto's file under the open page. Track picks made on the old file name
-    /// streams of that file, so they're dropped and reseeded as on a reload.
-    private func reconcileTracksAfterConnectionChange(wasMetered: Bool) {
+    /// The connection changed tier, which can change Auto's file under the
+    /// open page. Track picks made on the old file name streams of that file,
+    /// so they're dropped and reseeded as on a reload.
+    private func reconcileTracksAfterConnectionChange(previousTier: PlaybackNetworkTier) {
         if preferredVersionFileId == nil, let detail = viewModel.detail,
-           let before = effectiveVersion(for: detail, versionFileId: nil, onMeteredNetwork: wasMetered) {
+           let before = effectiveVersion(for: detail, versionFileId: nil, networkTier: previousTier) {
             // The connection never changes the cut: keep the one shown.
             if preferredEditionId == nil {
                 preferredEditionId = PlaybackEditions.edition(forFileId: before.fileId, in: detail.versions ?? [])?.id
@@ -1382,7 +1403,7 @@ private struct ItemDetailPhoneContent: View {
             }
         }
         if preferredNextUpFileId == nil, let nextUpWatchDetail,
-           let before = effectiveVersion(for: nextUpWatchDetail, versionFileId: nil, onMeteredNetwork: wasMetered) {
+           let before = effectiveVersion(for: nextUpWatchDetail, versionFileId: nil, networkTier: previousTier) {
             if preferredNextUpEditionId == nil {
                 preferredNextUpEditionId = PlaybackEditions.edition(forFileId: before.fileId, in: nextUpWatchDetail.versions)?.id
             }
@@ -1397,9 +1418,9 @@ private struct ItemDetailPhoneContent: View {
     }
 
     /// The quality Auto ranks with: the current connection's, or the one
-    /// for `onMeteredNetwork` when asking what it was before a change.
-    private func detailQuality(onMeteredNetwork: Bool?) -> String {
-        onMeteredNetwork.map { PlayerSettings.shared.preferredQuality(onMeteredNetwork: $0) }
+    /// for `networkTier` when asking what it was before a change.
+    private func detailQuality(for networkTier: PlaybackNetworkTier?) -> String {
+        networkTier.map { PlayerSettings.shared.preferredQuality(for: $0) }
             ?? PlayerSettings.shared.connectionPreferredQuality
     }
 
@@ -1407,14 +1428,14 @@ private struct ItemDetailPhoneContent: View {
     private func effectiveVersion(
         for detail: ItemDetail,
         versionFileId: Int?,
-        onMeteredNetwork: Bool? = nil
+        networkTier: PlaybackNetworkTier? = nil
     ) -> FileVersion? {
         DetailVersionSelection.displayVersion(
             versions: detail.versions ?? [],
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
             lastFileInProgress: detail.userData?.hasResumePoint ?? false,
-            preferredQualityId: detailQuality(onMeteredNetwork: onMeteredNetwork),
+            preferredQualityId: detailQuality(for: networkTier),
             editionId: preferredEditionId,
             lastEditionKey: detail.userData?.lastEditionKey,
             variants: detail.playbackVariants
@@ -1425,7 +1446,7 @@ private struct ItemDetailPhoneContent: View {
     private func effectiveVersion(
         for detail: WatchDetail?,
         versionFileId: Int?,
-        onMeteredNetwork: Bool? = nil
+        networkTier: PlaybackNetworkTier? = nil
     ) -> FileVersion? {
         guard let detail else { return nil }
         return DetailVersionSelection.displayVersion(
@@ -1433,7 +1454,7 @@ private struct ItemDetailPhoneContent: View {
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
             lastFileInProgress: detail.userData?.hasResumePoint ?? false,
-            preferredQualityId: detailQuality(onMeteredNetwork: onMeteredNetwork),
+            preferredQualityId: detailQuality(for: networkTier),
             editionId: preferredNextUpEditionId,
             lastEditionKey: detail.userData?.lastEditionKey,
             variants: detail.playbackVariants
@@ -1722,6 +1743,8 @@ private struct ItemDetailPhoneContent: View {
         startFromBeginning: Bool,
         resumePosition: Double?
     ) {
+        // Starting playback saves an open rating row, as Done does.
+        ratingController.commit()
         #if os(iOS)
         // An engaged TV takes the request through the router's interceptor
         // (see `AppRouter.presentPlayer`). Skipping the local-copy choice and

@@ -23,6 +23,7 @@ struct TVHeroAmbientWash: View {
 
     let tints: HeroBackdropPalette.Tints
     let isVisible: Bool
+    let includesTopTrailing: Bool
     /// Draws this cover's glow and shadow into the wash.
     let cover: Cover?
     /// False for the first paint and under Reduce Motion: changes snap.
@@ -45,6 +46,7 @@ struct TVHeroAmbientWash: View {
     private struct Request: Equatable {
         let tints: HeroBackdropPalette.Tints
         let isVisible: Bool
+        let includesTopTrailing: Bool
         let cover: Cover?
         let canvas: CGSize
     }
@@ -52,7 +54,11 @@ struct TVHeroAmbientWash: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                TVBackdropCornerWash(corners: tints.corners, isVisible: isVisible)
+                TVBackdropCornerWash(
+                    corners: tints.corners,
+                    includesTopTrailing: includesTopTrailing,
+                    isVisible: isVisible
+                )
                     .animation(animatesChanges ? .easeInOut(duration: crossfadeDuration) : nil, value: tints)
                     .animation(animatesChanges ? .easeInOut(duration: 0.24) : nil, value: isVisible)
 
@@ -67,14 +73,20 @@ struct TVHeroAmbientWash: View {
                         .transition(.asymmetric(insertion: .opacity, removal: .identity))
                 }
             }
-            .task(id: Request(tints: tints, isVisible: isVisible, cover: cover, canvas: geometry.size)) {
+            .task(id: Request(
+                tints: tints,
+                isVisible: isVisible,
+                includesTopTrailing: includesTopTrailing,
+                cover: cover,
+                canvas: geometry.size
+            )) {
                 await render(canvas: geometry.size)
             }
         }
     }
 
     private func render(canvas: CGSize) async {
-        let colors = TVHeroAmbientRenderer.Colors(tints: tints)
+        let colors = TVHeroAmbientRenderer.Colors(tints: tints, includesTopTrailing: includesTopTrailing)
         var coverEffects: TVHeroAmbientRenderer.CoverEffects?
         if let cover {
             // The tint sampler already decoded this thumbnail for the cover.
@@ -130,9 +142,9 @@ enum TVHeroAmbientRenderer {
         /// Corner colors with their unit-square centers, bottom layer first.
         let corners: [(rgb: SIMD3<Float>, center: CGPoint)]
 
-        init(tints: HeroBackdropPalette.Tints) {
+        init(tints: HeroBackdropPalette.Tints, includesTopTrailing: Bool) {
             background = Self.components(Color.siloBackground)
-            corners = TVBackdropCornerWash.layers(tints.corners).map {
+            corners = TVBackdropCornerWash.layers(tints.corners, includesTopTrailing: includesTopTrailing).map {
                 (Self.components($0.color), CGPoint(x: $0.center.x, y: $0.center.y))
             }
         }

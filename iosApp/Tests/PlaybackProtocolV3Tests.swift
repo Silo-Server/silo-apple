@@ -2685,18 +2685,25 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(HTTPError.http(statusCode: 404, body: "Not found")))
     }
 
-    func testAnAdministratorEndedSessionIsGoneNotMissing() throws {
+    func testAServerEndedSessionIsGoneNotMissingAndNamesWhy() throws {
         func problem(_ status: Int, _ type: String) throws -> Error {
             APIv2Error.problem(try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(
                 #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(type)","title":"t","status":\#(status),"detail":"d"}"#.utf8)))
         }
-        let ended = try problem(410, "playback_session_ended")
-        XCTAssertTrue(PlaybackSessionBridge.isPlaybackSessionEnded(ended))
-        // A 410 means leave, never renew into a fresh session.
-        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(ended))
-        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionEnded(try problem(404, "not_found")))
-        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionEnded(try problem(410, "gone")))
-        XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionEnded(HTTPError.http(statusCode: 410, body: "Gone")))
+        let cases: [(type: String, reason: PlaybackServerEndReason)] = [
+            ("playback_session_ended", .administrator),
+            ("playback_session_paused_timeout", .pausedTimeout)
+        ]
+        for (type, reason) in cases {
+            let ended = try problem(410, type)
+            XCTAssertEqual(PlaybackSessionBridge.serverEndReason(ended), reason, type)
+            // A 410 means leave, never renew into a fresh session.
+            XCTAssertFalse(PlaybackSessionBridge.isPlaybackSessionMissing(ended), type)
+        }
+        XCTAssertNil(PlaybackSessionBridge.serverEndReason(try problem(404, "not_found")))
+        XCTAssertNil(PlaybackSessionBridge.serverEndReason(try problem(404, "playback_session_paused_timeout")))
+        XCTAssertNil(PlaybackSessionBridge.serverEndReason(try problem(410, "gone")))
+        XCTAssertNil(PlaybackSessionBridge.serverEndReason(HTTPError.http(statusCode: 410, body: "Gone")))
     }
 
     func testHDRAttestationDoesNotInventHDR10PlusOrMacDolbyVision() {
@@ -3283,6 +3290,17 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(
             ApplePlaybackV3Capabilities.audiobookFeatures.contains(
                 PlaybackProtocolV3.seekReanchorFeature
+            )
+        )
+        // Video starts claim the paused-timeout answer; audiobooks never do.
+        XCTAssertTrue(
+            ApplePlaybackV3Capabilities.startFeatures(authorizedMediaOrigins: false).contains(
+                PlaybackProtocolV3.pausedTimeoutFeature
+            )
+        )
+        XCTAssertFalse(
+            ApplePlaybackV3Capabilities.audiobookFeatures.contains(
+                PlaybackProtocolV3.pausedTimeoutFeature
             )
         )
         XCTAssertTrue(

@@ -89,6 +89,7 @@ extension ItemDetail {
                 unplayedCount: try $0.unplayedCount.map { try catalogLegacyInt($0) }
             )
         }
+        self.userRating = value.userRating.flatMap { (1...10).contains($0) ? $0 : nil }
         self.posterIsEpisodeStill = value.posterIsEpisodeStill
         self.backdropIsEpisodeStill = value.backdropIsEpisodeStill
         self.posterUrl = value.posterUrl

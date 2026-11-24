@@ -28,10 +28,10 @@ struct TVPairingReceiverView: View {
             MarqueeTVCard { card }
         }
         .defaultFocus($focused, .primary, priority: .userInitiated)
-        .marqueeTVSeedFocus($focused, .primary)
         // Each state draws its own buttons, so the one that had focus is gone;
-        // hand focus to the new state's main action.
-        .onChange(of: coordinator.state) { _, _ in focused = .primary }
+        // hand focus to the new state's main action. A state with no buttons
+        // (signed in, finishing) leaves nothing to focus until the next one.
+        .marqueeTVSeedFocus($focused, .primary, reseedOn: coordinator.state)
     }
 
     private var isSignIn: Bool { coordinator.mode.isSignIn }
@@ -169,18 +169,11 @@ struct TVPairingReceiverView: View {
             }
             cardTitle(Text(verbatim: serverName))
             cardNote(Text(.tvPairingCardConsentNote))
-        case let .awaitingApproval(serverName, accountName, code, matchWords, automatic):
+        case let .awaitingApproval(serverName, accountName, code, _, _):
             cardTitle(Text(.companionCodeCardTitle)).padding(.top, 0)
             MarqueeCodeTiles(code: DeviceUserCode.display(code))
                 .padding(.top, 26)
                 .accessibilityLabel(DeviceUserCode.spokenLabel(code) { AppLanguage.string(.shellMarqueeCodeSpoken($0)) })
-            // Rollout fallback: phones released before user codes compare
-            // the match words. Remove together with the phone's "Older TV
-            // apps show ..." line once the iOS and Android apps that compare
-            // user codes have shipped.
-            if !automatic, let matchWords {
-                cardNote(Text(.tvPairingConfirmOlderPhones(matchWords.uppercased())))
-            }
             Divider().overlay(Color.white.opacity(0.1)).padding(.vertical, 30)
             HStack(spacing: 18) {
                 MarqueeServerMark(name: serverName, imageURL: nil, size: 56)

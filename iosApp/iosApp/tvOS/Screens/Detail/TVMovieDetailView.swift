@@ -26,14 +26,6 @@ struct TVMovieDetailView: View {
     /// whether remote cards exist at all). Empty hides the rail.
     let trailerEntries: [TrailerRailEntry]
     let onSelectTrailer: (TrailerRailEntry) -> Void
-    /// Whether the manual "Find Trailers" action can be offered.
-    let supportsTrailerFetch: Bool
-    let onFindTrailers: () -> Void
-    /// Copy from the fetch coordinator; nil while idle.
-    let trailerFetchStatus: String?
-    let isFetchingTrailers: Bool
-    /// Called once a terminal fetch message has been on screen long enough.
-    let onTrailerStatusShown: () -> Void
     let onPlay: (_ startFromBeginning: Bool) -> Void
     let onSelectVersion: (Int?) -> Void
     let onSelectEdition: (String) -> Void
@@ -53,9 +45,17 @@ struct TVMovieDetailView: View {
     /// item keeps the action reachable without adding a focus stop to the
     /// hero, whose synopsis is deliberately not focusable.
     var onTranslateDescription: (() -> Void)? = nil
+    /// The viewer's rating, 1...10, nil when unrated.
+    var userRating: Int? = nil
+    /// False on the card's provisional copy of the page: the star button is
+    /// shown but takes no input yet.
+    var canRate = false
+    /// Nil removes the rating. Nil hides the star button.
+    var onSetRating: ((Int?) -> Void)? = nil
 
     @Namespace private var detailFocusNamespace
-    @FocusState private var playFocused: Bool
+    @FocusState private var focusedAction: TVDetailAction?
+    @State private var preferredAction: TVDetailAction = .play
     /// True while focus sits anywhere in the hero's primary action row —
     /// drives the scroll back to the page-entry (hero at top) framing.
     @FocusState private var actionRowFocused: Bool
@@ -64,6 +64,9 @@ struct TVMovieDetailView: View {
     /// vertical reveal.
     @FocusState private var boxSetRailFocused: Bool
     @FocusState private var similarRailFocused: Bool
+    /// True while the star button edits; the page below the action row is
+    /// disabled meanwhile so remote presses have nowhere else to go.
+    @State private var isRatingEditing = false
     private let heroScrollId = "detail-hero"
     private let boxSetSectionScrollId = "detail-box-set-section"
     private let similarSectionScrollId = "detail-similar-section"
@@ -88,6 +91,7 @@ struct TVMovieDetailView: View {
                             synopsisStatus: synopsisStatus,
                             factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
                             ratings: detail.displayRatings,
+                            personalRating: TVHeroPersonalRating(score: userRating, isSeries: false),
                             starringText: TVHeroMetadata.starringText(from: detail, locale: locale),
                             playbackSummary: TVPlaybackSelectionSummary.make(
                                 currentVersion: currentVersion,
@@ -126,11 +130,12 @@ struct TVMovieDetailView: View {
                         }
                         .padding(.horizontal, TVDetailLayout.horizontalInset)
                         .padding(.bottom, TVDetailLayout.pageBottomPadding)
+                        .disabled(isRatingEditing)
                     }
                 }
                 .ignoresSafeArea()
                 .focusScope(detailFocusNamespace)
-                .defaultFocus($playFocused, true, priority: .userInitiated)
+                .defaultFocus($focusedAction, preferredAction, priority: .userInitiated)
                 .detailFocusScroll(
                     proxy: scrollProxy,
                     actionRowFocused: actionRowFocused,
@@ -151,20 +156,8 @@ struct TVMovieDetailView: View {
 
     // MARK: - Hero actions
 
-    @ViewBuilder
     private var actionColumn: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            actionRow
-            if let trailerFetchStatus {
-                // Non-focusable readout, so it adds no stop to the action
-                // column's focus traversal.
-                TVTrailerStatusPill(
-                    message: trailerFetchStatus,
-                    isFetching: isFetchingTrailers,
-                    onAutoDismiss: onTrailerStatusShown
-                )
-            }
-        }
+        actionRow
     }
 
     private var actionRow: some View {
@@ -178,10 +171,13 @@ struct TVMovieDetailView: View {
             focusResetKey: detail.contentId,
             initialFocusScope: .page,
             focusNamespace: detailFocusNamespace,
-            playFocused: $playFocused,
+            focusedAction: $focusedAction,
+            preferredAction: $preferredAction,
             rowFocused: $actionRowFocused,
             stabilizesFocusMotion: true,
             primaryButtonWidth: 340,
+            rating: ratingInput,
+            isRatingEditing: $isRatingEditing,
             playbackSelectors: { focusedAction in
                 TVPlaybackActionSelectors(
                     versions: availableVersions,
@@ -208,10 +204,21 @@ struct TVMovieDetailView: View {
         )
     }
 
+    private var ratingInput: TVDetailRating? {
+        guard SiloMediaType.isMovieLibrary(detail.type), let onSetRating else { return nil }
+        return TVDetailRating(
+            score: userRating,
+            isSeries: false,
+            isWatched: isWatched,
+            isAvailable: canRate,
+            onChange: onSetRating
+        )
+    }
+
     // MARK: - More menu
 
     private enum MoreAction: String {
-        case watchParty, favorite, watched, trailers, translate, notInterested
+        case watchParty, favorite, watched, translate, notInterested
     }
 
     @Environment(AppRouter.self) private var partyRouter
@@ -225,14 +232,6 @@ struct TVMovieDetailView: View {
             items: {
                 var items: [TVActionPopoverItem] = [
                     TVActionPopoverItem(
-                        id: MoreAction.favorite.rawValue,
-                        title: AppLanguage.string(
-                            isFavorite ? .detailMoreRemoveFavorite : .detailMoreAddFavorite,
-                            locale: locale
-                        ),
-                        systemImage: isFavorite ? "heart.fill" : "heart"
-                    ),
-                    TVActionPopoverItem(
                         id: MoreAction.watched.rawValue,
                         title: AppLanguage.string(
                             isWatched ? .detailMoreMarkUnwatched : .detailMoreMarkWatched,
@@ -240,20 +239,32 @@ struct TVMovieDetailView: View {
                         ),
                         systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
                     ),
+                    TVActionPopoverItem(
+                        id: MoreAction.favorite.rawValue,
+                        title: AppLanguage.string(
+                            isFavorite ? .detailMoreRemoveFavorite : .detailMoreAddFavorite,
+                            locale: locale
+                        ),
+                        systemImage: isFavorite ? "heart.fill" : "heart"
+                    ),
                 ]
-                if supportsTrailerFetch {
+                if WatchPartyEntry.isAvailable {
                     items.append(TVActionPopoverItem(
-                        id: MoreAction.trailers.rawValue,
-                        title: AppLanguage.string(.detailMoreFindTrailers, locale: locale),
-                        systemImage: "film.stack"
+                        id: MoreAction.watchParty.rawValue,
+                        title: WatchPartyEntry.actionTitle,
+                        systemImage: "person.3",
+                        startsSection: true
                     ))
                 }
+                var startedUtilitySection = false
                 if onTranslateDescription != nil {
                     items.append(TVActionPopoverItem(
                         id: MoreAction.translate.rawValue,
                         title: AppLanguage.string(.detailMoreTranslate, locale: locale),
-                        systemImage: MachineTranslation.symbol
+                        systemImage: MachineTranslation.symbol,
+                        startsSection: !startedUtilitySection
                     ))
+                    startedUtilitySection = true
                 }
                 if let isNotInterested, onToggleNotInterested != nil {
                     items.append(TVActionPopoverItem(
@@ -262,12 +273,9 @@ struct TVMovieDetailView: View {
                             isNotInterested ? .cardMenuShowInRecommendations : .cardMenuNotInterested,
                             locale: locale
                         ),
-                        systemImage: isNotInterested ? "hand.thumbsup" : "hand.thumbsdown"
+                        systemImage: isNotInterested ? "hand.thumbsup" : "hand.thumbsdown",
+                        startsSection: !startedUtilitySection
                     ))
-                }
-                if WatchPartyEntry.isAvailable {
-                    items.append(TVActionPopoverItem(id: MoreAction.watchParty.rawValue,
-                        title: WatchPartyEntry.actionTitle, systemImage: "person.3"))
                 }
                 return items
             },
@@ -281,8 +289,6 @@ struct TVMovieDetailView: View {
                     onToggleFavorite()
                 case .watched:
                     onToggleWatched()
-                case .trailers:
-                    onFindTrailers()
                 case .translate:
                     onTranslateDescription?()
                 case .notInterested:

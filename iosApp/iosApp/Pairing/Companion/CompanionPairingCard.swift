@@ -116,9 +116,9 @@ struct CompanionPairingCard: View {
             case let .pickAccounts(_, sections):
                 accountPicker(sections, listScrolls: !scrollsWhole)
                     .onAppear { preselect() }
-            case let .confirmMatch(_, serverName, serverHost, accountName, code, matchWords, step):
+            case let .confirmMatch(_, serverName, serverHost, accountName, code, _, step):
                 confirm(serverName: serverName, serverHost: serverHost, accountName: accountName,
-                        code: code, matchWords: matchWords, step: step)
+                        code: code, step: step)
             case let .working(progress):
                 progressStep(title: server == nil ? LocalizedStringResource.companionSetupProgressTitle : .companionSigninProgressTitle, subtitle: progress)
             case let .finished(signedIn, failed):
@@ -332,7 +332,7 @@ struct CompanionPairingCard: View {
     /// and Android: the code, which server and account, what approving
     /// grants, and the warning.
     private func confirm(serverName: String, serverHost: String, accountName: String?,
-                         code: String, matchWords: String?, step: String?) -> some View {
+                         code: String, step: String?) -> some View {
         VStack(spacing: 0) {
             if let step {
                 Text(step)
@@ -349,18 +349,6 @@ struct CompanionPairingCard: View {
                 .minimumScaleFactor(0.6)
                 .padding(.top, 8)
                 .accessibilityLabel(Text(DeviceUserCode.spokenCharacters(code)).speechSpellsOutCharacters())
-            // Rollout fallback: TVs released before user codes show only the
-            // match words. Remove together with Android's
-            // CompanionPairingBottomOverlay line, the web /activate card's
-            // "Older TV apps show ..." line and the Apple TV pairing panel's
-            // "Older phones show ..." line.
-            if let olderTVLine = Self.olderTVLine(matchWords: matchWords) {
-                Text(olderTVLine)
-                    .font(.siloCaption)
-                    .foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 4)
-            }
             Text(TVApprovalCard.signInLine(serverName: serverName, serverHost: serverHost, accountName: accountName))
                 .font(.siloBody)
                 .multilineTextAlignment(.center)
@@ -383,13 +371,6 @@ struct CompanionPairingCard: View {
             tertiaryButton(.companionConfirmDoesntMatch) { Task { await coordinator?.declineMatch() } }
                 .padding(.top, 4)
         }
-    }
-
-    /// The line under the code naming what TVs released before user codes
-    /// show instead; the same wording as Android and the web `/activate` card.
-    static func olderTVLine(matchWords: String?) -> String? {
-        guard let words = matchWords?.trimmingCharacters(in: .whitespacesAndNewlines), !words.isEmpty else { return nil }
-        return AppLanguage.string(.companionConfirmOlderTv(words.uppercased()))
     }
 
     private func finished(signedIn: [String], failed: [CompanionPairingCoordinator.FailedServer]) -> some View {

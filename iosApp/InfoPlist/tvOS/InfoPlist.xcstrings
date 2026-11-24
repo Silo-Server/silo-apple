@@ -11,6 +11,18 @@
             "value" : "يستخدم Silo شبكتك المحلية للعثور على خوادم Silo، ولإعداد Silo على Apple TV والتحكم فيه."
           }
         },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo използва локалната ви мрежа, за да намира сървъри на Silo и да настройва и управлява Silo на вашия Apple TV."
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo utilitza la xarxa local per trobar servidors de Silo i per configurar i controlar Silo a l’Apple TV."
+          }
+        },
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
@@ -29,6 +41,12 @@
             "value" : "Silo verwendet dein lokales Netzwerk, um Silo-Server zu finden und um Silo auf deinem Apple TV einzurichten und zu steuern."
           }
         },
+        "el" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Το Silo χρησιμοποιεί το τοπικό σας δίκτυο για να βρίσκει διακομιστές Silo και για να ρυθμίζει και να ελέγχει το Silo στο Apple TV σας."
+          }
+        },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
@@ -39,6 +57,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo usa tu red local para encontrar servidores de Silo y para configurar y controlar Silo en tu Apple TV."
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo kasutab teie kohtvõrku, et leida Silo servereid ning seadistada ja juhtida Silot teie Apple TV-s."
           }
         },
         "fi" : {
@@ -53,10 +77,34 @@
             "value" : "Silo utilise votre réseau local pour trouver des serveurs Silo, et pour configurer et contrôler Silo sur votre Apple TV."
           }
         },
+        "he" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "הרשת המקומית שלך משמשת את Silo כדי למצוא שרתי Silo, וכדי להגדיר את Silo ב-Apple TV ולשלוט בו."
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo सर्वर ढूँढने के लिए और आपके Apple TV पर Silo को सेट अप और कंट्रोल करने के लिए Silo आपके लोकल नेटवर्क का इस्तेमाल करता है।"
+          }
+        },
         "hr" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo upotrebljava vašu lokalnu mrežu za pronalaženje poslužitelja Silo te za postavljanje i upravljanje aplikacijom Silo na vašem Apple TV-u."
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A Silo a helyi hálózatot használja a Silo szerverek megkereséséhez, valamint az Apple TV-n futó Silo beállításához és vezérléséhez."
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo menggunakan jaringan lokal Anda untuk menemukan server Silo, serta untuk menyiapkan dan mengontrol Silo di Apple TV Anda."
           }
         },
         "it" : {
@@ -75,6 +123,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo는 로컬 네트워크를 사용해 Silo 서버를 찾고, Apple TV에서 Silo를 설정하고 제어해요."
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "„Silo“ naudoja jūsų vietinį tinklą, kad rastų „Silo“ serverius, taip pat kad nustatytų ir valdytų „Silo“ jūsų „Apple TV“ įrenginyje."
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo izmanto jūsu lokālo tīklu, lai atrastu Silo serverus, kā arī lai iestatītu un vadītu Silo jūsu Apple TV ierīcē."
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo menggunakan rangkaian setempat anda untuk mencari pelayan Silo, serta untuk menyediakan dan mengawal Silo pada Apple TV anda."
           }
         },
         "nb" : {
@@ -101,16 +167,46 @@
             "value" : "O Silo usa sua rede local para encontrar servidores Silo e para configurar e controlar o Silo na sua Apple TV."
           }
         },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Silo usa a sua rede local para encontrar servidores Silo e para configurar e controlar o Silo na sua Apple TV."
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo folosește rețeaua locală pentru a găsi servere Silo și pentru a configura și controla Silo pe Apple TV."
+          }
+        },
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo использует локальную сеть, чтобы находить серверы Silo, а также настраивать Silo на вашем Apple TV и управлять им."
           }
         },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo používa vašu lokálnu sieť na vyhľadávanie serverov Silo a na nastavenie a ovládanie aplikácie Silo na vašom Apple TV."
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo uporablja vaše lokalno omrežje za iskanje strežnikov Silo ter za nastavitev in upravljanje aplikacije Silo v napravi Apple TV."
+          }
+        },
         "sv" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo använder ditt lokala nätverk för att hitta Silo-servrar och för att konfigurera och styra Silo på din Apple TV."
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo ใช้เครือข่ายภายในเพื่อค้นหาเซิร์ฟเวอร์ Silo และเพื่อตั้งค่าและควบคุม Silo บน Apple TV"
           }
         },
         "tr" : {
@@ -123,6 +219,12 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo використовує вашу локальну мережу, щоб знаходити сервери Silo, а також налаштовувати Silo на Apple TV і керувати ним."
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo dùng mạng cục bộ của bạn để tìm máy chủ Silo, cũng như để thiết lập và điều khiển Silo trên Apple TV."
           }
         },
         "zh-Hans" : {

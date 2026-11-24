@@ -93,7 +93,7 @@ struct LiveTVApprovalAPI: TVApprovalAPI {
 struct TVApprovalRequest: Equatable, Sendable {
     /// The code grouped for display (`4821 7730`).
     let code: String
-    let deviceName: String
+    let deviceName: String?
     /// "Apple TV", "Android TV", or nil when the platform is unknown.
     let platformLabel: String?
     let serverName: String
@@ -320,7 +320,7 @@ final class TVApprovalModel {
     private func request(from lookup: DeviceLookupResponse, account: String?) -> TVApprovalRequest {
         TVApprovalRequest(
             code: DeviceUserCode.display(ServerIdentity.usable(lookup.userCode) ?? code),
-            deviceName: ServerIdentity.usable(lookup.deviceName) ?? "TV",
+            deviceName: ServerIdentity.usable(lookup.deviceName),
             platformLabel: Self.platformLabel(lookup.devicePlatform),
             serverName: ServerIdentity.usable(lookup.serverName) ?? serverName,
             serverHost: TVSignInPresentation.host(of: server.url),

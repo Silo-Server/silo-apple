@@ -56,19 +56,19 @@ final class DetailEditionSelectionTests: XCTestCase {
         XCTAssertEqual(shown(lastFileId: 18, lastEditionKey: " Director_Cut ", quality: "auto"), 32)
     }
 
-    /// With nothing played, each cut's Auto file competes: a file that fits
-    /// beats one above the cap beats an unknown one, then the higher rank,
-    /// then HDR, then the standard cut before a theatrical one before the
-    /// rest. File size never decides between cuts.
+    /// With nothing played, the name picks the cut first: the standard cut,
+    /// then a theatrical one, then the rest. Within that name, each cut's
+    /// Auto file competes: a file that fits beats one above the cap beats an
+    /// unknown one, then the higher rank, then HDR. File size never decides
+    /// between cuts.
     func testWithNothingPlayedThePageComparesEachCutsAutoFile() {
-        XCTAssertEqual(shown(quality: "auto"), 32)
-        XCTAssertEqual(shown(quality: "1080p"), 18, "a 1080p tie goes to Theatrical over the Director's Cut")
+        XCTAssertEqual(shown(quality: "auto"), 18, "Theatrical over a 2160p Director's Cut")
 
         let cuts = decode("""
         [
           { "file_id": 1, "edition_key": "theatrical", "edition_raw": "Theatrical", "resolution": "1080p", "file_size": 90 },
           { "file_id": 2, "resolution": "1080p", "file_size": 10 },
-          { "file_id": 3, "edition_key": "extended", "edition_raw": "Extended", "resolution": "1080p", "hdr": true },
+          { "file_id": 3, "edition_key": "extended", "edition_raw": "Extended", "resolution": "2160p", "hdr": true },
           { "file_id": 4, "edition_key": "imax", "edition_raw": "IMAX", "resolution": "" }
         ]
         """)
@@ -82,7 +82,7 @@ final class DetailEditionSelectionTests: XCTestCase {
             )?.fileId
         }
         XCTAssertEqual(opening([1, 2]), 2, "the unnamed cut over Theatrical, though its file is smaller")
-        XCTAssertEqual(opening([1, 2, 3]), 3, "HDR before edition preference")
+        XCTAssertEqual(opening([2, 3]), 2, "the 1080p SDR standard cut over a 2160p HDR Extended one")
         XCTAssertEqual(opening([3, 4], quality: "720p"), 3, "above the cap before unknown")
 
         // The last tie goes to the server's edition order: playback_variants,

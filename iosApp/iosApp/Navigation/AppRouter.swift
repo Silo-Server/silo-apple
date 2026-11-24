@@ -1134,7 +1134,7 @@ final class AppRouter {
         accountSignIn = nil
         sessionReturnPoint = nil
         recordScreenBreadcrumb(target: "login", action: "reset")
-        path = NavigationPath()
+        clearStack(before: .needsLogin)
         setAuthState(.needsLogin, reason: "resetToLogin")
     }
 
@@ -1155,7 +1155,7 @@ final class AppRouter {
         }
         loginNotice = nil
         recordScreenBreadcrumb(target: "profileSelection", action: "reset")
-        path = NavigationPath()
+        clearStack(before: .needsProfile)
         choosesAccountFirst = choosingAccountFirst
         setAuthState(.needsProfile, reason: "showProfileSelection")
     }
@@ -1165,7 +1165,7 @@ final class AppRouter {
     func showPasswordChange() {
         loginNotice = nil
         recordScreenBreadcrumb(target: "passwordChange", action: "reset")
-        path = NavigationPath()
+        clearStack(before: .needsPasswordChange)
         setAuthState(.needsPasswordChange, reason: "showPasswordChange")
         passwordChangeAccount = signedInAccount()
     }
@@ -1280,7 +1280,7 @@ final class AppRouter {
         AccountDirectory.shared.reload()
         let returnPoint = sessionReturnPoint
         sessionReturnPoint = nil
-        path = NavigationPath()
+        clearStack(before: .authenticated)
         setAuthState(.authenticated, reason: "resetToHome")
         guard let returnPoint, returnPoint.restores(for: authenticatedOwner) else { return }
         recordScreenBreadcrumb(target: "previous", action: "restoreAfterSessionExpired")
@@ -1299,7 +1299,7 @@ final class AppRouter {
         accountSignIn = nil
         sessionReturnPoint = nil
         recordScreenBreadcrumb(target: "serverSetup", action: "reset")
-        path = NavigationPath()
+        clearStack(before: .needsServerSetup)
         skipsSingleProfilePicker = false
         setAuthState(.needsServerSetup, reason: "resetToServerSetup")
     }
@@ -1313,7 +1313,7 @@ final class AppRouter {
         PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
         presentedPlayer = nil
         dismissItemDetail()
-        path = NavigationPath()
+        clearStack(before: state)
         setAuthState(state, reason: "serverResolution")
     }
 
@@ -1505,6 +1505,21 @@ final class AppRouter {
             ]
         )
         #endif
+    }
+
+    /// Empties the navigation stack ahead of a move to `state`. When the
+    /// state changes, the whole stack crossfades out, so popping it with
+    /// animation shows nothing, and on Apple TV a pop still running in a stack
+    /// that is being removed leaves the next screen refusing programmatic
+    /// focus: Add server from Change Account opened server setup with nothing
+    /// focused. Within the same state the pop animates as usual.
+    private func clearStack(before state: AuthState) {
+        guard !path.isEmpty else { return }
+        if state == authState {
+            path = NavigationPath()
+        } else {
+            withoutStackCrossfade { path = NavigationPath() }
+        }
     }
 
     /// Records why the next `authState` assignment happens.

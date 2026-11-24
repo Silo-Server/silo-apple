@@ -60,11 +60,10 @@ struct TVPlaybackActionSelectors: View {
     }
 
     private var isEditionDisabled: Bool { currentVersion == nil || !showsEditions }
-    /// Version opens only when the current edition has a choice, as on iPhone.
-    private var isVersionDisabled: Bool {
-        currentVersion == nil
-            || !DetailPlaybackFormatting.shouldEnableVersionSelector(versions: versions, currentVersion: currentVersion)
-    }
+    /// Enabled whenever at least one version exists (matching Audio), so users
+    /// can open the popover to inspect a single version's details instead of
+    /// having focus skip over the button.
+    private var isVersionDisabled: Bool { currentVersion == nil || scopedVersions.isEmpty }
     private var isAudioDisabled: Bool { currentVersion == nil || audioOptions.isEmpty }
     private var isSubtitleDisabled: Bool { currentVersion == nil }
 
@@ -161,7 +160,7 @@ struct TVPlaybackActionSelectors: View {
                         id: "track-\(option.ordinal)",
                         title: option.title,
                         detail: option.detail,
-                        isSelected: option.isSelected
+                        isSelected: selectedAudioTrackIndex != nil && option.isSelected
                     )
                 }
             },

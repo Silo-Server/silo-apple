@@ -106,6 +106,19 @@ struct PlayerMarkerTimeline: Equatable, Sendable {
         return time >= finalCredits.start
     }
 
+    /// Where the end credits start in a file of `duration` seconds: the last
+    /// credits occurrence that starts in the file's tail window and before
+    /// its end, or nil. Reaching it finishes the item, as the server judges
+    /// a streamed stop (`CreditsLimits.EndCreditsStart`), so credits placed
+    /// earlier in the file never finish it early. The tail window is the last
+    /// 450 s or 40% of an episode, and the last 900 s or 25% of anything else.
+    func endCreditsStart(duration: Double, isEpisode: Bool) -> Double? {
+        guard duration.isFinite, duration > 0 else { return nil }
+        let tail = isEpisode ? min(450, duration * 0.4) : min(900, duration * 0.25)
+        let windowStart = duration - tail
+        return ranges(.credits).map(\.start).filter { $0 >= windowStart && $0 < duration }.max()
+    }
+
     /// A `markers_updated` event's view of the file. Its `marker_segments`
     /// is a full snapshot. Without one, each singular field it names replaces
     /// every occurrence of that kind, and the kinds it omits keep theirs.
