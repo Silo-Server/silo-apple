@@ -1074,6 +1074,57 @@ private enum PlayerNextUpFocusTarget: Hashable {
     case stopShuffling
 }
 
+#if os(tvOS)
+/// Sets Keep Watching and Exit Playback side by side when both fit the
+/// proposed width at their ideal sizes, and stacks them, leading-aligned,
+/// when they do not. `ViewThatFits` would build a separate copy of each
+/// button per arrangement; here both arrangements place the same two
+/// buttons, so a change of arrangement (Keep Watching leaving when the
+/// episode ends) never replaces the focused button.
+private struct TVNextUpSecondaryActionsLayout: Layout {
+    var rowSpacing: CGFloat = 20
+    var columnSpacing: CGFloat = 18
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = idealSizes(of: subviews)
+        if fitsSideBySide(sizes, in: proposal) {
+            return CGSize(width: rowWidth(of: sizes), height: sizes.map(\.height).max() ?? 0)
+        }
+        let gaps = columnSpacing * CGFloat(max(sizes.count - 1, 0))
+        return CGSize(width: sizes.map(\.width).max() ?? 0, height: sizes.map(\.height).reduce(0, +) + gaps)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = idealSizes(of: subviews)
+        let sideBySide = fitsSideBySide(sizes, in: proposal)
+        var x = bounds.minX
+        var y = bounds.minY
+        for (subview, size) in zip(subviews, sizes) {
+            if sideBySide {
+                subview.place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(size))
+                x += size.width + rowSpacing
+            } else {
+                subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(size))
+                y += size.height + columnSpacing
+            }
+        }
+    }
+
+    private func idealSizes(of subviews: Subviews) -> [CGSize] {
+        subviews.map { $0.sizeThatFits(.unspecified) }
+    }
+
+    private func rowWidth(of sizes: [CGSize]) -> CGFloat {
+        sizes.map(\.width).reduce(0, +) + rowSpacing * CGFloat(max(sizes.count - 1, 0))
+    }
+
+    private func fitsSideBySide(_ sizes: [CGSize], in proposal: ProposedViewSize) -> Bool {
+        guard let width = proposal.width else { return true }
+        return rowWidth(of: sizes) <= width
+    }
+}
+#endif
+
 struct PlayerNextUpScreen: View {
     let viewModel: PlayerViewModel
     let onClose: () -> Void
@@ -1445,24 +1496,22 @@ struct PlayerNextUpScreen: View {
                 // loses tvOS focus, and repeat presses are ignored.
                 .disabled(!viewModel.canPickAnotherShufflePick)
                 .focused($focusedTarget, equals: .pickAnother)
+                // Side by side, Exit Playback can sit past Pick Another's
+                // trailing edge; a full-width section still takes its Up.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .focusSection()
             }
 
             // Keep Watching and Exit Playback share a row when both fit the
             // panel; longer translations stack them instead of running past
             // the screen edge.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 20) {
-                    tvKeepWatchingButton(hasNextEpisode: hasNextEpisode)
-                    tvExitButton(hasNextEpisode: hasNextEpisode)
-                }
-                .onMoveCommand(perform: focusBelowActions(on:))
-
-                VStack(alignment: .leading, spacing: 18) {
-                    tvKeepWatchingButton(hasNextEpisode: hasNextEpisode)
-                    // Only the last button hands Down to the row below.
-                    tvExitButton(hasNextEpisode: hasNextEpisode)
-                        .onMoveCommand(perform: focusBelowActions(on:))
-                }
+            TVNextUpSecondaryActionsLayout {
+                tvKeepWatchingButton(hasNextEpisode: hasNextEpisode)
+                // Exit Playback ends the row in either arrangement, so it
+                // hands Down to the row below. Side by side, Down from Keep
+                // Watching reaches the auto-play toggle natively.
+                tvExitButton(hasNextEpisode: hasNextEpisode)
+                    .onMoveCommand(perform: focusBelowActions(on:))
             }
         }
         #else
