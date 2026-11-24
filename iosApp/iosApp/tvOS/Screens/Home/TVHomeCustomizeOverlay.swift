@@ -1041,6 +1041,22 @@ struct TVAddRowModal: View {
                     .buttonStyle(.borderedProminent)
             }
 
+            if let error = editor.saveError {
+                HStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                    Text(verbatim: error)
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.9))
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.white.opacity(0.08))
+                )
+            }
+
             // Source selector pills (native focus section)
             HStack(spacing: 16) {
                 ForEach(SourceTab.allCases) { tab in

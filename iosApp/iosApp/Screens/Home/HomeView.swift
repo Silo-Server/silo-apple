@@ -430,35 +430,25 @@ struct HomeView: View {
             onSetWatched: setWatched,
             onMoveToTop: {
                 Task {
-                    let loaded = await homeEditor.load()
-                    guard loaded, homeEditor.phase == .loaded else {
-                        if let message = homeEditor.saveError {
-                            viewModel.presentActionError(message: message)
-                        }
-                        return
+                    let ok = await homeEditor.performQuickAction { editor in
+                        editor.moveToTop(id: section.id)
                     }
-                    await homeEditor.moveToTop(id: section.id).value
-                    if let message = homeEditor.saveError {
-                        viewModel.presentActionError(message: message)
-                    } else {
+                    if ok {
                         await viewModel.loadSections()
+                    } else if let message = homeEditor.saveError {
+                        viewModel.presentActionError(message: message)
                     }
                 }
             },
             onHideRow: {
                 Task {
-                    let loaded = await homeEditor.load()
-                    guard loaded, homeEditor.phase == .loaded else {
-                        if let message = homeEditor.saveError {
-                            viewModel.presentActionError(message: message)
-                        }
-                        return
+                    let ok = await homeEditor.performQuickAction { editor in
+                        editor.setHidden(true, id: section.id)
                     }
-                    await homeEditor.setHidden(true, id: section.id).value
-                    if let message = homeEditor.saveError {
-                        viewModel.presentActionError(message: message)
-                    } else {
+                    if ok {
                         await viewModel.loadSections()
+                    } else if let message = homeEditor.saveError {
+                        viewModel.presentActionError(message: message)
                     }
                 }
             },

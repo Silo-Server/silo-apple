@@ -108,6 +108,13 @@ enum StartupContentPrefetcher {
         homeSections.reset()
     }
 
+    /// Cancels a single library's in-flight sections request so callers
+    /// refreshing after a library layout edit start a fresh fetch instead of
+    /// joining a pre-save flight.
+    static func invalidateLibrarySectionsInFlight(libraryId: Int) {
+        librarySections[libraryId]?.reset()
+    }
+
     /// A personal-state change (watched, favorite, watchlist) alters these
     /// lists: requests already in flight carry the old rows, so callers that
     /// join after the change must start a fresh one.

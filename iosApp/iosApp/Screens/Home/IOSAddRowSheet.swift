@@ -464,7 +464,7 @@ private struct IOSConfigureRecipeRowView: View {
                         title: effectiveTitle,
                         config: builtConfig,
                         itemLimit: itemLimit,
-                        featured: isHeroBanner
+                        featured: editor.scope == .home ? isHeroBanner : false
                     )
                     onFinished()
                 }
@@ -843,12 +843,16 @@ private struct IOSConfigureRecipeRowView: View {
                 }
             }
 
-            Toggle(.homeAddRowHeroBanner, isOn: $isHeroBanner)
-                .tint(Color.siloSwitchOn)
+            if editor.scope == .home {
+                Toggle(.homeAddRowHeroBanner, isOn: $isHeroBanner)
+                    .tint(Color.siloSwitchOn)
+            }
         } header: {
             Text(.homeAddRowSectionDisplay)
         } footer: {
-            Text(.homeAddRowHeroBannerRecipeFooter(pageLabel))
+            if editor.scope == .home {
+                Text(.homeAddRowHeroBannerRecipeFooter(pageLabel))
+            }
         }
     }
 }
@@ -1150,12 +1154,16 @@ private struct IOSConfigureCollectionRowView: View {
                     }
                 }
 
-                Toggle(.homeAddRowHeroBanner, isOn: $isHeroBanner)
-                    .tint(Color.siloSwitchOn)
+                if editor.scope == .home {
+                    Toggle(.homeAddRowHeroBanner, isOn: $isHeroBanner)
+                        .tint(Color.siloSwitchOn)
+                }
             } header: {
                 Text(.homeAddRowSectionDisplay)
             } footer: {
-                Text(.homeAddRowHeroBannerCollectionFooter(pageLabel))
+                if editor.scope == .home {
+                    Text(.homeAddRowHeroBannerCollectionFooter(pageLabel))
+                }
             }
         }
         #if os(macOS)
@@ -1175,7 +1183,7 @@ private struct IOSConfigureCollectionRowView: View {
                         title: effectiveTitle,
                         isUserCollection: collection.isUserCollection,
                         itemLimit: itemLimit,
-                        featured: isHeroBanner
+                        featured: editor.scope == .home ? isHeroBanner : false
                     )
                     onFinished()
                 }

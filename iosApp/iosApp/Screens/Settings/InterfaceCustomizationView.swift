@@ -18,7 +18,7 @@ struct InterfaceCustomizationView: View {
                     #if os(iOS)
                     SettingsOverviewRow(
                         title: .homeCustomizeHomeScreen,
-                        subtitle: .verbatim("Reorder, hide, and add rows on Home and library pages."),
+                        subtitle: .homeCustomizeSettingsDescription,
                         systemImage: "slider.horizontal.3"
                     )
                     #else

@@ -64,6 +64,7 @@ final class HomeSectionsEditorModel {
     @ObservationIgnored private var saved: [APIv2SectionOverride] = []
     @ObservationIgnored private var confirmedRows: [APIv2ProfileSectionSetting] = []
     @ObservationIgnored private var saveChain: Task<Void, Never>?
+    @ObservationIgnored private var quickActionChain: Task<Void, Never>?
     @ObservationIgnored private var editGeneration = 0
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var pickerLoadGeneration = 0
@@ -592,6 +593,23 @@ final class HomeSectionsEditorModel {
         return apply(next)
     }
 
+    /// Serializes a Home feed quick action's fresh layout read, mutation, and save
+    /// so two rapid context-menu actions never supersede each other's read.
+    func performQuickAction(
+        _ mutation: @escaping @MainActor (HomeSectionsEditorModel) -> Task<Void, Never>
+    ) async -> Bool {
+        let previous = quickActionChain
+        let task = Task<Bool, Never> { @MainActor in
+            await previous?.value
+            let loaded = await self.load()
+            guard loaded, self.phase == .loaded else { return false }
+            await mutation(self).value
+            return self.saveError == nil
+        }
+        quickActionChain = Task { _ = await task.value }
+        return await task.value
+    }
+
     func resetToServerDefault() async {
         guard let auth, !isResetting, !isRefreshing, phase == .loaded else { return }
         let startIdentity = requestIdentity()
@@ -620,21 +638,31 @@ final class HomeSectionsEditorModel {
                 self.phase = .loading
                 self.saveError = nil
                 Self.refreshScope(self.scope)
-                await self.reloadAfterReset(expectedIdentity: startIdentity)
+                await self.reloadAfterReset(expectedIdentity: startIdentity, preservingError: nil)
             } catch {
                 guard self.requestIdentity() == startIdentity else { return }
                 let message = ErrorState(error).message
+                // DELETE may have reached the server even when the client receives
+                // an error. Clear the pre-reset baseline and reconcile from the
+                // server (keeping edits blocked if the reload also fails) so a
+                // subsequent edit can never re-upload stale pre-reset overrides.
+                self.editGeneration += 1
+                self.saved = []
+                self.confirmedRows = []
+                self.committedRows = []
+                self.dragDraftVisibleOrder = nil
+                self.hasLoadedFromServer = false
+                self.phase = .loading
                 self.saveError = message
-                if self.phase == .loading {
-                    self.phase = .failed(message)
-                }
+                Self.refreshScope(self.scope)
+                await self.reloadAfterReset(expectedIdentity: startIdentity, preservingError: message)
             }
         }
         saveChain = task
         await task.value
     }
 
-    private func reloadAfterReset(expectedIdentity: HTTPRequestIdentity?) async {
+    private func reloadAfterReset(expectedIdentity: HTTPRequestIdentity?, preservingError: String?) async {
         loadGeneration += 1
         let myLoadGen = loadGeneration
         isRefreshing = true
@@ -652,7 +680,7 @@ final class HomeSectionsEditorModel {
                     if attempt < 2 {
                         continue
                     }
-                    let message = ErrorState(URLError(.cannotLoadFromNetwork)).message
+                    let message = preservingError ?? ErrorState(URLError(.cannotLoadFromNetwork)).message
                     phase = .failed(message)
                     saveError = message
                     return
@@ -663,7 +691,7 @@ final class HomeSectionsEditorModel {
                 dragDraftVisibleOrder = nil
                 confirmedRows = layout.rows
                 hasLoadedFromServer = true
-                saveError = nil
+                saveError = preservingError
                 phase = .loaded
                 return
             } catch {
@@ -671,7 +699,7 @@ final class HomeSectionsEditorModel {
                       !Task.isCancelled,
                       loadGeneration == myLoadGen,
                       requestIdentity() == expectedIdentity else { return }
-                let message = ErrorState(error).message
+                let message = preservingError ?? ErrorState(error).message
                 phase = .failed(message)
                 saveError = message
                 return
@@ -736,6 +764,7 @@ final class HomeSectionsEditorModel {
         StartupContentPrefetcher.invalidateHomeSectionsInFlight()
         ResponseCache.shared.remove(CacheKey.homeSections)
         if case .library(let libraryId) = scope {
+            StartupContentPrefetcher.invalidateLibrarySectionsInFlight(libraryId: libraryId)
             ResponseCache.shared.remove(CacheKey.librarySections(libraryId))
         }
         NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
@@ -959,6 +988,15 @@ final class HomePreferencesModel {
             supportedKeys = resolvedKeys
             isAuthorized = !resolvedKeys.isEmpty
             errorMessage = preservingError
+            let needsReconciliation = resolvedKeys.contains { key in
+                let scope = KeyScope(identity: identity, key: key)
+                return reconcilingKeys.contains(scope) && pendingWrites[scope, default: 0] == 0
+            }
+            if needsReconciliation {
+                Task { @MainActor [weak self] in
+                    await self?.load(preservingError: preservingError)
+                }
+            }
         } catch {
             guard !(error is CancellationError), !Task.isCancelled, loadSequence == sequence, requestIdentity() == identity else { return }
             isAuthorized = false
@@ -1020,14 +1058,24 @@ final class HomePreferencesModel {
         keyWriteTail[scope] = Task { @MainActor [weak self] in
             await previous?.value
             guard let self else { return }
+            var dispatched = false
             defer {
                 self.pendingWrites[scope] = max(0, self.pendingWrites[scope, default: 0] - 1)
-                self.settledWrites[scope, default: 0] += 1
+                if dispatched {
+                    self.settledWrites[scope, default: 0] += 1
+                }
             }
-            // Skip obsolete writes superseded while waiting, or writes whose
-            // authorization / key support was revoked by a newer refresh.
-            guard self.keyGeneration[scope] == generation,
-                  self.isAuthorizedForWrite(key, identity: identity) else { return }
+            // Skip obsolete writes superseded while waiting.
+            guard self.keyGeneration[scope] == generation else { return }
+            // If authorization was revoked while this latest intent was queued,
+            // do not bump `settledWrites` (nothing reached the server) and keep
+            // the key locked in `reconcilingKeys` until a recovery load installs
+            // the authoritative server value.
+            guard self.isAuthorizedForWrite(key, identity: identity) else {
+                self.reconcilingKeys.insert(scope)
+                return
+            }
+            dispatched = true
             self.activeWriteCount += 1
             self.isSaving = true
             defer {
