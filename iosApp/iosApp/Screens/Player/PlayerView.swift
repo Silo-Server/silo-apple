@@ -1420,68 +1420,48 @@ struct PlayerNextUpScreen: View {
                     .prefersDefaultFocus(true, in: defaultFocusNamespace)
                 }
 
-                if hasNextEpisode && viewModel.shuffleState != nil {
-                    Button(action: { viewModel.pickAnotherShufflePick() }) {
-                        HStack(spacing: 16) {
-                            Image(systemName: "shuffle")
-                                .font(.system(size: 26, weight: .semibold))
-                            Text(.upNextPickAnother)
-                                .font(.system(size: 26, weight: .semibold))
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
-                        .frame(width: 250)
-                    }
-                    .buttonStyle(TVPillButtonStyle(kind: .secondary))
-                    // Not disabled while a pick is replaced: a disabled button
-                    // loses tvOS focus, and repeat presses are ignored.
-                    .disabled(!viewModel.canPickAnotherShufflePick)
-                    .focused($focusedTarget, equals: .pickAnother)
-                }
-
                 if let seconds = viewModel.nextUpCountdownSeconds {
                     CountdownRing(seconds: seconds, totalSeconds: viewModel.nextUpCountdownTotalSeconds)
                 }
             }
 
-            HStack(spacing: 20) {
-                if viewModel.nextUpOffersKeepWatching {
-                    Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
-                        HStack(spacing: 16) {
-                            Image(systemName: "rectangle.inset.filled")
-                                .font(.system(size: 25, weight: .semibold))
-                            Text(.upNextKeepWatching)
-                                .font(.system(size: 26, weight: .semibold))
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
-                        .frame(width: 250)
-                    }
-                    .buttonStyle(TVPillButtonStyle(kind: .secondary))
-                    .disabled(viewModel.isStartingNextUp)
-                    .focused($focusedTarget, equals: .keepWatching)
-                    .prefersDefaultFocus(!hasNextEpisode, in: defaultFocusNamespace)
-                }
-
-                Button(action: onClose) {
+            // Pick Another has a row of its own: beside the longer Play Next
+            // Up translations it ran off the screen. Down from Play Next Up
+            // reaches it natively, and Down again reaches the row below.
+            if hasNextEpisode && viewModel.shuffleState != nil {
+                Button(action: { viewModel.pickAnotherShufflePick() }) {
                     HStack(spacing: 16) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 24, weight: .semibold))
-                        Text(.upNextClose)
+                        Image(systemName: "shuffle")
+                            .font(.system(size: 26, weight: .semibold))
+                        Text(.upNextPickAnother)
                             .font(.system(size: 26, weight: .semibold))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                     }
-                    // Grows for longer translations ("Schließen").
-                    .frame(minWidth: 120)
+                    .frame(minWidth: 250)
                 }
                 .buttonStyle(TVPillButtonStyle(kind: .secondary))
-                .focused($focusedTarget, equals: .close)
-                .prefersDefaultFocus(!hasNextEpisode && !viewModel.nextUpOffersKeepWatching, in: defaultFocusNamespace)
+                // Not disabled while a pick is replaced: a disabled button
+                // loses tvOS focus, and repeat presses are ignored.
+                .disabled(!viewModel.canPickAnotherShufflePick)
+                .focused($focusedTarget, equals: .pickAnother)
             }
-            .onMoveCommand { direction in
-                if direction == .down {
-                    focusBelowActions()
+
+            // Keep Watching and Exit Playback share a row when both fit the
+            // panel; longer translations stack them instead of running past
+            // the screen edge.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 20) {
+                    tvKeepWatchingButton(hasNextEpisode: hasNextEpisode)
+                    tvExitButton(hasNextEpisode: hasNextEpisode)
+                }
+                .onMoveCommand(perform: focusBelowActions(on:))
+
+                VStack(alignment: .leading, spacing: 18) {
+                    tvKeepWatchingButton(hasNextEpisode: hasNextEpisode)
+                    // Only the last button hands Down to the row below.
+                    tvExitButton(hasNextEpisode: hasNextEpisode)
+                        .onMoveCommand(perform: focusBelowActions(on:))
                 }
             }
         }
@@ -1539,6 +1519,47 @@ struct PlayerNextUpScreen: View {
         .frame(maxWidth: compact ? 560 : 380)
         #endif
     }
+
+    #if os(tvOS)
+    @ViewBuilder
+    private func tvKeepWatchingButton(hasNextEpisode: Bool) -> some View {
+        if viewModel.nextUpOffersKeepWatching {
+            Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
+                HStack(spacing: 16) {
+                    Image(systemName: "rectangle.inset.filled")
+                        .font(.system(size: 25, weight: .semibold))
+                    Text(.upNextKeepWatching)
+                        .font(.system(size: 26, weight: .semibold))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .frame(minWidth: 250)
+            }
+            .buttonStyle(TVPillButtonStyle(kind: .secondary))
+            .disabled(viewModel.isStartingNextUp)
+            .focused($focusedTarget, equals: .keepWatching)
+            .prefersDefaultFocus(!hasNextEpisode, in: defaultFocusNamespace)
+        }
+    }
+
+    private func tvExitButton(hasNextEpisode: Bool) -> some View {
+        Button(action: onClose) {
+            HStack(spacing: 16) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 24, weight: .semibold))
+                Text(.upNextClose)
+                    .font(.system(size: 26, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            // Grows for longer translations ("Schließen").
+            .frame(minWidth: 120)
+        }
+        .buttonStyle(TVPillButtonStyle(kind: .secondary))
+        .focused($focusedTarget, equals: .close)
+        .prefersDefaultFocus(!hasNextEpisode && !viewModel.nextUpOffersKeepWatching, in: defaultFocusNamespace)
+    }
+    #endif
 
     #if !os(tvOS)
     /// Keep Watching and Exit Playback share a line, or stack when a
@@ -1676,6 +1697,14 @@ struct PlayerNextUpScreen: View {
         guard viewModel.nextUpEpisode != nil else { return }
         focusedTarget = .autoPlay
     }
+
+    #if os(tvOS)
+    private func focusBelowActions(on direction: MoveCommandDirection) {
+        if direction == .down {
+            focusBelowActions()
+        }
+    }
+    #endif
 
     private func focusAboveOnDeck() {
         if viewModel.nextUpEpisode != nil {
