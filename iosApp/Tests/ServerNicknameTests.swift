@@ -269,6 +269,29 @@ final class ServerNicknameTests: XCTestCase {
         XCTAssertEqual(cloud.records.map(\.name), ["Lounge"])
     }
 
+    /// Two devices rename one server at once after a name stamped by a clock
+    /// running ahead, so both renames carry the same time. Once iCloud keeps
+    /// one of them, the other device takes it instead of keeping its own.
+    func testDevicesRenamingWithTheSameTimeAgreeOnTheNameICloudKeeps() throws {
+        let ahead = ServerNickname(
+            serverId: Self.id(Self.publicURL), verifiedServerId: nil, name: "Home", updatedAt: Date().addingTimeInterval(3600)
+        )
+        let phoneCloud = CloudStorage()
+        let tvCloud = CloudStorage()
+        phoneCloud.records = [ahead]
+        tvCloud.records = [ahead]
+        let phone = try Device(saved: [Self.entry(Self.publicURL, name: "Silo")], cloud: phoneCloud)
+        let tv = try Device(saved: [Self.entry(Self.publicURL, name: "Silo")], cloud: tvCloud)
+        phone.registry.rename(serverId: Self.id(Self.publicURL), to: "Lounge")
+        tv.registry.rename(serverId: Self.id(Self.publicURL), to: "Den")
+        XCTAssertEqual(phoneCloud.records.map(\.updatedAt), tvCloud.records.map(\.updatedAt))
+
+        tvCloud.records = phoneCloud.records
+        tv.cloudChanged()
+
+        XCTAssertEqual(tv.registry.entry(with: Self.id(Self.publicURL))?.displayName, "Lounge")
+    }
+
     /// An address that took another address's name later reports a different
     /// deployment: the copied name belonged to the old server and goes.
     func testACopiedNameGoesWhenTheAddressReportsAnotherDeployment() throws {

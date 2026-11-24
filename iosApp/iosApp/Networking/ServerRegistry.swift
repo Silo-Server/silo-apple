@@ -489,7 +489,11 @@ final class ServerRegistry {
     private func moveNickname(from dropped: ServerEntry, to survivor: ServerEntry) {
         guard let record = nicknameRecords.first(where: { $0.serverId == dropped.id }) else { return }
         var records = nicknameRecords.filter { $0.serverId != dropped.id }
-        if record.name != nil, !records.contains(where: { $0.serverId == survivor.id }) {
+        // The survivor's own name stays; a copy gives way to a newer name.
+        let existing = records.first { $0.serverId == survivor.id }
+        if record.name != nil,
+           existing.map({ $0.inheritedFrom != nil && record.updatedAt > $0.updatedAt }) ?? true {
+            records.removeAll { $0.serverId == survivor.id }
             var moved = record
             moved.serverId = survivor.id
             moved.verifiedServerId = ServerIdentity.usable(survivor.verifiedServerId) ?? record.verifiedServerId
@@ -550,7 +554,9 @@ final class ServerRegistry {
             let mine = local.first { $0.serverId == entry.id }
             var adopted: ServerNickname?
             if let theirs = ServerNicknameSync.addressRecord(for: entry, in: synced) {
-                if mine.map({ $0.inheritedFrom != nil || theirs.updatedAt > $0.updatedAt }) ?? true {
+                // On a tie the synced record wins, so two devices that stamped
+                // different names with the same time still agree.
+                if mine.map({ $0.inheritedFrom != nil || theirs.updatedAt >= $0.updatedAt }) ?? true {
                     adopted = ServerNickname(
                         serverId: entry.id,
                         verifiedServerId: entry.verifiedServerId,
@@ -1130,8 +1136,9 @@ final class ServerRegistry {
         // the server is neither half-removed nor silently signed out.
         func rollBackRemoval(reason: String) async {
             entries = previousEntries
-            // The snapshot's nicknames may predate a sync during the await.
-            applyNicknames()
+            // A sync during the await skipped the removed entry, so read
+            // the synced names again rather than reapply the snapshot's.
+            reconcileNicknames()
             activeServerId = previousActiveServerID
             // The rollback is itself a durable write. When it fails after the
             // registry removal was already persisted, the in-memory entry is
