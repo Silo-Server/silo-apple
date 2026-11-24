@@ -547,6 +547,37 @@ final class ProfilePrefsEditor {
                     } catch is ProfileSettingsWriter.HeldChange {
                         failures.removeValue(forKey: identity)
                         heldSubtitleEditorValues[identity] = write.editorValue
+                    } catch let refusal as ProfileSettingsWriter.UncertainRefusal {
+                        // An earlier retryable attempt may have applied before
+                        // the server refused a later retry. Read the server's
+                        // authoritative value instead of rolling back blindly or
+                        // offering "Try Again" for a refused value; keep the hold
+                        // only if the server cannot be reached to confirm.
+                        if boundProfileId == write.profileId,
+                           let (prefs, byKey) = try? await writer.load(),
+                           boundProfileId == write.profileId {
+                            let authoritative: String = {
+                                if write.key == ProfileSettingKeys.subtitleLanguage {
+                                    return prefs.subtitleLanguage ?? PlaybackPrefSentinel.none
+                                } else if write.key == ProfileSettingKeys.subtitleMode {
+                                    return prefs.subtitleMode
+                                } else {
+                                    return prefs.showForcedSubtitles ? "on" : "off"
+                                }
+                            }()
+                            recordServerValue(for: write.key, value: authoritative)
+                            if let row = byKey[write.key] {
+                                resolvedSources[write.key] = row.source
+                            }
+                            if pendingSubtitleEditorValues[identity] == nil,
+                               currentEditorValue(for: write.key) == write.editorValue {
+                                setEditorValue(authoritative, for: write.key)
+                            }
+                            failures[identity] = refusal.cause
+                        } else {
+                            failures.removeValue(forKey: identity)
+                            heldSubtitleEditorValues[identity] = write.editorValue
+                        }
                     } catch {
                         if Self.isServerUpgradeRequired(error) {
                             serverUpgradeRequired = true
@@ -813,6 +844,28 @@ final class ProfilePrefsEditor {
                 saveState = .held
             } else if pendingMetadataWrite == nil {
                 saveState = nil
+            }
+        } catch let refusal as ProfileSettingsWriter.UncertainRefusal {
+            if boundProfileId == write.profileId,
+               let (prefs, byKey) = try? await writer.load(),
+               boundProfileId == write.profileId {
+                let authoritative = prefs.metadataLanguage ?? PlaybackPrefSentinel.none
+                recordServerValue(for: ProfileSettingKeys.metadataLanguage, value: authoritative)
+                if let row = byKey[ProfileSettingKeys.metadataLanguage] {
+                    resolvedSources[ProfileSettingKeys.metadataLanguage] = row.source
+                }
+                if pendingMetadataWrite == nil,
+                   Self.outboundLanguage(preferredMetadataLanguage) == write.language {
+                    preferredMetadataLanguage = authoritative
+                }
+                saveState = Self.saveState(for: refusal.cause)
+            } else {
+                heldMetadataWrite = write
+                if boundProfileId == write.profileId {
+                    saveState = .held
+                } else if pendingMetadataWrite == nil {
+                    saveState = nil
+                }
             }
         } catch {
             if Self.isServerUpgradeRequired(error) {

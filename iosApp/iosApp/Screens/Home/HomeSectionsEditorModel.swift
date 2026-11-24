@@ -32,13 +32,21 @@ final class HomeSectionsEditorModel {
 
     let scope: ProfileSectionsScope
 
+    private struct DragCrossing: Equatable {
+        let neighborId: String
+        let movedUp: Bool
+    }
+
     private struct DragPlacement: Equatable {
         let movedId: String
+        /// Reduced net adjacent crossings in the current drag; reversing a swap
+        /// pops the matching crossing, and an empty stack clears the draft.
+        let crossings: [DragCrossing]
         let anchorAfterId: String?
         let anchorBeforeId: String?
-        /// True when the row was dragged downward past `anchorBeforeId`, so
-        /// replay prefers placing it after `anchorBeforeId` rather than before
-        /// `anchorAfterId`.
+        /// True when the net drag direction is downward past `anchorBeforeId`,
+        /// so replay prefers placing it after `anchorBeforeId` rather than
+        /// before `anchorAfterId`.
         let preferBeforeAnchor: Bool
         let fallbackIndex: Int
     }
@@ -601,16 +609,35 @@ final class HomeSectionsEditorModel {
         var visible = visibleRows
         guard let index = visible.firstIndex(where: { $0.id == id }),
               visible.indices.contains(index + offset) else { return false }
+        let crossedId = visible[index + offset].id
+        let movedUp = offset < 0
         visible.swapAt(index, index + offset)
         let newIndex = index + offset
-        let anchorAfterId = newIndex + 1 < visible.count ? visible[newIndex + 1].id : nil
-        let anchorBeforeId = newIndex > 0 ? visible[newIndex - 1].id : nil
+
+        var crossings = activeDragPlacement?.movedId == id ? (activeDragPlacement?.crossings ?? []) : []
+        if let last = crossings.last, last.neighborId == crossedId && last.movedUp != movedUp {
+            crossings.removeLast()
+        } else {
+            crossings.append(DragCrossing(neighborId: crossedId, movedUp: movedUp))
+        }
+
         dragGeneration += 1
+        guard let lastCrossing = crossings.last else {
+            activeDragPlacement = nil
+            return true
+        }
+        let anchorAfterId = lastCrossing.movedUp
+            ? lastCrossing.neighborId
+            : (newIndex + 1 < visible.count ? visible[newIndex + 1].id : nil)
+        let anchorBeforeId = lastCrossing.movedUp
+            ? (newIndex > 0 ? visible[newIndex - 1].id : nil)
+            : lastCrossing.neighborId
         activeDragPlacement = DragPlacement(
             movedId: id,
+            crossings: crossings,
             anchorAfterId: anchorAfterId,
             anchorBeforeId: anchorBeforeId,
-            preferBeforeAnchor: offset > 0,
+            preferBeforeAnchor: !lastCrossing.movedUp,
             fallbackIndex: newIndex
         )
         return true
@@ -1163,19 +1190,55 @@ final class HomeSectionsEditorModel {
         NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil, userInfo: userInfo)
     }
 
+    private static var collectionMembershipBatchDepth = 0
+    private static var deferredCollectionMembershipRefresh: [String: Bool] = [:]
+
+    /// Defers feed and collection-detail refresh notifications while a
+    /// card-owned collection editor sheet is presented so removing a title from
+    /// the currently displayed row does not unmount the card and dismiss the
+    /// sheet before the user finishes. Caches are still invalidated immediately.
+    static func beginCollectionMembershipBatch() {
+        collectionMembershipBatchDepth += 1
+    }
+
+    static func endCollectionMembershipBatch() {
+        collectionMembershipBatchDepth = max(0, collectionMembershipBatchDepth - 1)
+        guard collectionMembershipBatchDepth == 0, !deferredCollectionMembershipRefresh.isEmpty else { return }
+        let pending = deferredCollectionMembershipRefresh
+        deferredCollectionMembershipRefresh.removeAll()
+        for (collectionId, postCollectionItemsChange) in pending {
+            NotificationCenter.default.post(
+                name: .homeSectionsShouldRefresh,
+                object: nil,
+                userInfo: [RefreshNotificationKey.collectionId: collectionId]
+            )
+            if postCollectionItemsChange {
+                NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
+            }
+        }
+    }
+
     /// Invalidates Home and all Library section reads/caches when collection
     /// membership changes and notifies mounted feeds (which coalesce or defer
-    /// reloads when off-screen).
-    static func refreshCollectionMembership(collectionId: String) {
+    /// reloads when off-screen, or until an active collection sheet closes).
+    static func refreshCollectionMembership(collectionId: String, postCollectionItemsChange: Bool = false) {
         StartupContentPrefetcher.invalidateHomeSectionsInFlight()
         StartupContentPrefetcher.invalidateAllLibrarySectionsInFlight()
         ResponseCache.shared.remove(CacheKey.homeSections)
         ResponseCache.shared.removeAll(withPrefix: "library:")
+        if collectionMembershipBatchDepth > 0 {
+            let existing = deferredCollectionMembershipRefresh[collectionId] ?? false
+            deferredCollectionMembershipRefresh[collectionId] = existing || postCollectionItemsChange
+            return
+        }
         NotificationCenter.default.post(
             name: .homeSectionsShouldRefresh,
             object: nil,
             userInfo: [RefreshNotificationKey.collectionId: collectionId]
         )
+        if postCollectionItemsChange {
+            NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
+        }
     }
 }
 
@@ -1261,6 +1324,7 @@ final class HomePreferencesModel {
     @ObservationIgnored private var deferredWrites: [KeyScope: DeferredWrite] = [:]
     @ObservationIgnored private var keyWriteTail: [KeyScope: Task<Void, Never>] = [:]
     @ObservationIgnored private var activeWriteCount = 0
+    @ObservationIgnored private var activeLoadCount = 0
     @ObservationIgnored private var writeWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var writeFailureCount = 0
     @ObservationIgnored private var acknowledgedFailureCount = 0
@@ -1306,6 +1370,11 @@ final class HomePreferencesModel {
     }
 
     private func load(preservingError: String?) async {
+        activeLoadCount += 1
+        defer {
+            activeLoadCount = max(0, activeLoadCount - 1)
+            resumeWriteWaitersIfIdle()
+        }
         loadSequence += 1
         let sequence = loadSequence
         guard let identity = requestIdentity() else {
@@ -1647,7 +1716,7 @@ final class HomePreferencesModel {
     /// sees `errorMessage`; a subsequent Done tap with no new failure closes cleanly.
     func waitForPendingWrites() async -> Bool {
         let failureCountAtTap = writeFailureCount
-        while queuedWriteCount > 0 || recoveryLoadCount > 0 {
+        while queuedWriteCount > 0 || recoveryLoadCount > 0 || activeLoadCount > 0 {
             await withCheckedContinuation { continuation in
                 writeWaiters.append(continuation)
             }
@@ -1660,7 +1729,10 @@ final class HomePreferencesModel {
     }
 
     private func resumeWriteWaitersIfIdle() {
-        guard queuedWriteCount == 0, recoveryLoadCount == 0, !writeWaiters.isEmpty else { return }
+        guard queuedWriteCount == 0,
+              recoveryLoadCount == 0,
+              activeLoadCount == 0,
+              !writeWaiters.isEmpty else { return }
         let waiters = writeWaiters
         writeWaiters.removeAll()
         for waiter in waiters {
@@ -1785,13 +1857,25 @@ final class HomePreferencesModel {
                 }
                 return
             } catch let held as ProfileSettingsWriter.HeldChange {
-                // Automatic retries were exhausted (or a later refusal followed
-                // an earlier retryable failure) and the server may already hold
-                // the new value; record uncertainty even if a newer write
+                // Automatic retries were exhausted and the server may already
+                // hold the new value; record uncertainty even if a newer write
                 // superseded this generation, and lock + reconcile if latest.
                 self.uncertainConfirmedKeys.insert(scope)
                 guard self.keyGeneration[scope] == generation else { return }
                 let message = ErrorState(held.cause).message
+                self.reconcilingKeys.insert(scope)
+                if self.requestIdentity() == identity {
+                    self.writeFailureCount += 1
+                    self.errorMessage = message
+                    shouldScheduleRecoveryLoad = true
+                }
+            } catch let refusal as ProfileSettingsWriter.UncertainRefusal {
+                // A later refusal followed an earlier retryable attempt that
+                // may have applied; record uncertainty and reconcile from the
+                // server rather than rolling back blindly.
+                self.uncertainConfirmedKeys.insert(scope)
+                guard self.keyGeneration[scope] == generation else { return }
+                let message = ErrorState(refusal.cause).message
                 self.reconcilingKeys.insert(scope)
                 if self.requestIdentity() == identity {
                     self.writeFailureCount += 1

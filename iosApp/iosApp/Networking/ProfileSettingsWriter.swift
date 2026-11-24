@@ -142,6 +142,14 @@ final class ProfileSettingsWriter: Sendable {
         let cause: SettingsAPIError
     }
 
+    /// An earlier retryable attempt in this write may have applied on the
+    /// server, and a later attempt returned a non-retry refusal. Callers must
+    /// reconcile from the server instead of rolling back blindly or offering
+    /// to resend the refused value.
+    struct UncertainRefusal: Error, Equatable {
+        let cause: SettingsAPIError
+    }
+
     /// A newer local value for the key replaced this one while it waited to
     /// be retried. That value's own write supersedes this one.
     struct Superseded: Error, Equatable {}
@@ -237,11 +245,12 @@ final class ProfileSettingsWriter: Sendable {
                     // An earlier attempt in this write failed in a retryable way
                     // (for example, a lost response), so it may already have
                     // applied on the server. Report uncertainty instead of a
-                    // clean refusal so callers reconcile rather than rolling back.
+                    // clean refusal so callers reconcile rather than rolling back
+                    // or blindly offering to resend a refused value.
                     // `serverUpgradeRequired` means the canonical settings route
                     // does not exist on this server, so preserve that terminal
-                    // classification instead of offering retries against it.
-                    throw HeldChange(cause: failure)
+                    // classification.
+                    throw UncertainRefusal(cause: failure)
                 }
                 throw failure
             }

@@ -295,6 +295,7 @@ struct IOSAddToCollectionSheet: View {
     @State private var nameEditGeneration = 0
     @State private var isFinishing = false
     @State private var hapticCount = 0
+    @State private var isHoldingRefreshBatch = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.locale) private var locale
 
@@ -481,6 +482,18 @@ struct IOSAddToCollectionSheet: View {
         }
         .task {
             await model.load()
+        }
+        .onAppear {
+            if !isHoldingRefreshBatch {
+                isHoldingRefreshBatch = true
+                HomeSectionsEditorModel.beginCollectionMembershipBatch()
+            }
+        }
+        .onDisappear {
+            if isHoldingRefreshBatch {
+                isHoldingRefreshBatch = false
+                HomeSectionsEditorModel.endCollectionMembershipBatch()
+            }
         }
         #if os(iOS)
         .sensoryFeedback(.selection, trigger: hapticCount)

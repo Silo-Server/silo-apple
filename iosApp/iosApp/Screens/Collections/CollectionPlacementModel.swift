@@ -642,9 +642,21 @@ final class AddToCollectionModel {
             let memberCollectionIds: Set<String>?
             let usesContainsField: Bool
             if capabilities?.supportsContainsItem == true {
-                response = try await api.collections(containsItem: contentId)
-                memberCollectionIds = nil
-                usesContainsField = true
+                do {
+                    response = try await api.collections(containsItem: contentId)
+                    memberCollectionIds = nil
+                    usesContainsField = true
+                } catch {
+                    guard Self.isRecoverableProbeError(error) else { throw error }
+                    guard !Task.isCancelled,
+                          loadGeneration == myLoadGen,
+                          pendingMutations == 0,
+                          mutationGeneration == startMutationGen,
+                          requestIdentity() == startIdentity else { return }
+                    response = try await api.collections()
+                    memberCollectionIds = nil
+                    usesContainsField = false
+                }
             } else {
                 usesContainsField = false
                 let supportsItemCollections: Bool
@@ -876,9 +888,12 @@ final class AddToCollectionModel {
                 ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
                 ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(collectionId))
                 ResponseCache.shared.remove(CacheKey.collections)
-                HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
-                if self.requestIdentity() == startIdentity {
-                    NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
+                let stillMatchesIdentity = self.requestIdentity() == startIdentity
+                HomeSectionsEditorModel.refreshCollectionMembership(
+                    collectionId: collectionId,
+                    postCollectionItemsChange: stillMatchesIdentity
+                )
+                if stillMatchesIdentity {
                     if wasIn == nil || previousItemCount == nil {
                         for _ in 0..<3 {
                             let refreshStartToken = ResponseCache.shared.writeToken
@@ -918,8 +933,10 @@ final class AddToCollectionModel {
                         ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
                         ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(collectionId))
                         ResponseCache.shared.remove(CacheKey.collections)
-                        HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
-                        NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
+                        HomeSectionsEditorModel.refreshCollectionMembership(
+                            collectionId: collectionId,
+                            postCollectionItemsChange: true
+                        )
                         self.unconfirmedCollectionIds.insert(collectionId)
                         self.needsReconciliation = true
                         self.pendingReconciliationError = message
@@ -1060,8 +1077,10 @@ final class AddToCollectionModel {
                 ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
                 ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(created.id))
                 ResponseCache.shared.remove(CacheKey.collections)
-                HomeSectionsEditorModel.refreshCollectionMembership(collectionId: created.id)
-                NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
+                HomeSectionsEditorModel.refreshCollectionMembership(
+                    collectionId: created.id,
+                    postCollectionItemsChange: true
+                )
                 result = .createdAndAdded
             } catch {
                 guard self.requestIdentity() == startIdentity else {
@@ -1077,8 +1096,10 @@ final class AddToCollectionModel {
                     ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
                     ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(created.id))
                     ResponseCache.shared.remove(CacheKey.collections)
-                    HomeSectionsEditorModel.refreshCollectionMembership(collectionId: created.id)
-                    NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
+                    HomeSectionsEditorModel.refreshCollectionMembership(
+                        collectionId: created.id,
+                        postCollectionItemsChange: true
+                    )
                     self.unconfirmedCollectionIds.insert(created.id)
                     self.needsReconciliation = true
                     self.pendingReconciliationError = message

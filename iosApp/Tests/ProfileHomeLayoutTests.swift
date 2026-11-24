@@ -858,12 +858,76 @@ final class ProfileHomeLayoutTests: XCTestCase {
         let putRequests = stub.requests.filter { $0.method == "PUT" && $0.path == "/api/v2/profile/sections" }
         XCTAssertEqual(putRequests.count, 2)
         struct OverridesBody: Decodable { let overrides: [APIv2SectionOverride] }
-        let secondBody = try XCTUnwrap(putRequests[1].body)
+        let secondRequest = try XCTUnwrap(putRequests.dropFirst().first)
+        let secondBody = try XCTUnwrap(secondRequest.body)
         let decoded = try JSONDecoder().decode(OverridesBody.self, from: secondBody)
         let positionsById = Dictionary(uniqueKeysWithValues: decoded.overrides.map { ($0.sectionId, $0.position) })
         XCTAssertEqual(positionsById["sec-b"], 0)
         XCTAssertEqual(positionsById["sec-a"], 1)
         XCTAssertEqual(positionsById["sec-c"], 2)
+    }
+
+    @MainActor
+    func testReversedDragClearsDraftAndDoesNotSaveOnDropAfterRejectedPriorReorder() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "drag-reverse-test")
+        await tokens.setServerUrl("https://drag-reverse.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "drag-reverse-test",
+            serverURL: "https://drag-reverse.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+
+        let settingsJSON = """
+        {"items":[
+          {"id":"sec-a","section_type":"recently_added","title":"A","default_title":"A","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":0},
+          {"id":"sec-b","section_type":"recently_added","title":"B","default_title":"B","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":1},
+          {"id":"sec-c","section_type":"recently_added","title":"C","default_title":"C","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":2}
+        ]}
+        """
+        stub.reply(path: "/api/v2/profile/sections/settings", 200, settingsJSON)
+        stub.reply(path: "/api/v2/profile/sections", 200, #"{"items":[]}"#)
+
+        let editor = HomeSectionsEditorModel(scope: .home, api: api, requestIdentity: { identity })
+        let loaded = await editor.load()
+        XCTAssertTrue(loaded)
+
+        // PUT #1 (move C to top) will be rejected.
+        stub.sequence(path: "/api/v2/profile/sections", [
+            .json(500, #"{"error":{"code":"internal","message":"failed"}}"#),
+        ])
+        stub.hold(path: "/api/v2/profile/sections")
+
+        let moveC = editor.moveToTop(id: "sec-c")
+        await stub.waitUntilHeld()
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-c", "sec-a", "sec-b"])
+
+        // Drag A up past C, then back down past C (returning to its starting slot).
+        XCTAssertTrue(editor.swapVisibleDuringDrag(id: "sec-a", by: -1))
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-a", "sec-c", "sec-b"])
+        XCTAssertTrue(editor.swapVisibleDuringDrag(id: "sec-a", by: 1))
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-c", "sec-a", "sec-b"])
+
+        // PUT #1 fails -> base restores [A, B, C]. Dropping A must NOT save [B, C, A].
+        stub.release()
+        await moveC.value
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-a", "sec-b", "sec-c"])
+
+        let dropTask = editor.commitDraggedOrder()
+        await dropTask.value
+        XCTAssertEqual(editor.rows.map(\.id), ["sec-a", "sec-b", "sec-c"])
+        let putRequests = stub.requests.filter { $0.method == "PUT" && $0.path == "/api/v2/profile/sections" }
+        XCTAssertEqual(putRequests.count, 1)
     }
 
     @MainActor
@@ -1267,6 +1331,23 @@ final class ProfileHomeLayoutTests: XCTestCase {
         let afterRemove = try XCTUnwrap(model.entries.first(where: { $0.id == "old-col" }))
         XCTAssertEqual(afterRemove.containsItem, false)
         XCTAssertNil(afterRemove.itemCount)
+
+        // 3) Combined contains_item read failing with 503 still falls back to unfiltered
+        //    /api/v2/collections so the list stays available with unknown membership.
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":false,"contains_item":true}"#)
+        stub.sequence(path: "/api/v2/collections", [
+            .json(503, #"{"error":{"code":"unavailable","message":"membership query failed"}}"#),
+            .json(200, """
+            {"items":[
+              {"id":"old-col","name":"Old","collection_type":"manual","item_count":2,"creator_profile_id":"profile-one"}
+            ],"groups":[]}
+            """),
+        ])
+        let fallbackModel = AddToCollectionModel(contentId: "movie-77", api: api, requestIdentity: { identity })
+        await fallbackModel.load()
+        XCTAssertTrue(fallbackModel.hasLoaded)
+        XCTAssertEqual(fallbackModel.entries.map(\.id), ["old-col"])
+        XCTAssertNil(fallbackModel.entries.first?.containsItem)
     }
 }
 
