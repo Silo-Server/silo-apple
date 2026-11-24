@@ -507,7 +507,7 @@ enum StartupContentPrefetcher {
     /// Share the in-flight fetch while retaining its owner for follow-up section paging.
     static func fetchLibrarySectionsRead(libraryId: Int) async throws -> APIv2LibrarySectionsRead {
         let profileGeneration = profileScopedGeneration
-        while true {
+        for attempt in 0..<3 {
             try Task.checkCancellation()
             let libraryGeneration = librarySectionsGeneration[libraryId, default: 0]
             do {
@@ -519,10 +519,15 @@ enum StartupContentPrefetcher {
             } catch where profileScopedGeneration == profileGeneration
                 && librarySectionsGeneration[libraryId, default: 0] != libraryGeneration {
                 // A layout save or derived-list invalidation superseded this
-                // library's in-flight read. Join the fresh generation so the
-                // caller receives post-edit rows instead of pre-edit rows.
+                // library's in-flight read. Retry up to the bound so repeated
+                // concurrent invalidations return a retryable error instead of
+                // spinning indefinitely or publishing stale rows.
+                if attempt == 2 {
+                    throw URLError(.cannotLoadFromNetwork)
+                }
             }
         }
+        throw URLError(.cannotLoadFromNetwork)
     }
 
     private static func fetchLibrarySectionsRead(

@@ -1006,6 +1006,7 @@ struct IOSHomeSectionsSettingsView: View {
         .home: HomeSectionsEditorModel(scope: .home),
     ]
     @State private var libraries: [Library] = []
+    @State private var librariesError: String?
     @State private var loadedSectionsByScope: [ProfileSectionsScope: [ResolvedSection]] = [:]
     @State private var librariesLoadGeneration = 0
     @State private var artworkLoadGeneration: [ProfileSectionsScope: Int] = [:]
@@ -1035,6 +1036,20 @@ struct IOSHomeSectionsSettingsView: View {
         VStack(spacing: 0) {
             if !libraries.isEmpty {
                 pageSwitcherBar
+            } else if let librariesError {
+                HStack(spacing: 10) {
+                    Label(librariesError, systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .lineLimit(2)
+                    Spacer(minLength: 8)
+                    Button(.commonRetry) {
+                        Task { await loadLibrariesAndCurrentArtwork() }
+                    }
+                    .font(.footnote.weight(.semibold))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
             }
 
             if let editor = activeEditor {
@@ -1124,13 +1139,24 @@ struct IOSHomeSectionsSettingsView: View {
         let myGen = librariesLoadGeneration
         let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
         let startToken = ResponseCache.shared.writeToken
+        librariesError = nil
         async let homeArtwork: Void = loadArtwork(for: .home)
-        if let response = try? await StartupContentPrefetcher.fetchUserLibraries(),
-           !Task.isCancelled,
-           librariesLoadGeneration == myGen,
-           SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
-           !ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startToken) {
-            libraries = response.libraries
+        do {
+            let response = try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: false)
+            if !Task.isCancelled,
+               librariesLoadGeneration == myGen,
+               SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
+               !ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startToken) {
+                libraries = response.libraries
+                librariesError = nil
+            }
+        } catch {
+            if !(error is CancellationError),
+               !Task.isCancelled,
+               librariesLoadGeneration == myGen,
+               SeekIntervalPreferences.activeRequestIdentity() == startIdentity {
+                librariesError = ErrorState(error).message
+            }
         }
         await homeArtwork
     }

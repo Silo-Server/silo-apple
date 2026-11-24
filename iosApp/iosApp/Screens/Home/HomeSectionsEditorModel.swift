@@ -229,7 +229,6 @@ final class HomeSectionsEditorModel {
         pickerLoadGeneration += 1
         let myGen = pickerLoadGeneration
         let startIdentity = currentIdentity
-        let startCacheToken = ResponseCache.shared.writeToken
         isLoadingPickerCatalog = true
         defer {
             if pickerLoadGeneration == myGen {
@@ -237,119 +236,145 @@ final class HomeSectionsEditorModel {
             }
         }
 
-        async let recipesResult: Result<APIv2RecipeCatalog, Error> = {
-            do { return .success(try await api.sectionRecipeCatalog()) }
-            catch { return .failure(error) }
-        }()
-        async let personalResult: Result<CollectionsResponse, Error> = {
-            do { return .success(try await api.collections()) }
-            catch { return .failure(error) }
-        }()
-        async let librariesResult: Result<LibrariesResponse, Error> = {
-            do { return .success(try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: !force)) }
-            catch { return .failure(error) }
-        }()
+        for attempt in 0..<3 {
+            let startCacheToken = ResponseCache.shared.writeToken
 
-        let (fetchedRecipes, fetchedPersonal, fetchedLibraries) = await (recipesResult, personalResult, librariesResult)
-        guard !Task.isCancelled, pickerLoadGeneration == myGen, requestIdentity() == startIdentity else { return }
+            async let recipesResult: Result<APIv2RecipeCatalog, Error> = {
+                do { return .success(try await api.sectionRecipeCatalog()) }
+                catch { return .failure(error) }
+            }()
+            async let personalResult: Result<CollectionsResponse, Error> = {
+                do { return .success(try await api.collections()) }
+                catch { return .failure(error) }
+            }()
+            async let librariesResult: Result<LibrariesResponse, Error> = {
+                do { return .success(try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: !force && attempt == 0)) }
+                catch { return .failure(error) }
+            }()
 
-        var allSucceeded = true
-
-        switch fetchedRecipes {
-        case .success(let catalog) where !catalog.categories.isEmpty:
-            recipeCatalog = catalog
-        case .success:
-            recipeCatalog = .curatedFallback
-        case .failure:
-            if !hasLoadedPickerCatalog {
-                recipeCatalog = .curatedFallback
-            }
-            allSucceeded = false
-        }
-
-        switch fetchedPersonal {
-        case .success(let response):
-            personalCollections = response.collections ?? []
-            personalCollectionsError = nil
-        case .failure(let error):
-            personalCollections = []
-            personalCollectionsError = ErrorState(error).message
-            allSucceeded = false
-        }
-
-        switch fetchedLibraries {
-        case .success(let response):
-            let libraries = response.libraries
-            availableLibraries = libraries
-            var collected: [ServerCollectionOption] = []
-            var libraryErrors = 0
-            var firstLibraryError: Error?
-            await withTaskGroup(of: Result<[ServerCollectionOption], Error>.self) { group in
-                for library in libraries {
-                    group.addTask { [api] in
-                        do {
-                            let response = try await api.libraryCollections(libraryId: library.id)
-                            // Preserve `isUserCollection` so household-shared personal
-                            // collections surfaced inside a library's `user_collections`
-                            // group remain addable and serialize as `user_collection_id`.
-                            let mapped = response.collections.map { col in
-                                ServerCollectionOption(
-                                    id: col.id,
-                                    title: col.name,
-                                    libraryId: library.id,
-                                    libraryName: library.name,
-                                    itemCount: col.itemCount ?? 0,
-                                    posterUrl: col.posterUrl,
-                                    posterThumbhash: col.posterThumbhash,
-                                    isUserCollection: col.kind == .userCollections
-                                )
-                            }
-                            return .success(mapped)
-                        } catch {
-                            return .failure(error)
-                        }
-                    }
-                }
-                for await batch in group {
-                    switch batch {
-                    case .success(let options):
-                        collected.append(contentsOf: options)
-                    case .failure(let error):
-                        libraryErrors += 1
-                        if firstLibraryError == nil {
-                            firstLibraryError = error
-                        }
-                    }
-                }
-            }
+            let (fetchedRecipes, fetchedPersonal, fetchedLibraries) = await (recipesResult, personalResult, librariesResult)
             guard !Task.isCancelled, pickerLoadGeneration == myGen, requestIdentity() == startIdentity else { return }
-            let ownPersonalIds = Set(personalCollections.map(\.id))
-            var seen = Set<String>()
-            serverCollections = collected
-                .filter { option in
-                    if option.isUserCollection && ownPersonalIds.contains(option.id) {
-                        return false
-                    }
-                    let dedupeKey = "\(option.isUserCollection ? "user" : "lib"):\(option.id)"
-                    return seen.insert(dedupeKey).inserted
-                }
-                .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-            if libraryErrors > 0 {
-                serverCollectionsError = ErrorState(firstLibraryError ?? URLError(.cannotLoadFromNetwork)).message
-                allSucceeded = false
-            } else {
-                serverCollectionsError = nil
-            }
-        case .failure(let error):
-            serverCollections = []
-            serverCollectionsError = ErrorState(error).message
-            allSucceeded = false
-        }
 
-        let invalidatedWhileLoading = ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken)
-        hasLoadedPickerCatalog = allSucceeded && !invalidatedWhileLoading
-        pickerCatalogIdentity = hasLoadedPickerCatalog ? startIdentity : nil
-        pickerCatalogCacheToken = startCacheToken
+            var allSucceeded = true
+            let nextRecipeCatalog: APIv2RecipeCatalog
+            switch fetchedRecipes {
+            case .success(let catalog) where !catalog.categories.isEmpty:
+                nextRecipeCatalog = catalog
+            case .success:
+                nextRecipeCatalog = .curatedFallback
+            case .failure:
+                nextRecipeCatalog = hasLoadedPickerCatalog ? recipeCatalog : .curatedFallback
+                allSucceeded = false
+            }
+
+            let nextPersonalCollections: [UserCollection]
+            let nextPersonalError: String?
+            switch fetchedPersonal {
+            case .success(let response):
+                nextPersonalCollections = response.collections ?? []
+                nextPersonalError = nil
+            case .failure(let error):
+                nextPersonalCollections = []
+                nextPersonalError = ErrorState(error).message
+                allSucceeded = false
+            }
+
+            let nextAvailableLibraries: [Library]
+            let nextServerCollections: [ServerCollectionOption]
+            let nextServerError: String?
+            switch fetchedLibraries {
+            case .success(let response):
+                let libraries = response.libraries
+                nextAvailableLibraries = libraries
+                var collected: [ServerCollectionOption] = []
+                var libraryErrors = 0
+                var firstLibraryError: Error?
+                await withTaskGroup(of: Result<[ServerCollectionOption], Error>.self) { group in
+                    for library in libraries {
+                        group.addTask { [api] in
+                            do {
+                                let response = try await api.libraryCollections(libraryId: library.id)
+                                // Preserve `isUserCollection` so household-shared personal
+                                // collections surfaced inside a library's `user_collections`
+                                // group remain addable and serialize as `user_collection_id`.
+                                let mapped = response.collections.map { col in
+                                    ServerCollectionOption(
+                                        id: col.id,
+                                        title: col.name,
+                                        libraryId: library.id,
+                                        libraryName: library.name,
+                                        itemCount: col.itemCount ?? 0,
+                                        posterUrl: col.posterUrl,
+                                        posterThumbhash: col.posterThumbhash,
+                                        isUserCollection: col.kind == .userCollections
+                                    )
+                                }
+                                return .success(mapped)
+                            } catch {
+                                return .failure(error)
+                            }
+                        }
+                    }
+                    for await batch in group {
+                        switch batch {
+                        case .success(let options):
+                            collected.append(contentsOf: options)
+                        case .failure(let error):
+                            libraryErrors += 1
+                            if firstLibraryError == nil {
+                                firstLibraryError = error
+                            }
+                        }
+                    }
+                }
+                guard !Task.isCancelled, pickerLoadGeneration == myGen, requestIdentity() == startIdentity else { return }
+                let ownPersonalIds = Set(nextPersonalCollections.map(\.id))
+                var seen = Set<String>()
+                nextServerCollections = collected
+                    .filter { option in
+                        if option.isUserCollection && ownPersonalIds.contains(option.id) {
+                            return false
+                        }
+                        let dedupeKey = "\(option.isUserCollection ? "user" : "lib"):\(option.id)"
+                        return seen.insert(dedupeKey).inserted
+                    }
+                    .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+                if libraryErrors > 0 {
+                    nextServerError = ErrorState(firstLibraryError ?? URLError(.cannotLoadFromNetwork)).message
+                    allSucceeded = false
+                } else {
+                    nextServerError = nil
+                }
+            case .failure(let error):
+                nextAvailableLibraries = []
+                nextServerCollections = []
+                nextServerError = ErrorState(error).message
+                allSucceeded = false
+            }
+
+            if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken) {
+                if attempt < 2 {
+                    continue
+                }
+                let retryMessage = ErrorState(URLError(.cannotLoadFromNetwork)).message
+                hasLoadedPickerCatalog = false
+                pickerCatalogIdentity = nil
+                personalCollectionsError = retryMessage
+                serverCollectionsError = retryMessage
+                return
+            }
+
+            recipeCatalog = nextRecipeCatalog
+            personalCollections = nextPersonalCollections
+            personalCollectionsError = nextPersonalError
+            availableLibraries = nextAvailableLibraries
+            serverCollections = nextServerCollections
+            serverCollectionsError = nextServerError
+            hasLoadedPickerCatalog = allSucceeded
+            pickerCatalogIdentity = allSucceeded ? startIdentity : nil
+            pickerCatalogCacheToken = startCacheToken
+            return
+        }
     }
 
     // MARK: - Queries
@@ -1061,9 +1086,6 @@ final class HomePreferencesModel {
     private struct DeferredWrite {
         let generation: Int
         let value: SettingJSONValue
-        let onApplyOptimistic: @MainActor () -> Void
-        let onConfirm: @MainActor () -> Void
-        let onRevertToConfirmed: @MainActor () -> Void
     }
 
     @ObservationIgnored private let transport: ProfileScopedSettingTransport
@@ -1271,14 +1293,11 @@ final class HomePreferencesModel {
             errorMessage = preservingError
 
             for (key, deferred) in deferredToDispatch {
-                deferred.onApplyOptimistic()
+                applyOptimistic(deferred.value, for: key)
                 enqueueWrite(
                     key: key,
                     value: deferred.value,
-                    identity: identity,
-                    onApplyOptimistic: deferred.onApplyOptimistic,
-                    onConfirm: deferred.onConfirm,
-                    onRevertToConfirmed: deferred.onRevertToConfirmed
+                    identity: identity
                 )
             }
 
@@ -1300,16 +1319,64 @@ final class HomePreferencesModel {
         }
     }
 
+    private func applyOptimistic(_ value: SettingJSONValue, for key: SettingKey) {
+        switch key {
+        case .uiNextUpMode:
+            if let mode = value.stringValue.flatMap(NextUpMode.init(rawValue:)) {
+                nextUpMode = mode
+            }
+        case .uiNextUpNewReleasesFirst:
+            if let enabled = value.boolValue {
+                newReleasesFirst = enabled
+            }
+        case .homeHideWatchedItems:
+            if let enabled = value.boolValue {
+                hideWatchedItems = enabled
+            }
+        default:
+            break
+        }
+    }
+
+    private func confirm(_ value: SettingJSONValue, for key: SettingKey) {
+        switch key {
+        case .uiNextUpMode:
+            if let mode = value.stringValue.flatMap(NextUpMode.init(rawValue:)) {
+                confirmedNextUpMode = mode
+            }
+        case .uiNextUpNewReleasesFirst:
+            if let enabled = value.boolValue {
+                confirmedNewReleasesFirst = enabled
+            }
+        case .homeHideWatchedItems:
+            if let enabled = value.boolValue {
+                confirmedHideWatchedItems = enabled
+            }
+        default:
+            break
+        }
+    }
+
+    private func revertToConfirmed(for key: SettingKey) {
+        switch key {
+        case .uiNextUpMode:
+            nextUpMode = confirmedNextUpMode
+        case .uiNextUpNewReleasesFirst:
+            newReleasesFirst = confirmedNewReleasesFirst
+        case .homeHideWatchedItems:
+            hideWatchedItems = confirmedHideWatchedItems
+        default:
+            break
+        }
+    }
+
     func setNextUpMode(_ mode: NextUpMode) {
         guard canEdit(.uiNextUpMode), mode != nextUpMode, let identity = loadedIdentity else { return }
         nextUpMode = mode
         enqueueWrite(
             key: .uiNextUpMode,
             value: .string(mode.rawValue),
-            identity: identity,
-            onApplyOptimistic: { self.nextUpMode = mode },
-            onConfirm: { self.confirmedNextUpMode = mode },
-            onRevertToConfirmed: { self.nextUpMode = self.confirmedNextUpMode }
+            identity: identity
         )
     }
 
@@ -1319,10 +1386,7 @@ final class HomePreferencesModel {
         enqueueWrite(
             key: .uiNextUpNewReleasesFirst,
             value: .bool(enabled),
-            identity: identity,
-            onApplyOptimistic: { self.newReleasesFirst = enabled },
-            onConfirm: { self.confirmedNewReleasesFirst = enabled },
-            onRevertToConfirmed: { self.newReleasesFirst = self.confirmedNewReleasesFirst }
+            identity: identity
         )
     }
 
@@ -1332,20 +1396,14 @@ final class HomePreferencesModel {
         enqueueWrite(
             key: .homeHideWatchedItems,
             value: .bool(enabled),
-            identity: identity,
-            onApplyOptimistic: { self.hideWatchedItems = enabled },
-            onConfirm: { self.confirmedHideWatchedItems = enabled },
-            onRevertToConfirmed: { self.hideWatchedItems = self.confirmedHideWatchedItems }
+            identity: identity
         )
     }
 
     private func enqueueWrite(
         key: SettingKey,
         value: SettingJSONValue,
-        identity: HTTPRequestIdentity,
-        onApplyOptimistic: @escaping @MainActor () -> Void,
-        onConfirm: @escaping @MainActor () -> Void,
-        onRevertToConfirmed: @escaping @MainActor () -> Void
+        identity: HTTPRequestIdentity
     ) {
         let scope = KeyScope(identity: identity, key: key)
         let generation = keyGeneration[scope, default: 0] + 1
@@ -1375,17 +1433,14 @@ final class HomePreferencesModel {
             guard self.keyGeneration[scope] == generation else { return }
             // If authorization is temporarily unavailable (including after a
             // profile switch or while this key is reconciling), retain the
-            // user's latest intent partitioned by `scope`, lock the key, and
-            // schedule a recovery load if `identity` is still active. Once
-            // `load()` confirms authorization for `identity`, it retries this
-            // owed write automatically.
+            // user's latest intent as pure data partitioned by `scope`, lock
+            // the key, and schedule a recovery load if `identity` is still
+            // active. Once `load()` confirms authorization for `identity`, it
+            // retries this owed write automatically.
             guard self.isAuthorizedForWrite(key, identity: identity) else {
                 self.deferredWrites[scope] = DeferredWrite(
                     generation: generation,
-                    value: value,
-                    onApplyOptimistic: onApplyOptimistic,
-                    onConfirm: onConfirm,
-                    onRevertToConfirmed: onRevertToConfirmed
+                    value: value
                 )
                 self.reconcilingKeys.insert(scope)
                 if self.requestIdentity() == identity {
@@ -1411,14 +1466,19 @@ final class HomePreferencesModel {
                             && self?.isAuthorizedForWrite(key, identity: identity) == true
                     }
                 )
+                if self.requestIdentity() == identity {
+                    HomeSectionsEditorModel.refreshScope(.home)
+                }
                 guard self.isAuthorizedForWrite(key, identity: identity) else {
                     self.reconcilingKeys.insert(scope)
+                    if self.requestIdentity() == identity {
+                        scheduleRecoveryLoad = true
+                    }
                     return
                 }
-                onConfirm()
+                self.confirm(value, for: key)
                 self.uncertainConfirmedKeys.remove(scope)
                 self.reconcilingKeys.remove(scope)
-                HomeSectionsEditorModel.refreshScope(.home)
             } catch is ProfileSettingsWriter.Superseded {
                 // A superseded attempt may still have landed on the server;
                 // mark the confirmed baseline uncertain until a newer write
@@ -1456,7 +1516,7 @@ final class HomePreferencesModel {
                         scheduleRecoveryLoad = true
                     }
                 } else {
-                    onRevertToConfirmed()
+                    self.revertToConfirmed(for: key)
                 }
             }
         }

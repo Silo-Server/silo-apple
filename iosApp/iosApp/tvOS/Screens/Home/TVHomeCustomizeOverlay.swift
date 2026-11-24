@@ -18,6 +18,7 @@ struct TVHomeCustomizeOverlay: View {
     let onDone: () -> Void
 
     enum FooterAction: Int, CaseIterable, Hashable {
+        case retry
         case addRow
         case hiddenRows
         case options
@@ -37,6 +38,7 @@ struct TVHomeCustomizeOverlay: View {
     @State private var rowOptionsRowId: String?
     @State private var isShowingOptions = false
     @State private var isShowingAddRow = false
+    @State private var isFinishingDone = false
     @State private var preferences = HomePreferencesModel()
     @State private var focusClaimTask: Task<Void, Never>?
 
@@ -62,6 +64,9 @@ struct TVHomeCustomizeOverlay: View {
     }
 
     private var activeFooterActions: [FooterAction] {
+        if case .failed = editor.phase {
+            return [.retry, .done]
+        }
         if editor.hiddenRows.isEmpty {
             return [.addRow, .options, .done]
         }
@@ -150,9 +155,15 @@ struct TVHomeCustomizeOverlay: View {
             reclaimCompositeFocus()
         }
         .onChange(of: editor.phase) { _, phase in
-            if phase == .loaded {
+            switch phase {
+            case .loaded:
                 seedInitialHighlightIfNeeded()
                 reclaimCompositeFocus()
+            case .failed:
+                highlighted = .footer(.retry)
+                reclaimCompositeFocus()
+            case .loading:
+                break
             }
         }
         .onChange(of: editor.rows) { _, _ in
@@ -394,6 +405,7 @@ struct TVHomeCustomizeOverlay: View {
 
     private func footerTitle(for action: FooterAction) -> String {
         switch action {
+        case .retry: return AppLanguage.string(.commonRetry, locale: locale)
         case .addRow: return "Add Row"
         case .hiddenRows:
             return isHiddenExpanded
@@ -406,6 +418,7 @@ struct TVHomeCustomizeOverlay: View {
 
     private func footerIcon(for action: FooterAction) -> String {
         switch action {
+        case .retry: return "arrow.clockwise"
         case .addRow: return "plus"
         case .hiddenRows: return isHiddenExpanded ? "eye.slash.fill" : "eye.slash"
         case .options: return "ellipsis.circle"
@@ -523,6 +536,9 @@ struct TVHomeCustomizeOverlay: View {
             }
         case .footer(let action):
             switch action {
+            case .retry:
+                guard !editor.isRefreshing else { return }
+                Task { await editor.load() }
             case .addRow:
                 guard editor.phase == .loaded, !editor.isResetting else { return }
                 isShowingAddRow = true
@@ -537,7 +553,18 @@ struct TVHomeCustomizeOverlay: View {
                 guard !editor.isResetting else { return }
                 isShowingOptions = true
             case .done:
-                guard !editor.isResetting else { return }
+                finishAndClose()
+            }
+        }
+    }
+
+    private func finishAndClose() {
+        guard !editor.isResetting, !isFinishingDone else { return }
+        isFinishingDone = true
+        Task {
+            let settled = await editor.waitForPendingSaves()
+            isFinishingDone = false
+            if settled {
                 editor.triggerFeedRefresh()
                 onDone()
             }
@@ -563,9 +590,7 @@ struct TVHomeCustomizeOverlay: View {
             }
             return
         }
-        guard !editor.isResetting else { return }
-        editor.triggerFeedRefresh()
-        onDone()
+        finishAndClose()
     }
 
     // MARK: - Row Options Popover

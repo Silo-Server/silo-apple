@@ -537,9 +537,11 @@ final class ProfileHomeLayoutTests: XCTestCase {
 
         // Hold Write 1 in flight, enqueue Write 2 behind it, then transiently fail a refresh
         // so Write 2 sees authorization unavailable when it wakes up.
-        writeTransport.holdNextWrite()
+        let writeHeldExpectation = expectation(description: "first preference write held in flight")
+        defer { writeTransport.releaseHeldWrite() }
+        writeTransport.holdNextWrite(onHeld: { writeHeldExpectation.fulfill() })
         model.setHideWatchedItems(true)
-        await writeTransport.waitUntilWriteHeld()
+        await fulfillment(of: [writeHeldExpectation], timeout: 2.0)
 
         model.setHideWatchedItems(false)
 
@@ -624,25 +626,20 @@ private final class FakeHomePreferencesTransport: ProfileScopedSettingTransport,
 private final class FakeHomePreferencesWriteTransport: ProfileSettingsTransport, @unchecked Sendable {
     private(set) var writtenValues: [SettingJSONValue] = []
     private var shouldHoldNext = false
-    private var heldArrived = false
     private var released = false
-    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var onHeldHandler: (() -> Void)?
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func holdNextWrite() {
+    func holdNextWrite(onHeld: @escaping () -> Void) {
         shouldHoldNext = true
-        heldArrived = false
         released = false
-    }
-
-    func waitUntilWriteHeld() async {
-        if heldArrived { return }
-        await withCheckedContinuation { heldWaiters.append($0) }
+        onHeldHandler = onHeld
     }
 
     func releaseHeldWrite() {
         shouldHoldNext = false
         released = true
+        onHeldHandler = nil
         let waiters = releaseWaiters
         releaseWaiters.removeAll()
         waiters.forEach { $0.resume() }
@@ -670,10 +667,9 @@ private final class FakeHomePreferencesWriteTransport: ProfileSettingsTransport,
         let hold = await MainActor.run { () -> Bool in
             if shouldHoldNext {
                 shouldHoldNext = false
-                heldArrived = true
-                let waiters = heldWaiters
-                heldWaiters.removeAll()
-                waiters.forEach { $0.resume() }
+                let handler = onHeldHandler
+                onHeldHandler = nil
+                handler?()
                 return true
             }
             return false
