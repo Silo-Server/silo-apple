@@ -1377,6 +1377,60 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertNil(cachedSeries)
         XCTAssertNotNil(cachedOther)
     }
+
+    @MainActor
+    func testCollectionPlacementSkipsPutWhenFreshLayoutAlreadyMatchesRequestedPinState() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "noop-pin-test")
+        await tokens.setServerUrl("https://noop-pin.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "noop-pin-test",
+            serverURL: "https://noop-pin.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+
+        let unpinnedSettings = #"{"items":[]}"#
+        let alreadyPinnedSettings = """
+        {"items":[
+          {"id":"custom-pin","section_type":"user_collection","title":"Mine","default_title":"Mine","featured":false,"item_limit":20,"hidden":false,"is_custom":true,"customized":true,"position":0,"config":{"user_collection_id":"col-1"}}
+        ]}
+        """
+        stub.sequence(path: "/api/v2/profile/sections/settings", [
+            .json(200, unpinnedSettings),
+            .json(200, alreadyPinnedSettings),
+        ])
+        stub.reply(path: "/api/v2/profile/sections", 200, #"{"items":[]}"#)
+        stub.reply(path: "/api/v2/libraries", 200, #"{"items":[]}"#)
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":false}"#)
+
+        let model = CollectionPlacementModel(
+            collectionId: "col-1",
+            title: "Mine",
+            isUserCollection: true,
+            api: api,
+            requestIdentity: { identity }
+        )
+        await model.load()
+        XCTAssertTrue(model.hasLoadedHome)
+        XCTAssertFalse(model.isPinnedOnHome)
+
+        // Another client pinned col-1 before the user tapped Pin: toggleHomePin must
+        // accept the already-matching fresh layout without sending a redundant PUT.
+        await model.toggleHomePin()
+        XCTAssertTrue(model.isPinnedOnHome)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(stub.requests.filter { $0.method == "PUT" }.isEmpty)
+    }
 }
 
 @MainActor

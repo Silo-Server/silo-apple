@@ -1190,8 +1190,13 @@ final class HomeSectionsEditorModel {
         NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil, userInfo: userInfo)
     }
 
+    private struct DeferredCollectionRefresh {
+        let identity: HTTPRequestIdentity?
+        var postCollectionItemsChange: Bool
+    }
+
     private static var collectionMembershipBatchDepth = 0
-    private static var deferredCollectionMembershipRefresh: [String: Bool] = [:]
+    private static var deferredCollectionMembershipRefresh: [String: DeferredCollectionRefresh] = [:]
 
     /// Defers feed and collection-detail refresh notifications while a
     /// card-owned collection editor sheet is presented so removing a title from
@@ -1206,13 +1211,15 @@ final class HomeSectionsEditorModel {
         guard collectionMembershipBatchDepth == 0, !deferredCollectionMembershipRefresh.isEmpty else { return }
         let pending = deferredCollectionMembershipRefresh
         deferredCollectionMembershipRefresh.removeAll()
-        for (collectionId, postCollectionItemsChange) in pending {
+        let currentIdentity = SeekIntervalPreferences.activeRequestIdentity()
+        for (collectionId, entry) in pending {
+            guard entry.identity == currentIdentity else { continue }
             NotificationCenter.default.post(
                 name: .homeSectionsShouldRefresh,
                 object: nil,
                 userInfo: [RefreshNotificationKey.collectionId: collectionId]
             )
-            if postCollectionItemsChange {
+            if entry.postCollectionItemsChange {
                 NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
             }
         }
@@ -1227,8 +1234,17 @@ final class HomeSectionsEditorModel {
         ResponseCache.shared.remove(CacheKey.homeSections)
         ResponseCache.shared.removeAll(withPrefix: "library:")
         if collectionMembershipBatchDepth > 0 {
-            let existing = deferredCollectionMembershipRefresh[collectionId] ?? false
-            deferredCollectionMembershipRefresh[collectionId] = existing || postCollectionItemsChange
+            let currentIdentity = SeekIntervalPreferences.activeRequestIdentity()
+            if var existing = deferredCollectionMembershipRefresh[collectionId],
+               existing.identity == currentIdentity {
+                existing.postCollectionItemsChange = existing.postCollectionItemsChange || postCollectionItemsChange
+                deferredCollectionMembershipRefresh[collectionId] = existing
+            } else {
+                deferredCollectionMembershipRefresh[collectionId] = DeferredCollectionRefresh(
+                    identity: currentIdentity,
+                    postCollectionItemsChange: postCollectionItemsChange
+                )
+            }
             return
         }
         NotificationCenter.default.post(
@@ -1846,11 +1862,16 @@ final class HomePreferencesModel {
                 // A superseded attempt may still have landed on the server;
                 // mark the confirmed baseline uncertain until a newer write
                 // succeeds or a fresh load reconciles the authoritative value.
-                // When no newer write exists for this key (e.g. authorization
-                // dropped mid-backoff), lock the key and schedule reconciliation
-                // so a Retry load cannot re-enable editing over unsaved state.
+                // When no newer write exists for this key (authorization
+                // dropped mid-backoff), retain the desired edit in
+                // `deferredWrites` so recovery replays it once authorization
+                // returns (or reports failure if recovery cannot send it).
                 self.uncertainConfirmedKeys.insert(scope)
                 guard self.keyGeneration[scope] == generation else { return }
+                self.deferredWrites[scope] = DeferredWrite(
+                    generation: generation,
+                    value: value
+                )
                 self.reconcilingKeys.insert(scope)
                 if self.requestIdentity() == identity {
                     shouldScheduleRecoveryLoad = true

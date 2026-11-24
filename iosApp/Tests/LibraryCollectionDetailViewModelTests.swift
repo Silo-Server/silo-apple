@@ -275,4 +275,52 @@ final class LibraryCollectionDetailViewModelTests: XCTestCase {
         XCTAssertNotNil(model.refreshError)
         XCTAssertEqual(model.pageSequence, seqBeforeRefresh)
     }
+
+    func testPaginationBudgetPublishesValidatedCardsAndAllowsContinuingFromCursor() async throws {
+        let handler = StubURLProtocol.Handler()
+        // Page 1 returns one card; pages 2..5 repeat that card under distinct cursors,
+        // exhausting the 5-page per-batch budget; page 6 delivers a new card.
+        handler.expect(StubURLProtocol.any) { _ in Self.page("only-one", type: "movie", cursor: "c2") }
+        handler.expect(StubURLProtocol.any) { _ in Self.page("only-one", type: "movie", cursor: "c3") }
+        handler.expect(StubURLProtocol.any) { _ in Self.page("only-one", type: "movie", cursor: "c4") }
+        handler.expect(StubURLProtocol.any) { _ in Self.page("only-one", type: "movie", cursor: "c5") }
+        handler.expect(StubURLProtocol.any) { _ in Self.page("only-one", type: "movie", cursor: "c6") }
+        handler.expect(StubURLProtocol.any) { request in
+            XCTAssertEqual(request.query["cursor"], "c6")
+            return Self.page("later-card", type: "movie")
+        }
+        let (api, tokens) = try await client(handler)
+        let model = LibraryCollectionDetailViewModel(api: api, tokens: tokens)
+
+        await load(model, scope: .movie)
+        XCTAssertEqual(handler.requests.count, 5)
+        XCTAssertEqual(model.items.map(\.contentId), ["only-one"])
+        XCTAssertNil(model.error)
+        XCTAssertNotNil(model.paginationError)
+        XCTAssertTrue(model.hasMore)
+
+        await load(model, scope: .movie, reset: false)
+        XCTAssertEqual(model.items.map(\.contentId), ["only-one", "later-card"])
+        XCTAssertNil(model.paginationError)
+        XCTAssertFalse(model.hasMore)
+    }
+
+    func testProfileSwitchPreservesNewProfileFirstPageWhenContinuationFails() async throws {
+        let handler = StubURLProtocol.Handler()
+        handler.expect(StubURLProtocol.any) { _ in Self.page("profile-one-item", type: "movie") }
+        handler.expect(StubURLProtocol.any) { _ in Self.page("profile-two-first", type: "movie", cursor: "p2-next") }
+        handler.expect(StubURLProtocol.any) { _ in throw URLError(.networkConnectionLost) }
+        let (api, tokens) = try await client(handler)
+        let model = LibraryCollectionDetailViewModel(api: api, tokens: tokens)
+
+        await load(model, scope: .movie)
+        XCTAssertEqual(model.items.map(\.contentId), ["profile-one-item"])
+
+        await tokens.setProfileId("profile-two")
+        await load(model, scope: .movie)
+        XCTAssertEqual(model.items.map(\.contentId), ["profile-two-first"])
+        XCTAssertNil(model.error)
+        XCTAssertNotNil(model.paginationError)
+        XCTAssertTrue(model.hasMore)
+    }
 }

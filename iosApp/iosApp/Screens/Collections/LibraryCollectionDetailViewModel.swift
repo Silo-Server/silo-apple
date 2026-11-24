@@ -68,7 +68,7 @@ final class LibraryCollectionDetailViewModel {
         } else if isLoading || !hasMore || refreshError != nil || hasPendingInvalidation {
             return false
         }
-        let hadVisibleItemsBeforeLoad = !items.isEmpty
+        var hadVisibleItemsBeforeLoad = !items.isEmpty
         let requestGeneration = generation
         let startInvalidation = invalidationGeneration
         let startToken = ResponseCache.shared.writeToken
@@ -96,6 +96,7 @@ final class LibraryCollectionDetailViewModel {
                   !Task.isCancelled else { return false }
             if let owner, !owner.sameCredentialIdentity(as: requestOwner) { clearPage() }
             owner = requestOwner
+            hadVisibleItemsBeforeLoad = !items.isEmpty
             if resetsPage, items.isEmpty,
                let cached: CachedPage = ResponseCache.shared.get(requested.cacheKey),
                cached.owner.sameCredentialIdentity(as: requestOwner) {
@@ -114,11 +115,14 @@ final class LibraryCollectionDetailViewModel {
             var seenIds = replacedPageOne ? Set<String>() : Set(items.map(\.id))
             var loaded: [BrowseItem] = []
             var restarts = 0
+            var fetchedPages = 0
+            let maxPagesPerBatch = 5
             var page: CatalogListPage
             // Accumulate distinct cards across pages until enough new items
             // are available to move CatalogGrid's load-more trigger onto a new
-            // card, or until the continuation is exhausted.
+            // card, or until the continuation or per-batch budget is exhausted.
             repeat {
+                fetchedPages += 1
                 if let currentPage = nextPage {
                     page = try await api.nextCatalogPage(currentPage)
                 } else {
@@ -149,11 +153,16 @@ final class LibraryCollectionDetailViewModel {
                 validatedLoaded = loaded
                 lastValidatedPage = page
                 nextPage = page.continuation
-            } while loaded.count < CatalogGrid.loadMoreLead && nextPage != nil && restarts < 2
+            } while loaded.count < CatalogGrid.loadMoreLead
+                && nextPage != nil
+                && restarts < 2
+                && fetchedPages < maxPagesPerBatch
 
-            if loaded.count < CatalogGrid.loadMoreLead && nextPage != nil {
+            if loaded.count < CatalogGrid.loadMoreLead && nextPage != nil && restarts >= 2 {
                 throw APIv2Error.invalidCatalogContinuation
             }
+
+            let hitPageBudget = loaded.count < CatalogGrid.loadMoreLead && nextPage != nil
 
             if !replacedPageOne {
                 items.append(contentsOf: loaded)
@@ -176,12 +185,12 @@ final class LibraryCollectionDetailViewModel {
             hasLoadedOnce = true
             pageSequence += 1
             error = nil
-            paginationError = nil
+            paginationError = hitPageBudget ? ErrorState(APIv2Error.invalidCatalogContinuation) : nil
             if replacedPageOne {
                 refreshError = nil
                 hasPendingInvalidation = false
             }
-            return true
+            return !hitPageBudget
         } catch {
             var effectiveError = error
             var ownerStillValid = false

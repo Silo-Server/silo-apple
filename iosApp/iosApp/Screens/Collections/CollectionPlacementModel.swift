@@ -462,6 +462,10 @@ final class CollectionPlacementModel {
             }
         }
 
+        if nextRows == layout.rows {
+            return layout
+        }
+
         let overrides = ProfileHomeLayout.overrides(
             rows: nextRows,
             baseline: layout.rows,
@@ -716,7 +720,7 @@ final class AddToCollectionModel {
                 return Entry(
                     collection: col,
                     containsItem: effectiveContains,
-                    itemCount: col.itemCount ?? 0
+                    itemCount: col.itemCount
                 )
             }
             if let fallbackEntry, !loaded.contains(where: { $0.id == fallbackEntry.id }) {
@@ -866,8 +870,27 @@ final class AddToCollectionModel {
                 }
             }
 
+            let scheduleDetachedReconciliationIfNeeded = {
+                guard self.pendingMutations == 0,
+                      self.requestIdentity() == startIdentity,
+                      self.needsReconciliation || !self.hasLoaded else { return }
+                let preservedError = self.errorMessage ?? self.pendingReconciliationError
+                self.beginMutation()
+                Task { @MainActor [weak self] in
+                    defer { self?.endMutation() }
+                    guard let self,
+                          self.pendingMutations == 0,
+                          self.requestIdentity() == startIdentity else { return }
+                    if self.needsReconciliation || !self.hasLoaded {
+                        await self.load(preservingEntry: nil, preservingError: preservedError)
+                    }
+                }
+            }
+
             guard !Task.isCancelled, self.requestIdentity() == startIdentity else {
                 restoreOptimisticBeforeDispatch()
+                releaseMutationAccounting()
+                scheduleDetachedReconciliationIfNeeded()
                 return
             }
 
@@ -878,6 +901,8 @@ final class AddToCollectionModel {
                       self.requestIdentity() == startIdentity,
                       Self.authMatchesIdentity(auth, startIdentity) else {
                     restoreOptimisticBeforeDispatch()
+                    releaseMutationAccounting()
+                    scheduleDetachedReconciliationIfNeeded()
                     return
                 }
                 if nextIn {
