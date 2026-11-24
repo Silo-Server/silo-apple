@@ -109,7 +109,7 @@ struct MobilePlayerControls: View {
         .animation(.easeOut(duration: 0.18), value: viewModel.showControls)
         .animation(.easeOut(duration: 0.18), value: showsStats)
         // Fades in, and out when its timer runs out. Tap takes it down at once
-        // (see `PlayerViewModel.selectIntroSkipPrompt`).
+        // (see `PlayerViewModel.activateIntroSkipPrompt` and `skipCurrentSegment`).
         .animation(.easeOut(duration: 0.2), value: viewModel.skipPill?.segment)
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -641,6 +641,9 @@ struct MobilePlayerControls: View {
     @ViewBuilder
     private var skipPill: some View {
         if let pill = viewModel.skipPill {
+            // The untimed pill stays hidden while the viewer drags the
+            // scrubber, where it would sit over the scrub preview.
+            let hidesForScrub = !pill.isTimed && viewModel.showsScrubPreview
             VStack(alignment: .trailing, spacing: 4) {
                 Spacer()
                 if let caption = pill.caption {
@@ -675,6 +678,8 @@ struct MobilePlayerControls: View {
             // Clear the bottom stack, time row included, while the controls
             // are up; hug the bottom edge when the pill is floating alone.
             .padding(.bottom, viewModel.showControls ? skipPillBottomInsetWithControls : 24)
+            .opacity(hidesForScrub ? 0 : 1)
+            .accessibilityHidden(hidesForScrub)
             .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
             .transition(.opacity)
         }

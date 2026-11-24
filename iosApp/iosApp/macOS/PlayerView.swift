@@ -128,6 +128,9 @@ private struct MacPlayerScreen: View {
                 }
 
                 if let pill = viewModel.introSkipPrompt.pill {
+                    // The untimed pill stays hidden while the timeline is
+                    // dragged, where it would sit over the scrub preview.
+                    let hidesForScrub = !pill.isTimed && viewModel.showsScrubPreview
                     MacIntroSkipPill(pill: pill) {
                         viewModel.activateIntroSkipPrompt()
                     }
@@ -136,6 +139,8 @@ private struct MacPlayerScreen: View {
                     // once they hide.
                     .padding(.bottom, shouldShowControls ? controlBarHeight + 16 : 24)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .opacity(hidesForScrub ? 0 : 1)
+                    .accessibilityHidden(hidesForScrub)
                     .transition(.opacity)
                 }
 
