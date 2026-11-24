@@ -182,13 +182,27 @@ struct TVHomeCustomizeOverlay: View {
         VStack(alignment: .leading, spacing: 22) {
             compressedStatusBanner
 
-            if let error = editor.saveError ?? preferences.errorMessage {
-                HStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.yellow)
-                    Text(verbatim: error)
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.9))
+            let bannerErrors: [String] = {
+                var messages: [String] = []
+                if let saveError = editor.saveError {
+                    messages.append(saveError)
+                }
+                if let prefError = preferences.errorMessage, !messages.contains(prefError) {
+                    messages.append(prefError)
+                }
+                return messages
+            }()
+            if !bannerErrors.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(bannerErrors, id: \.self) { error in
+                        HStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.yellow)
+                            Text(verbatim: error)
+                                .font(.system(size: 20, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.9))
+                        }
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)

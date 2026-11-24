@@ -1212,6 +1212,24 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertFalse(model.hasReconcilingKeys)
         XCTAssertNotNil(model.errorMessage)
 
+        // Verify reconciliation actually updated the confirmed baseline to `true`:
+        // attempting to turn it off with a first-attempt 403 must roll back to `true`.
+        writeTransport.queuedErrors = [
+            SettingsAPIError.server(status: 403, code: "forbidden", message: "Denied"),
+        ]
+        let writesBeforeRevertCheck = writeTransport.writtenValues.count
+        model.setHideWatchedItems(false)
+        for _ in 0..<100 {
+            if writeTransport.writtenValues.count >= writesBeforeRevertCheck + 1,
+               !model.isSaving,
+               model.errorMessage != nil {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(model.hideWatchedItems)
+        XCTAssertFalse(model.hasReconcilingKeys)
+
         // 3) A retryable failure followed by `serverUpgradeRequired` preserves the
         //    terminal upgrade classification instead of wrapping in `HeldChange`.
         writeTransport.queuedErrors = [
@@ -1356,6 +1374,50 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertEqual(case3CollectionGets.count, 2)
         XCTAssertEqual(case3CollectionGets.first?.query["contains_item"], "movie-77")
         XCTAssertNil(case3CollectionGets.dropFirst().first?.query["contains_item"])
+        // 4) Overlapping toggle on A and create-and-add on B before initial load finishes:
+        //    B completes while A is still held; when A finishes and triggers recovery read
+        //    without membership data, both A and B keep their confirmed membership.
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":false,"contains_item":false}"#)
+        stub.reply(path: "/api/v2/catalog/search/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"item_collections":false}"#)
+        stub.reply(path: "/api/v2/collections", 500, #"{"error":{"code":"internal","message":"down"}}"#)
+
+        let overlapModel = AddToCollectionModel(contentId: "movie-77", api: api, requestIdentity: { identity })
+        await overlapModel.load()
+        XCTAssertFalse(overlapModel.hasLoaded)
+
+        // Seed incomplete list with collection A via createAndAdd while /api/v2/collections GET still fails.
+        stub.sequence(path: "/api/v2/collections", [
+            .json(201, #"{"id":"col-a","name":"Col A","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"}"#),
+            .json(500, #"{"error":{"code":"internal","message":"still down"}}"#),
+            .json(201, #"{"id":"col-b","name":"Col B","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"}"#),
+            .json(200, """
+            {"items":[
+              {"id":"col-a","name":"Col A","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"},
+              {"id":"col-b","name":"Col B","collection_type":"manual","item_count":1,"creator_profile_id":"profile-one"}
+            ],"groups":[]}
+            """),
+        ])
+        stub.reply(path: "/api/v2/collections/col-a/items/movie-77", 204, "")
+        stub.reply(path: "/api/v2/collections/col-b/items/movie-77", 204, "")
+        let createdA = await overlapModel.createAndAdd(name: "Col A")
+        XCTAssertEqual(createdA, .createdAndAdded)
+        XCTAssertFalse(overlapModel.hasLoaded)
+
+        // Hold toggle on A (removing movie-77), create-and-add B to completion while A is pending,
+        // then release A so the shared recovery read returns both without membership fields.
+        stub.hold(path: "/api/v2/collections/col-a/items/movie-77")
+        let toggleA = overlapModel.startToggle(collectionId: "col-a")
+        defer { stub.release() }
+        await stub.waitUntilHeld()
+
+        let createdB = await overlapModel.createAndAdd(name: "Col B")
+        XCTAssertEqual(createdB, .createdAndAdded)
+
+        stub.release()
+        await toggleA.value
+        XCTAssertTrue(overlapModel.hasLoaded)
+        XCTAssertEqual(overlapModel.entries.first(where: { $0.id == "col-a" })?.containsItem, false)
+        XCTAssertEqual(overlapModel.entries.first(where: { $0.id == "col-b" })?.containsItem, true)
     }
 
     @MainActor

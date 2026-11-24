@@ -290,8 +290,7 @@ final class ProfilePrefsEditor {
                editGenerations[ProfileSettingKeys.subtitleLanguage] == generations[ProfileSettingKeys.subtitleLanguage] {
                 ProfilePrefsStore.shared.setPreferredSubtitleLanguage(preferences.subtitleLanguage)
             }
-            if reconciledMetadataLanguage,
-               editGenerations[ProfileSettingKeys.metadataLanguage] == generations[ProfileSettingKeys.metadataLanguage] {
+            if reconciledMetadataLanguage {
                 Self.invalidateMetadataCaches()
             }
             showHeldValues()
@@ -625,7 +624,6 @@ final class ProfilePrefsEditor {
                         profileId: write.profileId,
                         requestIdentity: startRequestIdentity
                     )
-                    reconciliationHolds.removeValue(forKey: reconciliationScope)
                     defer { inFlightSubtitleWrites.remove(identity) }
                     do {
                         try await writer.write(
@@ -637,6 +635,7 @@ final class ProfilePrefsEditor {
                             }
                         )
                         failures.removeValue(forKey: identity)
+                        reconciliationHolds.removeValue(forKey: reconciliationScope)
                         let stillEditingWrittenProfile = boundProfileId == write.profileId
                         if stillEditingWrittenProfile {
                             recordServerValue(for: write.key, value: write.editorValue)
@@ -934,7 +933,6 @@ final class ProfilePrefsEditor {
             profileId: write.profileId,
             requestIdentity: startRequestIdentity
         )
-        reconciliationHolds.removeValue(forKey: reconciliationScope)
         saveState = .saving
         do {
             try await writer.write(
@@ -948,6 +946,7 @@ final class ProfilePrefsEditor {
                         && Self.outboundLanguage(self.preferredMetadataLanguage) == write.language
                 }
             )
+            reconciliationHolds.removeValue(forKey: reconciliationScope)
             Self.invalidateMetadataCaches()
             // A newer edit landed while this was in flight; let its own pass
             // report, or this one would announce a value already superseded.

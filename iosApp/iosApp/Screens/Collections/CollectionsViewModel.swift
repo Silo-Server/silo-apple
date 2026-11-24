@@ -210,6 +210,7 @@ class CollectionsViewModel {
     /// the post-mutation state. Called from every successful add / move /
     /// rename / delete path.
     private func writeBackCache() {
+        ResponseCache.shared.remove(CacheKey.collections)
         ResponseCache.shared.set(
             CollectionsResponse(collections: collections, groups: groups),
             for: CacheKey.collections

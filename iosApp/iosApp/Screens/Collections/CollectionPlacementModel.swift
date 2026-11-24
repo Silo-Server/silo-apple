@@ -590,6 +590,7 @@ final class AddToCollectionModel {
     @ObservationIgnored private var mutationGeneration = 0
     @ObservationIgnored private var pendingMutations = 0
     @ObservationIgnored private var entryGeneration: [String: Int] = [:]
+    @ObservationIgnored private var confirmedLocalEntries: [String: (identity: HTTPRequestIdentity?, entry: Entry)] = [:]
     @ObservationIgnored private var needsReconciliation = false
     @ObservationIgnored private var pendingReconciliationError: String?
     @ObservationIgnored private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -706,6 +707,15 @@ final class AddToCollectionModel {
                     && col.isOwnedBy(profileId: activeProfileId)
             }
 
+            var localConfirmedById: [String: Entry] = [:]
+            for (id, record) in confirmedLocalEntries
+            where record.identity == startIdentity && !unconfirmedCollectionIds.contains(id) {
+                localConfirmedById[id] = record.entry
+            }
+            if let fallbackEntry, !unconfirmedCollectionIds.contains(fallbackEntry.id) {
+                localConfirmedById[fallbackEntry.id] = fallbackEntry
+            }
+
             var loaded = manual.map { col in
                 let isMember: Bool?
                 if usesContainsField {
@@ -715,8 +725,7 @@ final class AddToCollectionModel {
                 } else {
                     isMember = nil
                 }
-                let effectiveContains = isMember
-                    ?? (fallbackEntry?.id == col.id ? fallbackEntry?.containsItem : nil)
+                let effectiveContains = isMember ?? localConfirmedById[col.id]?.containsItem
                 return Entry(
                     collection: col,
                     containsItem: effectiveContains,
@@ -730,6 +739,7 @@ final class AddToCollectionModel {
             hasLoaded = true
             loadErrorMessage = nil
             hasUncertainCreation = false
+            confirmedLocalEntries = confirmedLocalEntries.filter { $0.value.identity != startIdentity }
             // Only unlock previously unconfirmed rows whose membership was
             // actually confirmed by this read (or that no longer exist).
             let loadedIds = Set(loaded.map(\.id))
@@ -919,6 +929,9 @@ final class AddToCollectionModel {
                     postCollectionItemsChange: stillMatchesIdentity
                 )
                 if stillMatchesIdentity {
+                    if let idx = self.entries.firstIndex(where: { $0.id == collectionId }) {
+                        self.confirmedLocalEntries[collectionId] = (startIdentity, self.entries[idx])
+                    }
                     if wasIn == nil || previousItemCount == nil {
                         for _ in 0..<3 {
                             let refreshStartToken = ResponseCache.shared.writeToken
@@ -962,6 +975,7 @@ final class AddToCollectionModel {
                             collectionId: collectionId,
                             postCollectionItemsChange: true
                         )
+                        self.confirmedLocalEntries.removeValue(forKey: collectionId)
                         self.unconfirmedCollectionIds.insert(collectionId)
                         self.needsReconciliation = true
                         self.pendingReconciliationError = message
@@ -1106,6 +1120,7 @@ final class AddToCollectionModel {
                     collectionId: created.id,
                     postCollectionItemsChange: true
                 )
+                self.confirmedLocalEntries[created.id] = (startIdentity, createdEntry)
                 result = .createdAndAdded
             } catch {
                 guard self.requestIdentity() == startIdentity else {
@@ -1125,9 +1140,12 @@ final class AddToCollectionModel {
                         collectionId: created.id,
                         postCollectionItemsChange: true
                     )
+                    self.confirmedLocalEntries.removeValue(forKey: created.id)
                     self.unconfirmedCollectionIds.insert(created.id)
                     self.needsReconciliation = true
                     self.pendingReconciliationError = message
+                } else {
+                    self.confirmedLocalEntries[created.id] = (startIdentity, createdEntry)
                 }
                 result = .createdOnly
             }

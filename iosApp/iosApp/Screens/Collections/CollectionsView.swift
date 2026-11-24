@@ -813,7 +813,7 @@ struct LibraryCollectionDetailView: View {
                     #endif
             } else if !viewModel.items.isEmpty || kind == nil || kind == .regular {
                 content
-            } else if viewModel.hasMore && viewModel.paginationError == nil {
+            } else if viewModel.hasMore && viewModel.paginationError == nil && viewModel.refreshError == nil {
                 ProgressView()
                     #if os(tvOS)
                     .tvPageFocusOwner(
@@ -943,7 +943,7 @@ struct LibraryCollectionDetailView: View {
                         )
                         .padding(.top, SiloTheme.largePadding)
                     }
-                } else if viewModel.items.isEmpty && viewModel.hasMore && viewModel.paginationError == nil {
+                } else if viewModel.items.isEmpty && viewModel.hasMore && viewModel.paginationError == nil && viewModel.refreshError == nil {
                     HStack {
                         Spacer()
                         ProgressView()
