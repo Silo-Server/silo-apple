@@ -1788,9 +1788,9 @@ final class PlayerSettings {
         // A clear still on its way has not reached the server, whose answer
         // therefore still shows the device value being removed.
         let clearing = flusher.unsettledClears
-        // A cellular or buffering key with no row keeps what this device last
-        // knew, like its value above, unless the server doesn't define it:
-        // then this device has no value of its own there.
+        // A cellular, buffering or Show Next Up Off key with no row keeps what
+        // this device last knew, like its value above, unless the server
+        // doesn't define it: then this device has no value of its own there.
         var unreadGated = Set(
             SettingKey.playerCellularQualitySettings
                 + SettingKey.playerBufferingQualitySettings
@@ -1799,6 +1799,9 @@ final class PlayerSettings {
             .subtracting(effectiveByKey.keys)
         if serverLacksBufferingQualityMode {
             unreadGated.subtract(SettingKey.playerBufferingQualitySettings)
+        }
+        if let knownManifestRevision, !SettingKey.nextUpEnabled.isServed(atRevision: knownManifestRevision) {
+            unreadGated.subtract(SettingKey.playerNextUpSettings)
         }
         deviceOverriddenKeys = Set(
             effectiveByKey.compactMap { key, entry in

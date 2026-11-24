@@ -470,6 +470,22 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertTrue(harness.transport.deletes().contains(.playbackNextUpPromptSeconds))
     }
 
+    /// Off saved on a server that stores it isn't left behind as this
+    /// device's own value once the server no longer defines the key.
+    func testNextUpOffIsNoDeviceValueWhereTheServerLacksTheKey() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.nextUpEnabledRevision
+        await harness.settings.refreshFromServer()
+        harness.settings.setNextUpEnabled(false)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.nextUpPrompt))
+
+        harness.transport.revision = SettingKey.nextUpEnabledRevision - 1
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.showsNextUp)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.nextUpPrompt))
+    }
+
     // MARK: - Cellular quality
 
     private static func cellularRows(
