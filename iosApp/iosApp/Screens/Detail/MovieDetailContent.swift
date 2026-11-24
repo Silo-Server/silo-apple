@@ -121,7 +121,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
             if hasDeferredRefitForCollectionSheet {
                 hasDeferredRefitForCollectionSheet = false
                 router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
-                router.refitItemDetail()
+                if !isShowingAddToCollection {
+                    router.refitItemDetail()
+                }
             }
             isShowingAddToCollection = false
             #endif

@@ -65,9 +65,17 @@ final class HomeSectionsEditorModel {
     @ObservationIgnored private var confirmedRows: [APIv2ProfileSectionSetting] = []
     @ObservationIgnored private var saveChain: Task<Void, Never>?
     @ObservationIgnored private var quickActionChain: Task<Void, Never>?
+    @ObservationIgnored private var pendingSaveCount = 0
     @ObservationIgnored private var editGeneration = 0
     @ObservationIgnored private var loadGeneration = 0
     @ObservationIgnored private var pickerLoadGeneration = 0
+
+    private struct PendingEdit {
+        let generation: Int
+        let applyTo: ([APIv2ProfileSectionSetting]) -> [APIv2ProfileSectionSetting]?
+    }
+    @ObservationIgnored private var pendingEdits: [PendingEdit] = []
+    @ObservationIgnored private var pendingEditsIdentity: HTTPRequestIdentity?
 
     init(
         scope: ProfileSectionsScope = .home,
@@ -163,12 +171,32 @@ final class HomeSectionsEditorModel {
                 }
                 auth = layout.auth
                 saved = layout.saved
-                committedRows = layout.rows
-                dragDraftVisibleOrder = nil
                 confirmedRows = layout.rows
+                dragDraftVisibleOrder = nil
                 hasLoadedFromServer = true
                 saveError = nil
                 phase = .loaded
+                if pendingEditsIdentity == startIdentity, !pendingEdits.isEmpty {
+                    let rebased = Self.reapply(pendingEdits, to: layout.rows)
+                    committedRows = rebased
+                    if rebased != confirmedRows {
+                        pendingSaveCount += 1
+                        let previous = saveChain
+                        let task = Task { @MainActor in
+                            defer { self.pendingSaveCount = max(0, self.pendingSaveCount - 1) }
+                            await previous?.value
+                            await self.saveCurrentRows()
+                        }
+                        saveChain = task
+                    } else {
+                        pendingEdits.removeAll()
+                        pendingEditsIdentity = nil
+                    }
+                } else {
+                    pendingEdits.removeAll()
+                    pendingEditsIdentity = nil
+                    committedRows = layout.rows
+                }
                 return true
             } catch {
                 guard !(error is CancellationError),
@@ -223,7 +251,9 @@ final class HomeSectionsEditorModel {
         case .success:
             recipeCatalog = .curatedFallback
         case .failure:
-            recipeCatalog = .curatedFallback
+            if !hasLoadedPickerCatalog {
+                recipeCatalog = .curatedFallback
+            }
             allSucceeded = false
         }
 
@@ -249,17 +279,22 @@ final class HomeSectionsEditorModel {
                     group.addTask { [api] in
                         do {
                             let response = try await api.libraryCollections(libraryId: library.id)
-                            let mapped = response.collections.map { col in
-                                ServerCollectionOption(
-                                    id: col.id,
-                                    title: col.name,
-                                    libraryId: library.id,
-                                    libraryName: library.name,
-                                    itemCount: col.itemCount ?? 0,
-                                    posterUrl: col.posterUrl,
-                                    posterThumbhash: col.posterThumbhash
-                                )
-                            }
+                            // Exclude personal collections surfaced inside a library's
+                            // `user_collections` group; those are already listed under
+                            // `personalCollections` and must serialize as `user_collection_id`.
+                            let mapped = response.collections
+                                .filter { $0.kind != .userCollections }
+                                .map { col in
+                                    ServerCollectionOption(
+                                        id: col.id,
+                                        title: col.name,
+                                        libraryId: library.id,
+                                        libraryName: library.name,
+                                        itemCount: col.itemCount ?? 0,
+                                        posterUrl: col.posterUrl,
+                                        posterThumbhash: col.posterThumbhash
+                                    )
+                                }
                             return .success(mapped)
                         } catch {
                             return .failure(error)
@@ -361,23 +396,29 @@ final class HomeSectionsEditorModel {
     /// rows anchored in their original slots.
     @discardableResult
     func moveVisible(fromOffsets source: IndexSet, toOffset destination: Int) -> Task<Void, Never> {
-        guard let next = Self.reorderVisibleSlots(in: committedRows, transform: { visible in
-            visible.move(fromOffsets: source, toOffset: destination)
-            return true
-        }) else { return Task {} }
-        return apply(next)
+        let visible = visibleRows
+        let orderedIds = {
+            var reordered = visible
+            reordered.move(fromOffsets: source, toOffset: destination)
+            return reordered.map(\.id)
+        }()
+        return applyEdit { rows in
+            let next = Self.applyingVisibleOrder(orderedIds, to: rows)
+            return next == rows ? nil : next
+        }
     }
 
     /// Slides a visible row by `offset` (e.g. -1 up, +1 down) within visible slots.
     @discardableResult
     func moveVisible(id: String, by offset: Int) -> Task<Void, Never> {
-        guard let next = Self.reorderVisibleSlots(in: committedRows, transform: { visible in
-            guard let index = visible.firstIndex(where: { $0.id == id }),
-                  visible.indices.contains(index + offset) else { return false }
-            visible.swapAt(index, index + offset)
-            return true
-        }) else { return Task {} }
-        return apply(next)
+        applyEdit { rows in
+            Self.reorderVisibleSlots(in: rows, transform: { visible in
+                guard let index = visible.firstIndex(where: { $0.id == id }),
+                      visible.indices.contains(index + offset) else { return false }
+                visible.swapAt(index, index + offset)
+                return true
+            })
+        }
     }
 
     /// Projects a dragged visible-row ID order onto `base` without altering
@@ -434,52 +475,58 @@ final class HomeSectionsEditorModel {
     func commitDraggedOrder() -> Task<Void, Never> {
         guard let order = dragDraftVisibleOrder else { return Task {} }
         dragDraftVisibleOrder = nil
-        let next = Self.applyingVisibleOrder(order, to: committedRows)
-        return apply(next)
+        return applyEdit { rows in
+            let next = Self.applyingVisibleOrder(order, to: rows)
+            return next == rows ? nil : next
+        }
     }
 
     /// Moves any row to the top of the visible stack (keeping hidden rows anchored
     /// when the target is already visible, or unhiding and inserting at the top if hidden).
     @discardableResult
     func moveToTop(id: String) -> Task<Void, Never> {
-        guard let index = committedRows.firstIndex(where: { $0.id == id }) else { return Task {} }
-        if !committedRows[index].hidden {
-            guard let next = Self.reorderVisibleSlots(in: committedRows, transform: { visible in
-                guard let visibleIndex = visible.firstIndex(where: { $0.id == id }),
-                      visibleIndex > 0 else { return false }
-                let row = visible.remove(at: visibleIndex)
-                visible.insert(row, at: 0)
-                return true
-            }) else { return Task {} }
-            return apply(next)
+        applyEdit { rows in
+            guard let index = rows.firstIndex(where: { $0.id == id }) else { return nil }
+            if !rows[index].hidden {
+                return Self.reorderVisibleSlots(in: rows, transform: { visible in
+                    guard let visibleIndex = visible.firstIndex(where: { $0.id == id }),
+                          visibleIndex > 0 else { return false }
+                    let row = visible.remove(at: visibleIndex)
+                    visible.insert(row, at: 0)
+                    return true
+                })
+            }
+            var next = rows
+            var row = next.remove(at: index)
+            row.hidden = false
+            next.insert(row, at: 0)
+            return next
         }
-        var next = committedRows
-        var row = next.remove(at: index)
-        row.hidden = false
-        next.insert(row, at: 0)
-        return apply(next)
     }
 
     /// Moves a visible row to the bottom of the visible slots without moving hidden rows.
     @discardableResult
     func moveToBottom(id: String) -> Task<Void, Never> {
-        guard let next = Self.reorderVisibleSlots(in: committedRows, transform: { visible in
-            guard let index = visible.firstIndex(where: { $0.id == id }),
-                  index < visible.count - 1 else { return false }
-            let row = visible.remove(at: index)
-            visible.append(row)
-            return true
-        }) else { return Task {} }
-        return apply(next)
+        applyEdit { rows in
+            Self.reorderVisibleSlots(in: rows, transform: { visible in
+                guard let index = visible.firstIndex(where: { $0.id == id }),
+                      index < visible.count - 1 else { return false }
+                let row = visible.remove(at: index)
+                visible.append(row)
+                return true
+            })
+        }
     }
 
     @discardableResult
     func setHidden(_ hidden: Bool, id: String) -> Task<Void, Never> {
-        guard let index = committedRows.firstIndex(where: { $0.id == id }),
-              committedRows[index].hidden != hidden else { return Task {} }
-        var next = committedRows
-        next[index].hidden = hidden
-        return apply(next)
+        applyEdit { rows in
+            guard let index = rows.firstIndex(where: { $0.id == id }),
+                  rows[index].hidden != hidden else { return nil }
+            var next = rows
+            next[index].hidden = hidden
+            return next
+        }
     }
 
     @discardableResult
@@ -491,8 +538,7 @@ final class HomeSectionsEditorModel {
         featured: Bool = false
     ) -> Task<Void, Never> {
         let nonEmptyConfig = (config?.isEmpty == false) ? config : nil
-        // If an identical hidden row exists and the user kept default options,
-        // unhide it instead of creating a duplicate.
+        // Pre-check if unhiding an existing matching hidden row when defaults are kept.
         if !featured && itemLimit == 20,
            let existingIdx = committedRows.firstIndex(where: { row in
                row.hidden
@@ -502,22 +548,35 @@ final class HomeSectionsEditorModel {
             return setHidden(false, id: committedRows[existingIdx].id)
         }
         let id = newID()
-        let newRow = APIv2ProfileSectionSetting(
-            id: id,
-            sectionType: sectionType,
-            title: title,
-            defaultTitle: title,
-            featured: featured,
-            itemLimit: itemLimit,
-            hidden: false,
-            isCustom: true,
-            customized: true,
-            position: committedRows.count,
-            config: nonEmptyConfig
-        )
-        var next = committedRows
-        next.append(newRow)
-        return apply(next)
+        return applyEdit { rows in
+            if !featured && itemLimit == 20,
+               let existingIdx = rows.firstIndex(where: { row in
+                   row.hidden
+                       && Self.matchesRecipe(row, sectionType: sectionType, params: nonEmptyConfig ?? [:])
+                       && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
+               }) {
+                var next = rows
+                next[existingIdx].hidden = false
+                return next
+            }
+            guard !rows.contains(where: { $0.id == id }) else { return nil }
+            let newRow = APIv2ProfileSectionSetting(
+                id: id,
+                sectionType: sectionType,
+                title: title,
+                defaultTitle: title,
+                featured: featured,
+                itemLimit: itemLimit,
+                hidden: false,
+                isCustom: true,
+                customized: true,
+                position: rows.count,
+                config: nonEmptyConfig
+            )
+            var next = rows
+            next.append(newRow)
+            return next
+        }
     }
 
     @discardableResult
@@ -538,18 +597,36 @@ final class HomeSectionsEditorModel {
            existing.displayTitle.caseInsensitiveCompare(title) == .orderedSame {
             return setHidden(false, id: existing.id)
         }
-        let newRow = ProfileHomeLayout.makeCollectionRow(
-            id: newID(),
-            title: title,
-            collectionId: collectionId,
-            isUserCollection: isUserCollection,
-            position: committedRows.count,
-            itemLimit: itemLimit,
-            featured: featured
-        )
-        var next = committedRows
-        next.append(newRow)
-        return apply(next)
+        let id = newID()
+        return applyEdit { rows in
+            if !featured && itemLimit == 20,
+               let existingIdx = rows.firstIndex(where: { row in
+                   row.hidden
+                       && ProfileHomeLayout.matchingCollectionRow(
+                           collectionId: collectionId,
+                           isUserCollection: isUserCollection,
+                           in: [row]
+                       ) != nil
+                       && row.displayTitle.caseInsensitiveCompare(title) == .orderedSame
+               }) {
+                var next = rows
+                next[existingIdx].hidden = false
+                return next
+            }
+            guard !rows.contains(where: { $0.id == id }) else { return nil }
+            let newRow = ProfileHomeLayout.makeCollectionRow(
+                id: id,
+                title: title,
+                collectionId: collectionId,
+                isUserCollection: isUserCollection,
+                position: rows.count,
+                itemLimit: itemLimit,
+                featured: featured
+            )
+            var next = rows
+            next.append(newRow)
+            return next
+        }
     }
 
     @discardableResult
@@ -566,47 +643,86 @@ final class HomeSectionsEditorModel {
         let effectiveTitle = trimmed.isEmpty
             ? AppLanguage.string(.collectionsTitle)
             : trimmed
-        let newRow = APIv2ProfileSectionSetting(
-            id: newID(),
-            sectionType: "collection_posters",
-            title: effectiveTitle,
-            defaultTitle: effectiveTitle,
-            featured: false,
-            itemLimit: 20,
-            hidden: false,
-            isCustom: true,
-            customized: true,
-            position: committedRows.count,
-            config: ["collections": .array(entries)]
-        )
-        var next = committedRows
-        next.append(newRow)
-        return apply(next)
+        let id = newID()
+        return applyEdit { rows in
+            guard !rows.contains(where: { $0.id == id }) else { return nil }
+            let newRow = APIv2ProfileSectionSetting(
+                id: id,
+                sectionType: "collection_posters",
+                title: effectiveTitle,
+                defaultTitle: effectiveTitle,
+                featured: false,
+                itemLimit: 20,
+                hidden: false,
+                isCustom: true,
+                customized: true,
+                position: rows.count,
+                config: ["collections": .array(entries)]
+            )
+            var next = rows
+            next.append(newRow)
+            return next
+        }
     }
 
     @discardableResult
     func removeCustomRow(id: String) -> Task<Void, Never> {
-        guard let index = committedRows.firstIndex(where: { $0.id == id && $0.isCustom }) else { return Task {} }
-        var next = committedRows
-        next.remove(at: index)
-        return apply(next)
+        applyEdit { rows in
+            guard let index = rows.firstIndex(where: { $0.id == id && $0.isCustom }) else { return nil }
+            var next = rows
+            next.remove(at: index)
+            return next
+        }
+    }
+
+    struct QuickActionResult: Equatable, Sendable {
+        let succeeded: Bool
+        let errorMessage: String?
     }
 
     /// Serializes a Home feed quick action's fresh layout read, mutation, and save
-    /// so two rapid context-menu actions never supersede each other's read.
+    /// so two rapid context-menu actions never supersede each other's read, and
+    /// aborts if the active profile/server changes before the mutation runs.
     func performQuickAction(
         _ mutation: @escaping @MainActor (HomeSectionsEditorModel) -> Task<Void, Never>
-    ) async -> Bool {
+    ) async -> QuickActionResult {
+        let requestedIdentity = requestIdentity()
         let previous = quickActionChain
-        let task = Task<Bool, Never> { @MainActor in
+        let task = Task<QuickActionResult, Never> { @MainActor in
             await previous?.value
+            guard !Task.isCancelled, self.requestIdentity() == requestedIdentity else {
+                return QuickActionResult(succeeded: false, errorMessage: nil)
+            }
             let loaded = await self.load()
-            guard loaded, self.phase == .loaded else { return false }
+            guard !Task.isCancelled,
+                  loaded,
+                  self.phase == .loaded,
+                  self.requestIdentity() == requestedIdentity else {
+                let message = self.requestIdentity() == requestedIdentity ? self.saveError : nil
+                return QuickActionResult(succeeded: false, errorMessage: message)
+            }
             await mutation(self).value
-            return self.saveError == nil
+            guard self.requestIdentity() == requestedIdentity else {
+                return QuickActionResult(succeeded: false, errorMessage: nil)
+            }
+            let message = self.saveError
+            return QuickActionResult(succeeded: message == nil, errorMessage: message)
         }
         quickActionChain = Task { _ = await task.value }
         return await task.value
+    }
+
+    /// Waits for any queued row saves to settle before closing Customize Mode.
+    /// Returns `false` if a pending save ended with an error so the editor
+    /// stays visible to show the failure instead of dismissing silently.
+    func waitForPendingSaves() async -> Bool {
+        guard pendingSaveCount > 0 else { return true }
+        var generation: Int
+        repeat {
+            generation = editGeneration
+            await saveChain?.value
+        } while generation != editGeneration || pendingSaveCount > 0
+        return saveError == nil
     }
 
     func resetToServerDefault() async {
@@ -629,9 +745,12 @@ final class HomeSectionsEditorModel {
                 // Invalidate pre-reset state immediately once the server accepts DELETE
                 // so a failed reload can never resend pre-reset overrides.
                 self.editGeneration += 1
+                self.auth = nil
                 self.saved = []
                 self.confirmedRows = []
                 self.committedRows = []
+                self.pendingEdits.removeAll()
+                self.pendingEditsIdentity = nil
                 self.dragDraftVisibleOrder = nil
                 self.hasLoadedFromServer = false
                 self.phase = .loading
@@ -646,9 +765,12 @@ final class HomeSectionsEditorModel {
                 // server (keeping edits blocked if the reload also fails) so a
                 // subsequent edit can never re-upload stale pre-reset overrides.
                 self.editGeneration += 1
+                self.auth = nil
                 self.saved = []
                 self.confirmedRows = []
                 self.committedRows = []
+                self.pendingEdits.removeAll()
+                self.pendingEditsIdentity = nil
                 self.dragDraftVisibleOrder = nil
                 self.hasLoadedFromServer = false
                 self.phase = .loading
@@ -686,9 +808,15 @@ final class HomeSectionsEditorModel {
                 }
                 auth = layout.auth
                 saved = layout.saved
-                committedRows = layout.rows
-                dragDraftVisibleOrder = nil
                 confirmedRows = layout.rows
+                if pendingEditsIdentity == expectedIdentity, !pendingEdits.isEmpty {
+                    committedRows = Self.reapply(pendingEdits, to: layout.rows)
+                } else {
+                    pendingEdits.removeAll()
+                    pendingEditsIdentity = nil
+                    committedRows = layout.rows
+                }
+                dragDraftVisibleOrder = nil
                 hasLoadedFromServer = true
                 saveError = preservingError
                 phase = .loaded
@@ -713,14 +841,36 @@ final class HomeSectionsEditorModel {
 
     // MARK: - Persistence
 
-    private func apply(_ next: [APIv2ProfileSectionSetting]) -> Task<Void, Never> {
-        guard phase == .loaded, !isResetting, next != committedRows else { return Task {} }
+    private static func reapply(
+        _ edits: [PendingEdit],
+        to base: [APIv2ProfileSectionSetting]
+    ) -> [APIv2ProfileSectionSetting] {
+        edits.reduce(base) { current, edit in
+            edit.applyTo(current) ?? current
+        }
+    }
+
+    private func applyEdit(
+        _ transform: @escaping ([APIv2ProfileSectionSetting]) -> [APIv2ProfileSectionSetting]?
+    ) -> Task<Void, Never> {
+        guard phase == .loaded, !isResetting,
+              let next = transform(committedRows),
+              next != committedRows else { return Task {} }
         dragDraftVisibleOrder = nil
         committedRows = next
         saveError = nil
         editGeneration += 1
+        let gen = editGeneration
+        let identity = requestIdentity()
+        if pendingEditsIdentity != identity {
+            pendingEdits.removeAll()
+            pendingEditsIdentity = identity
+        }
+        pendingEdits.append(PendingEdit(generation: gen, applyTo: transform))
+        pendingSaveCount += 1
         let previous = saveChain
         let task = Task { @MainActor in
+            defer { self.pendingSaveCount = max(0, self.pendingSaveCount - 1) }
             await previous?.value
             await self.saveCurrentRows()
         }
@@ -729,7 +879,12 @@ final class HomeSectionsEditorModel {
     }
 
     private func saveCurrentRows() async {
-        guard let auth, committedRows != confirmedRows else { return }
+        guard phase == .loaded, hasLoadedFromServer, let auth else { return }
+        guard committedRows != confirmedRows else {
+            pendingEdits.removeAll { $0.generation <= editGeneration }
+            if pendingEdits.isEmpty { pendingEditsIdentity = nil }
+            return
+        }
         let startIdentity = requestIdentity()
         let sent = committedRows
         let sentGeneration = editGeneration
@@ -746,19 +901,28 @@ final class HomeSectionsEditorModel {
             guard requestIdentity() == startIdentity else { return }
             saved = overrides
             confirmedRows = sent
+            pendingEdits.removeAll { $0.generation <= sentGeneration }
+            if pendingEdits.isEmpty { pendingEditsIdentity = nil }
             saveError = nil
             Self.refreshScope(scope)
         } catch {
             guard requestIdentity() == startIdentity else { return }
             let message = ErrorState(error).message
+            pendingEdits.removeAll { $0.generation <= sentGeneration }
+            if pendingEdits.isEmpty { pendingEditsIdentity = nil }
             if APIv2MutationOutcome(error).mayHaveApplied {
                 // PUT may have committed on the server before the response was
                 // lost; clear the stale baseline and reconcile from the server
-                // so a subsequent edit cannot replace a committed custom row.
-                editGeneration += 1
+                // without invalidating or discarding newer queued edits. Any
+                // edits newer than `sentGeneration` stay in `pendingEdits`, get
+                // rebased over the authoritative reload, and are sent by the
+                // next queued save in `saveChain`.
+                self.auth = nil
                 saved = []
                 confirmedRows = []
-                committedRows = []
+                if pendingEdits.isEmpty {
+                    committedRows = []
+                }
                 dragDraftVisibleOrder = nil
                 hasLoadedFromServer = false
                 phase = .loading
@@ -766,10 +930,13 @@ final class HomeSectionsEditorModel {
                 Self.refreshScope(scope)
                 await reloadAfterReset(expectedIdentity: startIdentity, preservingError: message)
             } else {
-                // Definite rejection: restore confirmedRows unless a newer edit
-                // superseded this save, without clobbering an active drag draft.
+                // Definite rejection: restore confirmedRows (or rebase newer
+                // queued edits onto confirmedRows) without clobbering an active
+                // drag draft.
                 if editGeneration == sentGeneration {
                     committedRows = confirmedRows
+                } else {
+                    committedRows = Self.reapply(pendingEdits, to: confirmedRows)
                 }
                 saveError = message
             }
@@ -845,9 +1012,17 @@ final class HomePreferencesModel {
     private(set) var supportedKeys = Set<SettingKey>()
     private var reconcilingKeys = Set<KeyScope>()
 
+    private struct DeferredWrite {
+        let generation: Int
+        let value: SettingJSONValue
+        let onConfirm: @MainActor () -> Void
+        let onRevertToConfirmed: @MainActor () -> Void
+    }
+
     @ObservationIgnored private let transport: ProfileScopedSettingTransport
     @ObservationIgnored private let writer: ProfileSettingsWriter
     @ObservationIgnored private let requestIdentity: @MainActor () -> HTTPRequestIdentity?
+    @ObservationIgnored private var activeIdentity: HTTPRequestIdentity?
     @ObservationIgnored private var loadedIdentity: HTTPRequestIdentity?
     @ObservationIgnored private var loadSequence = 0
     @ObservationIgnored private var confirmedNextUpMode: NextUpMode = .combined
@@ -857,6 +1032,7 @@ final class HomePreferencesModel {
     @ObservationIgnored private var pendingWrites: [KeyScope: Int] = [:]
     @ObservationIgnored private var settledWrites: [KeyScope: Int] = [:]
     @ObservationIgnored private var uncertainConfirmedKeys = Set<KeyScope>()
+    @ObservationIgnored private var deferredWrites: [KeyScope: DeferredWrite] = [:]
     @ObservationIgnored private var keyWriteTail: [KeyScope: Task<Void, Never>] = [:]
     @ObservationIgnored private var activeWriteCount = 0
 
@@ -874,6 +1050,11 @@ final class HomePreferencesModel {
         self.transport = transport
         self.writer = writer
         self.requestIdentity = requestIdentity
+    }
+
+    var hasReconcilingKeys: Bool {
+        guard let identity = requestIdentity() else { return false }
+        return reconcilingKeys.contains { $0.identity == identity }
     }
 
     func canEdit(_ key: SettingKey) -> Bool {
@@ -903,8 +1084,16 @@ final class HomePreferencesModel {
             isAuthorized = false
             supportedKeys = []
             loadedIdentity = nil
+            activeIdentity = nil
+            deferredWrites.removeAll()
+            reconcilingKeys.removeAll()
             errorMessage = nil
             return
+        }
+        if activeIdentity != identity {
+            deferredWrites = deferredWrites.filter { $0.key.identity == identity }
+            reconcilingKeys = reconcilingKeys.filter { $0.identity == identity }
+            activeIdentity = identity
         }
         if loadedIdentity != identity {
             isAuthorized = false
@@ -936,8 +1125,19 @@ final class HomePreferencesModel {
             isAuthorized = false
             supportedKeys = []
             loadedIdentity = nil
-            if case .failed(let err) = capabilitiesResult {
+            switch capabilitiesResult {
+            case .unavailable, .serverUpgradeRequired:
+                // Server authoritatively does not support profile-scoped settings;
+                // drop any owed writes and release locks for this identity.
+                for key in Self.preferenceKeys {
+                    let scope = KeyScope(identity: identity, key: key)
+                    deferredWrites.removeValue(forKey: scope)
+                    reconcilingKeys.remove(scope)
+                }
+            case .failed(let err):
                 errorMessage = preservingError ?? ErrorState(err).message
+            case .available:
+                break
             }
             return
         }
@@ -947,6 +1147,11 @@ final class HomePreferencesModel {
             isAuthorized = false
             supportedKeys = []
             loadedIdentity = nil
+            for key in Self.preferenceKeys {
+                let scope = KeyScope(identity: identity, key: key)
+                deferredWrites.removeValue(forKey: scope)
+                reconcilingKeys.remove(scope)
+            }
             return
         }
 
@@ -958,6 +1163,7 @@ final class HomePreferencesModel {
             guard !Task.isCancelled, loadSequence == sequence, requestIdentity() == identity else { return }
             let byKey = response.byKey
             var resolvedKeys = Set<SettingKey>()
+            var deferredToDispatch: [(SettingKey, DeferredWrite)] = []
 
             func isUntouched(_ key: SettingKey) -> Bool {
                 let scope = KeyScope(identity: identity, key: key)
@@ -971,10 +1177,15 @@ final class HomePreferencesModel {
                 if isUntouched(.uiNextUpMode) {
                     let serverVal = byKey[.uiNextUpMode]?.value.stringValue.flatMap(NextUpMode.init(rawValue:)) ?? .combined
                     confirmedNextUpMode = serverVal
-                    nextUpMode = serverVal
                     let scope = KeyScope(identity: identity, key: .uiNextUpMode)
                     uncertainConfirmedKeys.remove(scope)
                     reconcilingKeys.remove(scope)
+                    if let deferred = deferredWrites.removeValue(forKey: scope),
+                       deferred.generation == keyGeneration[scope] {
+                        deferredToDispatch.append((.uiNextUpMode, deferred))
+                    } else {
+                        nextUpMode = serverVal
+                    }
                 }
             }
             if keysSupportedByContract.contains(.uiNextUpNewReleasesFirst), response.servesAll([.uiNextUpNewReleasesFirst]) {
@@ -982,10 +1193,15 @@ final class HomePreferencesModel {
                 if isUntouched(.uiNextUpNewReleasesFirst) {
                     let serverVal = byKey[.uiNextUpNewReleasesFirst]?.value.boolValue ?? false
                     confirmedNewReleasesFirst = serverVal
-                    newReleasesFirst = serverVal
                     let scope = KeyScope(identity: identity, key: .uiNextUpNewReleasesFirst)
                     uncertainConfirmedKeys.remove(scope)
                     reconcilingKeys.remove(scope)
+                    if let deferred = deferredWrites.removeValue(forKey: scope),
+                       deferred.generation == keyGeneration[scope] {
+                        deferredToDispatch.append((.uiNextUpNewReleasesFirst, deferred))
+                    } else {
+                        newReleasesFirst = serverVal
+                    }
                 }
             }
             if keysSupportedByContract.contains(.homeHideWatchedItems), response.servesAll([.homeHideWatchedItems]) {
@@ -993,17 +1209,39 @@ final class HomePreferencesModel {
                 if isUntouched(.homeHideWatchedItems) {
                     let serverVal = byKey[.homeHideWatchedItems]?.value.boolValue ?? false
                     confirmedHideWatchedItems = serverVal
-                    hideWatchedItems = serverVal
                     let scope = KeyScope(identity: identity, key: .homeHideWatchedItems)
                     uncertainConfirmedKeys.remove(scope)
                     reconcilingKeys.remove(scope)
+                    if let deferred = deferredWrites.removeValue(forKey: scope),
+                       deferred.generation == keyGeneration[scope] {
+                        deferredToDispatch.append((.homeHideWatchedItems, deferred))
+                    } else {
+                        hideWatchedItems = serverVal
+                    }
                 }
+            }
+
+            for key in Self.preferenceKeys where !resolvedKeys.contains(key) {
+                let scope = KeyScope(identity: identity, key: key)
+                deferredWrites.removeValue(forKey: scope)
+                reconcilingKeys.remove(scope)
             }
 
             loadedIdentity = identity
             supportedKeys = resolvedKeys
             isAuthorized = !resolvedKeys.isEmpty
             errorMessage = preservingError
+
+            for (key, deferred) in deferredToDispatch {
+                enqueueWrite(
+                    key: key,
+                    value: deferred.value,
+                    identity: identity,
+                    onConfirm: deferred.onConfirm,
+                    onRevertToConfirmed: deferred.onRevertToConfirmed
+                )
+            }
+
             let needsReconciliation = resolvedKeys.contains { key in
                 let scope = KeyScope(identity: identity, key: key)
                 return reconcilingKeys.contains(scope) && pendingWrites[scope, default: 0] == 0
@@ -1068,6 +1306,7 @@ final class HomePreferencesModel {
         let scope = KeyScope(identity: identity, key: key)
         let generation = keyGeneration[scope, default: 0] + 1
         keyGeneration[scope] = generation
+        deferredWrites.removeValue(forKey: scope)
         pendingWrites[scope, default: 0] += 1
         errorMessage = nil
         let previous = keyWriteTail[scope]
@@ -1075,20 +1314,37 @@ final class HomePreferencesModel {
             await previous?.value
             guard let self else { return }
             var dispatched = false
+            var scheduleRecoveryLoad = false
             defer {
                 self.pendingWrites[scope] = max(0, self.pendingWrites[scope, default: 0] - 1)
                 if dispatched {
                     self.settledWrites[scope, default: 0] += 1
                 }
+                if scheduleRecoveryLoad {
+                    let preservedError = self.errorMessage
+                    Task { @MainActor [weak self] in
+                        await self?.load(preservingError: preservedError)
+                    }
+                }
             }
-            // Skip obsolete writes superseded while waiting.
-            guard self.keyGeneration[scope] == generation else { return }
-            // If authorization was revoked while this latest intent was queued,
-            // do not bump `settledWrites` (nothing reached the server) and keep
-            // the key locked in `reconcilingKeys` until a recovery load installs
-            // the authoritative server value.
+            // Skip obsolete writes superseded while waiting, or writes from a
+            // previous account/profile after switching.
+            guard self.keyGeneration[scope] == generation,
+                  self.requestIdentity() == identity else { return }
+            // If authorization is temporarily unavailable (or this key is
+            // reconciling), retain the user's latest intent in `deferredWrites`,
+            // lock the key, and schedule an authoritative recovery load after
+            // decrementing `pendingWrites`. Once `load()` confirms authorization
+            // for `identity`, it retries this owed write automatically.
             guard self.isAuthorizedForWrite(key, identity: identity) else {
+                self.deferredWrites[scope] = DeferredWrite(
+                    generation: generation,
+                    value: value,
+                    onConfirm: onConfirm,
+                    onRevertToConfirmed: onRevertToConfirmed
+                )
                 self.reconcilingKeys.insert(scope)
+                scheduleRecoveryLoad = true
                 return
             }
             dispatched = true
@@ -1118,7 +1374,7 @@ final class HomePreferencesModel {
                 // A superseded attempt may still have landed on the server;
                 // mark the confirmed baseline uncertain until a newer write
                 // succeeds or a fresh load reconciles the authoritative value.
-                if self.requestIdentity() == identity, self.loadedIdentity == identity {
+                if self.requestIdentity() == identity {
                     self.uncertainConfirmedKeys.insert(scope)
                 }
                 return
@@ -1127,7 +1383,7 @@ final class HomePreferencesModel {
                 // hold the new value; record uncertainty even if a newer write
                 // superseded this generation, and lock + reconcile immediately
                 // if this write is still the latest.
-                if self.requestIdentity() == identity, self.loadedIdentity == identity {
+                if self.requestIdentity() == identity {
                     self.uncertainConfirmedKeys.insert(scope)
                 }
                 guard self.keyGeneration[scope] == generation,

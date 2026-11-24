@@ -349,4 +349,330 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertTrue(HomeSectionsEditorModel.matchesRecipe(unfilteredWatchlist, sectionType: "watchlist", params: [:]))
         XCTAssertFalse(HomeSectionsEditorModel.matchesRecipe(unfilteredWatchlist, sectionType: "watchlist", params: ["media_type": .string("movie")]))
     }
+
+    @MainActor
+    func testUncertainLayoutSavePreservesAndRebasesNewerQueuedEdit() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "layout-test")
+        await tokens.setServerUrl("https://layout.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "layout-test",
+            serverURL: "https://layout.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+
+        let initialSettings = """
+        {"items":[
+          {"id":"sec-a","section_type":"recently_added","title":"A","default_title":"A","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":0},
+          {"id":"sec-b","section_type":"recently_added","title":"B","default_title":"B","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":1},
+          {"id":"sec-c","section_type":"recently_added","title":"C","default_title":"C","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":2}
+        ]}
+        """
+        let initialOverrides = #"{"items":[]}"#
+        stub.reply(path: "/api/v2/profile/sections/settings", 200, initialSettings)
+        stub.reply(path: "/api/v2/profile/sections", 200, initialOverrides)
+
+        let editor = HomeSectionsEditorModel(scope: .home, api: api, requestIdentity: { identity })
+        let loaded = await editor.load()
+        XCTAssertTrue(loaded)
+
+        // Authoritative reload reflects that PUT #1 (hiding sec-a) committed on the server
+        // before the response was lost.
+        let reloadedSettings = """
+        {"items":[
+          {"id":"sec-a","section_type":"recently_added","title":"A","default_title":"A","featured":false,"item_limit":20,"hidden":true,"is_custom":false,"customized":true,"position":0},
+          {"id":"sec-b","section_type":"recently_added","title":"B","default_title":"B","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":1},
+          {"id":"sec-c","section_type":"recently_added","title":"C","default_title":"C","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":2}
+        ]}
+        """
+        let reloadedOverrides = #"{"items":[{"id":"ovr-a","section_id":"sec-a","hidden":true,"removed":false,"section_type":"","title":"","is_user_added":false,"user_section_type":"","user_title":""}]}"#
+
+        stub.reply(path: "/api/v2/profile/sections/settings", 200, reloadedSettings)
+        // Sequence on /api/v2/profile/sections:
+        // 1) PUT #1 loses connection (uncertain outcome)
+        // 2) GET during reloadAfterReset returns reloadedOverrides
+        // 3) PUT #2 (rebased Edit 2) succeeds with 200
+        stub.sequence(path: "/api/v2/profile/sections", [
+            .failure(URLError(.networkConnectionLost)),
+            .json(200, reloadedOverrides),
+            .json(200, "{}"),
+        ])
+        stub.hold(path: "/api/v2/profile/sections")
+
+        let edit1 = editor.setHidden(true, id: "sec-a")
+        await stub.waitUntilHeld()
+
+        // Queue Edit 2 while PUT #1 is still in flight.
+        let edit2 = editor.setHidden(true, id: "sec-b")
+        stub.release()
+
+        await edit1.value
+        await edit2.value
+
+        XCTAssertEqual(editor.phase, .loaded)
+        XCTAssertNil(editor.saveError)
+        XCTAssertEqual(editor.rows.map(\.hidden), [true, true, false])
+        let putRequests = stub.requests.filter { $0.method == "PUT" && $0.path == "/api/v2/profile/sections" }
+        XCTAssertEqual(putRequests.count, 2)
+    }
+
+    @MainActor
+    func testPerformQuickActionAbortsWhenIdentityChanges() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "layout-test")
+        await tokens.setServerUrl("https://layout.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        var currentIdentity = HTTPRequestIdentity(
+            serverId: "layout-test",
+            serverURL: "https://layout.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+        let settingsJSON = """
+        {"items":[
+          {"id":"sec-a","section_type":"recently_added","title":"A","default_title":"A","featured":false,"item_limit":20,"hidden":false,"is_custom":false,"customized":false,"position":0}
+        ]}
+        """
+        stub.reply(path: "/api/v2/profile/sections/settings", 200, settingsJSON)
+        stub.reply(path: "/api/v2/profile/sections", 200, #"{"items":[]}"#)
+        stub.hold(path: "/api/v2/profile/sections/settings")
+
+        let editor = HomeSectionsEditorModel(scope: .home, api: api, requestIdentity: { currentIdentity })
+
+        let first = Task {
+            await editor.performQuickAction { $0.setHidden(true, id: "sec-a") }
+        }
+        await stub.waitUntilHeld()
+
+        var secondMutationRan = false
+        let second = Task {
+            await editor.performQuickAction { model in
+                secondMutationRan = true
+                return model.setHidden(true, id: "sec-a")
+            }
+        }
+        await Task.yield()
+
+        // Switch profile before releasing the first action's load.
+        currentIdentity = HTTPRequestIdentity(
+            serverId: "layout-test",
+            serverURL: "https://layout.example",
+            profileId: "profile-two",
+            clientFamily: "ios"
+        )
+        stub.release()
+
+        let firstResult = await first.value
+        let secondResult = await second.value
+
+        XCTAssertFalse(firstResult.succeeded)
+        XCTAssertFalse(secondResult.succeeded)
+        XCTAssertNil(secondResult.errorMessage)
+        XCTAssertFalse(secondMutationRan)
+        XCTAssertTrue(stub.requests.filter { $0.method == "PUT" }.isEmpty)
+    }
+
+    @MainActor
+    func testHomePreferencesPreservesAndRetriesQueuedWriteAfterAuthorizationRecovery() async throws {
+        let identity = HTTPRequestIdentity(
+            serverId: "prefs-test",
+            serverURL: "https://prefs.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+        let scopedTransport = FakeHomePreferencesTransport()
+        let writeTransport = FakeHomePreferencesWriteTransport()
+        let writer = ProfileSettingsWriter(
+            transport: writeTransport,
+            sleep: { _ in }
+        )
+        let model = HomePreferencesModel(
+            transport: scopedTransport,
+            writer: writer,
+            requestIdentity: { identity }
+        )
+
+        await model.load()
+        XCTAssertTrue(model.isAuthorized)
+        XCTAssertFalse(model.hideWatchedItems)
+        guard model.canEdit(.homeHideWatchedItems) else {
+            XCTFail("Expected homeHideWatchedItems to be editable after load")
+            return
+        }
+
+        // Hold Write 1 in flight, enqueue Write 2 behind it, then transiently fail a refresh
+        // so Write 2 sees authorization unavailable when it wakes up.
+        writeTransport.holdNextWrite()
+        model.setHideWatchedItems(true)
+        await writeTransport.waitUntilWriteHeld()
+
+        model.setHideWatchedItems(false)
+
+        scopedTransport.capabilities = .failed(.transport(description: "offline"))
+        await model.load()
+        XCTAssertFalse(model.isAuthorized)
+
+        // Restore capabilities before releasing Write 1; the server still reports `true`
+        // (old value) during recovery so we prove recovery does NOT discard Write 2 (`false`).
+        scopedTransport.capabilities = .available(FakeHomePreferencesTransport.makeCapabilities())
+        scopedTransport.hideWatchedItems = true
+        writeTransport.releaseHeldWrite()
+
+        // Wait for recovery load and automatic retry of Write 2 to complete.
+        for _ in 0..<100 {
+            if model.isAuthorized,
+               !model.hasReconcilingKeys,
+               writeTransport.writtenValues.last == .bool(false) {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertTrue(model.isAuthorized)
+        XCTAssertFalse(model.hasReconcilingKeys)
+        XCTAssertFalse(model.hideWatchedItems)
+        XCTAssertEqual(writeTransport.writtenValues.last, .bool(false))
+    }
+}
+
+@MainActor
+private final class FakeHomePreferencesTransport: ProfileScopedSettingTransport, @unchecked Sendable {
+    var capabilities: SettingsCapabilitiesResult = .available(FakeHomePreferencesTransport.makeCapabilities())
+    var hideWatchedItems = false
+
+    static func makeCapabilities() -> APIv2SettingsContractCapabilities {
+        APIv2SettingsContractCapabilities(
+            revision: "capabilities-20",
+            state: "available",
+            allowed: true,
+            manifestRevision: 20,
+            clientFamilies: ["tv", "mobile", "tablet", "desktop", "web"],
+            supportsBatchedEffective: true
+        )
+    }
+
+    nonisolated func contractCapabilities(
+        requestIdentity: HTTPRequestIdentity
+    ) async -> SettingsCapabilitiesResult {
+        await MainActor.run { capabilities }
+    }
+
+    nonisolated func effectiveValues(
+        keys: [SettingKey],
+        requestIdentity: HTTPRequestIdentity
+    ) async throws -> EffectiveSettingValuesResponse {
+        let hideWatched = await MainActor.run { hideWatchedItems }
+        let rows: [[String: Any]] = keys.map { key in
+            switch key {
+            case .uiNextUpMode:
+                return ["key": key.rawValue, "value": "combined", "source": "profile"]
+            case .uiNextUpNewReleasesFirst:
+                return ["key": key.rawValue, "value": false, "source": "profile"]
+            case .homeHideWatchedItems:
+                return ["key": key.rawValue, "value": hideWatched, "source": "profile"]
+            default:
+                return ["key": key.rawValue, "value": false, "source": "profile"]
+            }
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["items": rows, "revision": 1])
+        return try SettingsWireCoding.makeDecoder().decode(EffectiveSettingValuesResponse.self, from: data)
+    }
+
+    nonisolated func putProfileValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        requestIdentity: HTTPRequestIdentity
+    ) async throws {}
+}
+
+@MainActor
+private final class FakeHomePreferencesWriteTransport: ProfileSettingsTransport, @unchecked Sendable {
+    private(set) var writtenValues: [SettingJSONValue] = []
+    private var shouldHoldNext = false
+    private var heldArrived = false
+    private var released = false
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func holdNextWrite() {
+        shouldHoldNext = true
+        heldArrived = false
+        released = false
+    }
+
+    func waitUntilWriteHeld() async {
+        if heldArrived { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
+    }
+
+    func releaseHeldWrite() {
+        shouldHoldNext = false
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    private func waitUntilReleased() async {
+        if released { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    nonisolated func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        profileId: String?
+    ) async throws {
+        try await putValue(key: key, value: value, profileId: profileId, requestIdentity: nil)
+    }
+
+    nonisolated func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        profileId: String?,
+        requestIdentity: HTTPRequestIdentity?
+    ) async throws {
+        let hold = await MainActor.run { () -> Bool in
+            if shouldHoldNext {
+                shouldHoldNext = false
+                heldArrived = true
+                let waiters = heldWaiters
+                heldWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+                return true
+            }
+            return false
+        }
+        if hold {
+            await waitUntilReleased()
+        }
+        await MainActor.run {
+            writtenValues.append(value)
+        }
+    }
+
+    nonisolated func effectiveValues(
+        keys: [SettingKey]
+    ) async throws -> EffectiveSettingValuesResponse {
+        let data = try JSONSerialization.data(withJSONObject: ["items": [], "revision": 1])
+        return try SettingsWireCoding.makeDecoder().decode(EffectiveSettingValuesResponse.self, from: data)
+    }
 }

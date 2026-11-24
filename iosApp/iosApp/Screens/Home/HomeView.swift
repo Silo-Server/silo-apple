@@ -430,24 +430,24 @@ struct HomeView: View {
             onSetWatched: setWatched,
             onMoveToTop: {
                 Task {
-                    let ok = await homeEditor.performQuickAction { editor in
+                    let result = await homeEditor.performQuickAction { editor in
                         editor.moveToTop(id: section.id)
                     }
-                    if ok {
+                    if result.succeeded {
                         await viewModel.loadSections()
-                    } else if let message = homeEditor.saveError {
+                    } else if let message = result.errorMessage {
                         viewModel.presentActionError(message: message)
                     }
                 }
             },
             onHideRow: {
                 Task {
-                    let ok = await homeEditor.performQuickAction { editor in
+                    let result = await homeEditor.performQuickAction { editor in
                         editor.setHidden(true, id: section.id)
                     }
-                    if ok {
+                    if result.succeeded {
                         await viewModel.loadSections()
-                    } else if let message = homeEditor.saveError {
+                    } else if let message = result.errorMessage {
                         viewModel.presentActionError(message: message)
                     }
                 }

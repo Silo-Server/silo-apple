@@ -72,7 +72,7 @@ struct IOSAddRowSheet: View {
             }
         }
         .task {
-            await editor.loadPickerCatalogIfNeeded()
+            await editor.loadPickerCatalogIfNeeded(force: true)
         }
     }
 
@@ -1211,7 +1211,7 @@ private struct IOSCollectionPostersBuilderView: View {
 
     private let maxCollections = 30
 
-    @State private var rowName = "Collections"
+    @State private var rowName = AppLanguage.string(.collectionsTitle)
     @State private var selectedRefs: [SelectedRef] = []
     @State private var searchText = ""
     @Environment(\.locale) private var locale

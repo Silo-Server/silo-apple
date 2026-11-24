@@ -23,6 +23,7 @@ struct IOSHomeCustomizeView: View {
     @State private var isHiddenExpanded = false
     @State private var isShowingAddRow = false
     @State private var isShowingOptions = false
+    @State private var isFinishingDone = false
     @State private var hapticCount = 0
     @State private var dragStartHaptic = 0
     @State private var preferences = HomePreferencesModel()
@@ -73,7 +74,7 @@ struct IOSHomeCustomizeView: View {
             isHiddenExpanded = false
             editor.seedPreviewRowsIfEmpty(from: loadedSections, locale: locale)
             async let layoutLoad = editor.load()
-            async let catalogPrewarm: Void = editor.loadPickerCatalogIfNeeded()
+            async let catalogPrewarm: Void = editor.loadPickerCatalogIfNeeded(force: true)
             _ = await (layoutLoad, catalogPrewarm)
         }
         #if os(iOS)
@@ -607,19 +608,35 @@ struct IOSHomeCustomizeView: View {
             .accessibilityLabel(.homeCustomizeOptions)
 
             Button {
+                guard !isFinishingDone else { return }
                 hapticCount += 1
-                editor.triggerFeedRefresh()
-                onDone()
+                isFinishingDone = true
+                Task {
+                    let settled = await editor.waitForPendingSaves()
+                    isFinishingDone = false
+                    if settled {
+                        editor.triggerFeedRefresh()
+                        onDone()
+                    }
+                }
             } label: {
-                Text(.commonDone)
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(Capsule().fill(Color.white))
-                    .contentShape(Capsule())
+                HStack(spacing: 6) {
+                    if isFinishingDone {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(.black)
+                    }
+                    Text(.commonDone)
+                        .font(.subheadline.weight(.bold))
+                }
+                .foregroundStyle(.black)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(Capsule().fill(Color.white))
+                .contentShape(Capsule())
             }
             .buttonStyle(.plain)
+            .disabled(isFinishingDone)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -910,7 +927,7 @@ struct IOSHomeOptionsSheet: View {
                                 Label(error, systemImage: "exclamationmark.triangle")
                                     .font(.footnote)
                                     .foregroundStyle(Color.siloSecondaryText)
-                                if !preferences.isAuthorized {
+                                if !preferences.isAuthorized || preferences.hasReconcilingKeys {
                                     Button(.commonRetry) {
                                         Task { await preferences.load() }
                                     }

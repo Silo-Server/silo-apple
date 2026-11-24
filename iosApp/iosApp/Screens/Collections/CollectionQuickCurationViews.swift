@@ -43,7 +43,7 @@ struct CollectionPinActionBar: View {
                     set: { if !$0 { model.clearError() } }
                 )
             ) {
-                if !model.hasLoadedHome {
+                if model.hasFailedLoad {
                     Button(.commonRetry) {
                         Task { await model.load() }
                     }
@@ -64,7 +64,7 @@ struct CollectionPinActionBar: View {
                     set: { if !$0 { model.clearError() } }
                 )
             ) {
-                if !model.hasLoadedHome {
+                if model.hasFailedLoad {
                     Button(.commonRetry) {
                         Task { await model.load() }
                     }
@@ -136,7 +136,7 @@ struct CollectionPinActionBar: View {
                     }
                     .disabled(model.isLoading || !model.hasLoadedHome || model.isUpdatingHome)
 
-                    if (!model.hasLoadedHome || model.hasFailedLibraryPlacement) && !model.isLoading {
+                    if model.hasFailedLoad && !model.isLoading {
                         Button {
                             Task { await model.load() }
                         } label: {
@@ -230,7 +230,7 @@ struct CollectionPinActionBar: View {
                             isEnabled: !model.isLoading && model.hasLoadedHome && !model.isUpdatingHome
                         ),
                     ]
-                    if (!model.hasLoadedHome || model.hasFailedLibraryPlacement) && !model.isLoading {
+                    if model.hasFailedLoad && !model.isLoading {
                         items.append(TVActionPopoverItem(
                             id: "retry",
                             title: AppLanguage.string(.commonRetry, locale: locale),
@@ -394,6 +394,8 @@ struct IOSAddToCollectionSheet: View {
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(model.busyCollectionIds.contains(entry.id))
+                                .accessibilityValue(Text(entry.containsItem ? LocalizedStringResource.detailActionOn : .detailActionOff))
+                                .accessibilityAddTraits(entry.containsItem ? [.isSelected] : [])
                             }
                             if !model.hasLoaded && !model.isLoading && model.errorMessage == nil {
                                 Button(.commonRetry) {

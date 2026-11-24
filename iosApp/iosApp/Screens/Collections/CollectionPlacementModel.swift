@@ -18,6 +18,10 @@ final class CollectionPlacementModel {
         libraryDiscoveryFailed || libraryPlacements.contains { !$0.hasLoaded }
     }
 
+    var hasFailedLoad: Bool {
+        !hasLoadedHome || hasFailedLibraryPlacement || shareLoadFailed
+    }
+
     let collectionId: String
     let collectionTitle: String
     let isUserCollection: Bool
@@ -29,6 +33,7 @@ final class CollectionPlacementModel {
     private(set) var libraryDiscoveryFailed = false
     private(set) var isShared = false
     private(set) var canToggleShare = false
+    private(set) var shareLoadFailed = false
     private(set) var isLoading = false
     private(set) var isUpdatingHome = false
     private(set) var updatingLibraryIds = Set<Int>()
@@ -82,11 +87,14 @@ final class CollectionPlacementModel {
             do { return .success(try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: true)) }
             catch { return .failure(error) }
         }()
-        async let editorRead: CollectionEditor<UserCollection>? = isUserCollection
-            ? (try? await api.collectionEditor(id: collectionId))
+        async let editorRead: Result<CollectionEditor<UserCollection>, Error>? = isUserCollection
+            ? await {
+                do { return .success(try await api.collectionEditor(id: collectionId)) }
+                catch { return .failure(error) }
+            }()
             : nil
 
-        let (homeResult, librariesResult, editor) = await (homeRead, librariesRead, editorRead)
+        let (homeResult, librariesResult, editorResult) = await (homeRead, librariesRead, editorRead)
         guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == startIdentity else { return }
 
         switch homeResult {
@@ -106,10 +114,18 @@ final class CollectionPlacementModel {
             }
         }
 
-        if let editor, !isUpdatingShare && shareMutationGeneration == startShareGen {
-            collectionVersion = editor.version
-            isShared = editor.value.isShared ?? false
-            canToggleShare = true
+        if let editorResult, !isUpdatingShare && shareMutationGeneration == startShareGen {
+            switch editorResult {
+            case .success(let editor):
+                collectionVersion = editor.version
+                isShared = editor.value.isShared ?? false
+                canToggleShare = true
+                shareLoadFailed = false
+            case .failure:
+                collectionVersion = nil
+                canToggleShare = false
+                shareLoadFailed = true
+            }
         }
 
         switch librariesResult {
@@ -199,8 +215,25 @@ final class CollectionPlacementModel {
             HomeSectionsEditorModel.refreshScope(.home)
         } catch {
             guard requestIdentity() == startIdentity else { return }
-            isPinnedOnHome = !targetPinned
-            errorMessage = ErrorState(error).message
+            let message = ErrorState(error).message
+            if APIv2MutationOutcome(error).mayHaveApplied {
+                HomeSectionsEditorModel.refreshScope(.home)
+                if let fresh = try? await api.profileLayout(scope: .home),
+                   requestIdentity() == startIdentity {
+                    isPinnedOnHome = ProfileHomeLayout.pinnedCollectionRow(
+                        collectionId: collectionId,
+                        isUserCollection: isUserCollection,
+                        in: fresh.rows
+                    ) != nil
+                    hasLoadedHome = true
+                } else if requestIdentity() == startIdentity {
+                    isPinnedOnHome = false
+                    hasLoadedHome = false
+                }
+            } else {
+                isPinnedOnHome = !targetPinned
+            }
+            errorMessage = message
         }
     }
 
@@ -236,10 +269,27 @@ final class CollectionPlacementModel {
             HomeSectionsEditorModel.refreshScope(.library(libraryId))
         } catch {
             guard requestIdentity() == startIdentity else { return }
-            if let refreshedIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
+            let message = ErrorState(error).message
+            if APIv2MutationOutcome(error).mayHaveApplied {
+                HomeSectionsEditorModel.refreshScope(.library(libraryId))
+                if let fresh = try? await api.profileLayout(scope: .library(libraryId)),
+                   requestIdentity() == startIdentity,
+                   let refreshedIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
+                    libraryPlacements[refreshedIdx].isPinned = ProfileHomeLayout.pinnedCollectionRow(
+                        collectionId: collectionId,
+                        isUserCollection: isUserCollection,
+                        in: fresh.rows
+                    ) != nil
+                    libraryPlacements[refreshedIdx].hasLoaded = true
+                } else if requestIdentity() == startIdentity,
+                          let refreshedIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
+                    libraryPlacements[refreshedIdx].isPinned = false
+                    libraryPlacements[refreshedIdx].hasLoaded = false
+                }
+            } else if let refreshedIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
                 libraryPlacements[refreshedIdx].isPinned = !targetPinned
             }
-            errorMessage = ErrorState(error).message
+            errorMessage = message
         }
     }
 
@@ -275,13 +325,26 @@ final class CollectionPlacementModel {
                shareMutationGeneration == myShareGen {
                 collectionVersion = fresh.version
                 isShared = fresh.value.isShared ?? isShared
+                shareLoadFailed = false
             } else if requestIdentity() == startIdentity, shareMutationGeneration == myShareGen {
                 collectionVersion = nil
             }
         } catch {
             guard requestIdentity() == startIdentity, shareMutationGeneration == myShareGen else { return }
-            isShared = !targetShared
-            collectionVersion = nil
+            if let fresh = try? await api.collectionEditor(id: collectionId),
+               requestIdentity() == startIdentity,
+               shareMutationGeneration == myShareGen {
+                collectionVersion = fresh.version
+                isShared = fresh.value.isShared ?? !targetShared
+                shareLoadFailed = false
+            } else if requestIdentity() == startIdentity, shareMutationGeneration == myShareGen {
+                isShared = !targetShared
+                collectionVersion = nil
+                if APIv2MutationOutcome(error).mayHaveApplied {
+                    canToggleShare = false
+                    shareLoadFailed = true
+                }
+            }
             errorMessage = ErrorState(error).message
         }
     }
@@ -493,9 +556,10 @@ final class AddToCollectionModel {
         errorMessage = nil
 
         let wasIn = entries[index].containsItem
+        let previousItemCount = entries[index].itemCount
         let nextIn = !wasIn
         entries[index].containsItem = nextIn
-        entries[index].itemCount = max(0, entries[index].itemCount + (nextIn ? 1 : -1))
+        entries[index].itemCount = max(0, previousItemCount + (nextIn ? 1 : -1))
 
         var toggleError: String?
         do {
@@ -514,7 +578,7 @@ final class AddToCollectionModel {
                 if !APIv2MutationOutcome(error).mayHaveApplied {
                     if let idx = entries.firstIndex(where: { $0.id == collectionId }) {
                         entries[idx].containsItem = wasIn
-                        entries[idx].itemCount = max(0, entries[idx].itemCount + (wasIn ? 1 : -1))
+                        entries[idx].itemCount = previousItemCount
                     }
                 } else {
                     // The server may have committed the membership change before
@@ -633,6 +697,9 @@ final class AddToCollectionModel {
             addError = message
             errorMessage = message
             if APIv2MutationOutcome(error).mayHaveApplied {
+                ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
+                ResponseCache.shared.remove(CacheKey.collections)
+                HomeSectionsEditorModel.refreshScope(.home)
                 needsReconciliation = true
                 pendingReconciliationError = message
             }
