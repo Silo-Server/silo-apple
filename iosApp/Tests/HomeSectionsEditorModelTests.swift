@@ -11,8 +11,8 @@ final class HomeSectionsEditorModelTests: XCTestCase {
     private var stub = APIv2TestStub()
     private var tokenStore: TokenStore!
 
-    private func row(_ id: String, hidden: Bool = false) -> String {
-        #"{"id":"\#(id)","section_type":"recently_added","title":"Row \#(id)","default_title":"Row \#(id)","featured":false,"item_limit":20,"hidden":\#(hidden),"is_custom":false,"customized":false,"position":0}"#
+    private func row(_ id: String, hidden: Bool = false, position: Int = 0, customized: Bool = false) -> String {
+        #"{"id":"\#(id)","section_type":"recently_added","title":"Row \#(id)","default_title":"Row \#(id)","featured":false,"item_limit":20,"hidden":\#(hidden),"is_custom":false,"customized":\#(customized),"position":\#(position)}"#
     }
 
     private func model() async throws -> HomeSectionsEditorModel {
@@ -126,7 +126,9 @@ final class HomeSectionsEditorModelTests: XCTestCase {
 
         // The server stores the move, but the reply never arrives.
         stub.sequence([.failure(URLError(.networkConnectionLost))])
-        stub.reply(path: "/api/v2/profile/sections/settings", 200, #"{"items":[\#(row("b")),\#(row("a")),\#(row("c", hidden: true))]}"#)
+        // As the server reads it back: positions and `customized` now set.
+        stub.reply(path: "/api/v2/profile/sections/settings", 200,
+            #"{"items":[\#(row("b", customized: true)),\#(row("a", position: 1, customized: true)),\#(row("c", hidden: true, position: 2, customized: true))]}"#)
         let refreshed = expectation(forNotification: .homeSectionsShouldRefresh, object: nil)
         await editor.move(id: "a", by: 1).value
 

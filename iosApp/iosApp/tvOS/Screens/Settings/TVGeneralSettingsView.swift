@@ -386,7 +386,7 @@ private struct TVHomeSectionsCustomizationSheet: View {
                     editorControlsCard
 
                     if let error = model.saveError {
-                        TVSettingsFooter(.verbatim(error))
+                        TVSettingsWarningFooter(.verbatim(error))
                     }
 
                     switch model.phase {
