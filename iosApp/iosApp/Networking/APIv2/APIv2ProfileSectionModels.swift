@@ -456,14 +456,20 @@ enum SectionRecipePresentation {
         }
     }
 
-    static func categoryTitle(for category: String) -> String {
+    static func categoryTitle(for category: String, locale: Locale = .current) -> String {
         switch category.lowercased() {
-        case "keep_watching", "personal", "watch_activity": return "Keep Watching"
-        case "whats_new", "library_staples", "new", "fresh": return "What's New"
-        case "popular", "trending", "community", "social": return "Popular"
-        case "for_you", "personalized", "recommendations": return "For You"
-        case "moods", "mood", "discovery", "curated", "seasonal", "editorial": return "Moods & Discovery"
-        case "hand_picked": return "Collections"
+        case "keep_watching", "personal", "watch_activity":
+            return AppLanguage.string(.homeAddRowGroupKeepWatching, locale: locale)
+        case "whats_new", "library_staples", "new", "fresh":
+            return AppLanguage.string(.homeAddRowGroupWhatsNew, locale: locale)
+        case "popular", "trending", "community", "social":
+            return AppLanguage.string(.homeAddRowGroupPopular, locale: locale)
+        case "for_you", "personalized", "recommendations":
+            return AppLanguage.string(.homeAddRowGroupForYou, locale: locale)
+        case "moods", "mood", "discovery", "curated", "seasonal", "editorial":
+            return AppLanguage.string(.homeAddRowGroupMoodsDiscovery, locale: locale)
+        case "hand_picked":
+            return AppLanguage.string(.homeAddRowSectionYourCollections, locale: locale)
         default:
             return category.replacingOccurrences(of: "_", with: " ").capitalized
         }

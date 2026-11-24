@@ -29,6 +29,7 @@ enum StartupContentPrefetcher {
     /// Most screens read the library list as they appear; reuse a result this
     /// fresh instead of repeating the request at launch.
     private static let userLibraries = SharedFetch<LibrariesResponse>(reuseWindow: .seconds(15))
+    private(set) static var userLibrariesRevision = 0
     private static var librarySections: [Int: SharedFetch<APIv2LibrarySectionsRead>] = [:]
     private static var browseFirstPages: [String: SharedFetch<CatalogListPage>] = [:]
     #if os(tvOS)
@@ -405,6 +406,7 @@ enum StartupContentPrefetcher {
             #endif
             ResponseCache.shared.set(response, for: CacheKey.userLibraries, fetchedAt: writeToken)
             if isFirstToLand {
+                userLibrariesRevision += 1
                 NotificationCenter.default.post(name: .userLibrariesDidRefresh, object: response)
             }
             return response

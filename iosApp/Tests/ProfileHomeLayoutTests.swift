@@ -1541,9 +1541,10 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertNotNil(createModel.errorMessage)
 
         // 3) Ambiguous create timeout keeps the timed-out name blocked across a
-        //    reread that omits it (while allowing other names and explicit abandonment),
-        //    and when a later reload observes the new collection it clears the hold and
-        //    resumes adding the selected item.
+        //    reread that omits it (while allowing other names), abandoning only
+        //    reconciled holds preserves unreconciled holds, and observing a
+        //    matching collection on reload clears the hold without silently
+        //    auto-adding the item before the user confirms.
         stub.sequence(path: "/api/v2/collections", [
             .failure(URLError(.timedOut)),
             .json(200, """
@@ -1551,37 +1552,45 @@ final class ProfileHomeLayoutTests: XCTestCase {
               {"id":"existing-1","name":"Existing","collection_type":"manual","item_count":3,"creator_profile_id":"profile-one"}
             ],"groups":[]}
             """),
+            .failure(URLError(.timedOut)),
+            .failure(URLError(.cannotConnectToHost)),
             .json(200, """
             {"items":[
               {"id":"existing-1","name":"Existing","collection_type":"manual","item_count":3,"creator_profile_id":"profile-one"},
-              {"id":"late-1","name":"Late Night","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"}
-            ],"groups":[]}
-            """),
-            .json(200, """
-            {"items":[
-              {"id":"existing-1","name":"Existing","collection_type":"manual","item_count":3,"creator_profile_id":"profile-one"},
-              {"id":"late-1","name":"Late Night","collection_type":"manual","item_count":1,"creator_profile_id":"profile-one"}
+              {"id":"other-1","name":"Other Hold","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"}
             ],"groups":[]}
             """),
         ])
-        stub.reply(path: "/api/v2/collections/late-1/items/movie-88", 204, "")
         let uncertainResult = await createModel.createAndAdd(name: "Late Night")
         XCTAssertEqual(uncertainResult, .uncertain)
         XCTAssertTrue(createModel.hasUncertainCreation)
         XCTAssertTrue(createModel.hasReconciledUncertainCreation)
         XCTAssertTrue(createModel.isUncertainCreation(name: "Late Night"))
-        XCTAssertFalse(createModel.isUncertainCreation(name: "Different Name"))
+        XCTAssertFalse(createModel.isUncertainCreation(name: "Other Hold"))
 
         let postCountBeforeBlockedCreate = stub.requests.filter { $0.method == "POST" && $0.path == "/api/v2/collections" }.count
         let blockedRetry = await createModel.createAndAdd(name: "Late Night")
         XCTAssertEqual(blockedRetry, .failed)
         XCTAssertEqual(stub.requests.filter { $0.method == "POST" && $0.path == "/api/v2/collections" }.count, postCountBeforeBlockedCreate)
 
+        // A second uncertain creation whose reconciliation read fails stays
+        // unreconciled; abandoning reconciled holds must clear "Late Night"
+        // while preserving the unreconciled "Other Hold".
+        let secondUncertain = await createModel.createAndAdd(name: "Other Hold")
+        XCTAssertEqual(secondUncertain, .uncertain)
+        XCTAssertTrue(createModel.isUncertainCreation(name: "Late Night"))
+        XCTAssertTrue(createModel.isUncertainCreation(name: "Other Hold"))
+        createModel.abandonUncertainCreations()
+        XCTAssertFalse(createModel.isUncertainCreation(name: "Late Night"))
+        XCTAssertTrue(createModel.isUncertainCreation(name: "Other Hold"))
+        XCTAssertFalse(createModel.hasReconciledUncertainCreation)
+
+        // When a later reload observes "Other Hold", the hold clears and the
+        // row appears in entries, without auto-sending a membership PUT.
         await createModel.load()
         XCTAssertFalse(createModel.hasUncertainCreation)
-        _ = await createModel.waitForPendingMutations()
-        XCTAssertEqual(createModel.entries.first(where: { $0.id == "late-1" })?.containsItem, true)
-        XCTAssertTrue(stub.requests.contains { $0.method == "PUT" && $0.path == "/api/v2/collections/late-1/items/movie-88" })
+        XCTAssertTrue(createModel.entries.contains { $0.id == "other-1" })
+        XCTAssertFalse(stub.requests.contains { $0.method == "PUT" && $0.path == "/api/v2/collections/other-1/items/movie-88" })
     }
 
     func testHidingAdminRowPreservesSavedCustomRowPosition() {

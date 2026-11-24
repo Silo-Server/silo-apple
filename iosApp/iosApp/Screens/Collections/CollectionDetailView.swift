@@ -197,11 +197,16 @@ struct CollectionDetailView: View {
                 if ResponseCache.shared.wasInvalidated(cacheKey, after: attemptToken) {
                     hasPendingInvalidation = true
                     if isVisible && attempt == 0 { continue }
-                    if isVisible && items.isEmpty && !hasLoadedOnce {
-                        self.error = ErrorState(
+                    if isVisible {
+                        let retryError = ErrorState(
                             statusCode: nil,
                             message: AppLanguage.string(.statusErrorGeneric, locale: locale)
                         )
+                        if items.isEmpty && !hasLoadedOnce {
+                            self.error = retryError
+                        } else {
+                            self.refreshError = retryError
+                        }
                     }
                     return
                 }
@@ -221,11 +226,16 @@ struct CollectionDetailView: View {
                 if ResponseCache.shared.wasInvalidated(cacheKey, after: attemptToken) {
                     hasPendingInvalidation = true
                     if isVisible && attempt == 0 { continue }
-                    if isVisible && items.isEmpty && !hasLoadedOnce {
-                        self.error = ErrorState(
+                    if isVisible {
+                        let retryError = ErrorState(
                             statusCode: nil,
                             message: AppLanguage.string(.statusErrorGeneric, locale: locale)
                         )
+                        if items.isEmpty && !hasLoadedOnce {
+                            self.error = retryError
+                        } else {
+                            self.refreshError = retryError
+                        }
                     }
                     return
                 }

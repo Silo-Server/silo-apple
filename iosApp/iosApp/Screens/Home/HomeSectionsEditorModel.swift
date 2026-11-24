@@ -67,6 +67,9 @@ final class HomeSectionsEditorModel {
     private(set) var saveError: String?
     private(set) var isSaving = false
     private(set) var isResetting = false
+    var canResetToServerDefault: Bool {
+        auth != nil && !isResetting && !isRefreshing && phase == .loaded
+    }
     private(set) var isRefreshing = false
 
     // Add Row picker catalog data
@@ -80,6 +83,7 @@ final class HomeSectionsEditorModel {
     @ObservationIgnored private var hasLoadedPickerCatalog = false
     @ObservationIgnored private var pickerCatalogIdentity: HTTPRequestIdentity?
     @ObservationIgnored private var pickerCatalogCacheToken: UInt64 = 0
+    @ObservationIgnored private var pickerCatalogLibrariesRevision = -1
 
     @ObservationIgnored private let api: SiloAPI
     @ObservationIgnored private let newID: () -> String
@@ -265,10 +269,15 @@ final class HomeSectionsEditorModel {
         let currentIdentity = requestIdentity()
         let collectionsInvalidated = hasLoadedPickerCatalog
             && ResponseCache.shared.wasInvalidated(CacheKey.collections, after: pickerCatalogCacheToken)
+        let librariesChanged = hasLoadedPickerCatalog && (
+            ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: pickerCatalogCacheToken)
+                || pickerCatalogLibrariesRevision != StartupContentPrefetcher.userLibrariesRevision
+        )
         guard force
             || !hasLoadedPickerCatalog
             || pickerCatalogIdentity != currentIdentity
-            || collectionsInvalidated else { return }
+            || collectionsInvalidated
+            || librariesChanged else { return }
         pickerLoadGeneration += 1
         let myGen = pickerLoadGeneration
         let startIdentity = currentIdentity
@@ -394,7 +403,8 @@ final class HomeSectionsEditorModel {
                 allSucceeded = false
             }
 
-            if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken) {
+            if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken)
+                || ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startCacheToken) {
                 if attempt < 2 {
                     continue
                 }
@@ -415,6 +425,7 @@ final class HomeSectionsEditorModel {
             hasLoadedPickerCatalog = allSucceeded
             pickerCatalogIdentity = allSucceeded ? startIdentity : nil
             pickerCatalogCacheToken = startCacheToken
+            pickerCatalogLibrariesRevision = StartupContentPrefetcher.userLibrariesRevision
             return
         }
     }
@@ -1296,11 +1307,15 @@ final class HomePreferencesModel {
             AppLanguage.string(titleResource)
         }
 
-        var subtitle: String {
+        var subtitleResource: LocalizedStringResource {
             switch self {
-            case .combined: AppLanguage.string(.homeCustomizeNextUpCombinedSubtitle)
-            case .separate: AppLanguage.string(.homeCustomizeNextUpSeparateSubtitle)
+            case .combined: .homeCustomizeNextUpCombinedSubtitle
+            case .separate: .homeCustomizeNextUpSeparateSubtitle
             }
+        }
+
+        var subtitle: String {
+            AppLanguage.string(subtitleResource)
         }
     }
 

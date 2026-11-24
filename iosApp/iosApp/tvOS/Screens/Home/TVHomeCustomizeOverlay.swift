@@ -125,7 +125,7 @@ struct TVHomeCustomizeOverlay: View {
                 HStack {
                     Spacer()
                     TVActionPopoverMenu(
-                        title: "Home Options",
+                        title: AppLanguage.string(.homeCustomizeOptionsTitle, locale: locale),
                         items: homeOptionsItems(),
                         onSelect: { item in
                             handleHomeOptionSelect(item)
@@ -216,7 +216,7 @@ struct TVHomeCustomizeOverlay: View {
             case .loading:
                 VStack(spacing: 16) {
                     ProgressView()
-                    Text("Loading your Home layout…")
+                    Text(.commonLoading)
                         .font(.system(size: 24, weight: .medium))
                         .foregroundStyle(.white.opacity(0.65))
                 }
@@ -252,10 +252,12 @@ struct TVHomeCustomizeOverlay: View {
         .accessibilityValue(compositeAccessibilityValue)
         .accessibilityHint(compositeAccessibilityHint)
         .accessibilityAction { handleSelect() }
-        .accessibilityAction(named: grabbedRowId != nil ? "Cancel Move" : "Done") {
+        .accessibilityAction(named: grabbedRowId != nil
+            ? AppLanguage.string(.commonCancel, locale: locale)
+            : AppLanguage.string(.commonDone, locale: locale)) {
             handleExit()
         }
-        .accessibilityAction(named: "Row Options") {
+        .accessibilityAction(named: AppLanguage.string(.homeCustomizeOptions, locale: locale)) {
             handlePlayPause()
         }
         .accessibilityAdjustableAction { direction in
@@ -281,27 +283,20 @@ struct TVHomeCustomizeOverlay: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 12) {
-                    Text(grabbedRowId != nil ? "Moving Row" : "Customize Home")
-                        .font(.system(size: 30, weight: .bold))
-                        .foregroundStyle(.white)
-
                     if let title = grabbedRowTitle {
-                        Text(title)
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(.black)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.white))
+                        Text(.homeCustomizeA11YReorderRow(title))
+                            .font(.system(size: 30, weight: .bold))
+                            .foregroundStyle(.white)
+                    } else {
+                        Text(editor.scope == .home ? .homeCustomizeTitleHome : .homeCustomizeTitleLibrary)
+                            .font(.system(size: 30, weight: .bold))
+                            .foregroundStyle(.white)
                     }
                 }
 
-                Text(
-                    grabbedRowId != nil
-                        ? "Up / Down to slide live · Click to place · Menu to cancel"
-                        : "Click a row to pick up & slide · Play/Pause or Right for options · Menu when done"
-                )
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(Color.white.opacity(0.65))
+                Text(.homeCustomizeSubtitle)
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.65))
             }
 
             Spacer(minLength: 0)
@@ -309,7 +304,7 @@ struct TVHomeCustomizeOverlay: View {
             if editor.isSaving {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("Saving")
+                    Text(.settingsSaving)
                         .font(.system(size: 18, weight: .medium))
                         .foregroundStyle(.white.opacity(0.7))
                 }
@@ -354,7 +349,7 @@ struct TVHomeCustomizeOverlay: View {
                             }
                             handleSelect()
                         }
-                        .accessibilityAction(named: "Row Options") {
+                        .accessibilityAction(named: AppLanguage.string(.homeCustomizeOptions, locale: locale)) {
                             guard !isOverlayOpen, !isFinishingDone, grabbedRowId == nil else { return }
                             highlighted = .row(row.id)
                             handlePlayPause()
@@ -365,7 +360,10 @@ struct TVHomeCustomizeOverlay: View {
                         HStack(spacing: 10) {
                             Image(systemName: "eye.slash")
                                 .font(.system(size: 18, weight: .semibold))
-                            Text("HIDDEN ROWS (\(editor.hiddenRows.count)) · CLICK TO SHOW")
+                            Text(verbatim: AppLanguage.string(
+                                .homeCustomizeHiddenRows(LocaleFormat.integer(editor.hiddenRows.count, locale: locale)),
+                                locale: locale
+                            ).uppercased(with: locale))
                                 .font(.system(size: 16, weight: .bold, design: .monospaced))
                                 .tracking(1.2)
                         }
@@ -389,7 +387,7 @@ struct TVHomeCustomizeOverlay: View {
                                 highlighted = .hiddenRow(row.id)
                                 handleSelect()
                             }
-                            .accessibilityAction(named: "Row Options") {
+                            .accessibilityAction(named: AppLanguage.string(.homeCustomizeOptions, locale: locale)) {
                                 guard !isOverlayOpen, !isFinishingDone, grabbedRowId == nil else { return }
                                 highlighted = .hiddenRow(row.id)
                                 handlePlayPause()
@@ -464,13 +462,14 @@ struct TVHomeCustomizeOverlay: View {
     private func footerTitle(for action: FooterAction) -> String {
         switch action {
         case .retry: return AppLanguage.string(.commonRetry, locale: locale)
-        case .addRow: return "Add Row"
+        case .addRow: return AppLanguage.string(.homeCustomizeAddRow, locale: locale)
         case .hiddenRows:
-            return isHiddenExpanded
-                ? "Hide Hidden (\(editor.hiddenRows.count))"
-                : "Hidden Rows (\(editor.hiddenRows.count))"
-        case .options: return "Home Options"
-        case .done: return "Done"
+            return AppLanguage.string(
+                .homeCustomizeHiddenRows(LocaleFormat.integer(editor.hiddenRows.count, locale: locale)),
+                locale: locale
+            )
+        case .options: return AppLanguage.string(.homeCustomizeOptions, locale: locale)
+        case .done: return AppLanguage.string(.commonDone, locale: locale)
         }
     }
 
@@ -508,42 +507,46 @@ struct TVHomeCustomizeOverlay: View {
     }
 
     private var compositeAccessibilityLabel: String {
-        grabbedRowId != nil ? "Moving Row" : "Customize Home"
+        if let title = grabbedRowTitle {
+            return AppLanguage.string(.homeCustomizeA11YReorderRow(title), locale: locale)
+        }
+        return AppLanguage.string(editor.scope == .home ? .homeCustomizeTitleHome : .homeCustomizeTitleLibrary, locale: locale)
     }
 
     private var compositeAccessibilityValue: String {
         if let grabbedId = grabbedRowId {
             let title = rowTitle(for: grabbedId)
+            let moving = AppLanguage.string(.homeCustomizeA11YReorderRow(title), locale: locale)
             if let index = editor.visibleRows.firstIndex(where: { $0.id == grabbedId }) {
-                return "Moving \(title), \(index + 1) of \(editor.visibleRows.count)"
+                return "\(moving), \(LocaleFormat.integer(index + 1, locale: locale))/\(LocaleFormat.integer(editor.visibleRows.count, locale: locale))"
             }
-            return "Moving \(title)"
+            return moving
         }
         switch highlighted {
         case .row(let id):
             let title = rowTitle(for: id)
             if let index = editor.visibleRows.firstIndex(where: { $0.id == id }) {
-                return "\(title), \(index + 1) of \(editor.visibleRows.count)"
+                return "\(title), \(LocaleFormat.integer(index + 1, locale: locale))/\(LocaleFormat.integer(editor.visibleRows.count, locale: locale))"
             }
             return title
         case .hiddenRow(let id):
-            return "\(rowTitle(for: id)), hidden"
+            return AppLanguage.string(.homeCustomizeA11YShowRow(rowTitle(for: id)), locale: locale)
         case .footer(let action):
             return footerTitle(for: action)
         }
     }
 
     private var compositeAccessibilityHint: String {
-        if grabbedRowId != nil {
-            return "Swipe up or down to move row, select to place, or menu to cancel."
+        if let title = grabbedRowTitle {
+            return AppLanguage.string(.homeCustomizeA11YReorderRow(title), locale: locale)
         }
         switch highlighted {
-        case .row:
-            return "Select to pick up and reorder, or open Row Options."
-        case .hiddenRow:
-            return "Select to show row, or open Row Options."
+        case .row(let id):
+            return AppLanguage.string(.homeCustomizeA11YReorderRow(rowTitle(for: id)), locale: locale)
+        case .hiddenRow(let id):
+            return AppLanguage.string(.homeCustomizeA11YShowRow(rowTitle(for: id)), locale: locale)
         case .footer:
-            return "Select to activate."
+            return AppLanguage.string(.homeCustomizeSubtitle, locale: locale)
         }
     }
 
@@ -761,20 +764,20 @@ struct TVHomeCustomizeOverlay: View {
         var items: [TVActionPopoverItem] = [
             TVActionPopoverItem(
                 id: "toggle-visibility",
-                title: row.hidden ? "Show Row" : "Hide Row",
+                title: AppLanguage.string(row.hidden ? .homeCustomizeShowRow : .homeCustomizeHideRow, locale: locale),
                 systemImage: row.hidden ? "eye" : "eye.slash"
             ),
         ]
         if !row.hidden {
             items.append(TVActionPopoverItem(
                 id: "move-top",
-                title: "Move to Top",
+                title: AppLanguage.string(.homeCustomizeMoveToTop, locale: locale),
                 systemImage: "arrow.up.to.line",
                 isEnabled: editor.visibleRows.first?.id != row.id
             ))
             items.append(TVActionPopoverItem(
                 id: "move-bottom",
-                title: "Move to Bottom",
+                title: AppLanguage.string(.homeCustomizeMoveToBottom, locale: locale),
                 systemImage: "arrow.down.to.line",
                 isEnabled: editor.visibleRows.last?.id != row.id
             ))
@@ -782,7 +785,7 @@ struct TVHomeCustomizeOverlay: View {
         if row.isCustom {
             items.append(TVActionPopoverItem(
                 id: "remove",
-                title: "Remove Row",
+                title: AppLanguage.string(.homeCustomizeDeleteRow, locale: locale),
                 systemImage: "trash",
                 startsSection: true
             ))
@@ -844,15 +847,15 @@ struct TVHomeCustomizeOverlay: View {
             }
             items.append(TVActionPopoverItem(
                 id: "next-up-mode",
-                title: "Next Up Mode",
-                detail: preferences.nextUpMode.title,
+                title: AppLanguage.string(.homeCustomizeNextUpMode, locale: locale),
+                detail: AppLanguage.string(preferences.nextUpMode.titleResource, locale: locale),
                 systemImage: "forward.end.fill",
                 isEnabled: preferences.canEdit(.uiNextUpMode),
                 children: HomePreferencesModel.NextUpMode.allCases.map { mode in
                     TVActionPopoverItem(
                         id: "nextup:\(mode.rawValue)",
-                        title: mode.title,
-                        detail: mode.subtitle,
+                        title: AppLanguage.string(mode.titleResource, locale: locale),
+                        detail: AppLanguage.string(mode.subtitleResource, locale: locale),
                         isSelected: preferences.nextUpMode == mode,
                         isEnabled: preferences.canEdit(.uiNextUpMode)
                     )
@@ -860,35 +863,36 @@ struct TVHomeCustomizeOverlay: View {
             ))
             items.append(TVActionPopoverItem(
                 id: "new-releases-first",
-                title: "New Releases First",
-                detail: preferences.newReleasesFirst ? "On" : "Off",
+                title: AppLanguage.string(.homeCustomizeNewReleasesFirst, locale: locale),
+                detail: AppLanguage.string(preferences.newReleasesFirst ? .settingsOn : .settingsOff, locale: locale),
                 systemImage: "sparkles",
                 isSelected: preferences.newReleasesFirst,
                 isEnabled: preferences.canEdit(.uiNextUpNewReleasesFirst)
             ))
             items.append(TVActionPopoverItem(
                 id: "hide-watched",
-                title: "Hide Watched Items",
-                detail: preferences.hideWatchedItems ? "On" : "Off",
+                title: AppLanguage.string(.homeCustomizeHideWatchedItems, locale: locale),
+                detail: AppLanguage.string(preferences.hideWatchedItems ? .settingsOn : .settingsOff, locale: locale),
                 systemImage: "eye.slash",
                 isSelected: preferences.hideWatchedItems,
                 isEnabled: preferences.canEdit(.homeHideWatchedItems)
             ))
         }
+        let canReset = editor.canResetToServerDefault
         items.append(TVActionPopoverItem(
             id: "reset-submenu",
-            title: "Reset to Server Default",
-            detail: "Restore default rows and order",
+            title: AppLanguage.string(.homeCustomizeResetToDefault, locale: locale),
+            detail: AppLanguage.string(.homeCustomizeResetFooter, locale: locale),
             systemImage: "arrow.counterclockwise",
-            isEnabled: !editor.isResetting,
+            isEnabled: canReset,
             startsSection: !items.isEmpty,
             children: [
                 TVActionPopoverItem(
                     id: "confirm-reset",
-                    title: "Confirm Reset Layout",
-                    detail: "Removes custom order and added rows",
+                    title: AppLanguage.string(.homeCustomizeResetConfirmAction, locale: locale),
+                    detail: AppLanguage.string(.homeCustomizeResetConfirmBody, locale: locale),
                     systemImage: "trash",
-                    isEnabled: !editor.isResetting
+                    isEnabled: canReset
                 ),
             ]
         ))
@@ -907,6 +911,7 @@ struct TVHomeCustomizeOverlay: View {
         } else if item.id == "hide-watched" {
             preferences.setHideWatchedItems(!preferences.hideWatchedItems)
         } else if item.id == "confirm-reset" {
+            guard editor.canResetToServerDefault else { return }
             closeHomeOptions()
             Task { await editor.resetToServerDefault() }
         }
@@ -1024,7 +1029,10 @@ private struct TVArrangeRowCard: View {
             ? resolved.collections.count
             : (resolved.totalCount ?? resolved.items.count)
         guard count > 0 else { return nil }
-        return count == 1 ? "1 item" : "\(count) items"
+        return AppLanguage.string(
+            .collectionsItemCount(count: count, LocaleFormat.groupedCount(count, locale: locale)),
+            locale: locale
+        )
     }
 
     var body: some View {
@@ -1058,7 +1066,7 @@ private struct TVArrangeRowCard: View {
                         .foregroundStyle(primaryTextColor)
                         .lineLimit(1)
 
-                    Text(row.isCustom ? "Yours" : "Server")
+                    Text(row.isCustom ? .homeCustomizeBadgeYours : .accountServer)
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(badgeTextColor)
                         .padding(.horizontal, 10)
@@ -1066,7 +1074,7 @@ private struct TVArrangeRowCard: View {
                         .background(Capsule().fill(badgeFillColor))
 
                     if let count = itemCountText {
-                        Text(count)
+                        Text(verbatim: count)
                             .font(.system(size: 17, weight: .medium))
                             .foregroundStyle(secondaryTextColor)
                             .monospacedDigit()
@@ -1074,7 +1082,7 @@ private struct TVArrangeRowCard: View {
                 }
 
                 if isGrabbed {
-                    Text("Moving — Up/Down to slide, Click to place")
+                    Text(.homeCustomizeA11YReorderRow(effectiveTitle))
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(Color.black.opacity(0.75))
                 }
@@ -1085,14 +1093,18 @@ private struct TVArrangeRowCard: View {
             // Visibility + affordance cue
             HStack(spacing: 12) {
                 if isGrabbed {
-                    Label("Moving", systemImage: "arrow.up.and.down")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 7)
-                        .background(Capsule().fill(Color.black.opacity(0.82)))
+                    Label {
+                        Text(.homeCustomizeA11YReorderRow(effectiveTitle))
+                    } icon: {
+                        Image(systemName: "arrow.up.and.down")
+                    }
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(Color.black.opacity(0.82)))
                 } else if isHighlighted {
-                    Text(isHidden ? "Click to show" : "Click to move · ⏯ Options")
+                    Text(isHidden ? .homeCustomizeShowRow : .homeCustomizeOptions)
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(Color.black.opacity(0.65))
                 }
@@ -1124,18 +1136,22 @@ private struct TVArrangeRowCard: View {
         .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.84), value: isGrabbed)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(rowAccessibilityLabel)
-        .accessibilityValue(isGrabbed ? "Moving" : (isHidden ? "Hidden" : ""))
+        .accessibilityValue(
+            isGrabbed
+                ? AppLanguage.string(.homeCustomizeA11YReorderRow(effectiveTitle), locale: locale)
+                : (isHidden ? AppLanguage.string(.homeCustomizeShowRow, locale: locale) : "")
+        )
         .accessibilityAddTraits(isHighlighted || isGrabbed ? [.isButton, .isSelected] : .isButton)
     }
 
     private var rowAccessibilityLabel: String {
         var parts = [effectiveTitle]
         if let index {
-            parts.append("\(index + 1) of \(totalVisible)")
+            parts.append("\(LocaleFormat.integer(index + 1, locale: locale))/\(LocaleFormat.integer(totalVisible, locale: locale))")
         } else if isHidden {
-            parts.append("Hidden")
+            parts.append(AppLanguage.string(.homeCustomizeShowRow, locale: locale))
         }
-        parts.append(row.isCustom ? "Yours" : "Server")
+        parts.append(AppLanguage.string(row.isCustom ? .homeCustomizeBadgeYours : .accountServer, locale: locale))
         if let count = itemCountText {
             parts.append(count)
         }
@@ -1221,10 +1237,18 @@ struct TVAddRowModal: View {
     let onClose: () -> Void
 
     enum SourceTab: String, CaseIterable, Identifiable {
-        case recipes = "Recipes"
-        case myCollections = "My Collections"
-        case serverCollections = "Server Collections"
+        case recipes
+        case myCollections
+        case serverCollections
         var id: String { rawValue }
+
+        var titleResource: LocalizedStringResource {
+            switch self {
+            case .recipes: .homeAddRowSectionRows
+            case .myCollections: .homeAddRowSectionYourCollections
+            case .serverCollections: .homeAddRowSectionServerCollections
+            }
+        }
     }
 
     @State private var selectedTab: SourceTab = .recipes
@@ -1236,15 +1260,15 @@ struct TVAddRowModal: View {
         VStack(alignment: .leading, spacing: 26) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Add Row to Home")
+                    Text(.homeCustomizeAddRow)
                         .font(.system(size: 38, weight: .bold))
                         .foregroundStyle(.white)
-                    Text("Pick a recipe or collection to pin directly onto your Home screen.")
+                    Text(.homeCustomizeSubtitle)
                         .font(.system(size: 21))
                         .foregroundStyle(.white.opacity(0.65))
                 }
                 Spacer()
-                Button("Done", action: onClose)
+                Button(.commonDone, action: onClose)
                     .buttonStyle(.borderedProminent)
             }
 
@@ -1270,7 +1294,7 @@ struct TVAddRowModal: View {
                     Button {
                         selectedTab = tab
                     } label: {
-                        Text(tab.rawValue)
+                        Text(tab.titleResource)
                             .font(.system(size: 22, weight: .semibold))
                             .padding(.horizontal, 26)
                             .padding(.vertical, 12)
@@ -1309,12 +1333,18 @@ struct TVAddRowModal: View {
 
     @ViewBuilder
     private var recipesGrid: some View {
-        let groupedOrder = ["Keep Watching", "What's New", "Popular", "For You", "Moods & Discovery"]
+        let groupedOrder = [
+            AppLanguage.string(.homeAddRowGroupKeepWatching, locale: locale),
+            AppLanguage.string(.homeAddRowGroupWhatsNew, locale: locale),
+            AppLanguage.string(.homeAddRowGroupPopular, locale: locale),
+            AppLanguage.string(.homeAddRowGroupForYou, locale: locale),
+            AppLanguage.string(.homeAddRowGroupMoodsDiscovery, locale: locale),
+        ]
         let mergedByTitle: [String: [(APIv2RecipeDefinition, APIv2RecipePreset)]] = {
             var buckets: [String: [(APIv2RecipeDefinition, APIv2RecipePreset)]] = [:]
             var seenPresets = Set<String>()
             for cat in editor.recipeCatalog.categories {
-                let title = SectionRecipePresentation.categoryTitle(for: cat.category)
+                let title = SectionRecipePresentation.categoryTitle(for: cat.category, locale: locale)
                 for def in cat.recipes where !def.adminOnly && def.type != "collection" && def.type != "collection_posters" && def.type != "custom_filter" && def.type != "next_up" {
                     for preset in def.presets where seenPresets.insert(preset.key).inserted {
                         buckets[title, default: []].append((def, preset))
@@ -1415,36 +1445,50 @@ struct TVAddRowModal: View {
             }
             .padding(.top, 40)
         } else if editor.personalCollections.isEmpty {
-            Text("No personal collections yet.")
+            Text(.homeAddRowNoCollectionsTitle)
                 .font(.system(size: 24))
                 .foregroundStyle(.white.opacity(0.6))
                 .padding(.top, 40)
         } else {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
-                ForEach(editor.personalCollections) { collection in
-                    let isAdded = editor.isCollectionPresent(collectionId: collection.id, isUserCollection: true)
-                        || addedKeys.contains("user:\(collection.id)")
-                    collectionCard(
-                        title: collection.name,
-                        subtitle: collection.itemCount.map {
-                            AppLanguage.string(.collectionsItemCount(count: $0, LocaleFormat.groupedCount($0, locale: locale)), locale: locale)
-                        },
-                        posterUrl: collection.posterUrl,
-                        posterThumbhash: collection.posterThumbhash,
-                        isAdded: isAdded
-                    ) {
-                        guard !isAdded else { return }
-                        let key = "user:\(collection.id)"
-                        addedKeys.insert(key)
-                        let task = editor.addCollectionRow(
-                            collectionId: collection.id,
+            VStack(alignment: .leading, spacing: 20) {
+                if let error = editor.personalCollectionsError {
+                    HStack(spacing: 16) {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 20))
+                            .foregroundStyle(.white.opacity(0.75))
+                        Spacer()
+                        Button(.commonRetry) {
+                            Task { await editor.loadPickerCatalogIfNeeded(force: true) }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                LazyVGrid(columns: columns, alignment: .leading, spacing: 20) {
+                    ForEach(editor.personalCollections) { collection in
+                        let isAdded = editor.isCollectionPresent(collectionId: collection.id, isUserCollection: true)
+                            || addedKeys.contains("user:\(collection.id)")
+                        collectionCard(
                             title: collection.name,
-                            isUserCollection: true
-                        )
-                        Task {
-                            await task.value
-                            if !editor.isCollectionPresent(collectionId: collection.id, isUserCollection: true) {
-                                addedKeys.remove(key)
+                            subtitle: collection.itemCount.map {
+                                AppLanguage.string(.collectionsItemCount(count: $0, LocaleFormat.groupedCount($0, locale: locale)), locale: locale)
+                            },
+                            posterUrl: collection.posterUrl,
+                            posterThumbhash: collection.posterThumbhash,
+                            isAdded: isAdded
+                        ) {
+                            guard !isAdded else { return }
+                            let key = "user:\(collection.id)"
+                            addedKeys.insert(key)
+                            let task = editor.addCollectionRow(
+                                collectionId: collection.id,
+                                title: collection.name,
+                                isUserCollection: true
+                            )
+                            Task {
+                                await task.value
+                                if !editor.isCollectionPresent(collectionId: collection.id, isUserCollection: true) {
+                                    addedKeys.remove(key)
+                                }
                             }
                         }
                     }
@@ -1468,7 +1512,7 @@ struct TVAddRowModal: View {
             }
             .padding(.top, 40)
         } else if editor.serverCollections.isEmpty {
-            Text(editor.isLoadingPickerCatalog ? "Loading server collections…" : "No server collections found.")
+            Text(editor.isLoadingPickerCatalog ? .commonLoading : .homeAddRowNoCollectionsTitle)
                 .font(.system(size: 24))
                 .foregroundStyle(.white.opacity(0.6))
                 .padding(.top, 40)
