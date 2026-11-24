@@ -137,6 +137,7 @@ struct MediaCard: View {
     @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if !os(tvOS)
+    @State private var isShowingAddToCollection = false
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
     #endif
@@ -207,6 +208,11 @@ struct MediaCard: View {
         }
         .onChange(of: userState) { _, _ in
             personalState.reset()
+        }
+        .sheet(isPresented: $isShowingAddToCollection) {
+            if let contentId {
+                IOSAddToCollectionSheet(contentId: contentId, itemTitle: title)
+            }
         }
         .frame(width: cardWidth)
         #endif
@@ -294,7 +300,12 @@ struct MediaCard: View {
     private var hasStateActions: Bool { hasPersonalActions || canSetWatched }
 
     private var stateMenu: MediaStateMenuItems {
-        MediaStateMenuItems(
+        #if !os(tvOS)
+        let addToCollectionAction: (() -> Void)? = hasPersonalActions ? { isShowingAddToCollection = true } : nil
+        #else
+        let addToCollectionAction: (() -> Void)? = nil
+        #endif
+        return MediaStateMenuItems(
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: isInWatchlist,
@@ -303,7 +314,8 @@ struct MediaCard: View {
             onToggleWatched: canSetWatched ? toggleWatched : nil,
             onToggleFavorite: hasPersonalActions ? togglePersonalFavorite : nil,
             onToggleWatchlist: hasPersonalActions ? togglePersonalWatchlist : nil,
-            onToggleNotInterested: offersNotInterested ? toggleNotInterested : nil
+            onToggleNotInterested: offersNotInterested ? toggleNotInterested : nil,
+            onAddToCollection: addToCollectionAction
         )
     }
 

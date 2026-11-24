@@ -39,24 +39,32 @@ struct CollectionDetailView: View {
             await loadItems()
         }
         .shuffleFailureAlert(shuffleLauncher)
+        #if os(tvOS)
+        .tvActionPopoverHost()
+        #endif
     }
 
     private var gridContent: some View {
         ScrollView {
-            if ShuffleFeatureStore.shared.supports(.userCollection) {
-                HStack {
+            HStack(spacing: 12) {
+                if ShuffleFeatureStore.shared.supports(.userCollection) {
                     ShuffleButton(isStarting: shuffleLauncher.isStarting) {
                         shuffleLauncher.start(ShuffleScopeRequest(kind: .userCollection, id: collectionId), router: router)
                     }
-                    Spacer(minLength: 0)
                 }
-                .padding(.horizontal, SiloTheme.padding)
-                .padding(.top, SiloTheme.smallPadding)
-                #if os(tvOS)
-                // Up from any grid column reaches the Shuffle button.
-                .focusSection()
-                #endif
+                CollectionPinActionBar(
+                    collectionId: collectionId,
+                    title: title ?? "Collection",
+                    isUserCollection: true
+                )
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.top, SiloTheme.smallPadding)
+            #if os(tvOS)
+            // Up from any grid column reaches Shuffle & Pin to Home.
+            .focusSection()
+            #endif
             VStack(alignment: .leading, spacing: 0) {
                 CatalogGrid(
                     items: items,

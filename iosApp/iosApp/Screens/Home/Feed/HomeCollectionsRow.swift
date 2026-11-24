@@ -6,6 +6,9 @@ import SwiftUI
 /// poster width, but has no full page: no See all and no Explore all card.
 struct HomeCollectionsRow: View {
     let section: ResolvedSection
+    var onMoveToTop: (() -> Void)? = nil
+    var onHideRow: (() -> Void)? = nil
+    var onCustomizeHome: (() -> Void)? = nil
     @Environment(AppRouter.self) private var router
     /// The app language, so a switch re-renders the title and bylines.
     @Environment(\.locale) private var locale
@@ -18,7 +21,12 @@ struct HomeCollectionsRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
-            HomeSectionHeader(title: section.displayTitle(in: locale))
+            HomeSectionHeader(
+                title: section.displayTitle(in: locale),
+                onMoveToTop: onMoveToTop,
+                onHideRow: onHideRow,
+                onCustomizeHome: onCustomizeHome
+            )
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: HomeFeedMetrics.cardSpacing) {

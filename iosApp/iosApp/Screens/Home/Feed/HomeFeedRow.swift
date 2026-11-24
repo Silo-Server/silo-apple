@@ -11,6 +11,10 @@ struct HomeFeedRow: View {
     /// Long-press actions, forwarded to every card in the row.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
+    /// Long-press quick customization actions on the section header.
+    var onMoveToTop: (() -> Void)? = nil
+    var onHideRow: (() -> Void)? = nil
+    var onCustomizeHome: (() -> Void)? = nil
     @State private var visibleItemId: String?
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
@@ -66,13 +70,21 @@ struct HomeFeedRow: View {
 
     var body: some View {
         if section.holdsCollections {
-            HomeCollectionsRow(section: section)
+            HomeCollectionsRow(
+                section: section,
+                onMoveToTop: onMoveToTop,
+                onHideRow: onHideRow,
+                onCustomizeHome: onCustomizeHome
+            )
         } else {
             VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
                 HomeSectionHeader(
                     title: section.displayTitle(in: locale),
                     icon: isResume ? "play.circle.fill" : nil,
-                    action: exploreAll
+                    action: exploreAll,
+                    onMoveToTop: onMoveToTop,
+                    onHideRow: onHideRow,
+                    onCustomizeHome: onCustomizeHome
                 )
 
                 rowScroller

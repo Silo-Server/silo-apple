@@ -12,6 +12,7 @@ struct TVGeneralSettingsPane: View {
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var navPrefs = AppNavPreferences.shared
     @State private var activePicker: PickerKind?
+    @State private var isShowingHomeSections = false
     @State private var registry = ServerRegistry.shared
     @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
     let activeProfile: UserProfile?
@@ -120,6 +121,13 @@ struct TVGeneralSettingsPane: View {
 
             TVSettingsSectionHeader(.settingsGeneralTopMenuHeaderTv)
 
+            TVSettingsPickerRow(
+                title: .verbatim("Home Sections"),
+                value: .verbatim("Customize")
+            ) {
+                isShowingHomeSections = true
+            }
+
             TVSettingsToggleRow(
                 title: .settingsExperimentalShowAudiobooks,
                 isOn: navPrefs.showAudiobooks
@@ -132,6 +140,11 @@ struct TVGeneralSettingsPane: View {
         }
         .fullScreenCover(item: $activePicker) { picker in
             pickerSheet(for: picker)
+        }
+        .fullScreenCover(isPresented: $isShowingHomeSections) {
+            TVHomeSectionsSettingsSheet {
+                isShowingHomeSections = false
+            }
         }
         .task {
             async let preferencesRefresh: Void = preferences.refresh()

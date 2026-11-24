@@ -609,6 +609,60 @@ actor SiloAPI {
         try await apiV2Client.moveCollection(version, toGroupId: groupId)
     }
 
+    func addItemToCollection(collectionId: String, itemId: String, position: Int = 0) async throws {
+        try await apiV2Client.addItemToCollection(
+            collectionId: collectionId,
+            itemId: itemId,
+            position: position,
+            auth: try await mutationAuth()
+        )
+    }
+
+    func removeItemFromCollection(collectionId: String, itemId: String) async throws {
+        try await apiV2Client.removeItemFromCollection(
+            collectionId: collectionId,
+            itemId: itemId,
+            auth: try await mutationAuth()
+        )
+    }
+
+    func setCollectionShared(_ version: CollectionEditVersion, isShared: Bool) async throws -> UserCollection {
+        try await apiV2Client.setCollectionShared(version, isShared: isShared)
+    }
+
+    // --- Profile Sections Layout ---
+
+    func profileLayout(scope: ProfileSectionsScope = .home) async throws -> APIv2ProfileLayoutRead {
+        let auth = try await detailReadAuth()
+        async let rows = apiV2Client.profileSectionSettings(scope: scope, auth: auth)
+        async let saved = apiV2Client.profileSectionOverrides(scope: scope, auth: auth)
+        let (resolvedRows, resolvedSaved) = try await (rows, saved)
+        try await requireCurrentOwner(auth)
+        return APIv2ProfileLayoutRead(auth: auth, scope: scope, rows: resolvedRows, saved: resolvedSaved)
+    }
+
+    func saveProfileLayout(
+        _ overrides: [APIv2SectionOverride],
+        scope: ProfileSectionsScope = .home,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws {
+        try await apiV2Client.replaceProfileSectionOverrides(overrides, scope: scope, auth: auth)
+    }
+
+    func resetProfileLayout(
+        scope: ProfileSectionsScope = .home,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws {
+        try await apiV2Client.resetProfileSectionOverrides(scope: scope, auth: auth)
+    }
+
+    func sectionRecipeCatalog() async throws -> APIv2RecipeCatalog {
+        let auth = try await detailReadAuth()
+        let catalog = try await apiV2Client.sectionRecipeCatalog(auth: auth)
+        try await requireCurrentOwner(auth)
+        return catalog
+    }
+
     // --- Theme music ---
 
     func themeSongsCapability() async throws -> APIv2ThemeSongsCapability {

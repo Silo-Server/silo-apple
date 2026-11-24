@@ -208,6 +208,7 @@ private struct HomeCardMenu: ViewModifier {
     /// with the menu label instead of waiting on the Home refresh —
     /// `MediaCard` drives its badge from the same effective state.
     let personalState: MediaCardPersonalState
+    @State private var isShowingAddToCollection = false
 
     private var isPlayed: Bool { personalState.isPlayed(item.userState) }
     private var isFavorite: Bool { personalState.isFavorite(item.userState) }
@@ -229,6 +230,12 @@ private struct HomeCardMenu: ViewModifier {
                 .onChange(of: item.userState) { _, _ in
                     personalState.reset()
                 }
+                .sheet(isPresented: $isShowingAddToCollection) {
+                    IOSAddToCollectionSheet(
+                        contentId: item.contentId,
+                        itemTitle: HomeFeedMeta.cardTitle(for: item)
+                    )
+                }
         } else {
             content
         }
@@ -246,7 +253,8 @@ private struct HomeCardMenu: ViewModifier {
             onToggleFavorite: hasPersonalActions ? toggleFavorite : nil,
             onToggleWatchlist: hasPersonalActions ? toggleWatchlist : nil,
             onToggleNotInterested: MediaCardPersonalState.offersNotInterested(type: item.type, item.userState)
-                ? toggleNotInterested : nil
+                ? toggleNotInterested : nil,
+            onAddToCollection: hasPersonalActions ? { isShowingAddToCollection = true } : nil
         )
 
         if let onRemoveFromContinueWatching {
@@ -721,8 +729,26 @@ struct HomeSectionHeader: View {
     var icon: String? = nil
     /// Makes the title a link with a chevron, as on web.
     var action: (() -> Void)? = nil
+    /// Long-press quick customization actions for Variant 1 ("In-Place Direct").
+    var onMoveToTop: (() -> Void)? = nil
+    var onHideRow: (() -> Void)? = nil
+    var onCustomizeHome: (() -> Void)? = nil
+
+    private var hasContextActions: Bool {
+        onMoveToTop != nil || onHideRow != nil || onCustomizeHome != nil
+    }
 
     var body: some View {
+        headerRow
+            .modifier(SectionHeaderContextMenuModifier(
+                isEnabled: hasContextActions,
+                onMoveToTop: onMoveToTop,
+                onHideRow: onHideRow,
+                onCustomizeHome: onCustomizeHome
+            ))
+    }
+
+    private var headerRow: some View {
         HStack(spacing: 7) {
             if let action {
                 Button(action: action) {
@@ -742,6 +768,7 @@ struct HomeSectionHeader: View {
             Spacer(minLength: 8)
         }
         .padding(.horizontal, HomeFeedMetrics.gutter)
+        .contentShape(Rectangle())
     }
 
     @ViewBuilder
@@ -757,6 +784,38 @@ struct HomeSectionHeader: View {
             .tracking(-0.3)
             .foregroundStyle(Color.siloOnSurface)
             .lineLimit(1)
+    }
+}
+
+private struct SectionHeaderContextMenuModifier: ViewModifier {
+    let isEnabled: Bool
+    let onMoveToTop: (() -> Void)?
+    let onHideRow: (() -> Void)?
+    let onCustomizeHome: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.contextMenu {
+                if let onMoveToTop {
+                    Button(action: onMoveToTop) {
+                        Label("Move to Top", systemImage: "arrow.up.to.line")
+                    }
+                }
+                if let onHideRow {
+                    Button(role: .destructive, action: onHideRow) {
+                        Label("Hide Row", systemImage: "eye.slash")
+                    }
+                }
+                if let onCustomizeHome {
+                    Divider()
+                    Button(action: onCustomizeHome) {
+                        Label("Customize Home…", systemImage: "slider.horizontal.3")
+                    }
+                }
+            }
+        } else {
+            content
+        }
     }
 }
 

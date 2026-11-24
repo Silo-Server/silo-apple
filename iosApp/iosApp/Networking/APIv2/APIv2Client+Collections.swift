@@ -73,6 +73,38 @@ extension APIv2Client {
         _ = try await collectionRequest("DELETE", path: version.path, ifMatch: version.etag, status: 204, auth: version.auth)
     }
 
+    /// `204`: adds `itemId` to a manual personal collection.
+    func addItemToCollection(
+        collectionId: String,
+        itemId: String,
+        position: Int = 0,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws {
+        struct AddItemBody: Encodable { let position: Int }
+        let path = "/api/v2/collections/\(try catalogPathSegment(collectionId))/items/\(try catalogPathSegment(itemId))"
+        let body = try Self.collectionEncoder.encode(AddItemBody(position: position))
+        _ = try await collectionRequest("PUT", path: path, body: body, status: 204, auth: auth)
+    }
+
+    /// `204`: removes `itemId` from a manual personal collection.
+    func removeItemFromCollection(
+        collectionId: String,
+        itemId: String,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws {
+        let path = "/api/v2/collections/\(try catalogPathSegment(collectionId))/items/\(try catalogPathSegment(itemId))"
+        _ = try await collectionRequest("DELETE", path: path, status: 204, auth: auth)
+    }
+
+    /// `200`: updates whether the collection is shared with household profiles.
+    func setCollectionShared(_ version: CollectionEditVersion, isShared: Bool) async throws -> UserCollection {
+        struct UpdateSharedBody: Encodable { let isShared: Bool }
+        let body = try Self.collectionEncoder.encode(UpdateSharedBody(isShared: isShared))
+        let raw = try await collectionRequest("PATCH", path: version.path, body: body, ifMatch: version.etag,
+                                              status: 200, auth: version.auth)
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(UserCollection.self, from: raw.data)
+    }
+
     /// The display cards of a personal collection, read as catalog pages
     /// (`source=user_collection`). All pages keep the first page's owner and
     /// query; a partial list is never published as a complete collection.

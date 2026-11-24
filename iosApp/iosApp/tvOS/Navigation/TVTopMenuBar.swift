@@ -1280,6 +1280,7 @@ private struct TVDropdownBoundaryMoveHandler: ViewModifier {
 
 private enum TVProfileAction: Hashable {
     case history
+    case customizeHome
     case requests
     case watchParty
     case settings
@@ -1323,6 +1324,7 @@ struct TVProfileDropdown: View {
     let onSwitchProfile: () -> Void
     let onAddProfile: () -> Void
     let onHistory: () -> Void
+    let onCustomizeHome: () -> Void
     let onRequests: () -> Void
     let onWatchParty: () -> Void
     let onSettings: () -> Void
@@ -1389,6 +1391,7 @@ struct TVProfileDropdown: View {
 
             // Watchlist and Favorites live under For You, not here.
             actionButton(.menuHistory, systemImage: "clock.fill", id: .history, action: onHistory)
+            actionButton(.verbatim("Customize Home"), systemImage: "slider.horizontal.3", id: .customizeHome, action: onCustomizeHome)
             if showsRequests {
                 actionButton(.menuRequests, systemImage: "paperplane.fill", id: .requests, action: onRequests)
             }

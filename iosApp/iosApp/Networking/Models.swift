@@ -1644,6 +1644,7 @@ struct UserCollection: Codable, Identifiable {
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     let includeInServerCollections: Bool?
+    var isShared: Bool? = nil
 }
 
 /// A user-defined grouping bucket for personal collections: the v2

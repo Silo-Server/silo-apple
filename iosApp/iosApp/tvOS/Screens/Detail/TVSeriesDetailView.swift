@@ -276,6 +276,7 @@ struct TVSeriesDetailView: View {
     /// True while the star button edits; the season row, episodes and the
     /// rest of the page are disabled meanwhile.
     @State private var isRatingEditing = false
+    @State private var collectionsModel: AddToCollectionModel?
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.locale) private var locale
@@ -313,6 +314,11 @@ struct TVSeriesDetailView: View {
                 .ignoresSafeArea()
                 .focusScope(detailFocusNamespace)
                 .defaultFocus($focusedAction, preferredAction, priority: .userInitiated)
+                .task(id: detail.contentId) {
+                    let model = AddToCollectionModel(contentId: detail.seriesId ?? detail.contentId)
+                    collectionsModel = model
+                    await model.load()
+                }
                 .detailFocusScroll(
                     proxy: scrollProxy,
                     actionRowFocused: showActionRowFocused,
@@ -1125,6 +1131,34 @@ struct TVSeriesDetailView: View {
                     systemImage: isFavorite ? "heart.fill" : "heart",
                     startsSection: true
                 ))
+                let collectionChildren: [TVActionPopoverItem] = {
+                    guard let model = collectionsModel else {
+                        return [TVActionPopoverItem(id: "col:loading", title: "Loading collections…", isEnabled: false)]
+                    }
+                    if model.entries.isEmpty {
+                        return [TVActionPopoverItem(
+                            id: "col:empty",
+                            title: model.isLoading ? "Loading collections…" : "No Personal Collections",
+                            isEnabled: false
+                        )]
+                    }
+                    return model.entries.map { entry in
+                        TVActionPopoverItem(
+                            id: "col:\(entry.id)",
+                            title: entry.collection.name,
+                            detail: entry.itemCount == 1 ? "1 item" : "\(entry.itemCount) items",
+                            systemImage: "folder",
+                            isSelected: entry.containsItem,
+                            isEnabled: !model.busyCollectionIds.contains(entry.id)
+                        )
+                    }
+                }()
+                items.append(TVActionPopoverItem(
+                    id: "add-to-collection-submenu",
+                    title: "Add to Collection",
+                    systemImage: "folder.badge.plus",
+                    children: collectionChildren
+                ))
                 if onTranslateDescription != nil {
                     items.append(TVActionPopoverItem(
                         id: MoreAction.translate.rawValue,
@@ -1145,6 +1179,13 @@ struct TVSeriesDetailView: View {
                 return items
             },
             onSelect: { item in
+                if item.id.hasPrefix("col:") {
+                    let colId = String(item.id.dropFirst(4))
+                    if let model = collectionsModel {
+                        Task { await model.toggle(collectionId: colId) }
+                    }
+                    return
+                }
                 switch MoreAction(rawValue: item.id) {
                 case .episodeWatched:
                     toggleDisplayedEpisodeWatched()

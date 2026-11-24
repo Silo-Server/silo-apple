@@ -823,23 +823,34 @@ struct LibraryCollectionDetailView: View {
         .refreshable {
             await loadItems(reset: true)
         }
+        #if os(tvOS)
+        .tvActionPopoverHost()
+        #endif
     }
 
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
-                HStack(spacing: SiloTheme.padding) {
+                HStack(spacing: 12) {
                     if offersShuffle {
                         ShuffleButton(isStarting: shuffleLauncher.isStarting) {
                             shuffleLauncher.start(ShuffleScopeRequest(kind: shuffleKind, id: collectionId), router: router)
                         }
+                    }
+                    if kind == nil || kind == .regular {
+                        CollectionPinActionBar(
+                            collectionId: collectionId,
+                            title: title ?? "Collection",
+                            isUserCollection: false,
+                            sourceLibraryId: libraryId
+                        )
                     }
                     Text(countLabel)
                         .font(.siloCaption)
                         .foregroundColor(.siloSecondaryText)
                 }
                 #if os(tvOS)
-                // Up from any grid column reaches the Shuffle button.
+                // Up from any grid column reaches Shuffle & Pin to Home.
                 .focusSection()
                 #endif
 

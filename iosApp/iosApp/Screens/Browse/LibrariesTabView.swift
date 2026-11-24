@@ -353,6 +353,10 @@ struct LibrariesTabView: View {
                     router.switchProfile()
                 },
                 onSignOut: { router.signOutAndReset() },
+                customizePageTitle: selectedTab == .recommended ? "Customize \(activeLibrary.name)" : nil,
+                onCustomizePage: selectedTab == .recommended ? {
+                    NotificationCenter.default.post(name: .libraryCustomizeRequested, object: activeLibrary.id)
+                } : nil,
                 chromeScrollState: chromeScrollState
             )
             .padding(.horizontal, SiloTheme.padding)
@@ -496,6 +500,10 @@ struct LibrariesTabView: View {
                     onOpenRequests: { router.navigate(to: .requestsHub) },
                     onSwitchProfile: { router.switchProfile() },
                     onSignOut: { router.signOutAndReset() },
+                    customizePageTitle: selectedTab == .recommended ? "Customize \(activeLibrary.name)" : nil,
+                    onCustomizePage: selectedTab == .recommended ? {
+                        NotificationCenter.default.post(name: .libraryCustomizeRequested, object: activeLibrary.id)
+                    } : nil,
                     chromeScrollState: pageChromeStates[selectedTab] ?? chromeScrollState
                 )
             }
@@ -774,6 +782,8 @@ private struct LibrariesTopBar: View {
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
     let onSignOut: () -> Void
+    var customizePageTitle: String? = nil
+    var onCustomizePage: (() -> Void)? = nil
     let chromeScrollState: PageChromeScrollState
 
     var body: some View {
@@ -800,6 +810,8 @@ private struct LibrariesTopBar: View {
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
                 onSignOut: onSignOut,
+                customizePageTitle: customizePageTitle,
+                onCustomizePage: onCustomizePage,
                 chromeScrollState: chromeScrollState
             )
         }

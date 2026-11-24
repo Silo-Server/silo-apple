@@ -67,6 +67,7 @@ struct TVMovieDetailView: View {
     /// True while the star button edits; the page below the action row is
     /// disabled meanwhile so remote presses have nowhere else to go.
     @State private var isRatingEditing = false
+    @State private var collectionsModel: AddToCollectionModel?
     private let heroScrollId = "detail-hero"
     private let boxSetSectionScrollId = "detail-box-set-section"
     private let similarSectionScrollId = "detail-similar-section"
@@ -143,6 +144,11 @@ struct TVMovieDetailView: View {
                     focusedPosterRailId: focusedPosterRailId
                 )
                 .tvActionPopoverHost()
+                .task(id: detail.contentId) {
+                    let model = AddToCollectionModel(contentId: detail.contentId)
+                    collectionsModel = model
+                    await model.load()
+                }
             }
         }
     }
@@ -248,6 +254,34 @@ struct TVMovieDetailView: View {
                         systemImage: isFavorite ? "heart.fill" : "heart"
                     ),
                 ]
+                let collectionChildren: [TVActionPopoverItem] = {
+                    guard let model = collectionsModel else {
+                        return [TVActionPopoverItem(id: "col:loading", title: "Loading collections…", isEnabled: false)]
+                    }
+                    if model.entries.isEmpty {
+                        return [TVActionPopoverItem(
+                            id: "col:empty",
+                            title: model.isLoading ? "Loading collections…" : "No Personal Collections",
+                            isEnabled: false
+                        )]
+                    }
+                    return model.entries.map { entry in
+                        TVActionPopoverItem(
+                            id: "col:\(entry.id)",
+                            title: entry.collection.name,
+                            detail: entry.itemCount == 1 ? "1 item" : "\(entry.itemCount) items",
+                            systemImage: "folder",
+                            isSelected: entry.containsItem,
+                            isEnabled: !model.busyCollectionIds.contains(entry.id)
+                        )
+                    }
+                }()
+                items.append(TVActionPopoverItem(
+                    id: "add-to-collection-submenu",
+                    title: "Add to Collection",
+                    systemImage: "folder.badge.plus",
+                    children: collectionChildren
+                ))
                 if WatchPartyEntry.isAvailable {
                     items.append(TVActionPopoverItem(
                         id: MoreAction.watchParty.rawValue,
@@ -280,6 +314,13 @@ struct TVMovieDetailView: View {
                 return items
             },
             onSelect: { item in
+                if item.id.hasPrefix("col:") {
+                    let colId = String(item.id.dropFirst(4))
+                    if let model = collectionsModel {
+                        Task { await model.toggle(collectionId: colId) }
+                    }
+                    return
+                }
                 switch MoreAction(rawValue: item.id) {
                 case .watchParty:
                     WatchPartyEntry.open(contentId: detail.contentId, title: detail.title, type: detail.type,

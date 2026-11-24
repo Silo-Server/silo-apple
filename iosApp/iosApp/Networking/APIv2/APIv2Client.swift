@@ -21,6 +21,7 @@ enum APIv2Error: LocalizedError, Sendable {
     /// A conditional resource read answered without a usable strong `ETag`.
     case missingEntityTag
     case incompleteCollection
+    case incompleteHomeLayout
     case invalidCatalogQuery
     case invalidCatalogContinuation
     case invalidPersonalListContinuation
@@ -57,6 +58,8 @@ enum APIv2Error: LocalizedError, Sendable {
             return AppLanguage.string(.errorsAppleV2InvalidCatalogContinuation)
         case .incompleteCollection:
             return AppLanguage.string(.errorsAppleV2IncompleteCollection)
+        case .incompleteHomeLayout:
+            return "The server returned an incomplete section layout."
         case .missingEntityTag:
             return AppLanguage.string(.errorsAppleV2MissingEntityTag)
         case .incompleteRequestList:

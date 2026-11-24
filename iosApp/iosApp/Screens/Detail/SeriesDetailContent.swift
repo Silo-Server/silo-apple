@@ -98,6 +98,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         let watchState: LeafItemUserData?
     }
     @State private var pendingResume: PendingResume?
+    @State private var isShowingAddToCollection = false
     /// The Play tap's in-flight watch-state read. A second tap replaces it.
     @State private var resumeLookupTask: Task<Void, Never>?
     @State private var isUpdatingWatched = false
@@ -161,6 +162,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             resumeLookupTask?.cancel()
             resumeLookupTask = nil
             pendingEpisodePlayRequest = nil
+        }
+        .sheet(isPresented: $isShowingAddToCollection) {
+            IOSAddToCollectionSheet(contentId: detail.seriesId ?? detail.contentId, itemTitle: detail.title)
         }
         .onChange(of: hierarchyError) { _, error in
             if error != nil { pendingEpisodePlayRequest = nil }
@@ -417,6 +421,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             )
         }
         .disabled(isUpdatingWatched)
+        Button {
+            isShowingAddToCollection = true
+        } label: {
+            Label("Add to Collection…", systemImage: "folder.badge.plus")
+        }
         Divider()
         Button(action: onFindTrailers) {
             Label(.detailMoreFindTrailers, systemImage: "film")

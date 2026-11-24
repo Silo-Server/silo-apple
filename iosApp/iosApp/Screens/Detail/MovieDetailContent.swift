@@ -73,6 +73,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @State private var resumeLookupTask: Task<Void, Never>?
     /// The download options sheet, opened from the More menu.
     @State private var showDownloadOptions = false
+    /// Personal collection quick-add half-sheet.
+    @State private var isShowingAddToCollection = false
     /// The viewer opened the Media Info section.
     @State private var showsMediaInfo = false
 
@@ -109,6 +111,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
         .onDisappear {
             resumeLookupTask?.cancel()
             resumeLookupTask = nil
+        }
+        .sheet(isPresented: $isShowingAddToCollection) {
+            IOSAddToCollectionSheet(contentId: detail.contentId, itemTitle: detail.title)
         }
     }
 
@@ -301,6 +306,11 @@ struct MovieDetailContent<BelowOverview: View>: View {
         WatchPartyMenuButton(contentId: detail.contentId, title: detail.title, type: detail.type,
             fileId: watchPartyFileId, preview: WatchPartySelectedItem(previewing: detail))
         #endif
+        Button {
+            isShowingAddToCollection = true
+        } label: {
+            Label("Add to Collection…", systemImage: "folder.badge.plus")
+        }
         if showsDownloadButton {
             Button {
                 showDownloadOptions = true
