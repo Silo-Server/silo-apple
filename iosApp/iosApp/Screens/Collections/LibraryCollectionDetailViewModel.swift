@@ -7,6 +7,7 @@ final class LibraryCollectionDetailViewModel {
     private(set) var items: [BrowseItem] = []
     private(set) var isLoading = false
     private(set) var error: ErrorState?
+    private(set) var refreshError: ErrorState?
     private(set) var hasMore = true
     private(set) var totalItems: Int?
 
@@ -39,8 +40,9 @@ final class LibraryCollectionDetailViewModel {
         self.tokens = tokens
     }
 
+    @discardableResult
     func load(libraryId: Int, collectionId: String, kind: LibraryCollectionKind,
-              mediaScope: LibraryVideoScope?, reset: Bool) async {
+              mediaScope: LibraryVideoScope?, reset: Bool) async -> Bool {
         let requested = Selection(libraryId: libraryId, collectionId: collectionId,
                                   kind: kind, mediaScope: mediaScope)
         let selectionChanged = selection != requested
@@ -53,11 +55,13 @@ final class LibraryCollectionDetailViewModel {
             // network fails. A different selection cannot reuse those rows.
             if selectionChanged { clearPage() }
         } else if isLoading || !hasMore {
-            return
+            return false
         }
         let requestGeneration = generation
+        let startToken = ResponseCache.shared.writeToken
         isLoading = true
         error = nil
+        refreshError = nil
         defer {
             if requestGeneration == generation { isLoading = false }
         }
@@ -66,7 +70,7 @@ final class LibraryCollectionDetailViewModel {
             guard let requestOwner = await tokens.captureOrdinaryRequestAuth() else {
                 throw HTTPError.requestIdentityChanged
             }
-            guard requestGeneration == generation, !Task.isCancelled else { return }
+            guard requestGeneration == generation, !Task.isCancelled else { return false }
             if let owner, !owner.sameCredentialIdentity(as: requestOwner) { clearPage() }
             owner = requestOwner
             if resetsPage, items.isEmpty,
@@ -91,7 +95,9 @@ final class LibraryCollectionDetailViewModel {
                 page = try await api.catalogPage(query)
             }
             let stillOwnsRequest = await api.isCurrentOwner(requestOwner)
-            guard requestGeneration == generation, !Task.isCancelled else { return }
+            guard requestGeneration == generation,
+                  !Task.isCancelled,
+                  !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
             guard stillOwnsRequest else { throw HTTPError.requestIdentityChanged }
 
             if nextPage != nil, !page.startsOver {
@@ -99,16 +105,26 @@ final class LibraryCollectionDetailViewModel {
             } else {
                 items = page.response.items
                 ResponseCache.shared.set(CachedPage(owner: requestOwner, response: page.response),
-                                         for: requested.cacheKey)
+                                         for: requested.cacheKey, fetchedAt: startToken)
             }
             totalItems = page.response.totalExact == false ? nil : page.response.total
             continuation = page.continuation
             hasMore = page.continuation != nil
+            error = nil
+            refreshError = nil
+            return true
         } catch {
-            guard requestGeneration == generation, !Task.isCancelled else { return }
+            guard requestGeneration == generation,
+                  !Task.isCancelled,
+                  !ResponseCache.shared.wasInvalidated(requested.cacheKey, after: startToken) else { return false }
             if case HTTPError.requestIdentityChanged = error { clearPage() }
             if case HTTPError.authorityChanged = error { clearPage() }
-            if items.isEmpty { self.error = ErrorState(error) }
+            if items.isEmpty {
+                self.error = ErrorState(error)
+            } else {
+                self.refreshError = ErrorState(error)
+            }
+            return false
         }
     }
 

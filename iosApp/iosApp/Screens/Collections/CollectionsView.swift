@@ -780,6 +780,10 @@ struct LibraryCollectionDetailView: View {
 
     @State private var viewModel = LibraryCollectionDetailViewModel()
     @State private var shuffleLauncher = ShuffleLauncher()
+    @State private var isVisible = false
+    @State private var hasPendingInvalidation = false
+    @State private var invalidationGeneration = 0
+    @State private var reloadTask: Task<Void, Never>?
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
 
@@ -798,7 +802,7 @@ struct LibraryCollectionDetailView: View {
             if !viewModel.items.isEmpty {
                 content
             } else if let error = viewModel.error {
-                ErrorView(state: error, onRetry: { Task { await loadItems(reset: true) } })
+                ErrorView(state: error, onRetry: { scheduleReload(delay: nil) })
             } else if viewModel.isLoading {
                 Color.clear
             } else {
@@ -817,11 +821,37 @@ struct LibraryCollectionDetailView: View {
         .navigationTitle(title.map { Text($0) } ?? Text(.collectionsCollection))
         .siloNavigationTitleDisplayMode(.large)
         .task(id: "\(libraryId)-\(collectionId)-\(mediaScope?.rawValue ?? "all")-\(kind?.rawValue ?? "regular")") {
+            reloadTask?.cancel()
+            reloadTask = nil
             await loadItems(reset: true)
         }
         .shuffleFailureAlert(shuffleLauncher)
         .refreshable {
+            reloadTask?.cancel()
+            reloadTask = nil
             await loadItems(reset: true)
+        }
+        .onAppear {
+            isVisible = true
+            if hasPendingInvalidation {
+                scheduleReload(delay: nil)
+            }
+        }
+        .onDisappear {
+            isVisible = false
+            reloadTask?.cancel()
+            reloadTask = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .collectionItemsDidChange)) { note in
+            guard kind == .userCollections, (note.object as? String) == collectionId else { return }
+            invalidationGeneration += 1
+            hasPendingInvalidation = true
+            if isVisible {
+                scheduleReload(delay: .milliseconds(350))
+            } else {
+                reloadTask?.cancel()
+                reloadTask = nil
+            }
         }
         #if os(tvOS)
         .tvActionPopoverHost()
@@ -853,6 +883,23 @@ struct LibraryCollectionDetailView: View {
                 // Up from any grid column reaches Shuffle & Pin to Home.
                 .focusSection()
                 #endif
+
+                if let refreshError = viewModel.refreshError {
+                    HStack(spacing: 10) {
+                        Label(refreshError.message, systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(Color.siloSecondaryText)
+                            .lineLimit(2)
+                        Spacer(minLength: 8)
+                        Button(.commonRetry) {
+                            scheduleReload(delay: nil)
+                        }
+                        .font(.footnote.weight(.semibold))
+                        #if os(tvOS)
+                        .buttonStyle(.bordered)
+                        #endif
+                    }
+                }
 
                 CatalogGrid(
                     items: viewModel.items,
@@ -886,8 +933,32 @@ struct LibraryCollectionDetailView: View {
         await loadItems(reset: false)
     }
 
+    private func scheduleReload(delay: Duration?) {
+        reloadTask?.cancel()
+        reloadTask = Task {
+            if let delay {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled else { return }
+            }
+            await loadItems(reset: true)
+        }
+    }
+
     private func loadItems(reset: Bool) async {
-        await viewModel.load(libraryId: libraryId, collectionId: collectionId,
-                             kind: kind ?? .regular, mediaScope: mediaScope, reset: reset)
+        let startGen = invalidationGeneration
+        let succeeded = await viewModel.load(
+            libraryId: libraryId,
+            collectionId: collectionId,
+            kind: kind ?? .regular,
+            mediaScope: mediaScope,
+            reset: reset
+        )
+        if reset, !Task.isCancelled, invalidationGeneration == startGen {
+            if succeeded {
+                hasPendingInvalidation = false
+            } else if viewModel.refreshError != nil {
+                hasPendingInvalidation = true
+            }
+        }
     }
 }

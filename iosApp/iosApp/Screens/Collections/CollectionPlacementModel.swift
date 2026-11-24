@@ -51,6 +51,7 @@ final class CollectionPlacementModel {
     @ObservationIgnored private let requestIdentity: @MainActor () -> HTTPRequestIdentity?
     @ObservationIgnored private var collectionVersion: CollectionEditVersion?
     @ObservationIgnored private var loadGeneration = 0
+    @ObservationIgnored private var titleGeneration = 0
     @ObservationIgnored private var homeMutationGeneration = 0
     @ObservationIgnored private var libraryMutationGeneration: [Int: Int] = [:]
     @ObservationIgnored private var shareMutationGeneration = 0
@@ -128,6 +129,7 @@ final class CollectionPlacementModel {
                 collectionVersion = editor.version
                 let canonicalName = editor.value.name.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !canonicalName.isEmpty {
+                    titleGeneration += 1
                     collectionTitle = canonicalName
                 }
                 isShared = editor.value.isShared ?? false
@@ -425,13 +427,20 @@ final class CollectionPlacementModel {
         }
         if isUserCollection {
             let startIdentity = requestIdentity()
+            let startTitleGen = titleGeneration
             let editor = try? await api.collectionEditor(id: collectionId)
             guard !Task.isCancelled, requestIdentity() == startIdentity else {
                 throw CancellationError()
             }
+            if titleGeneration != startTitleGen, let existing = collectionTitle, !existing.isEmpty {
+                return existing
+            }
             if let canonicalName = editor?.value.name.trimmingCharacters(in: .whitespacesAndNewlines),
                !canonicalName.isEmpty {
-                collectionTitle = canonicalName
+                if titleGeneration == startTitleGen {
+                    titleGeneration += 1
+                    collectionTitle = canonicalName
+                }
                 return canonicalName
             }
         }
@@ -644,6 +653,18 @@ final class AddToCollectionModel {
 
         return Task { @MainActor in
             defer { self.endMutation() }
+            var releasedMutation = false
+            let releaseMutationAccounting = {
+                guard !releasedMutation else { return }
+                releasedMutation = true
+                self.pendingMutations = max(0, self.pendingMutations - 1)
+                self.mutationGeneration += 1
+                self.busyCollectionIds.remove(collectionId)
+            }
+            defer { releaseMutationAccounting() }
+
+            guard !Task.isCancelled, self.requestIdentity() == startIdentity else { return }
+
             var toggleError: String?
             do {
                 if nextIn {
@@ -652,6 +673,7 @@ final class AddToCollectionModel {
                     try await self.api.removeItemFromCollection(collectionId: collectionId, itemId: self.contentId)
                 }
                 ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
+                ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(collectionId))
                 HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
                 if self.requestIdentity() == startIdentity {
                     NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
@@ -672,6 +694,7 @@ final class AddToCollectionModel {
                         // the response was lost; invalidate caches and reconcile from
                         // the server once all pending mutations settle.
                         ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
+                        ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(collectionId))
                         HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
                         NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
                         self.needsReconciliation = true
@@ -681,9 +704,7 @@ final class AddToCollectionModel {
             }
 
             let currentEntry = self.entries.first(where: { $0.id == collectionId })
-            self.pendingMutations = max(0, self.pendingMutations - 1)
-            self.mutationGeneration += 1
-            self.busyCollectionIds.remove(collectionId)
+            releaseMutationAccounting()
 
             guard self.pendingMutations == 0, self.requestIdentity() == startIdentity else { return }
             if self.needsReconciliation {
@@ -727,6 +748,11 @@ final class AddToCollectionModel {
                 self.mutationGeneration += 1
             }
             defer { releaseMutationAccounting() }
+
+            guard !Task.isCancelled, self.requestIdentity() == startIdentity else {
+                releaseMutationAccounting()
+                return .failed
+            }
 
             let created: UserCollection
             do {
@@ -784,6 +810,7 @@ final class AddToCollectionModel {
                     }
                 }
                 ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
+                ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(created.id))
                 HomeSectionsEditorModel.refreshCollectionMembership(collectionId: created.id)
                 NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
                 result = .createdAndAdded
@@ -798,6 +825,7 @@ final class AddToCollectionModel {
                 self.errorMessage = message
                 if APIv2MutationOutcome(error).mayHaveApplied {
                     ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
+                    ResponseCache.shared.removeAll(withPrefix: CacheKey.catalogCollectionItems(created.id))
                     ResponseCache.shared.remove(CacheKey.collections)
                     HomeSectionsEditorModel.refreshCollectionMembership(collectionId: created.id)
                     NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
