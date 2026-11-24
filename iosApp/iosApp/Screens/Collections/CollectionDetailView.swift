@@ -166,7 +166,6 @@ struct CollectionDetailView: View {
         let myGen = loadGeneration
         let startInvalidationGen = invalidationGeneration
         let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
-        let startToken = ResponseCache.shared.writeToken
         // Hydrate from cache so a return visit paints the previous grid
         // instantly while the silent revalidate runs.
         let cacheKey = CacheKey.collectionItems(collectionId)
@@ -187,38 +186,63 @@ struct CollectionDetailView: View {
         }
         error = nil
         refreshError = nil
-        do {
-            let response = try await SiloAPI.shared.collectionItems(collectionId: collectionId)
-            guard !Task.isCancelled,
-                  loadGeneration == myGen,
-                  invalidationGeneration == startInvalidationGen,
-                  SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
-                  !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) else { return }
-            ResponseCache.shared.set(response, for: cacheKey, fetchedAt: startToken)
-            items = response.items
-            hasLoadedOnce = true
-            error = nil
-            refreshError = nil
-            hasPendingInvalidation = false
-        } catch let err {
-            guard !(err is CancellationError),
-                  !Task.isCancelled,
-                  loadGeneration == myGen,
-                  invalidationGeneration == startInvalidationGen,
-                  SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
-                  !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) else { return }
-            let errorState = ErrorState(err)
-            if errorState.isNotFound || (items.isEmpty && !hasLoadedOnce) {
-                if errorState.isNotFound {
-                    items = []
-                    hasLoadedOnce = false
-                    hasPendingInvalidation = false
-                    ResponseCache.shared.remove(cacheKey)
+        for attempt in 0..<2 {
+            let attemptToken = ResponseCache.shared.writeToken
+            do {
+                let response = try await SiloAPI.shared.collectionItems(collectionId: collectionId)
+                guard !Task.isCancelled,
+                      loadGeneration == myGen,
+                      invalidationGeneration == startInvalidationGen,
+                      SeekIntervalPreferences.activeRequestIdentity() == startIdentity else { return }
+                if ResponseCache.shared.wasInvalidated(cacheKey, after: attemptToken) {
+                    hasPendingInvalidation = true
+                    if isVisible && attempt == 0 { continue }
+                    if isVisible && items.isEmpty && !hasLoadedOnce {
+                        self.error = ErrorState(
+                            statusCode: nil,
+                            message: AppLanguage.string(.statusErrorGeneric, locale: locale)
+                        )
+                    }
+                    return
                 }
-                self.error = errorState
-            } else {
-                self.refreshError = errorState
-                self.hasPendingInvalidation = true
+                ResponseCache.shared.set(response, for: cacheKey, fetchedAt: attemptToken)
+                items = response.items
+                hasLoadedOnce = true
+                error = nil
+                refreshError = nil
+                hasPendingInvalidation = false
+                return
+            } catch let err {
+                guard !(err is CancellationError),
+                      !Task.isCancelled,
+                      loadGeneration == myGen,
+                      invalidationGeneration == startInvalidationGen,
+                      SeekIntervalPreferences.activeRequestIdentity() == startIdentity else { return }
+                if ResponseCache.shared.wasInvalidated(cacheKey, after: attemptToken) {
+                    hasPendingInvalidation = true
+                    if isVisible && attempt == 0 { continue }
+                    if isVisible && items.isEmpty && !hasLoadedOnce {
+                        self.error = ErrorState(
+                            statusCode: nil,
+                            message: AppLanguage.string(.statusErrorGeneric, locale: locale)
+                        )
+                    }
+                    return
+                }
+                let errorState = ErrorState(err)
+                if errorState.isNotFound || (items.isEmpty && !hasLoadedOnce) {
+                    if errorState.isNotFound {
+                        items = []
+                        hasLoadedOnce = false
+                        hasPendingInvalidation = false
+                        ResponseCache.shared.remove(cacheKey)
+                    }
+                    self.error = errorState
+                } else {
+                    self.refreshError = errorState
+                    self.hasPendingInvalidation = true
+                }
+                return
             }
         }
     }

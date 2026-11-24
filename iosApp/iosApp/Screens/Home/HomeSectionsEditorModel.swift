@@ -587,21 +587,25 @@ final class HomeSectionsEditorModel {
                 if let anchorBeforeId = placement.anchorBeforeId,
                    let beforeIndex = currentVisible.firstIndex(where: { $0.id == anchorBeforeId }) {
                     currentVisible.insert(row, at: beforeIndex + 1)
-                } else if let anchorAfterId = placement.anchorAfterId,
-                          let afterIndex = currentVisible.firstIndex(where: { $0.id == anchorAfterId }) {
-                    currentVisible.insert(row, at: afterIndex)
                 } else if !insertUsingSurvivingCrossing(into: &currentVisible) {
-                    currentVisible.insert(row, at: min(placement.fallbackIndex, currentVisible.count))
+                    if let anchorAfterId = placement.anchorAfterId,
+                       let afterIndex = currentVisible.firstIndex(where: { $0.id == anchorAfterId }) {
+                        currentVisible.insert(row, at: afterIndex)
+                    } else {
+                        currentVisible.insert(row, at: min(placement.fallbackIndex, currentVisible.count))
+                    }
                 }
             } else {
                 if let anchorAfterId = placement.anchorAfterId,
                    let afterIndex = currentVisible.firstIndex(where: { $0.id == anchorAfterId }) {
                     currentVisible.insert(row, at: afterIndex)
-                } else if let anchorBeforeId = placement.anchorBeforeId,
-                          let beforeIndex = currentVisible.firstIndex(where: { $0.id == anchorBeforeId }) {
-                    currentVisible.insert(row, at: beforeIndex + 1)
                 } else if !insertUsingSurvivingCrossing(into: &currentVisible) {
-                    currentVisible.insert(row, at: min(placement.fallbackIndex, currentVisible.count))
+                    if let anchorBeforeId = placement.anchorBeforeId,
+                       let beforeIndex = currentVisible.firstIndex(where: { $0.id == anchorBeforeId }) {
+                        currentVisible.insert(row, at: beforeIndex + 1)
+                    } else {
+                        currentVisible.insert(row, at: min(placement.fallbackIndex, currentVisible.count))
+                    }
                 }
             }
             return true
@@ -1422,7 +1426,7 @@ final class HomePreferencesModel {
                 isLoading = false
             }
         }
-        if preservingError == nil {
+        if preservingError == nil && writeFailureCount <= acknowledgedFailureCount {
             errorMessage = nil
         }
 
@@ -1614,11 +1618,11 @@ final class HomePreferencesModel {
                 HomeSectionsEditorModel.refreshScope(.home)
             }
             let hadNewerWriteFailure = writeFailureCount != startWriteFailureCount
-            if !hadNewerWriteFailure {
+            let hadUnacknowledgedWriteFailure = writeFailureCount > acknowledgedFailureCount
+            if !hadNewerWriteFailure && !hadUnacknowledgedWriteFailure {
                 errorMessage = preservingError
-                if preservingError == nil && deferredToDispatch.isEmpty {
-                    acknowledgedFailureCount = writeFailureCount
-                }
+            } else if let preservingError, errorMessage == nil {
+                errorMessage = preservingError
             }
 
             for (key, deferred) in deferredToDispatch {

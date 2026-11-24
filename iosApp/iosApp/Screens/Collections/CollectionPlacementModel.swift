@@ -183,9 +183,13 @@ final class CollectionPlacementModel {
         case .success(let librariesResponse):
             libraryDiscoveryFailed = false
             let libraries = librariesResponse.libraries
-            // For a server collection, surface its own library first (plus other video libraries).
+            // Server/library collections only exist inside their owning library, so
+            // limit library placement to that library when known; user collections
+            // can be pinned to any video library.
             let relevant: [Library]
-            if let sourceLibraryId, let owning = libraries.first(where: { $0.id == sourceLibraryId }) {
+            if !isUserCollection, let sourceLibraryId {
+                relevant = libraries.filter { $0.id == sourceLibraryId }
+            } else if let sourceLibraryId, let owning = libraries.first(where: { $0.id == sourceLibraryId }) {
                 relevant = [owning] + libraries.filter { $0.id != sourceLibraryId && ($0.isMovieLibrary || $0.isSeriesLibrary || $0.isMixedLibrary) }
             } else {
                 relevant = libraries.filter { $0.isMovieLibrary || $0.isSeriesLibrary || $0.isMixedLibrary }
@@ -578,15 +582,41 @@ final class AddToCollectionModel {
     private(set) var activeMutationCount = 0
     /// True after a collection creation request failed with an ambiguous outcome
     /// (response lost; server may have created it) until a list reread settles.
+    struct UncertainCreation: Equatable {
+        let baselineCount: Int
+        let knownIds: Set<String>
+        var hasReconciled: Bool
+    }
+
     /// Normalized names of collections whose `POST /api/v2/collections` failed
-    /// ambiguously (`mayHaveApplied`), mapped to how many collections with that
-    /// name were already visible before the POST. Because collection creation
-    /// is not idempotent, creation stays blocked until a subsequent list read
-    /// observes a higher count for that name (confirming the earlier POST
-    /// settled) or the active account/profile changes.
-    private(set) var uncertainCreationBaselineCounts: [String: Int] = [:]
+    /// ambiguously (`mayHaveApplied`). Because collection creation is not
+    /// idempotent, re-creating the same name stays blocked until a subsequent
+    /// list read observes a new collection with that name (confirming the
+    /// earlier POST settled and resuming the item add when uniquely identified),
+    /// the user explicitly abandons the hold after an authoritative reload, or
+    /// the active account/profile changes.
+    private(set) var uncertainCreations: [String: UncertainCreation] = [:]
     @ObservationIgnored private var uncertainCreationIdentity: HTTPRequestIdentity?
-    var hasUncertainCreation: Bool { !uncertainCreationBaselineCounts.isEmpty }
+    var hasUncertainCreation: Bool { !uncertainCreations.isEmpty }
+    var hasReconciledUncertainCreation: Bool {
+        uncertainCreations.values.contains { $0.hasReconciled }
+    }
+
+    func isUncertainCreation(name: String) -> Bool {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        return uncertainCreations[normalized] != nil
+    }
+
+    func abandonUncertainCreations() {
+        uncertainCreations.removeAll()
+        uncertainCreationIdentity = nil
+        if errorMessage != nil && loadErrorMessage == nil && unconfirmedCollectionIds.isEmpty {
+            errorMessage = nil
+            hasMutationError = false
+            acknowledgedFailureCount = mutationFailureCount
+        }
+    }
     /// True when `errorMessage` came from a membership or creation mutation
     /// (rather than an initial list load), so tvOS alerts stay visible even if
     /// a follow-up reconciliation load fails and clears `hasLoaded`.
@@ -766,20 +796,33 @@ final class AddToCollectionModel {
             entriesIdentity = startIdentity
             hasLoaded = true
             loadErrorMessage = nil
+            var reconciledCollectionIdsToAdd: [String] = []
             if uncertainCreationIdentity != startIdentity {
-                uncertainCreationBaselineCounts.removeAll()
+                uncertainCreations.removeAll()
                 uncertainCreationIdentity = nil
-            } else if !uncertainCreationBaselineCounts.isEmpty {
-                var loadedCounts: [String: Int] = [:]
+            } else if !uncertainCreations.isEmpty {
+                var loadedByName: [String: [Entry]] = [:]
                 for entry in loaded {
                     let normalized = entry.collection.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    loadedCounts[normalized, default: 0] += 1
+                    loadedByName[normalized, default: []].append(entry)
                 }
-                for (name, baselineCount) in uncertainCreationBaselineCounts
-                where (loadedCounts[name] ?? 0) > baselineCount {
-                    uncertainCreationBaselineCounts.removeValue(forKey: name)
+                for (name, record) in uncertainCreations {
+                    let matches = loadedByName[name] ?? []
+                    if matches.count > record.baselineCount {
+                        uncertainCreations.removeValue(forKey: name)
+                        let newlyAppeared = matches.filter { !record.knownIds.contains($0.id) }
+                        if newlyAppeared.count == 1,
+                           let created = newlyAppeared.first,
+                           created.containsItem != true {
+                            reconciledCollectionIdsToAdd.append(created.id)
+                        }
+                    } else {
+                        var updated = record
+                        updated.hasReconciled = true
+                        uncertainCreations[name] = updated
+                    }
                 }
-                if uncertainCreationBaselineCounts.isEmpty {
+                if uncertainCreations.isEmpty {
                     uncertainCreationIdentity = nil
                 }
             }
@@ -808,6 +851,9 @@ final class AddToCollectionModel {
                 errorMessage = nil
                 hasMutationError = false
                 acknowledgedFailureCount = mutationFailureCount
+            }
+            for collectionId in reconciledCollectionIdsToAdd {
+                _ = startToggle(collectionId: collectionId)
             }
         } catch {
             guard !(error is CancellationError),
@@ -1061,7 +1107,7 @@ final class AddToCollectionModel {
     @discardableResult
     func startCreateAndAdd(name: String) -> Task<CreateResult, Never> {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isCreating, !hasUncertainCreation else { return Task { .failed } }
+        guard !trimmed.isEmpty, !isCreating, !isUncertainCreation(name: trimmed) else { return Task { .failed } }
         beginMutation()
         let startIdentity = requestIdentity()
         pendingMutations += 1
@@ -1146,17 +1192,21 @@ final class AddToCollectionModel {
                     // cached list and reread before allowing another POST to prevent duplicates.
                     ResponseCache.shared.remove(CacheKey.collections)
                     if self.uncertainCreationIdentity != startIdentity {
-                        self.uncertainCreationBaselineCounts.removeAll()
+                        self.uncertainCreations.removeAll()
                     }
                     self.uncertainCreationIdentity = startIdentity
                     let normalized = trimmed.lowercased()
-                    if self.uncertainCreationBaselineCounts[normalized] == nil {
-                        let existingCount = self.entriesIdentity == startIdentity
+                    if self.uncertainCreations[normalized] == nil {
+                        let matchingEntries = self.entriesIdentity == startIdentity
                             ? self.entries.filter {
                                 $0.collection.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalized
-                            }.count
-                            : 0
-                        self.uncertainCreationBaselineCounts[normalized] = existingCount
+                            }
+                            : []
+                        self.uncertainCreations[normalized] = UncertainCreation(
+                            baselineCount: matchingEntries.count,
+                            knownIds: Set(matchingEntries.map(\.id)),
+                            hasReconciled: false
+                        )
                     }
                     self.needsReconciliation = true
                     self.pendingReconciliationError = message
@@ -1268,6 +1318,7 @@ final class AddToCollectionModel {
 
     nonisolated private static func isRecoverableProbeError(_ error: Error) -> Bool {
         if error is CancellationError { return false }
+        if error is APIv2OwnerChangedBeforeDispatch { return false }
         if case HTTPError.requestIdentityChanged = error { return false }
         if case HTTPError.authorityChanged = error { return false }
         if UpdateRequirement(error) != nil { return false }

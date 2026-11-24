@@ -317,11 +317,11 @@ struct IOSAddToCollectionSheet: View {
                         TextField(AppLanguage.string(.collectionsCreateTitle, locale: locale), text: $newCollectionName)
                             .submitLabel(.done)
                             .onSubmit(createCollection)
-                            .disabled(isFinishing || model.isCreating || model.hasUncertainCreation)
+                            .disabled(isFinishing || model.isCreating)
                         if !newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             Button(.collectionsGroupCreate, action: createCollection)
                                 .font(.subheadline.weight(.semibold))
-                                .disabled(isFinishing || model.isCreating || model.hasUncertainCreation)
+                                .disabled(isFinishing || model.isCreating || model.isUncertainCreation(name: newCollectionName))
                         }
                     }
                 } header: {
@@ -342,11 +342,22 @@ struct IOSAddToCollectionSheet: View {
                                     .foregroundStyle(Color.siloSecondaryText)
                             }
                             if needsRetry {
-                                Button(.commonRetry) {
-                                    Task { await model.load() }
+                                HStack(spacing: 16) {
+                                    Button(.commonRetry) {
+                                        Task { await model.load() }
+                                    }
+                                    .font(.subheadline.weight(.semibold))
+                                    .disabled(isFinishing || model.hasPendingMutations || model.isLoading)
+
+                                    if model.hasReconciledUncertainCreation {
+                                        Button(.commonCancel) {
+                                            model.abandonUncertainCreations()
+                                        }
+                                        .font(.subheadline)
+                                        .foregroundStyle(Color.siloSecondaryText)
+                                        .disabled(isFinishing || model.hasPendingMutations || model.isLoading)
+                                    }
                                 }
-                                .font(.subheadline.weight(.semibold))
-                                .disabled(isFinishing || model.hasPendingMutations || model.isLoading)
                             }
                         }
                     }

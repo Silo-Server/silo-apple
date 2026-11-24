@@ -688,18 +688,18 @@ final class ProfilePrefsEditor {
                                     return prefs.showForcedSubtitles ? "on" : "off"
                                 }
                             }()
-                            if editGenerations[write.key, default: 0] == startEditGen {
-                                recordServerValue(for: write.key, value: authoritative)
-                                noteEdit(for: write.key)
-                                if let row = byKey[write.key] {
-                                    resolvedSources[write.key] = row.source
-                                }
-                                if write.key == ProfileSettingKeys.subtitleLanguage {
-                                    ProfilePrefsStore.shared.setPreferredSubtitleLanguage(prefs.subtitleLanguage)
-                                }
-                                if pendingSubtitleEditorValues[identity] == nil {
-                                    setEditorValue(authoritative, for: write.key)
-                                }
+                            let hadNewerEdit = editGenerations[write.key, default: 0] != startEditGen
+                            recordServerValue(for: write.key, value: authoritative)
+                            noteEdit(for: write.key)
+                            reconciliationHolds.removeValue(forKey: reconciliationScope)
+                            if let row = byKey[write.key] {
+                                resolvedSources[write.key] = row.source
+                            }
+                            if write.key == ProfileSettingKeys.subtitleLanguage {
+                                ProfilePrefsStore.shared.setPreferredSubtitleLanguage(prefs.subtitleLanguage)
+                            }
+                            if !hadNewerEdit && pendingSubtitleEditorValues[identity] == nil {
+                                setEditorValue(authoritative, for: write.key)
                             }
                             failures[identity] = refusal.cause
                         } else if boundProfileId == write.profileId,
@@ -982,13 +982,15 @@ final class ProfilePrefsEditor {
                requestIdentity() == startRequestIdentity,
                boundProfileId == write.profileId {
                 Self.invalidateMetadataCaches()
-                if editGenerations[ProfileSettingKeys.metadataLanguage, default: 0] == startEditGen {
-                    let authoritative = prefs.metadataLanguage ?? PlaybackPrefSentinel.none
-                    recordServerValue(for: ProfileSettingKeys.metadataLanguage, value: authoritative)
-                    noteEdit(for: ProfileSettingKeys.metadataLanguage)
-                    if let row = byKey[ProfileSettingKeys.metadataLanguage] {
-                        resolvedSources[ProfileSettingKeys.metadataLanguage] = row.source
-                    }
+                let hadNewerEdit = editGenerations[ProfileSettingKeys.metadataLanguage, default: 0] != startEditGen
+                let authoritative = prefs.metadataLanguage ?? PlaybackPrefSentinel.none
+                recordServerValue(for: ProfileSettingKeys.metadataLanguage, value: authoritative)
+                noteEdit(for: ProfileSettingKeys.metadataLanguage)
+                reconciliationHolds.removeValue(forKey: reconciliationScope)
+                if let row = byKey[ProfileSettingKeys.metadataLanguage] {
+                    resolvedSources[ProfileSettingKeys.metadataLanguage] = row.source
+                }
+                if !hadNewerEdit {
                     if pendingMetadataWrite == nil {
                         preferredMetadataLanguage = authoritative
                     }

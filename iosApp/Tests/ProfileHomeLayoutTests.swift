@@ -1540,9 +1540,10 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertTrue(createModel.hasMutationError)
         XCTAssertNotNil(createModel.errorMessage)
 
-        // 3) Ambiguous create timeout keeps hasUncertainCreation set across a successful
-        //    reread that does not yet include the collection, then clears it once the
-        //    collection appears.
+        // 3) Ambiguous create timeout keeps the timed-out name blocked across a
+        //    reread that omits it (while allowing other names and explicit abandonment),
+        //    and when a later reload observes the new collection it clears the hold and
+        //    resumes adding the selected item.
         stub.sequence(path: "/api/v2/collections", [
             .failure(URLError(.timedOut)),
             .json(200, """
@@ -1556,10 +1557,20 @@ final class ProfileHomeLayoutTests: XCTestCase {
               {"id":"late-1","name":"Late Night","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"}
             ],"groups":[]}
             """),
+            .json(200, """
+            {"items":[
+              {"id":"existing-1","name":"Existing","collection_type":"manual","item_count":3,"creator_profile_id":"profile-one"},
+              {"id":"late-1","name":"Late Night","collection_type":"manual","item_count":1,"creator_profile_id":"profile-one"}
+            ],"groups":[]}
+            """),
         ])
+        stub.reply(path: "/api/v2/collections/late-1/items/movie-88", 204, "")
         let uncertainResult = await createModel.createAndAdd(name: "Late Night")
         XCTAssertEqual(uncertainResult, .uncertain)
         XCTAssertTrue(createModel.hasUncertainCreation)
+        XCTAssertTrue(createModel.hasReconciledUncertainCreation)
+        XCTAssertTrue(createModel.isUncertainCreation(name: "Late Night"))
+        XCTAssertFalse(createModel.isUncertainCreation(name: "Different Name"))
 
         let postCountBeforeBlockedCreate = stub.requests.filter { $0.method == "POST" && $0.path == "/api/v2/collections" }.count
         let blockedRetry = await createModel.createAndAdd(name: "Late Night")
@@ -1568,6 +1579,9 @@ final class ProfileHomeLayoutTests: XCTestCase {
 
         await createModel.load()
         XCTAssertFalse(createModel.hasUncertainCreation)
+        _ = await createModel.waitForPendingMutations()
+        XCTAssertEqual(createModel.entries.first(where: { $0.id == "late-1" })?.containsItem, true)
+        XCTAssertTrue(stub.requests.contains { $0.method == "PUT" && $0.path == "/api/v2/collections/late-1/items/movie-88" })
     }
 
     func testHidingAdminRowPreservesSavedCustomRowPosition() {

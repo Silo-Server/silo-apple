@@ -248,6 +248,19 @@ struct TVHomeCustomizeOverlay: View {
         .focusable(!isOverlayOpen)
         .focused($isCompositeFocused)
         .focusEffectDisabled()
+        .accessibilityLabel(compositeAccessibilityLabel)
+        .accessibilityValue(compositeAccessibilityValue)
+        .accessibilityHint(compositeAccessibilityHint)
+        .accessibilityAction { handleSelect() }
+        .accessibilityAction(named: grabbedRowId != nil ? "Cancel Move" : "Done") {
+            handleExit()
+        }
+        .accessibilityAction(named: "Row Options") {
+            handlePlayPause()
+        }
+        .accessibilityAdjustableAction { direction in
+            handleAccessibilityAdjust(direction)
+        }
         .onMoveCommand(perform: handleMove)
         .onTapGesture(perform: handleSelect)
         .onPlayPauseCommand(perform: handlePlayPause)
@@ -334,6 +347,18 @@ struct TVHomeCustomizeOverlay: View {
                             isHidden: false
                         )
                         .id(Target.row(row.id))
+                        .accessibilityAction {
+                            guard !isOverlayOpen, !isFinishingDone else { return }
+                            if grabbedRowId == nil {
+                                highlighted = .row(row.id)
+                            }
+                            handleSelect()
+                        }
+                        .accessibilityAction(named: "Row Options") {
+                            guard !isOverlayOpen, !isFinishingDone, grabbedRowId == nil else { return }
+                            highlighted = .row(row.id)
+                            handlePlayPause()
+                        }
                     }
 
                     if isHiddenExpanded && !editor.hiddenRows.isEmpty {
@@ -359,6 +384,16 @@ struct TVHomeCustomizeOverlay: View {
                                 isHidden: true
                             )
                             .id(Target.hiddenRow(row.id))
+                            .accessibilityAction {
+                                guard !isOverlayOpen, !isFinishingDone, grabbedRowId == nil else { return }
+                                highlighted = .hiddenRow(row.id)
+                                handleSelect()
+                            }
+                            .accessibilityAction(named: "Row Options") {
+                                guard !isOverlayOpen, !isFinishingDone, grabbedRowId == nil else { return }
+                                highlighted = .hiddenRow(row.id)
+                                handlePlayPause()
+                            }
                         }
                     }
                 }
@@ -411,6 +446,14 @@ struct TVHomeCustomizeOverlay: View {
                 )
                 .scaleEffect(isSelected ? 1.04 : 1.0)
                 .animation(reduceMotion ? nil : SiloTheme.springAnimation, value: isSelected)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(footerTitle(for: action))
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+                .accessibilityAction {
+                    guard !isOverlayOpen, !isFinishingDone, grabbedRowId == nil else { return }
+                    highlighted = .footer(action)
+                    handleSelect()
+                }
             }
             Spacer(minLength: 0)
         }
@@ -450,6 +493,86 @@ struct TVHomeCustomizeOverlay: View {
             targets.append(contentsOf: editor.hiddenRows.map { Target.hiddenRow($0.id) })
         }
         return targets
+    }
+
+    private var allAccessibilityTargets: [Target] {
+        verticalTargets + activeFooterActions.map { Target.footer($0) }
+    }
+
+    private func rowTitle(for id: String) -> String {
+        if let resolved = sectionLookup[id] {
+            let title = resolved.displayTitle(in: locale).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty { return title }
+        }
+        return editor.rows.first(where: { $0.id == id })?.displayTitle ?? id
+    }
+
+    private var compositeAccessibilityLabel: String {
+        grabbedRowId != nil ? "Moving Row" : "Customize Home"
+    }
+
+    private var compositeAccessibilityValue: String {
+        if let grabbedId = grabbedRowId {
+            let title = rowTitle(for: grabbedId)
+            if let index = editor.visibleRows.firstIndex(where: { $0.id == grabbedId }) {
+                return "Moving \(title), \(index + 1) of \(editor.visibleRows.count)"
+            }
+            return "Moving \(title)"
+        }
+        switch highlighted {
+        case .row(let id):
+            let title = rowTitle(for: id)
+            if let index = editor.visibleRows.firstIndex(where: { $0.id == id }) {
+                return "\(title), \(index + 1) of \(editor.visibleRows.count)"
+            }
+            return title
+        case .hiddenRow(let id):
+            return "\(rowTitle(for: id)), hidden"
+        case .footer(let action):
+            return footerTitle(for: action)
+        }
+    }
+
+    private var compositeAccessibilityHint: String {
+        if grabbedRowId != nil {
+            return "Swipe up or down to move row, select to place, or menu to cancel."
+        }
+        switch highlighted {
+        case .row:
+            return "Select to pick up and reorder, or open Row Options."
+        case .hiddenRow:
+            return "Select to show row, or open Row Options."
+        case .footer:
+            return "Select to activate."
+        }
+    }
+
+    private func handleAccessibilityAdjust(_ direction: AccessibilityAdjustmentDirection) {
+        guard !isOverlayOpen, !isFinishingDone else { return }
+        if grabbedRowId != nil {
+            switch direction {
+            case .increment:
+                handleMove(.down)
+            case .decrement:
+                handleMove(.up)
+            @unknown default:
+                break
+            }
+            return
+        }
+        let targets = allAccessibilityTargets
+        guard !targets.isEmpty else { return }
+        let currentIndex = targets.firstIndex(of: highlighted) ?? 0
+        switch direction {
+        case .increment:
+            let next = min(targets.count - 1, currentIndex + 1)
+            highlighted = targets[next]
+        case .decrement:
+            let prev = max(0, currentIndex - 1)
+            highlighted = targets[prev]
+        @unknown default:
+            break
+        }
     }
 
     private func handleMove(_ direction: MoveCommandDirection) {
@@ -999,6 +1122,24 @@ private struct TVArrangeRowCard: View {
         .opacity(isHidden && !isHighlighted ? 0.55 : 1.0)
         .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.84), value: isHighlighted)
         .animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.84), value: isGrabbed)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(rowAccessibilityLabel)
+        .accessibilityValue(isGrabbed ? "Moving" : (isHidden ? "Hidden" : ""))
+        .accessibilityAddTraits(isHighlighted || isGrabbed ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private var rowAccessibilityLabel: String {
+        var parts = [effectiveTitle]
+        if let index {
+            parts.append("\(index + 1) of \(totalVisible)")
+        } else if isHidden {
+            parts.append("Hidden")
+        }
+        parts.append(row.isCustom ? "Yours" : "Server")
+        if let count = itemCountText {
+            parts.append(count)
+        }
+        return parts.joined(separator: ", ")
     }
 
     @ViewBuilder
