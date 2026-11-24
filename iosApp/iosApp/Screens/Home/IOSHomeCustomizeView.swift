@@ -1206,25 +1206,36 @@ struct IOSHomeSectionsSettingsView: View {
         librariesLoadGeneration += 1
         let myGen = librariesLoadGeneration
         let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
-        let startToken = ResponseCache.shared.writeToken
         librariesError = nil
         async let homeArtwork: Void = loadArtwork(for: .home)
-        do {
-            let response = try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: false)
-            if !Task.isCancelled,
-               librariesLoadGeneration == myGen,
-               SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
-               !ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startToken) {
+        for attempt in 0..<3 {
+            let startToken = ResponseCache.shared.writeToken
+            do {
+                let response = try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: false)
+                guard !Task.isCancelled,
+                      librariesLoadGeneration == myGen,
+                      SeekIntervalPreferences.activeRequestIdentity() == startIdentity else { break }
+                if ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startToken) {
+                    if attempt < 2 { continue }
+                    if libraries.isEmpty {
+                        librariesError = AppLanguage.string(.statusErrorGeneric, locale: locale)
+                    }
+                    break
+                }
                 libraries = response.libraries
                 librariesError = nil
-            }
-        } catch {
-            if !(error is CancellationError),
-               !Task.isCancelled,
-               librariesLoadGeneration == myGen,
-               SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
-               !ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startToken) {
+                break
+            } catch {
+                guard !(error is CancellationError),
+                      !Task.isCancelled,
+                      librariesLoadGeneration == myGen,
+                      SeekIntervalPreferences.activeRequestIdentity() == startIdentity else { break }
+                if ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startToken),
+                   attempt < 2 {
+                    continue
+                }
                 librariesError = ErrorState(error).message
+                break
             }
         }
         await homeArtwork

@@ -813,7 +813,9 @@ struct LibraryCollectionDetailView: View {
                     #endif
             } else if !viewModel.items.isEmpty || kind == nil || kind == .regular {
                 content
-            } else if viewModel.hasMore && viewModel.paginationError == nil && viewModel.refreshError == nil {
+            } else if let refreshError = viewModel.refreshError {
+                ErrorView(state: refreshError, onRetry: { scheduleReload(delay: nil) })
+            } else if viewModel.hasMore && viewModel.paginationError == nil {
                 ProgressView()
                     #if os(tvOS)
                     .tvPageFocusOwner(

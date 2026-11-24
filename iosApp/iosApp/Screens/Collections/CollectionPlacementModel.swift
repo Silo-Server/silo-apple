@@ -266,7 +266,12 @@ final class CollectionPlacementModel {
             // Always re-read the current layout immediately before writing so
             // edits made elsewhere since this page opened are preserved.
             let layout = try await api.profileLayout(scope: .home)
-            guard !Task.isCancelled, requestIdentity() == startIdentity else { return }
+            guard !Task.isCancelled, requestIdentity() == startIdentity else {
+                if requestIdentity() == startIdentity {
+                    isPinnedOnHome = !targetPinned
+                }
+                return
+            }
             let updated = try await applyPin(targetPinned, on: layout)
             guard requestIdentity() == startIdentity else { return }
             isPinnedOnHome = ProfileHomeLayout.pinnedCollectionRow(
@@ -319,7 +324,13 @@ final class CollectionPlacementModel {
 
         do {
             let layout = try await api.profileLayout(scope: .library(libraryId))
-            guard !Task.isCancelled, requestIdentity() == startIdentity else { return }
+            guard !Task.isCancelled, requestIdentity() == startIdentity else {
+                if requestIdentity() == startIdentity,
+                   let restoreIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
+                    libraryPlacements[restoreIdx].isPinned = !targetPinned
+                }
+                return
+            }
             let updated = try await applyPin(targetPinned, on: layout)
             guard requestIdentity() == startIdentity else { return }
             if let refreshedIdx = libraryPlacements.firstIndex(where: { $0.libraryId == libraryId }) {
@@ -590,6 +601,7 @@ final class AddToCollectionModel {
     @ObservationIgnored private var mutationGeneration = 0
     @ObservationIgnored private var pendingMutations = 0
     @ObservationIgnored private var entryGeneration: [String: Int] = [:]
+    @ObservationIgnored private var entriesIdentity: HTTPRequestIdentity?
     @ObservationIgnored private var confirmedLocalEntries: [String: (identity: HTTPRequestIdentity?, entry: Entry)] = [:]
     @ObservationIgnored private var needsReconciliation = false
     @ObservationIgnored private var pendingReconciliationError: String?
@@ -716,6 +728,7 @@ final class AddToCollectionModel {
                 localConfirmedById[fallbackEntry.id] = fallbackEntry
             }
 
+            var authoritativeIds = Set<String>()
             var loaded = manual.map { col in
                 let isMember: Bool?
                 if usesContainsField {
@@ -724,6 +737,9 @@ final class AddToCollectionModel {
                     isMember = memberCollectionIds.contains(col.id)
                 } else {
                     isMember = nil
+                }
+                if isMember != nil {
+                    authoritativeIds.insert(col.id)
                 }
                 let effectiveContains = isMember ?? localConfirmedById[col.id]?.containsItem
                 return Entry(
@@ -736,16 +752,25 @@ final class AddToCollectionModel {
                 loaded.insert(fallbackEntry, at: 0)
             }
             entries = loaded
+            entriesIdentity = startIdentity
             hasLoaded = true
             loadErrorMessage = nil
             hasUncertainCreation = false
-            confirmedLocalEntries = confirmedLocalEntries.filter { $0.value.identity != startIdentity }
             // Only unlock previously unconfirmed rows whose membership was
             // actually confirmed by this read (or that no longer exist).
             let loadedIds = Set(loaded.map(\.id))
             let confirmedIds = Set(loaded.compactMap { $0.containsItem != nil ? $0.id : nil })
             unconfirmedCollectionIds = unconfirmedCollectionIds.filter { id in
                 loadedIds.contains(id) && !confirmedIds.contains(id)
+            }
+            // Retain locally confirmed membership until an authoritative server
+            // response replaces it, the collection disappears, or a mutation
+            // makes its membership uncertain.
+            confirmedLocalEntries = confirmedLocalEntries.filter { id, record in
+                record.identity == startIdentity
+                    && loadedIds.contains(id)
+                    && !authoritativeIds.contains(id)
+                    && !unconfirmedCollectionIds.contains(id)
             }
             needsReconciliation = !unconfirmedCollectionIds.isEmpty
             pendingReconciliationError = nil
@@ -764,12 +789,13 @@ final class AddToCollectionModel {
                   pendingMutations == 0,
                   mutationGeneration == startMutationGen,
                   requestIdentity() == startIdentity else { return }
-            if hasLoaded {
-                hasLoaded = false
+            if entriesIdentity != startIdentity {
                 entries = fallbackEntry.map { [$0] } ?? []
+                entriesIdentity = entries.isEmpty ? nil : startIdentity
             } else if let fallbackEntry, !entries.contains(where: { $0.id == fallbackEntry.id }) {
                 entries.insert(fallbackEntry, at: 0)
             }
+            hasLoaded = false
             needsReconciliation = false
             pendingReconciliationError = nil
             let loadMessage = ErrorState(error).message
@@ -1032,8 +1058,26 @@ final class AddToCollectionModel {
             }
             defer { releaseMutationAccounting() }
 
+            let scheduleDetachedRecoveryIfNeeded = {
+                guard self.pendingMutations == 0,
+                      self.requestIdentity() == startIdentity,
+                      self.needsReconciliation || !self.hasLoaded else { return }
+                let preservedError = self.errorMessage ?? self.pendingReconciliationError
+                self.beginMutation()
+                Task { @MainActor [weak self] in
+                    defer { self?.endMutation() }
+                    guard let self,
+                          self.pendingMutations == 0,
+                          self.requestIdentity() == startIdentity else { return }
+                    if self.needsReconciliation || !self.hasLoaded {
+                        await self.load(preservingEntry: nil, preservingError: preservedError)
+                    }
+                }
+            }
+
             guard !Task.isCancelled, self.requestIdentity() == startIdentity else {
                 releaseMutationAccounting()
+                scheduleDetachedRecoveryIfNeeded()
                 return .failed
             }
 
@@ -1047,12 +1091,16 @@ final class AddToCollectionModel {
                 self.mutationFailureCount += 1
                 self.hasMutationError = true
                 self.errorMessage = message
+                if self.pendingMutations == 0, self.needsReconciliation || !self.hasLoaded {
+                    await self.load(preservingEntry: nil, preservingError: message)
+                }
                 return .failed
             }
             guard !Task.isCancelled,
                   self.requestIdentity() == startIdentity,
                   Self.authMatchesIdentity(mutationAuth, startIdentity) else {
                 releaseMutationAccounting()
+                scheduleDetachedRecoveryIfNeeded()
                 return .failed
             }
 
@@ -1078,6 +1126,9 @@ final class AddToCollectionModel {
                     }
                     return .uncertain
                 }
+                if self.pendingMutations == 0, self.needsReconciliation || !self.hasLoaded {
+                    await self.load(preservingEntry: nil, preservingError: message)
+                }
                 return .failed
             }
 
@@ -1094,7 +1145,10 @@ final class AddToCollectionModel {
 
             let baseCount = created.itemCount ?? 0
             var createdEntry = Entry(collection: created, containsItem: false, itemCount: baseCount)
-            if !self.entries.contains(where: { $0.id == created.id }) {
+            if self.entriesIdentity != startIdentity {
+                self.entries = [createdEntry]
+                self.entriesIdentity = startIdentity
+            } else if !self.entries.contains(where: { $0.id == created.id }) {
                 self.entries.insert(createdEntry, at: 0)
             }
 

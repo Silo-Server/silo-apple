@@ -1418,6 +1418,125 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertTrue(overlapModel.hasLoaded)
         XCTAssertEqual(overlapModel.entries.first(where: { $0.id == "col-a" })?.containsItem, false)
         XCTAssertEqual(overlapModel.entries.first(where: { $0.id == "col-b" })?.containsItem, true)
+
+        // A subsequent membership-free reload must retain locally confirmed membership
+        // until an authoritative response replaces it.
+        stub.reply(path: "/api/v2/collections", 200, """
+        {"items":[
+          {"id":"col-a","name":"Col A","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"},
+          {"id":"col-b","name":"Col B","collection_type":"manual","item_count":1,"creator_profile_id":"profile-one"}
+        ],"groups":[]}
+        """)
+        await overlapModel.load()
+        XCTAssertEqual(overlapModel.entries.first(where: { $0.id == "col-a" })?.containsItem, false)
+        XCTAssertEqual(overlapModel.entries.first(where: { $0.id == "col-b" })?.containsItem, true)
+
+        // Once the server provides authoritative membership, it replaces and clears local cache.
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":false,"contains_item":true}"#)
+        stub.reply(path: "/api/v2/collections", 200, """
+        {"items":[
+          {"id":"col-a","name":"Col A","collection_type":"manual","item_count":1,"creator_profile_id":"profile-one","contains":true},
+          {"id":"col-b","name":"Col B","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one","contains":false}
+        ],"groups":[]}
+        """)
+        await overlapModel.load()
+        XCTAssertEqual(overlapModel.entries.first(where: { $0.id == "col-a" })?.containsItem, true)
+        XCTAssertEqual(overlapModel.entries.first(where: { $0.id == "col-b" })?.containsItem, false)
+
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":false,"contains_item":false}"#)
+        stub.reply(path: "/api/v2/collections", 200, """
+        {"items":[
+          {"id":"col-a","name":"Col A","collection_type":"manual","item_count":1,"creator_profile_id":"profile-one"},
+          {"id":"col-b","name":"Col B","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"}
+        ],"groups":[]}
+        """)
+        await overlapModel.load()
+        XCTAssertNil(overlapModel.entries.first(where: { $0.id == "col-a" })?.containsItem)
+        XCTAssertNil(overlapModel.entries.first(where: { $0.id == "col-b" })?.containsItem)
+    }
+
+    @MainActor
+    func testAddToCollectionKeepsSameOwnerRowsOnReconciliationFailureAndResumesLoadAfterRejectedCreate() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "reconcile-keep-test")
+        await tokens.setServerUrl("https://reconcile-keep.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "reconcile-keep-test",
+            serverURL: "https://reconcile-keep.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+
+        // 1) Initial load returns rows A and B. An uncertain failure on B followed by a failed
+        //    reconciliation GET must keep same-owner row A visible and usable while B stays locked
+        //    and Retry (!hasLoaded + loadErrorMessage) remains available.
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":false,"contains_item":true}"#)
+        stub.reply(path: "/api/v2/collections", 200, """
+        {"items":[
+          {"id":"col-a","name":"Col A","collection_type":"manual","item_count":1,"creator_profile_id":"profile-one","contains":true},
+          {"id":"col-b","name":"Col B","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one","contains":false}
+        ],"groups":[]}
+        """)
+
+        let model = AddToCollectionModel(contentId: "movie-88", api: api, requestIdentity: { identity })
+        await model.load()
+        XCTAssertTrue(model.hasLoaded)
+        XCTAssertEqual(model.entries.map(\.id), ["col-a", "col-b"])
+
+        stub.sequence(path: "/api/v2/collections/col-b/items/movie-88", [.failure(URLError(.networkConnectionLost))])
+        stub.reply(path: "/api/v2/collections", 503, #"{"error":{"code":"unavailable","message":"list down"}}"#)
+        await model.toggle(collectionId: "col-b")
+        XCTAssertFalse(model.hasLoaded)
+        XCTAssertNotNil(model.loadErrorMessage)
+        XCTAssertEqual(model.entries.map(\.id), ["col-a", "col-b"])
+        XCTAssertEqual(model.entries.first(where: { $0.id == "col-a" })?.containsItem, true)
+        XCTAssertTrue(model.unconfirmedCollectionIds.contains("col-b"))
+        XCTAssertFalse(model.unconfirmedCollectionIds.contains("col-a"))
+
+        // 2) Submitting Create while the initial list load is in flight invalidates that read.
+        //    If the server rejects the POST, the picker must resume the initial list load while
+        //    keeping the rejection error visible.
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":false,"contains_item":false}"#)
+        stub.reply(path: "/api/v2/catalog/search/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"item_collections":false}"#)
+        stub.sequence(path: "/api/v2/collections", [
+            .json(200, """
+            {"items":[
+              {"id":"existing-1","name":"Existing","collection_type":"manual","item_count":3,"creator_profile_id":"profile-one"}
+            ],"groups":[]}
+            """),
+            .json(409, #"{"error":{"code":"conflict","message":"Collection name already exists"}}"#),
+            .json(200, """
+            {"items":[
+              {"id":"existing-1","name":"Existing","collection_type":"manual","item_count":3,"creator_profile_id":"profile-one"}
+            ],"groups":[]}
+            """),
+        ])
+
+        let createModel = AddToCollectionModel(contentId: "movie-88", api: api, requestIdentity: { identity })
+        stub.hold(path: "/api/v2/collections")
+        let initialLoad = Task { await createModel.load() }
+        defer { stub.release() }
+        await stub.waitUntilHeld()
+
+        let createTask = createModel.startCreateAndAdd(name: "Existing")
+        stub.release()
+        let createResult = await createTask.value
+        await initialLoad.value
+
+        XCTAssertEqual(createResult, .failed)
+        XCTAssertTrue(createModel.hasLoaded)
+        XCTAssertEqual(createModel.entries.map(\.id), ["existing-1"])
+        XCTAssertTrue(createModel.hasMutationError)
+        XCTAssertNotNil(createModel.errorMessage)
     }
 
     @MainActor
