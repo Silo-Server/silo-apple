@@ -4228,6 +4228,9 @@ class PlayerViewModel {
             return
         }
         if showNextUpScreen { cancelNextUpAutoPlay() }
+        // A shuffle advance still in flight would start the next pick when
+        // it answers. If the server already moved on, Play Now replays it.
+        if isAdvancingShuffle { cancelShuffleOperations() }
         noteViewerTransportCommand(play: false)
         if !holdPlayIntentForFreshLoad(false) {
             aetherPlaybackController.pause()
