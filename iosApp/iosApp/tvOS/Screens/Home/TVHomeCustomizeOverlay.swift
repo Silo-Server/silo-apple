@@ -430,6 +430,7 @@ struct TVHomeCustomizeOverlay: View {
     // MARK: - Composite Remote Input Handlers
 
     private var verticalTargets: [Target] {
+        guard editor.phase == .loaded else { return [] }
         var targets = editor.visibleRows.map { Target.row($0.id) }
         if isHiddenExpanded {
             targets.append(contentsOf: editor.hiddenRows.map { Target.hiddenRow($0.id) })

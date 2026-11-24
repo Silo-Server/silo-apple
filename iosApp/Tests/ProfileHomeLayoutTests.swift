@@ -861,10 +861,11 @@ final class ProfileHomeLayoutTests: XCTestCase {
         let secondRequest = try XCTUnwrap(putRequests.dropFirst().first)
         let secondBody = try XCTUnwrap(secondRequest.body)
         let decoded = try JSONDecoder().decode(OverridesBody.self, from: secondBody)
-        let positionsById = Dictionary(uniqueKeysWithValues: decoded.overrides.map { ($0.sectionId, $0.position) })
-        XCTAssertEqual(positionsById["sec-b"], 0)
-        XCTAssertEqual(positionsById["sec-a"], 1)
-        XCTAssertEqual(positionsById["sec-c"], 2)
+        for (expectedId, expectedPosition) in [("sec-b", 0), ("sec-a", 1), ("sec-c", 2)] {
+            let matches = decoded.overrides.filter { $0.sectionId == expectedId }
+            XCTAssertEqual(matches.count, 1, "expected exactly one override for \(expectedId)")
+            XCTAssertEqual(matches.first?.position, expectedPosition)
+        }
     }
 
     @MainActor
@@ -1343,11 +1344,18 @@ final class ProfileHomeLayoutTests: XCTestCase {
             ],"groups":[]}
             """),
         ])
+        let case3Start = stub.requests.count
         let fallbackModel = AddToCollectionModel(contentId: "movie-77", api: api, requestIdentity: { identity })
         await fallbackModel.load()
         XCTAssertTrue(fallbackModel.hasLoaded)
         XCTAssertEqual(fallbackModel.entries.map(\.id), ["old-col"])
         XCTAssertNil(fallbackModel.entries.first?.containsItem)
+        let case3CollectionGets = stub.requests[case3Start...].filter {
+            $0.method == "GET" && $0.path == "/api/v2/collections"
+        }
+        XCTAssertEqual(case3CollectionGets.count, 2)
+        XCTAssertEqual(case3CollectionGets.first?.query["contains_item"], "movie-77")
+        XCTAssertNil(case3CollectionGets.dropFirst().first?.query["contains_item"])
     }
 
     @MainActor

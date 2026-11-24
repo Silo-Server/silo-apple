@@ -574,6 +574,15 @@ final class HomeSectionsEditorModel {
                 return false
             }
             let row = currentVisible.remove(at: fromIndex)
+            func insertUsingSurvivingCrossing(into visible: inout [APIv2ProfileSectionSetting]) -> Bool {
+                for crossing in placement.crossings.reversed() {
+                    if let neighborIdx = visible.firstIndex(where: { $0.id == crossing.neighborId }) {
+                        visible.insert(row, at: crossing.movedUp ? neighborIdx : neighborIdx + 1)
+                        return true
+                    }
+                }
+                return false
+            }
             if placement.preferBeforeAnchor {
                 if let anchorBeforeId = placement.anchorBeforeId,
                    let beforeIndex = currentVisible.firstIndex(where: { $0.id == anchorBeforeId }) {
@@ -581,7 +590,7 @@ final class HomeSectionsEditorModel {
                 } else if let anchorAfterId = placement.anchorAfterId,
                           let afterIndex = currentVisible.firstIndex(where: { $0.id == anchorAfterId }) {
                     currentVisible.insert(row, at: afterIndex)
-                } else {
+                } else if !insertUsingSurvivingCrossing(into: &currentVisible) {
                     currentVisible.insert(row, at: min(placement.fallbackIndex, currentVisible.count))
                 }
             } else {
@@ -591,7 +600,7 @@ final class HomeSectionsEditorModel {
                 } else if let anchorBeforeId = placement.anchorBeforeId,
                           let beforeIndex = currentVisible.firstIndex(where: { $0.id == anchorBeforeId }) {
                     currentVisible.insert(row, at: beforeIndex + 1)
-                } else {
+                } else if !insertUsingSurvivingCrossing(into: &currentVisible) {
                     currentVisible.insert(row, at: min(placement.fallbackIndex, currentVisible.count))
                 }
             }
@@ -1382,10 +1391,10 @@ final class HomePreferencesModel {
     }
 
     func load() async {
-        await load(preservingError: nil)
+        await load(preservingError: nil, scheduledAtFailureCount: nil)
     }
 
-    private func load(preservingError: String?) async {
+    private func load(preservingError: String?, scheduledAtFailureCount: Int?) async {
         activeLoadCount += 1
         defer {
             activeLoadCount = max(0, activeLoadCount - 1)
@@ -1416,7 +1425,7 @@ final class HomePreferencesModel {
             errorMessage = nil
         }
 
-        let startWriteFailureCount = writeFailureCount
+        let startWriteFailureCount = scheduledAtFailureCount ?? writeFailureCount
         let capturedGenerations = Dictionary(uniqueKeysWithValues: Self.preferenceKeys.map { key in
             let scope = KeyScope(identity: identity, key: key)
             return (key, keyGeneration[scope, default: 0])
@@ -1760,6 +1769,7 @@ final class HomePreferencesModel {
         for expectedIdentity: HTTPRequestIdentity,
         preservingError: String?
     ) {
+        let scheduledFailureCount = writeFailureCount
         recoveryLoadCount += 1
         Task { @MainActor [weak self] in
             defer {
@@ -1769,7 +1779,10 @@ final class HomePreferencesModel {
                 }
             }
             guard let self, self.requestIdentity() == expectedIdentity else { return }
-            await self.load(preservingError: preservingError)
+            await self.load(
+                preservingError: preservingError,
+                scheduledAtFailureCount: scheduledFailureCount
+            )
         }
     }
 

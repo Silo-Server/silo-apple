@@ -689,6 +689,7 @@ final class ProfilePrefsEditor {
                             }()
                             if editGenerations[write.key, default: 0] == startEditGen {
                                 recordServerValue(for: write.key, value: authoritative)
+                                noteEdit(for: write.key)
                                 if let row = byKey[write.key] {
                                     resolvedSources[write.key] = row.source
                                 }
@@ -981,12 +982,16 @@ final class ProfilePrefsEditor {
                requestIdentity() == startRequestIdentity,
                boundProfileId == write.profileId {
                 if editGenerations[ProfileSettingKeys.metadataLanguage, default: 0] == startEditGen {
+                    let previousConfirmed = serverValue(for: ProfileSettingKeys.metadataLanguage)
                     let authoritative = prefs.metadataLanguage ?? PlaybackPrefSentinel.none
                     recordServerValue(for: ProfileSettingKeys.metadataLanguage, value: authoritative)
+                    noteEdit(for: ProfileSettingKeys.metadataLanguage)
                     if let row = byKey[ProfileSettingKeys.metadataLanguage] {
                         resolvedSources[ProfileSettingKeys.metadataLanguage] = row.source
                     }
-                    Self.invalidateMetadataCaches()
+                    if authoritative != previousConfirmed {
+                        Self.invalidateMetadataCaches()
+                    }
                     if pendingMetadataWrite == nil {
                         preferredMetadataLanguage = authoritative
                     }

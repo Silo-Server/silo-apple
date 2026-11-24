@@ -165,17 +165,19 @@ struct TVLibraryBrowseView: View {
         loadGeneration += 1
         let requestGeneration = loadGeneration
         let startRefreshGen = refreshInvalidationGen
+        let startToken = ResponseCache.shared.writeToken
         defer {
             if requestGeneration == loadGeneration { isLoadingSections = false }
         }
-        let scopedCacheKey = mediaScope.map { CacheKey.librarySections(library.id) + ".type-\($0.rawValue)" }
+        let baseCacheKey = CacheKey.librarySections(library.id)
+        let scopedCacheKey = mediaScope.map { baseCacheKey + ".type-\($0.rawValue)" }
         if sections.isEmpty, let scopedCacheKey,
            let cached: (sections: [ResolvedSection], incomplete: Bool) = ResponseCache.shared.get(scopedCacheKey) {
             sections = cached.sections
             scopeIncomplete = cached.incomplete
         }
         if sections.isEmpty,
-           let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.librarySections(library.id)) {
+           let cached: SectionsResponse = ResponseCache.shared.get(baseCacheKey) {
             sections = cached.sections.map { row in
                 guard let mediaScope else { return row }
                 return mediaScope.section(row, items: row.items.filter { mediaScope.contains($0.type) })
@@ -202,20 +204,28 @@ struct TVLibraryBrowseView: View {
                                              next: page.continuation, startsOver: page.startsOver)
                 }
                 guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
+                let invalidated = ResponseCache.shared.wasInvalidated(baseCacheKey, after: startToken)
+                    || (scopedCacheKey.map { ResponseCache.shared.wasInvalidated($0, after: startToken) } ?? false)
                 guard requestGeneration == loadGeneration,
                       refreshInvalidationGen == startRefreshGen,
+                      !invalidated,
                       !Task.isCancelled else { return }
                 sections = scoped.map(\.section)
                 scopeIncomplete = scoped.contains { $0.incomplete }
                 hasPendingRefresh = false
                 if let scopedCacheKey {
-                    ResponseCache.shared.set((sections: sections, incomplete: scopeIncomplete), for: scopedCacheKey)
+                    ResponseCache.shared.set(
+                        (sections: sections, incomplete: scopeIncomplete),
+                        for: scopedCacheKey,
+                        fetchedAt: startToken
+                    )
                 }
             } else {
                 let read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: library.id)
                 guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
                 guard requestGeneration == loadGeneration,
                       refreshInvalidationGen == startRefreshGen,
+                      !ResponseCache.shared.wasInvalidated(baseCacheKey, after: startToken),
                       !Task.isCancelled else { return }
                 sections = read.response.sections
                 hasPendingRefresh = false
