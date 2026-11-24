@@ -9,6 +9,7 @@ import XCTest
 @MainActor
 final class HomeSectionsEditorModelTests: XCTestCase {
     private var stub = APIv2TestStub()
+    private var tokenStore: TokenStore!
 
     private func row(_ id: String, hidden: Bool = false) -> String {
         #"{"id":"\#(id)","section_type":"recently_added","title":"Row \#(id)","default_title":"Row \#(id)","featured":false,"item_limit":20,"hidden":\#(hidden),"is_custom":false,"customized":false,"position":0}"#
@@ -24,6 +25,7 @@ final class HomeSectionsEditorModelTests: XCTestCase {
         await tokens.switchActiveServer(serverId: "home-editor-test")
         await tokens.setServerUrl("https://editor.example")
         await tokens.setProfileId("profile-one")
+        tokenStore = tokens
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
         var next = 0
         return HomeSectionsEditorModel(api: SiloAPI(http: http, tokenStore: tokens),
@@ -115,6 +117,46 @@ final class HomeSectionsEditorModelTests: XCTestCase {
         let overrides = try savedOverrides()
         XCTAssertEqual(overrides.map { $0["section_id"] as? String }, ["b", "a", "c"])
         XCTAssertEqual(overrides.map { $0["hidden"] as? Bool }, [true, false, true])
+    }
+
+    func testASaveWhoseReplyIsLostShowsWhatTheServerStored() async throws {
+        let editor = try await model()
+        serveLayout()
+        await editor.load()
+
+        // The server stores the move, but the reply never arrives.
+        stub.sequence([.failure(URLError(.networkConnectionLost))])
+        stub.reply(path: "/api/v2/profile/sections/settings", 200, #"{"items":[\#(row("b")),\#(row("a")),\#(row("c", hidden: true))]}"#)
+        let refreshed = expectation(forNotification: .homeSectionsShouldRefresh, object: nil)
+        await editor.move(id: "a", by: 1).value
+
+        await fulfillment(of: [refreshed], timeout: 5)
+        XCTAssertEqual(editor.rows.map(\.id), ["b", "a", "c"])
+        XCTAssertNil(editor.saveError)
+    }
+
+    func testAnEditorOpenedWhileAnotherIsSavingReadsAfterThatSave() async throws {
+        let closing = try await model()
+        serveLayout()
+        await closing.load()
+        let settingsReads = {
+            self.stub.requests.filter { $0.method == "GET" && $0.path == "/api/v2/profile/sections/settings" }.count
+        }
+
+        stub.sequence([.json(204, "")])
+        stub.hold(path: "/api/v2/profile/sections")
+        let save = closing.move(id: "a", by: 1)
+        await stub.waitUntilHeld()
+        // Back, then Home Sections again, while that save is in flight.
+        let reopened = HomeSectionsEditorModel(api: SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokenStore), tokenStore: tokenStore))
+        let load = Task { await reopened.load() }
+
+        let readWhileSaving = await eventually(timeout: .milliseconds(500)) { settingsReads() > 1 }
+        XCTAssertFalse(readWhileSaving, "the reopened editor read the layout before the earlier save landed")
+        stub.release()
+        await save.value
+        await load.value
+        XCTAssertEqual(settingsReads(), 2)
     }
 
     func testAnEditQueuedBehindASaveStillSavesAfterTheEditorCloses() async throws {

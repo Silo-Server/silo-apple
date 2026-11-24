@@ -5,9 +5,9 @@ import SwiftUI
 /// Drives the Home Sections editors (iOS/macOS Settings → Interface, tvOS
 /// Settings → General). It edits the acting profile's layout on the server,
 /// so the order and visibility follow the profile to every device, and to
-/// the admin's view of that profile. Each change saves at once; saves run one
-/// after another, and a refused save puts the last saved layout back
-/// unless a later change is queued to carry it.
+/// the admin's view of that profile. Each change saves at once; saves from
+/// every editor run one after another, and a failed save reads the layout
+/// back from the server unless a later change is queued to carry it.
 @Observable
 @MainActor
 final class HomeSectionsEditorModel {
@@ -23,16 +23,22 @@ final class HomeSectionsEditorModel {
     /// Why the last change could not be saved, or the last reload failed
     /// while rows were already on screen.
     private(set) var saveError: String?
-    private(set) var isSaving = false
 
     @ObservationIgnored private let api: SiloAPI
     @ObservationIgnored private let newID: () -> String
     @ObservationIgnored private var auth: CapturedOrdinaryRequestAuth?
     @ObservationIgnored private var saved: [APIv2SectionOverride] = []
-    /// The rows the server last confirmed; a refused save returns here
-    /// when no later change is queued.
+    /// The rows the server last confirmed.
     @ObservationIgnored private var confirmedRows: [APIv2ProfileSectionSetting] = []
-    @ObservationIgnored private var saveChain: Task<Void, Never>?
+    /// Set when a save failed and a later change was queued before the
+    /// layout could be read back. The server may or may not hold the failed
+    /// save, so the queued save sends its rows even when they match
+    /// `confirmedRows`.
+    @ObservationIgnored private var serverMayDiffer = false
+    /// Every editor's saves, in order. Shared, so an editor opened while a
+    /// closed one's save is still in flight reads the layout after it lands
+    /// rather than before, and its own saves never race that one.
+    private static var saveChain: Task<Void, Never>?
     /// Counts edits, so a load can tell whether one happened while it read.
     @ObservationIgnored private var editGeneration = 0
 
@@ -47,22 +53,27 @@ final class HomeSectionsEditorModel {
     /// and the edit's own save carries on.
     func load() async {
         var generation: Int
+        var awaited: Task<Void, Never>?
         repeat {
             generation = editGeneration
-            await saveChain?.value
-        } while generation != editGeneration
+            awaited = Self.saveChain
+            await awaited?.value
+        } while generation != editGeneration || awaited != Self.saveChain
+        let previousPhase = phase
         if rows.isEmpty { phase = .loading }
         do {
             let layout = try await api.profileHomeLayout()
             guard generation == editGeneration else { return }
-            auth = layout.auth
-            saved = layout.saved
-            rows = layout.rows
-            confirmedRows = layout.rows
+            adopt(layout)
             saveError = nil
-            phase = .loaded
         } catch {
-            guard !(error is CancellationError), !Task.isCancelled, generation == editGeneration else { return }
+            guard generation == editGeneration else { return }
+            guard !(error is CancellationError), !Task.isCancelled else {
+                // A cancelled read (a pull to refresh the view dropped)
+                // leaves the editor as it was, not on a spinner.
+                if phase == .loading, rows.isEmpty { phase = previousPhase }
+                return
+            }
             let message = ErrorState(error).message
             if rows.isEmpty {
                 phase = .failed(message)
@@ -111,7 +122,7 @@ final class HomeSectionsEditorModel {
         rows = next
         saveError = nil
         editGeneration += 1
-        let previous = saveChain
+        let previous = Self.saveChain
         // The task holds the model until its save is sent, so closing the
         // editor while an earlier save is in flight does not drop this edit.
         // The chain ends with the last queued save.
@@ -119,32 +130,77 @@ final class HomeSectionsEditorModel {
             await previous?.value
             await self.saveCurrentRows()
         }
-        saveChain = task
+        Self.saveChain = task
         return task
     }
 
     /// Sends the rows as they are now. A change made while this is in flight
-    /// queues its own save, which sends the newer rows, so a refused save
-    /// leaves those rows on screen for that save to carry.
+    /// queues its own save, which sends the newer rows. When this save fails
+    /// with no newer change queued, the layout is read back: a save whose
+    /// reply was lost may still have been stored.
     private func saveCurrentRows() async {
-        guard let auth, rows != confirmedRows else { return }
+        guard let auth else { return }
+        guard rows != confirmedRows || serverMayDiffer else {
+            saveError = nil
+            return
+        }
         let sent = rows
         let sentGeneration = editGeneration
         let overrides = ProfileHomeLayout.overrides(rows: sent, baseline: confirmedRows, saved: saved, newID: newID)
-        isSaving = true
-        defer { isSaving = false }
         do {
             try await api.saveProfileHomeLayout(overrides, auth: auth)
             saved = overrides
             confirmedRows = sent
+            serverMayDiffer = false
             saveError = nil
             Self.refreshHome()
         } catch {
-            if editGeneration == sentGeneration {
-                rows = confirmedRows
+            let message = AppLanguage.string(.homeProfileEditorSaveFailed(ErrorState(error).message))
+            guard editGeneration == sentGeneration else {
+                // The queued save carries the newer rows; it must send them
+                // whatever the server now holds.
+                serverMayDiffer = true
+                saveError = message
+                return
             }
-            saveError = AppLanguage.string(.homeProfileEditorSaveFailed(ErrorState(error).message))
+            await readBack(after: sent, failure: message)
         }
+    }
+
+    /// Reconciles with the server after a failed save of `sent`: shows what
+    /// it holds, refreshes Home when that is the change after all, and
+    /// otherwise reports `failure`. If the read fails too, the last confirmed
+    /// rows come back.
+    private func readBack(after sent: [APIv2ProfileSectionSetting], failure: String) async {
+        let generation = editGeneration
+        let layout = try? await api.profileHomeLayout()
+        guard generation == editGeneration else {
+            serverMayDiffer = true
+            saveError = failure
+            return
+        }
+        guard let layout else {
+            rows = confirmedRows
+            serverMayDiffer = true
+            saveError = failure
+            return
+        }
+        adopt(layout)
+        if layout.rows == sent {
+            saveError = nil
+            Self.refreshHome()
+        } else {
+            saveError = failure
+        }
+    }
+
+    private func adopt(_ layout: APIv2ProfileHomeLayoutRead) {
+        auth = layout.auth
+        saved = layout.saved
+        rows = layout.rows
+        confirmedRows = layout.rows
+        serverMayDiffer = false
+        phase = .loaded
     }
 
     /// Home renders the server's rows, so it re-reads them after a save

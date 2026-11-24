@@ -405,6 +405,10 @@ private struct TVHomeSectionsCustomizationSheet: View {
                         }
                         .buttonStyle(TVHomeSectionsControlButtonStyle())
                         .focused($focusedControl, equals: .retry)
+                        // Full width, so Down from Done at the trailing edge
+                        // reaches the leading-edge button.
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .focusSection()
                     case .loaded where model.rows.isEmpty:
                         TVSettingsFooter(.homeProfileEditorEmptyBody)
                     case .loaded:
@@ -605,7 +609,8 @@ private struct TVHomeSectionsCustomizationSheet: View {
         if let retarget {
             Task { @MainActor in
                 await Task.yield()
-                guard isEditing, !isClosing else { return }
+                // A refused save can put the row back before this runs.
+                guard isEditing, !isClosing, isAvailable(retarget) else { return }
                 focusedControl = retarget
             }
         }
