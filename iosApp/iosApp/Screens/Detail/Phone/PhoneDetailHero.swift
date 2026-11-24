@@ -479,6 +479,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// detail's own, shown while those load. See `AsyncImageView.fallbackUrl`.
     var fallbackArtworkUrl: String? = nil
     var fallbackPosterUrl: String? = nil
+    /// The viewer's own rating, drawn after the external scores on their
+    /// line. Only movie and series pages that can rate pass it.
+    var personalRating: PhoneRatingSlot? = nil
     @ViewBuilder let actions: () -> Actions
     @ViewBuilder let belowOverview: () -> BelowOverview
 
@@ -631,14 +634,14 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     // MARK: - Split page parts
 
-    /// The sidebar of a split page: title, facts, and actions, aligned to
-    /// the leading edge of the glass panel the page draws around them.
+    /// The sidebar of a split page: title, facts, and actions, centred in
+    /// the glass panel the page draws around them, as on the iPhone.
     private var paneSidebar: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 16) {
             // Smaller than the compact logo: the sidebar is narrow and shares
             // the display's height with the facts, actions, and selectors.
-            titleBlock(textAlignment: .leading, logoHeight: 84)
-            metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: true)
+            titleBlock(textAlignment: .center, logoHeight: 84)
+            metadataBlock(alignment: .center, textAlignment: .center, isCompact: true)
             actions()
                 .padding(.top, 2)
         }
@@ -1066,8 +1069,10 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     ) -> some View {
         let stackAlignment: HorizontalAlignment = textAlignment == .leading ? .leading : .center
         let hasFacts = !metadataTokens.isEmpty || !ratingChips.isEmpty
-        if hasFacts || !ratings.isEmpty {
-            VStack(alignment: stackAlignment, spacing: 10) {
+        if hasFacts || !ratings.isEmpty || personalRating != nil {
+            // The rating line is a 44pt slot with its content centred; the
+            // design sets it 4pt under the facts.
+            VStack(alignment: stackAlignment, spacing: personalRating == nil ? 10 : 4) {
                 if hasFacts {
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 8) {
@@ -1083,7 +1088,15 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                         .frame(maxWidth: .infinity, alignment: alignment)
                     }
                 }
-                if !ratings.isEmpty {
+                if let personalRating {
+                    PhoneRatingLine(
+                        ratings: ratings,
+                        ratingSize: ratingSize,
+                        ratingLimit: isCompact ? DisplayRating.phoneLimit : .max,
+                        alignment: alignment,
+                        slot: personalRating
+                    )
+                } else if !ratings.isEmpty {
                     Group {
                         if isCompact {
                             PhoneRatingsRow(ratings: ratings, size: ratingSize)

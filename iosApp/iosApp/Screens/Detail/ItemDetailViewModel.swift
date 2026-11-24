@@ -221,6 +221,25 @@ class ItemDetailViewModel {
     /// Nil when the page can't offer Not interested: anything but a movie or
     /// series, or a server that predates the mark.
     var isNotInterested: Bool?
+    /// The viewer's own rating of this movie or series, 1 to 10 (stars times
+    /// two), nil when unrated. Shows a change at once, before the server
+    /// confirms it; a failed change puts back `confirmedUserRating`. On a
+    /// series page it is the series' rating, never the episode's.
+    private(set) var userRating: Int?
+    /// The last rating the server reported or accepted for this page's item.
+    @ObservationIgnored private var confirmedUserRating: Int?
+    /// Items with a rating write in flight, each with the newest value chosen
+    /// while it runs. One write per item at a time.
+    @ObservationIgnored private var ratingWrites: [String: QueuedRating] = [:]
+    /// Bumped by every rating change, so a detail load that began before it
+    /// does not seed the older rating. Kept apart from
+    /// `userStateMutationGeneration`: a favorite or watchlist tap during a
+    /// load must not stop the fetched rating from being taken.
+    @ObservationIgnored private var ratingMutationGeneration = 0
+    /// The item whose rating changed on this page since a load last seeded
+    /// it. Until then `userRating` is newer than any payload for that item,
+    /// so details published or cached meanwhile carry it.
+    @ObservationIgnored private var ratedContentId: String?
     /// Invalidates favorite/watchlist lookups that began before a local
     /// mutation. Without this, a slow entry load can overwrite an optimistic
     /// button tap and put the stale pair back into `ResponseCache`.
@@ -297,6 +316,9 @@ class ItemDetailViewModel {
             boxSet = nil
             self.detail = nil
             seedArtwork = nil
+            userRating = nil
+            confirmedUserRating = nil
+            ratedContentId = nil
             resetSeriesState()
         }
         if detail?.contentId != contentId {
@@ -366,6 +388,7 @@ class ItemDetailViewModel {
 
         do {
             let userStateGeneration = userStateMutationGeneration
+            let ratingGeneration = ratingMutationGeneration
             personalStateOwner = await TokenStore.shared.captureOrdinaryRequestAuth()
 
             let item: ItemDetail
@@ -410,9 +433,13 @@ class ItemDetailViewModel {
             // under the user).
             guard let enriched else { return }
 
-            // A Watched tap made while this request was in flight wins.
+            // A Watched tap or rating change made while this request was in
+            // flight wins.
             if userStateMutationGeneration == userStateGeneration {
                 isWatched = enriched.userData?.played ?? false
+            }
+            if ratingMutationGeneration == ratingGeneration {
+                seedUserRating(from: enriched)
             }
 
             refreshBoxSet(for: enriched)
@@ -559,6 +586,7 @@ class ItemDetailViewModel {
         PosterImageCache.prefetchVisibleMovieCast(for: item)
         #endif
 
+        let item = carryingPageRating(item)
         let initial: ItemDetail
         if item.supportsPlaybackMetadata,
            let cachedWatchDetail: WatchDetail = ResponseCache.shared.get(
@@ -581,13 +609,15 @@ class ItemDetailViewModel {
 
         playbackEnrichmentTask = Task { [weak self] in
             guard let self,
-                  let enriched = await self.enrichPlaybackMetadata(
+                  let fetched = await self.enrichPlaybackMetadata(
                       for: item,
                       contentId: contentId,
                       coalescesMetadataRequest: coalescesMetadataRequest
                   ),
                   !Task.isCancelled,
                   generation == self.detailGeneration else { return }
+            // The rating may have changed while `/watch` was in flight.
+            let enriched = self.carryingPageRating(fetched)
 
             self.detail = enriched
             #if DEBUG
@@ -710,6 +740,7 @@ class ItemDetailViewModel {
             if cached.hasWatchDetailSubtitlePolicy == true { DetailLoadTrace.mark(.playbackMetadata) }
             #endif
             isWatched = cached.userData?.played ?? false
+            seedUserRating(from: cached)
 
             if cached.type == "series" {
                 seriesContentId = contentId
@@ -1655,6 +1686,114 @@ class ItemDetailViewModel {
         }
     }
 
+    /// Whether this page offers the viewer's own rating: a loaded movie or
+    /// series page, not the card's provisional copy.
+    var canRate: Bool {
+        guard let detail, !isDetailProvisional else { return false }
+        return SiloMediaType.isMovieLibrary(detail.type) || SiloMediaType.isSeries(detail.type)
+    }
+
+    /// Sets the viewer's rating of this movie or series to `score` (1 to 10,
+    /// stars times two), or removes it when `score` is nil or 0. Values above
+    /// 10 are sent as 10.
+    ///
+    /// `userRating` changes at once. Writes go out one at a time: a value
+    /// chosen while one is in flight replaces any queued value and is sent
+    /// when that write answers, unless it equals what the server just
+    /// accepted. A value equal to the confirmed one sends nothing. On a
+    /// failed or unanswered write `userRating` returns to the last confirmed
+    /// value, any queued value is dropped, and `personalStateNotice` is set.
+    /// A detail load that began before the change cannot overwrite it.
+    ///
+    /// Returns when this call's write and any value queued behind it have
+    /// answered, or at once when the value only joined the queue.
+    /// `send` replaces the network write in tests.
+    func setRating(
+        _ score: Int?,
+        send: ((_ contentId: String, _ score: Int?) async -> PersonalStateOutcome)? = nil
+    ) async {
+        guard canRate, let contentId = detail?.contentId else { return }
+        let requested = score.flatMap { $0 > 0 ? min($0, 10) : nil }
+        ratingMutationGeneration += 1
+        ratedContentId = contentId
+        userRating = requested
+        writeBackRating(requested, contentId: contentId)
+        if ratingWrites[contentId] != nil {
+            ratingWrites[contentId] = QueuedRating(score: requested)
+            return
+        }
+        ratingWrites[contentId] = QueuedRating(score: nil, isEmpty: true)
+        defer { ratingWrites[contentId] = nil }
+
+        var next = requested
+        while true {
+            if next != confirmedUserRating {
+                let outcome: PersonalStateOutcome
+                if let send {
+                    outcome = await send(contentId, next)
+                } else {
+                    outcome = await dispatchRating(contentId: contentId, score: next)
+                }
+                guard detail?.contentId == contentId else {
+                    // The page moved to another item; its state is not ours.
+                    // Applied or not, drop that item's cached detail, which
+                    // still holds the optimistic rating.
+                    invalidateRelatedCaches(contentId: contentId)
+                    return
+                }
+                guard outcome == .applied else {
+                    // Nothing after the last confirmed value is shown as saved.
+                    userRating = confirmedUserRating
+                    writeBackRating(confirmedUserRating, contentId: contentId)
+                    personalStateNotice = PersonalStateNotice(outcome)
+                    return
+                }
+                confirmedUserRating = next
+                // A load that began before the server accepted this value
+                // must not land the older one over it.
+                ratingMutationGeneration += 1
+                invalidateRelatedCaches(contentId: contentId)
+            }
+            guard let queued = ratingWrites[contentId], !queued.isEmpty else { return }
+            ratingWrites[contentId] = QueuedRating(score: nil, isEmpty: true)
+            next = queued.score
+        }
+    }
+
+    private func dispatchRating(contentId: String, score: Int?) async -> PersonalStateOutcome {
+        let owner = await currentPersonalStateOwner()
+        return await PersonalStateSync.outcome {
+            guard let owner else { throw HTTPError.requestIdentityChanged }
+            try await PersonalStateSync.setRating(contentId: contentId, to: score, owner: owner)
+        }
+    }
+
+    /// Takes the server's rating from a loaded or cached detail. Callers
+    /// skip it while a rating change is newer than the payload.
+    private func seedUserRating(from item: ItemDetail) {
+        guard ratingWrites[item.contentId] == nil else { return }
+        userRating = item.userRating
+        confirmedUserRating = item.userRating
+        ratedContentId = nil
+    }
+
+    /// `item` with this page's rating, when the rating changed here after
+    /// the payload could have been read.
+    private func carryingPageRating(_ item: ItemDetail) -> ItemDetail {
+        guard ratedContentId == item.contentId, item.userRating != userRating else { return item }
+        var item = item
+        item.userRating = userRating
+        return item
+    }
+
+    /// Keeps the cached detail in step with the page, so reopening it inside
+    /// the cache window shows the same rating before the server answers.
+    private func writeBackRating(_ score: Int?, contentId: String) {
+        ResponseCache.shared.update(CacheKey.itemDetail(contentId, libraryId: libraryId), as: ItemDetail.self) {
+            $0.userRating = score
+        }
+    }
+
     /// Mark the detail item (and, for series/seasons, its leaf episodes)
     /// as watched or unwatched through POST / DELETE
     /// `/api/v2/watched/{id}`; the server resolves the targets.
@@ -1923,6 +2062,14 @@ enum ItemDetailViewModelError: LocalizedError {
     }
 }
 
+/// A rating chosen while an earlier write for the same item is in flight.
+/// `isEmpty` means nothing is queued; otherwise `score` is the value to send
+/// next, where nil removes the rating.
+private struct QueuedRating {
+    var score: Int?
+    var isEmpty = false
+}
+
 /// User-state pair cached alongside an item detail so a returning view
 /// renders the correct favorite / watchlist buttons before the detail
 /// read returns its `user_state`.
@@ -2021,7 +2168,8 @@ extension ItemDetail {
             videos: videos,
             extras: extras,
             machineTranslatedFields: machineTranslatedFields,
-            themes: themes
+            themes: themes,
+            userRating: userRating
         )
     }
 }

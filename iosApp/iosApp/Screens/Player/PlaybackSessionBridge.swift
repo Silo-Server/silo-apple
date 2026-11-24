@@ -81,12 +81,23 @@ struct PreparedPlayback {
     }
 }
 
+/// Why the server ended a session for good. Either way the player leaves
+/// instead of renewing; the reason picks the notice it shows.
+enum PlaybackServerEndReason: Equatable, Sendable {
+    /// An administrator stopped it: 410 `playback_session_ended`.
+    case administrator
+    /// It stayed paused longer than the server allows: 410
+    /// `playback_session_paused_timeout`, sent only to an attempt that
+    /// advertised `paused_timeout_v1`.
+    case pausedTimeout
+}
+
 enum PlaybackProgressReportResult: Equatable {
     case success
     case missingSession
-    /// The server ended the session for good (an administrator stopped it);
-    /// the player leaves instead of renewing.
-    case sessionEnded
+    /// The server ended the session for good; the player leaves instead of
+    /// renewing.
+    case sessionEnded(PlaybackServerEndReason)
     case transientFailure
 }
 
@@ -2228,11 +2239,11 @@ actor PlaybackSessionBridge {
             logger.warning(
                 "reportProgress failed for session \(sid, privacy: .public) (consecutive=\(self.consecutiveProgressFailures)): \(MediaLogRedactor.sanitize(error), privacy: .public)"
             )
-            if Self.isPlaybackSessionEnded(error) {
+            if let reason = Self.serverEndReason(error) {
                 logger.notice(
-                    "playback session \(sid, privacy: .public) was ended by the server; leaving playback"
+                    "playback session \(sid, privacy: .public) was ended by the server (\(String(describing: reason), privacy: .public)); leaving playback"
                 )
-                return .sessionEnded
+                return .sessionEnded(reason)
             }
             if Self.isPlaybackSessionMissing(error) {
                 emittedOrphanedSessionWarning = true
@@ -2368,13 +2379,19 @@ actor PlaybackSessionBridge {
 
     // MARK: - Helpers
 
-    /// Whether the server ended the session for good: 410
-    /// `playback_session_ended`, which it answers once an administrator
-    /// stopped a player that could not be told directly. Starting a fresh
-    /// session would undo that stop, so the player leaves instead.
-    static func isPlaybackSessionEnded(_ error: Error) -> Bool {
-        guard case APIv2Error.problem(let problem) = error else { return false }
-        return problem.status == 410 && problem.identifier == "playback_session_ended"
+    /// Why the server ended the session for good, or nil when it did not.
+    /// It answers 410 `playback_session_ended` once an administrator stopped
+    /// a player that could not be told directly, and 410
+    /// `playback_session_paused_timeout` once the session stayed paused past
+    /// the server's limit. Starting a fresh session would undo either stop,
+    /// so the player leaves instead.
+    static func serverEndReason(_ error: Error) -> PlaybackServerEndReason? {
+        guard case APIv2Error.problem(let problem) = error, problem.status == 410 else { return nil }
+        switch problem.identifier {
+        case "playback_session_ended": return .administrator
+        case "playback_session_paused_timeout": return .pausedTimeout
+        default: return nil
+        }
     }
 
     /// Whether a session mutation failed because the session cannot be
