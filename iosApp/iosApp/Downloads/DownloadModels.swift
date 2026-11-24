@@ -849,6 +849,19 @@ extension DownloadRecord {
         return LocaleFormat.integer(year, locale: locale)
     }
 
+    /// A game of a date-labeled series (sports) as "Nov 20, 2026 · Lakers vs
+    /// Kings", the code-and-title shape of episode cards, so two games of one
+    /// league on one day stay apart; the series name for an untitled game
+    /// (stored as "Episode N"). Nil for every other record.
+    func datedGameName(locale: Locale = AppLanguage.formattingLocale) -> String? {
+        guard type == "episode", let episode = shownNumbers.episode,
+              let date = EpisodeLabel.airDate(labels: episodeLabels, airDate: airDate, locale: locale) else { return nil }
+        let game = title.flatMap { $0.isEmpty || $0 == Self.storedEpisodeName(episode) ? nil : $0 }
+        guard let name = game ?? seriesTitle, !name.isEmpty else { return date }
+        let isolated = AppLanguage.isolated(name, language: AppLanguage.language(of: locale))
+        return EpisodeCardCaption.titled(code: date, title: isolated, locale: locale)
+    }
+
     /// The name stored for an untitled episode: English "Episode 2" (D44).
     /// `shownTitle(locale:)` shows it in the app language.
     static func storedEpisodeName(_ number: Int) -> String {

@@ -53,14 +53,8 @@ enum DownloadNotifier {
         let base = record.seriesTitle ?? record.shownTitle() ?? AppLanguage.string(.downloadsNotificationDefaultTitle)
         if let season = record.seasonNumber, let episode = record.episodeNumber {
             // A date-labeled series (sports) names the game by its date and
-            // matchup, so two games of one league on one day stay apart:
-            // "Nov 20, 2026 · Lakers vs Kings", the code-and-title shape of
-            // episode cards. An untitled game (stored as "Episode N") falls
-            // back to the series name.
-            if let date = EpisodeLabel.airDate(labels: record.episodeLabels, airDate: record.airDate) {
-                let game = record.title.flatMap { $0.isEmpty || $0 == DownloadRecord.storedEpisodeName(episode) ? nil : $0 }
-                return EpisodeCardCaption.titled(code: date, title: game ?? base)
-            }
+            // matchup, so two games of one league on one day stay apart.
+            if let game = record.datedGameName() { return game }
             return AppLanguage.string(.downloadsNotificationEpisodeName(base, LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
         }
         return base
