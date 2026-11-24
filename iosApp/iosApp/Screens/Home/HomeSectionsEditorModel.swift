@@ -173,11 +173,11 @@ final class HomeSectionsEditorModel {
     /// rows come back.
     private func readBack(after sent: [APIv2ProfileSectionSetting], failure: String) async {
         let generation = editGeneration
-        // Only this editor's profile: after a switch, the layout read now
-        // belongs to someone else.
+        // Only this editor's profile: after a switch the read is refused
+        // rather than loading someone else's layout.
         let layout: APIv2ProfileHomeLayoutRead?
-        if let auth, await api.isCurrentOwner(auth) {
-            layout = try? await api.profileHomeLayout()
+        if let auth {
+            layout = try? await api.profileHomeLayout(owner: auth)
         } else {
             layout = nil
         }
@@ -192,15 +192,16 @@ final class HomeSectionsEditorModel {
             saveError = failure
             return
         }
+        let homeHad = confirmedRows
         adopt(layout)
         // The server rewrites positions and `customized` once it stores a
         // change, so compare what the editor changes: order and visibility.
-        if Self.arrangement(layout.rows) == Self.arrangement(sent) {
-            saveError = nil
+        // Home refreshes whenever the server's layout moved, even when what
+        // it holds is an earlier save rather than this one.
+        if Self.arrangement(layout.rows) != Self.arrangement(homeHad) {
             Self.refreshHome()
-        } else {
-            saveError = failure
         }
+        saveError = Self.arrangement(layout.rows) == Self.arrangement(sent) ? nil : failure
     }
 
     private static func arrangement(_ rows: [APIv2ProfileSectionSetting]) -> [String] {

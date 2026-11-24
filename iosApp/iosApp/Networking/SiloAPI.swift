@@ -113,9 +113,12 @@ actor SiloAPI {
     }
 
     /// The acting profile's own Home layout: its rows as it sees them and
-    /// the overrides it saved, read for one owner.
-    func profileHomeLayout() async throws -> APIv2ProfileHomeLayoutRead {
-        let auth = try await detailReadAuth()
+    /// the overrides it saved, read for one owner: `owner` when given (the
+    /// read is refused once that owner is no longer acting), otherwise
+    /// whoever is acting now.
+    func profileHomeLayout(owner: CapturedOrdinaryRequestAuth? = nil) async throws -> APIv2ProfileHomeLayoutRead {
+        let auth: CapturedOrdinaryRequestAuth
+        if let owner { auth = owner } else { auth = try await detailReadAuth() }
         async let rows = apiV2Client.profileHomeSectionSettings(auth: auth)
         async let saved = apiV2Client.profileHomeSectionOverrides(auth: auth)
         let read = try await APIv2ProfileHomeLayoutRead(auth: auth, rows: rows, saved: saved)
