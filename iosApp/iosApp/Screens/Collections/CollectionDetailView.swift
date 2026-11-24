@@ -11,6 +11,7 @@ struct CollectionDetailView: View {
     @State private var error: ErrorState?
     @State private var refreshError: ErrorState?
     @State private var loadGeneration = 0
+    @State private var invalidationGeneration = 0
     @State private var isVisible = false
     @State private var hasPendingInvalidation = false
     @State private var reloadTask: Task<Void, Never>?
@@ -58,6 +59,7 @@ struct CollectionDetailView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .collectionItemsDidChange)) { note in
             guard (note.object as? String) == collectionId else { return }
+            invalidationGeneration += 1
             hasPendingInvalidation = true
             if isVisible {
                 scheduleReload(delay: .milliseconds(350))
@@ -82,7 +84,7 @@ struct CollectionDetailView: View {
                 }
                 CollectionPinActionBar(
                     collectionId: collectionId,
-                    title: title ?? AppLanguage.string(.collectionsCollection, locale: locale),
+                    title: title,
                     isUserCollection: true
                 )
                 Spacer(minLength: 0)
@@ -141,6 +143,7 @@ struct CollectionDetailView: View {
     private func loadItems() async {
         loadGeneration += 1
         let myGen = loadGeneration
+        let startInvalidationGen = invalidationGeneration
         let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
         let startToken = ResponseCache.shared.writeToken
         // Hydrate from cache so a return visit paints the previous grid
@@ -164,6 +167,7 @@ struct CollectionDetailView: View {
             let response = try await SiloAPI.shared.collectionItems(collectionId: collectionId)
             guard !Task.isCancelled,
                   loadGeneration == myGen,
+                  invalidationGeneration == startInvalidationGen,
                   SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
                   !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) else { return }
             ResponseCache.shared.set(response, for: cacheKey, fetchedAt: startToken)
@@ -175,6 +179,7 @@ struct CollectionDetailView: View {
             guard !(err is CancellationError),
                   !Task.isCancelled,
                   loadGeneration == myGen,
+                  invalidationGeneration == startInvalidationGen,
                   SeekIntervalPreferences.activeRequestIdentity() == startIdentity,
                   !ResponseCache.shared.wasInvalidated(cacheKey, after: startToken) else { return }
             if items.isEmpty {

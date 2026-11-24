@@ -616,9 +616,11 @@ final class ProfileHomeLayoutTests: XCTestCase {
         ])
         stub.hold(path: itemPath)
 
-        let failedToggle = Task { await model.toggle(collectionId: "col-1") }
-        await stub.waitUntilHeld()
+        let failedToggle = model.startToggle(collectionId: "col-1")
+        // Synchronous registration guarantees Done sees the pending mutation immediately,
+        // even before the scheduled Task body reaches its first network suspension.
         XCTAssertTrue(model.hasPendingMutations)
+        await stub.waitUntilHeld()
 
         let waitOnFailure = Task { await model.waitForPendingMutations() }
         stub.release()
@@ -636,7 +638,8 @@ final class ProfileHomeLayoutTests: XCTestCase {
 
         // A subsequent successful mutation settles and allows Done to dismiss.
         stub.hold(path: itemPath)
-        let succeededToggle = Task { await model.toggle(collectionId: "col-1") }
+        let succeededToggle = model.startToggle(collectionId: "col-1")
+        XCTAssertTrue(model.hasPendingMutations)
         await stub.waitUntilHeld()
         let waitOnSuccess = Task { await model.waitForPendingMutations() }
         stub.release()

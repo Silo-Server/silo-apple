@@ -30,7 +30,7 @@ final class CollectionPlacementModel {
     }
 
     let collectionId: String
-    let collectionTitle: String
+    private(set) var collectionTitle: String?
     let isUserCollection: Bool
     let sourceLibraryId: Int?
 
@@ -57,14 +57,15 @@ final class CollectionPlacementModel {
 
     init(
         collectionId: String,
-        title: String,
+        title: String?,
         isUserCollection: Bool,
         sourceLibraryId: Int? = nil,
         api: SiloAPI = .shared,
         requestIdentity: @escaping @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity
     ) {
         self.collectionId = collectionId
-        self.collectionTitle = title
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.collectionTitle = (trimmed?.isEmpty == false) ? trimmed : nil
         self.isUserCollection = isUserCollection
         self.sourceLibraryId = sourceLibraryId
         self.api = api
@@ -125,6 +126,10 @@ final class CollectionPlacementModel {
             switch editorResult {
             case .success(let editor):
                 collectionVersion = editor.version
+                let canonicalName = editor.value.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !canonicalName.isEmpty {
+                    collectionTitle = canonicalName
+                }
                 isShared = editor.value.isShared ?? false
                 canToggleShare = true
                 shareLoadFailed = false
@@ -379,8 +384,9 @@ final class CollectionPlacementModel {
             } else if let existingIdx = nextRows.firstIndex(where: { matchesThisCollection($0) }) {
                 nextRows[existingIdx].hidden = false
             } else {
+                let rowTitle = try await resolveCollectionTitle()
                 let newRow = ProfileHomeLayout.makeCollectionRow(
-                    title: collectionTitle,
+                    title: rowTitle,
                     collectionId: collectionId,
                     isUserCollection: isUserCollection,
                     position: nextRows.count
@@ -411,6 +417,25 @@ final class CollectionPlacementModel {
             rows: nextRows,
             saved: overrides
         )
+    }
+
+    private func resolveCollectionTitle() async throws -> String {
+        if let existing = collectionTitle, !existing.isEmpty {
+            return existing
+        }
+        if isUserCollection {
+            let startIdentity = requestIdentity()
+            let editor = try? await api.collectionEditor(id: collectionId)
+            guard !Task.isCancelled, requestIdentity() == startIdentity else {
+                throw CancellationError()
+            }
+            if let canonicalName = editor?.value.name.trimmingCharacters(in: .whitespacesAndNewlines),
+               !canonicalName.isEmpty {
+                collectionTitle = canonicalName
+                return canonicalName
+            }
+        }
+        return AppLanguage.string(.collectionsCollection)
     }
 }
 
@@ -600,11 +625,11 @@ final class AddToCollectionModel {
         }
     }
 
-    func toggle(collectionId: String) async {
+    @discardableResult
+    func startToggle(collectionId: String) -> Task<Void, Never> {
         guard !busyCollectionIds.contains(collectionId),
-              let index = entries.firstIndex(where: { $0.id == collectionId }) else { return }
+              let index = entries.firstIndex(where: { $0.id == collectionId }) else { return Task {} }
         beginMutation()
-        defer { endMutation() }
         let startIdentity = requestIdentity()
         pendingMutations += 1
         mutationGeneration += 1
@@ -617,173 +642,188 @@ final class AddToCollectionModel {
         entries[index].containsItem = nextIn
         entries[index].itemCount = max(0, previousItemCount + (nextIn ? 1 : -1))
 
-        var toggleError: String?
-        do {
-            if nextIn {
-                try await api.addItemToCollection(collectionId: collectionId, itemId: contentId, position: 0)
-            } else {
-                try await api.removeItemFromCollection(collectionId: collectionId, itemId: contentId)
-            }
-            ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
-            HomeSectionsEditorModel.refreshAllSectionScopes()
-            if requestIdentity() == startIdentity {
-                NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
-            }
-        } catch {
-            if requestIdentity() == startIdentity {
-                let message = ErrorState(error).message
-                mutationFailureCount += 1
-                toggleError = message
-                errorMessage = message
-                if !APIv2MutationOutcome(error).mayHaveApplied {
-                    if let idx = entries.firstIndex(where: { $0.id == collectionId }) {
-                        entries[idx].containsItem = wasIn
-                        entries[idx].itemCount = previousItemCount
-                    }
+        return Task { @MainActor in
+            defer { self.endMutation() }
+            var toggleError: String?
+            do {
+                if nextIn {
+                    try await self.api.addItemToCollection(collectionId: collectionId, itemId: self.contentId, position: 0)
                 } else {
-                    // The server may have committed the membership change before
-                    // the response was lost; invalidate caches and reconcile from
-                    // the server once all pending mutations settle.
-                    ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
-                    HomeSectionsEditorModel.refreshAllSectionScopes()
+                    try await self.api.removeItemFromCollection(collectionId: collectionId, itemId: self.contentId)
+                }
+                ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
+                HomeSectionsEditorModel.refreshAllSectionScopes()
+                if self.requestIdentity() == startIdentity {
                     NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
-                    needsReconciliation = true
-                    pendingReconciliationError = message
+                }
+            } catch {
+                if self.requestIdentity() == startIdentity {
+                    let message = ErrorState(error).message
+                    self.mutationFailureCount += 1
+                    toggleError = message
+                    self.errorMessage = message
+                    if !APIv2MutationOutcome(error).mayHaveApplied {
+                        if let idx = self.entries.firstIndex(where: { $0.id == collectionId }) {
+                            self.entries[idx].containsItem = wasIn
+                            self.entries[idx].itemCount = previousItemCount
+                        }
+                    } else {
+                        // The server may have committed the membership change before
+                        // the response was lost; invalidate caches and reconcile from
+                        // the server once all pending mutations settle.
+                        ResponseCache.shared.remove(CacheKey.collectionItems(collectionId))
+                        HomeSectionsEditorModel.refreshAllSectionScopes()
+                        NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
+                        self.needsReconciliation = true
+                        self.pendingReconciliationError = message
+                    }
                 }
             }
+
+            let currentEntry = self.entries.first(where: { $0.id == collectionId })
+            self.pendingMutations = max(0, self.pendingMutations - 1)
+            self.mutationGeneration += 1
+            self.busyCollectionIds.remove(collectionId)
+
+            guard self.pendingMutations == 0, self.requestIdentity() == startIdentity else { return }
+            if self.needsReconciliation {
+                await self.load(preservingEntry: nil, preservingError: self.pendingReconciliationError ?? toggleError)
+            } else if !self.hasLoaded {
+                // If this toggle invalidated an in-flight recovery reload while the full
+                // list was still incomplete, schedule a fresh reload so existing collections
+                // and Retry state reconcile cleanly.
+                await self.load(preservingEntry: currentEntry, preservingError: toggleError)
+            }
         }
+    }
 
-        let currentEntry = entries.first(where: { $0.id == collectionId })
-        pendingMutations = max(0, pendingMutations - 1)
+    func toggle(collectionId: String) async {
+        await startToggle(collectionId: collectionId).value
+    }
+
+    @discardableResult
+    func startCreateAndAdd(name: String) -> Task<CreateResult, Never> {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isCreating, !hasUncertainCreation else { return Task { .failed } }
+        beginMutation()
+        let startIdentity = requestIdentity()
+        pendingMutations += 1
         mutationGeneration += 1
-        busyCollectionIds.remove(collectionId)
+        isCreating = true
 
-        guard pendingMutations == 0, requestIdentity() == startIdentity else { return }
-        if needsReconciliation {
-            await load(preservingEntry: nil, preservingError: pendingReconciliationError ?? toggleError)
-        } else if !hasLoaded {
-            // If this toggle invalidated an in-flight recovery reload while the full
-            // list was still incomplete, schedule a fresh reload so existing collections
-            // and Retry state reconcile cleanly.
-            await load(preservingEntry: currentEntry, preservingError: toggleError)
+        return Task { @MainActor in
+            defer { self.endMutation() }
+            defer { self.isCreating = false }
+
+            var createdCollectionId: String?
+            var releasedMutation = false
+            let releaseMutationAccounting = {
+                guard !releasedMutation else { return }
+                releasedMutation = true
+                if let createdCollectionId {
+                    self.busyCollectionIds.remove(createdCollectionId)
+                }
+                self.pendingMutations = max(0, self.pendingMutations - 1)
+                self.mutationGeneration += 1
+            }
+            defer { releaseMutationAccounting() }
+
+            let created: UserCollection
+            do {
+                created = try await self.api.createCollection(name: trimmed)
+            } catch {
+                releaseMutationAccounting()
+                guard self.requestIdentity() == startIdentity else { return .failed }
+                let message = ErrorState(error).message
+                self.mutationFailureCount += 1
+                self.errorMessage = message
+                if APIv2MutationOutcome(error).mayHaveApplied {
+                    // POST may have created the collection on the server; reread
+                    // the list before allowing another POST to prevent duplicates.
+                    self.hasUncertainCreation = true
+                    self.needsReconciliation = true
+                    self.pendingReconciliationError = message
+                    if self.pendingMutations == 0 {
+                        await self.load(preservingEntry: nil, preservingError: message)
+                    }
+                    return .uncertain
+                }
+                return .failed
+            }
+
+            guard self.requestIdentity() == startIdentity else {
+                releaseMutationAccounting()
+                return .failed
+            }
+
+            ResponseCache.shared.remove(CacheKey.collections)
+            createdCollectionId = created.id
+            self.busyCollectionIds.insert(created.id)
+            let myEntryGen = self.entryGeneration[created.id, default: 0] + 1
+            self.entryGeneration[created.id] = myEntryGen
+
+            let baseCount = created.itemCount ?? 0
+            var createdEntry = Entry(collection: created, containsItem: false, itemCount: baseCount)
+            if !self.entries.contains(where: { $0.id == created.id }) {
+                self.entries.insert(createdEntry, at: 0)
+            }
+
+            let result: CreateResult
+            var addError: String?
+            do {
+                try await self.api.addItemToCollection(collectionId: created.id, itemId: self.contentId, position: 0)
+                guard self.requestIdentity() == startIdentity else {
+                    releaseMutationAccounting()
+                    return .failed
+                }
+                if self.entryGeneration[created.id] == myEntryGen {
+                    createdEntry.containsItem = true
+                    createdEntry.itemCount = max(1, baseCount + 1)
+                    if let idx = self.entries.firstIndex(where: { $0.id == created.id }) {
+                        self.entries[idx] = createdEntry
+                    }
+                }
+                ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
+                HomeSectionsEditorModel.refreshAllSectionScopes()
+                NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
+                result = .createdAndAdded
+            } catch {
+                guard self.requestIdentity() == startIdentity else {
+                    releaseMutationAccounting()
+                    return .failed
+                }
+                let message = ErrorState(error).message
+                self.mutationFailureCount += 1
+                addError = message
+                self.errorMessage = message
+                if APIv2MutationOutcome(error).mayHaveApplied {
+                    ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
+                    ResponseCache.shared.remove(CacheKey.collections)
+                    HomeSectionsEditorModel.refreshAllSectionScopes()
+                    NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
+                    self.needsReconciliation = true
+                    self.pendingReconciliationError = message
+                }
+                result = .createdOnly
+            }
+
+            // Release mutation accounting before the follow-up reload so `load()` can
+            // apply, while `isCreating` stays true (via defer) until this call returns.
+            releaseMutationAccounting()
+
+            if self.pendingMutations == 0 {
+                if self.needsReconciliation {
+                    await self.load(preservingEntry: nil, preservingError: self.pendingReconciliationError ?? addError)
+                } else if !self.hasLoaded {
+                    await self.load(preservingEntry: createdEntry, preservingError: addError)
+                }
+            }
+            return result
         }
     }
 
     @discardableResult
     func createAndAdd(name: String) async -> CreateResult {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isCreating, !hasUncertainCreation else { return .failed }
-        beginMutation()
-        defer { endMutation() }
-        let startIdentity = requestIdentity()
-        pendingMutations += 1
-        mutationGeneration += 1
-        isCreating = true
-        defer { isCreating = false }
-
-        var createdCollectionId: String?
-        var releasedMutation = false
-        let releaseMutationAccounting = {
-            guard !releasedMutation else { return }
-            releasedMutation = true
-            if let createdCollectionId {
-                self.busyCollectionIds.remove(createdCollectionId)
-            }
-            self.pendingMutations = max(0, self.pendingMutations - 1)
-            self.mutationGeneration += 1
-        }
-        defer { releaseMutationAccounting() }
-
-        let created: UserCollection
-        do {
-            created = try await api.createCollection(name: trimmed)
-        } catch {
-            releaseMutationAccounting()
-            guard requestIdentity() == startIdentity else { return .failed }
-            let message = ErrorState(error).message
-            mutationFailureCount += 1
-            errorMessage = message
-            if APIv2MutationOutcome(error).mayHaveApplied {
-                // POST may have created the collection on the server; reread
-                // the list before allowing another POST to prevent duplicates.
-                hasUncertainCreation = true
-                needsReconciliation = true
-                pendingReconciliationError = message
-                if pendingMutations == 0 {
-                    await load(preservingEntry: nil, preservingError: message)
-                }
-                return .uncertain
-            }
-            return .failed
-        }
-
-        guard requestIdentity() == startIdentity else {
-            releaseMutationAccounting()
-            return .failed
-        }
-
-        ResponseCache.shared.remove(CacheKey.collections)
-        createdCollectionId = created.id
-        busyCollectionIds.insert(created.id)
-        let myEntryGen = entryGeneration[created.id, default: 0] + 1
-        entryGeneration[created.id] = myEntryGen
-
-        let baseCount = created.itemCount ?? 0
-        var createdEntry = Entry(collection: created, containsItem: false, itemCount: baseCount)
-        if !entries.contains(where: { $0.id == created.id }) {
-            entries.insert(createdEntry, at: 0)
-        }
-
-        let result: CreateResult
-        var addError: String?
-        do {
-            try await api.addItemToCollection(collectionId: created.id, itemId: contentId, position: 0)
-            guard requestIdentity() == startIdentity else {
-                releaseMutationAccounting()
-                return .failed
-            }
-            if entryGeneration[created.id] == myEntryGen {
-                createdEntry.containsItem = true
-                createdEntry.itemCount = max(1, baseCount + 1)
-                if let idx = entries.firstIndex(where: { $0.id == created.id }) {
-                    entries[idx] = createdEntry
-                }
-            }
-            ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
-            HomeSectionsEditorModel.refreshAllSectionScopes()
-            NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
-            result = .createdAndAdded
-        } catch {
-            guard requestIdentity() == startIdentity else {
-                releaseMutationAccounting()
-                return .failed
-            }
-            let message = ErrorState(error).message
-            mutationFailureCount += 1
-            addError = message
-            errorMessage = message
-            if APIv2MutationOutcome(error).mayHaveApplied {
-                ResponseCache.shared.remove(CacheKey.collectionItems(created.id))
-                ResponseCache.shared.remove(CacheKey.collections)
-                HomeSectionsEditorModel.refreshAllSectionScopes()
-                NotificationCenter.default.post(name: .collectionItemsDidChange, object: created.id)
-                needsReconciliation = true
-                pendingReconciliationError = message
-            }
-            result = .createdOnly
-        }
-
-        // Release mutation accounting before the follow-up reload so `load()` can
-        // apply, while `isCreating` stays true (via defer) until this call returns.
-        releaseMutationAccounting()
-
-        if pendingMutations == 0 {
-            if needsReconciliation {
-                await load(preservingEntry: nil, preservingError: pendingReconciliationError ?? addError)
-            } else if !hasLoaded {
-                await load(preservingEntry: createdEntry, preservingError: addError)
-            }
-        }
-        return result
+        await startCreateAndAdd(name: name).value
     }
 }

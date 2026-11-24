@@ -213,7 +213,7 @@ struct CollectionsView: View {
 
     private func collectionRow(_ collection: UserCollection) -> some View {
         Button {
-            router.navigate(to: .collectionDetail(collectionId: collection.id))
+            router.navigate(to: .collectionDetail(collectionId: collection.id, title: collection.name))
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {

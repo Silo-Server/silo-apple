@@ -6,7 +6,7 @@ import SwiftUI
 /// `Shuffle` on `CollectionDetailView` and `LibraryCollectionDetailView`.
 struct CollectionPinActionBar: View {
     let collectionId: String
-    let title: String
+    let title: String?
     let isUserCollection: Bool
     var sourceLibraryId: Int? = nil
 
@@ -16,7 +16,7 @@ struct CollectionPinActionBar: View {
 
     init(
         collectionId: String,
-        title: String,
+        title: String?,
         isUserCollection: Bool,
         sourceLibraryId: Int? = nil
     ) {
@@ -368,7 +368,7 @@ struct IOSAddToCollectionSheet: View {
                             ForEach(model.entries) { entry in
                                 Button {
                                     hapticCount += 1
-                                    Task { await model.toggle(collectionId: entry.id) }
+                                    model.startToggle(collectionId: entry.id)
                                 } label: {
                                     HStack(spacing: 12) {
                                         Image(systemName: entry.containsItem ? "checkmark.circle.fill" : "circle")
@@ -458,8 +458,9 @@ struct IOSAddToCollectionSheet: View {
         guard !isFinishing else { return }
         let name = newCollectionName
         let capturedGeneration = nameEditGeneration
+        let task = model.startCreateAndAdd(name: name)
         Task {
-            let result = await model.createAndAdd(name: name)
+            let result = await task.value
             switch result {
             case .createdAndAdded:
                 hapticCount += 1
