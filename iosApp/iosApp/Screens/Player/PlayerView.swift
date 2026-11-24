@@ -68,6 +68,9 @@ struct PlayerView: View {
     /// `TVPlayerControls`' explicit timeline scrub, which takes the buffering
     /// pill out of the focus graph.
     @State private var isTimelineScrubbing = false
+    /// The player menu's last-used tab. Kept here, not in `TVPlayerControls`,
+    /// because a hold seek unmounts the controls and would reset it.
+    @State private var activeHUDTab: TVPlayerInfoHUD.Tab = .info
     #endif
 
     init(
@@ -277,6 +280,7 @@ struct PlayerView: View {
                                 timelineSelectionRequest: timelineSelectionRequest,
                                 bufferingPillFocus: $focusedBufferingAction,
                                 showsCornerCapsule: showsWatchPartySyncCapsule,
+                                activeHUDTab: $activeHUDTab,
                                 onTimelineScrubbingChange: { isTimelineScrubbing = $0 },
                                 onDismiss: { dismissPlayer() }
                             )

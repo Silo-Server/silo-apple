@@ -24,6 +24,11 @@ struct TVPlayerControls: View {
     /// The shell's Watch Party sync capsule holds the top-trailing corner,
     /// so the status column starts below it.
     let showsCornerCapsule: Bool
+    /// Remembered so reopening the HUD lands on the last-used tab rather
+    /// than always snapping back to Info. The shell owns it: the HUD view is
+    /// recreated each time HUD presentation toggles, and this overlay is
+    /// unmounted during a hold seek.
+    @Binding var activeHUDTab: TVPlayerInfoHUD.Tab
     /// Reports the explicit timeline scrub, so the shell can take the
     /// buffering pill out of the focus graph during it as `introSkipLayer`
     /// does for the intro pill.
@@ -31,11 +36,6 @@ struct TVPlayerControls: View {
     let onDismiss: () -> Void
 
     @Environment(\.scenePhase) private var scenePhase
-
-    /// Remembered so reopening the HUD lands on the last-used tab rather
-    /// than always snapping back to Info. Lives at this level because the
-    /// HUD view is recreated each time HUD presentation toggles.
-    @State private var activeHUDTab: TVPlayerInfoHUD.Tab = .info
 
     /// Flipped on immediately *before* the HUD appears so the scrubber's
     /// focus-lost path treats the resulting blur as a cancel rather than a
