@@ -802,9 +802,11 @@ class PlayerViewModel {
     }
 
     /// The recap or credits pill while it is on screen. One skip pill shows at
-    /// a time, so it waits behind the intro pill.
+    /// a time, so it waits behind the intro pill. A party member who loses
+    /// the right to seek loses the pill at once, even while paused, when no
+    /// playback tick re-syncs the prompt.
     var segmentSkipPill: IntroSkipPrompt.Pill? {
-        guard !introSkipPrompt.isVisible else { return nil }
+        guard !introSkipPrompt.isVisible, canRequestSeek else { return nil }
         return recapSkipPrompt.pill ?? creditsSkipPrompt.pill
     }
 
