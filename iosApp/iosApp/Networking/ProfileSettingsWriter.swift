@@ -233,11 +233,14 @@ final class ProfileSettingsWriter: Sendable {
                         "\(key.rawValue, privacy: .public): the server refused the profile write: \(String(describing: failure), privacy: .public)"
                     )
                 }
-                if failedAttempts > 0 {
+                if failedAttempts > 0, failure != .serverUpgradeRequired {
                     // An earlier attempt in this write failed in a retryable way
                     // (for example, a lost response), so it may already have
                     // applied on the server. Report uncertainty instead of a
                     // clean refusal so callers reconcile rather than rolling back.
+                    // `serverUpgradeRequired` means the canonical settings route
+                    // does not exist on this server, so preserve that terminal
+                    // classification instead of offering retries against it.
                     throw HeldChange(cause: failure)
                 }
                 throw failure

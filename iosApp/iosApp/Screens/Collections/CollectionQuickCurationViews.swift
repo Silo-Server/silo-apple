@@ -329,13 +329,18 @@ struct IOSAddToCollectionSheet: View {
                     }
                 }
 
-                if let error = model.errorMessage {
+                let needsRetry = (!model.hasLoaded && !model.isLoading)
+                    || model.hasUncertainCreation
+                    || !model.unconfirmedCollectionIds.isEmpty
+                if model.errorMessage != nil || needsRetry {
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
-                            Label(error, systemImage: "exclamationmark.triangle")
-                                .font(.footnote)
-                                .foregroundStyle(Color.siloSecondaryText)
-                            if !model.hasLoaded || model.hasUncertainCreation || !model.unconfirmedCollectionIds.isEmpty {
+                            if let error = model.errorMessage {
+                                Label(error, systemImage: "exclamationmark.triangle")
+                                    .font(.footnote)
+                                    .foregroundStyle(Color.siloSecondaryText)
+                            }
+                            if needsRetry {
                                 Button(.commonRetry) {
                                     Task { await model.load() }
                                 }

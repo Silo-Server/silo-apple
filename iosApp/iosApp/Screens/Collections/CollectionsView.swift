@@ -803,6 +803,14 @@ struct LibraryCollectionDetailView: View {
                 ErrorView(state: error, onRetry: { scheduleReload(delay: nil) })
             } else if viewModel.items.isEmpty && !viewModel.hasLoadedOnce {
                 Color.clear
+                    #if os(tvOS)
+                    .tvPageFocusOwner(
+                        focusRequest: 0,
+                        isTopMenuFocused: false,
+                        accessibilityLabel: AppLanguage.string(.commonLoading, locale: locale),
+                        onMoveUp: nil
+                    )
+                    #endif
             } else if !viewModel.items.isEmpty || kind == nil || kind == .regular {
                 content
             } else if viewModel.hasMore && viewModel.paginationError == nil {

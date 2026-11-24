@@ -26,6 +26,14 @@ struct CollectionDetailView: View {
                 ErrorView(state: error, onRetry: { scheduleReload(delay: nil) })
             } else if items.isEmpty && !hasLoadedOnce {
                 Color.clear
+                    #if os(tvOS)
+                    .tvPageFocusOwner(
+                        focusRequest: 0,
+                        isTopMenuFocused: false,
+                        accessibilityLabel: AppLanguage.string(.commonLoading, locale: locale),
+                        onMoveUp: nil
+                    )
+                    #endif
             } else {
                 gridContent
             }
