@@ -38,10 +38,12 @@ struct PhoneItemCollectionsRow: View {
                 LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                     content()
                 }
-                .padding(.horizontal, SiloTheme.safePadding)
+                .scrollTargetLayout()
                 .padding(.vertical, 4)
+                .phoneMediaRailBounds()
                 .mouseDragScrolling()
             }
+            .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
             .scrollClipDisabled()
             .mediaRailScrolling()
         }
