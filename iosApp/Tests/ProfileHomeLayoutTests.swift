@@ -852,8 +852,18 @@ final class ProfileHomeLayoutTests: XCTestCase {
         let dragB = editor.commitDraggedOrder()
         await dragB.value
 
-        // Committing the drag yields the exact same order as the live preview.
+        // Committing the drag yields the exact same order as the live preview
+        // AND sends a second PUT with B, A, C at positions 0, 1, 2.
         XCTAssertEqual(editor.rows.map(\.id), ["sec-b", "sec-a", "sec-c"])
+        let putRequests = stub.requests.filter { $0.method == "PUT" && $0.path == "/api/v2/profile/sections" }
+        XCTAssertEqual(putRequests.count, 2)
+        struct OverridesBody: Decodable { let overrides: [APIv2SectionOverride] }
+        let secondBody = try XCTUnwrap(putRequests[1].body)
+        let decoded = try JSONDecoder().decode(OverridesBody.self, from: secondBody)
+        let positionsById = Dictionary(uniqueKeysWithValues: decoded.overrides.map { ($0.sectionId, $0.position) })
+        XCTAssertEqual(positionsById["sec-b"], 0)
+        XCTAssertEqual(positionsById["sec-a"], 1)
+        XCTAssertEqual(positionsById["sec-c"], 2)
     }
 
     @MainActor
@@ -1136,6 +1146,112 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertTrue(model.hideWatchedItems)
         XCTAssertFalse(model.hasReconcilingKeys)
         XCTAssertNotNil(model.errorMessage)
+    }
+
+    @MainActor
+    func testHomePreferencesReportsDeferredEditDroppedWhenRecoveryFindsUnsupportedCapabilities() async throws {
+        let identity = HTTPRequestIdentity(
+            serverId: "prefs-drop-deferred",
+            serverURL: "https://prefs.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+        let scopedTransport = FakeHomePreferencesTransport()
+        let writeTransport = FakeHomePreferencesWriteTransport()
+        let writer = ProfileSettingsWriter(transport: writeTransport, sleep: { _ in })
+        let model = HomePreferencesModel(
+            transport: scopedTransport,
+            writer: writer,
+            requestIdentity: { identity }
+        )
+
+        await model.load()
+        XCTAssertTrue(model.isAuthorized)
+
+        let heldExpectation = expectation(description: "first write held")
+        defer { writeTransport.releaseHeldWrite() }
+        writeTransport.holdNextWrite(onHeld: { heldExpectation.fulfill() })
+        model.setHideWatchedItems(true)
+        await fulfillment(of: [heldExpectation], timeout: 2.0)
+
+        // Queue a second write while Write 1 is in flight, then lose authorization.
+        model.setHideWatchedItems(false)
+        scopedTransport.capabilities = .failed(.transport(description: "offline"))
+        await model.load()
+        XCTAssertFalse(model.isAuthorized)
+
+        // Recovery discovers the server no longer supports settings (.unavailable).
+        scopedTransport.capabilities = .unavailable
+        writeTransport.releaseHeldWrite()
+
+        let settled = await model.waitForPendingWrites()
+        XCTAssertFalse(settled, "waitForPendingWrites must report the dropped deferred edit as unsaved")
+        XCTAssertNotNil(model.errorMessage)
+    }
+
+    @MainActor
+    func testAddToCollectionPreservesFallbackMembershipAndMarksCountUnknownWhenPostAddRefreshFails() async throws {
+        let stub = APIv2TestStub()
+        let name = "ProfileHomeLayoutTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let tokens = TokenStore(
+            keychain: SharedKeychain(service: name, accessGroup: nil),
+            defaults: SharedDefaults(suite: suite, standard: suite)
+        )
+        await tokens.switchActiveServer(serverId: "fallback-count-test")
+        await tokens.setServerUrl("https://fallback.example")
+        await tokens.setProfileId("profile-one")
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let identity = HTTPRequestIdentity(
+            serverId: "fallback-count-test",
+            serverURL: "https://fallback.example",
+            profileId: "profile-one",
+            clientFamily: "ios"
+        )
+
+        // 1) Create-and-add before initial load completes on a server with neither
+        //    contains_item nor item_collections: recovery read returns the new collection
+        //    with nil membership, and must preserve confirmed membership (`true`) from fallbackEntry.
+        stub.reply(path: "/api/v2/collections/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"groups":false,"login_sharing":false,"contains_item":false}"#)
+        stub.reply(path: "/api/v2/catalog/search/capabilities", 200, #"{"revision":"1","state":"available","allowed":true,"item_collections":false}"#)
+        stub.reply(path: "/api/v2/collections", 500, #"{"error":{"code":"internal","message":"down"}}"#)
+
+        let model = AddToCollectionModel(contentId: "movie-77", api: api, requestIdentity: { identity })
+        await model.load()
+        XCTAssertFalse(model.hasLoaded)
+
+        stub.sequence(path: "/api/v2/collections", [
+            .json(201, #"{"id":"new-col","name":"New","collection_type":"manual","item_count":0,"creator_profile_id":"profile-one"}"#),
+            .json(200, """
+            {"items":[
+              {"id":"new-col","name":"New","collection_type":"manual","item_count":1,"creator_profile_id":"profile-one"},
+              {"id":"old-col","name":"Old","collection_type":"manual","item_count":2,"creator_profile_id":"profile-one"}
+            ],"groups":[]}
+            """),
+        ])
+        stub.reply(path: "/api/v2/collections/new-col/items/movie-77", 204, "")
+        let created = await model.createAndAdd(name: "New")
+        XCTAssertEqual(created, .createdAndAdded)
+        XCTAssertTrue(model.hasLoaded)
+        XCTAssertEqual(model.entries.first(where: { $0.id == "new-col" })?.containsItem, true)
+        XCTAssertNil(model.entries.first(where: { $0.id == "old-col" })?.containsItem)
+        XCTAssertEqual(model.entries.first(where: { $0.id == "old-col" })?.itemCount, 2)
+
+        // 2) Adding from unknown membership when the post-add count refresh fails must
+        //    keep confirmed membership (`true`) and mark `itemCount` as `nil` (unknown)
+        //    so a subsequent remove does not decrement the stale pre-add count (`2 -> 1`).
+        stub.reply(path: "/api/v2/collections", 503, #"{"error":{"code":"unavailable","message":"busy"}}"#)
+        stub.reply(path: "/api/v2/collections/old-col/items/movie-77", 204, "")
+        await model.toggle(collectionId: "old-col")
+        let afterAdd = try XCTUnwrap(model.entries.first(where: { $0.id == "old-col" }))
+        XCTAssertEqual(afterAdd.containsItem, true)
+        XCTAssertNil(afterAdd.itemCount)
+
+        await model.toggle(collectionId: "old-col")
+        let afterRemove = try XCTUnwrap(model.entries.first(where: { $0.id == "old-col" }))
+        XCTAssertEqual(afterRemove.containsItem, false)
+        XCTAssertNil(afterRemove.itemCount)
     }
 }
 

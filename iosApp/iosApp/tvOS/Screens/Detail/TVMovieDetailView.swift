@@ -304,10 +304,12 @@ struct TVMovieDetailView: View {
                         return TVActionPopoverItem(
                             id: "col:\(entry.id)",
                             title: entry.collection.name,
-                            detail: AppLanguage.string(
-                                .collectionsItemCount(count: entry.itemCount, LocaleFormat.groupedCount(entry.itemCount, locale: locale)),
-                                locale: locale
-                            ),
+                            detail: entry.itemCount.map { count in
+                                AppLanguage.string(
+                                    .collectionsItemCount(count: count, LocaleFormat.groupedCount(count, locale: locale)),
+                                    locale: locale
+                                )
+                            },
                             systemImage: systemImage,
                             isSelected: !isUnconfirmed && entry.containsItem == true,
                             isEnabled: !model.busyCollectionIds.contains(entry.id) && !isUnconfirmed

@@ -1348,13 +1348,37 @@ final class HomePreferencesModel {
             supportedKeys = []
             loadedIdentity = nil
             switch capabilitiesResult {
-            case .unavailable, .serverUpgradeRequired:
-                // Server authoritatively does not support profile-scoped settings;
-                // drop any owed writes and release locks for this identity.
+            case .unavailable:
+                var droppedKey: SettingKey?
                 for key in Self.preferenceKeys {
                     let scope = KeyScope(identity: identity, key: key)
-                    deferredWrites.removeValue(forKey: scope)
+                    if deferredWrites.removeValue(forKey: scope) != nil, droppedKey == nil {
+                        droppedKey = key
+                    }
                     reconcilingKeys.remove(scope)
+                }
+                if let droppedKey {
+                    writeFailureCount += 1
+                    if errorMessage == nil {
+                        errorMessage = preservingError
+                            ?? ErrorState(SettingsAPIError.scopeNotAllowed(key: droppedKey.rawValue, scope: .profile)).message
+                    }
+                }
+            case .serverUpgradeRequired:
+                var droppedDeferred = false
+                for key in Self.preferenceKeys {
+                    let scope = KeyScope(identity: identity, key: key)
+                    if deferredWrites.removeValue(forKey: scope) != nil {
+                        droppedDeferred = true
+                    }
+                    reconcilingKeys.remove(scope)
+                }
+                if droppedDeferred {
+                    writeFailureCount += 1
+                    if errorMessage == nil {
+                        errorMessage = preservingError
+                            ?? ErrorState(SettingsAPIError.serverUpgradeRequired).message
+                    }
                 }
             case .failed(let err):
                 if writeFailureCount == startWriteFailureCount {
@@ -1375,10 +1399,20 @@ final class HomePreferencesModel {
             isAuthorized = false
             supportedKeys = []
             loadedIdentity = nil
+            var droppedKey: SettingKey?
             for key in Self.preferenceKeys {
                 let scope = KeyScope(identity: identity, key: key)
-                deferredWrites.removeValue(forKey: scope)
+                if deferredWrites.removeValue(forKey: scope) != nil, droppedKey == nil {
+                    droppedKey = key
+                }
                 reconcilingKeys.remove(scope)
+            }
+            if let droppedKey {
+                writeFailureCount += 1
+                if errorMessage == nil {
+                    errorMessage = preservingError
+                        ?? ErrorState(SettingsAPIError.unknownSetting(key: droppedKey.rawValue)).message
+                }
             }
             return
         }
@@ -1462,10 +1496,20 @@ final class HomePreferencesModel {
                 }
             }
 
+            var droppedKey: SettingKey?
             for key in Self.preferenceKeys where !resolvedKeys.contains(key) {
                 let scope = KeyScope(identity: identity, key: key)
-                deferredWrites.removeValue(forKey: scope)
+                if deferredWrites.removeValue(forKey: scope) != nil, droppedKey == nil {
+                    droppedKey = key
+                }
                 reconcilingKeys.remove(scope)
+            }
+            if let droppedKey {
+                writeFailureCount += 1
+                if errorMessage == nil {
+                    errorMessage = preservingError
+                        ?? ErrorState(SettingsAPIError.unknownSetting(key: droppedKey.rawValue)).message
+                }
             }
 
             loadedIdentity = identity

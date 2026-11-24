@@ -398,9 +398,11 @@ struct IOSAddToCollectionSheet: View {
                                             Text(verbatim: entry.collection.name)
                                                 .font(.body.weight(.medium))
                                                 .foregroundStyle(Color.siloOnSurface)
-                                            Text(.collectionsItemCount(count: entry.itemCount, LocaleFormat.groupedCount(entry.itemCount, locale: locale)))
-                                                .font(.caption)
-                                                .foregroundStyle(Color.siloSecondaryText)
+                                            if let count = entry.itemCount {
+                                                Text(.collectionsItemCount(count: count, LocaleFormat.groupedCount(count, locale: locale)))
+                                                    .font(.caption)
+                                                    .foregroundStyle(Color.siloSecondaryText)
+                                            }
                                         }
 
                                         Spacer()

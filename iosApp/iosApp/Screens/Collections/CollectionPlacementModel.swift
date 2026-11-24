@@ -206,9 +206,20 @@ final class CollectionPlacementModel {
                 guard !Task.isCancelled, loadGeneration == myLoadGen, requestIdentity() == startIdentity else { return }
                 for lib in relevant {
                     let layout = fetched[lib.id]?.1
-                    if updatingLibraryIds.contains(lib.id) || libraryMutationGeneration[lib.id] != startLibGens[lib.id],
-                       let existing = libraryPlacements.first(where: { $0.libraryId == lib.id }) {
-                        placements.append(existing)
+                    if updatingLibraryIds.contains(lib.id) || libraryMutationGeneration[lib.id] != startLibGens[lib.id] {
+                        if let existing = libraryPlacements.first(where: { $0.libraryId == lib.id }) {
+                            placements.append(existing)
+                        } else {
+                            // A mutation ran while this library was absent from
+                            // `libraryPlacements`; keep it unloaded until a fresh
+                            // read instead of publishing a stale pre-mutation layout.
+                            placements.append(LibraryPlacement(
+                                libraryId: lib.id,
+                                libraryName: lib.name,
+                                isPinned: false,
+                                hasLoaded: false
+                            ))
+                        }
                         continue
                     }
                     let pinned = layout.map {
@@ -317,6 +328,7 @@ final class CollectionPlacementModel {
                     isUserCollection: isUserCollection,
                     in: updated.rows
                 ) != nil
+                libraryPlacements[refreshedIdx].hasLoaded = true
             }
             HomeSectionsEditorModel.refreshScope(.library(libraryId))
         } catch {
@@ -514,7 +526,10 @@ final class AddToCollectionModel {
         /// `item_collections`, so existing membership is unknown and the row
         /// acts as add-only instead of claiming the item is absent.
         var containsItem: Bool?
-        var itemCount: Int
+        /// `nil` when the count is stale (for example, after an add from unknown
+        /// membership whose follow-up count refresh failed) so subsequent
+        /// optimistic toggles do not adjust an outdated number.
+        var itemCount: Int?
 
         var id: String { collection.id }
 
@@ -684,9 +699,11 @@ final class AddToCollectionModel {
                 } else {
                     isMember = nil
                 }
+                let effectiveContains = isMember
+                    ?? (fallbackEntry?.id == col.id ? fallbackEntry?.containsItem : nil)
                 return Entry(
                     collection: col,
-                    containsItem: isMember,
+                    containsItem: effectiveContains,
                     itemCount: col.itemCount ?? 0
                 )
             }
@@ -805,12 +822,15 @@ final class AddToCollectionModel {
         if let wasIn {
             nextIn = !wasIn
             entries[index].containsItem = nextIn
-            entries[index].itemCount = max(0, previousItemCount + (nextIn ? 1 : -1))
+            if let previousItemCount {
+                entries[index].itemCount = max(0, previousItemCount + (nextIn ? 1 : -1))
+            }
         } else {
             // Membership was unknown (server lacks lookup capabilities): perform an
-            // idempotent add without claiming prior count accuracy.
+            // idempotent add and mark the count unknown until the follow-up read succeeds.
             nextIn = true
             entries[index].containsItem = true
+            entries[index].itemCount = nil
         }
 
         return Task { @MainActor in
@@ -859,7 +879,7 @@ final class AddToCollectionModel {
                 HomeSectionsEditorModel.refreshCollectionMembership(collectionId: collectionId)
                 if self.requestIdentity() == startIdentity {
                     NotificationCenter.default.post(name: .collectionItemsDidChange, object: collectionId)
-                    if wasIn == nil {
+                    if wasIn == nil || previousItemCount == nil {
                         for _ in 0..<3 {
                             let refreshStartToken = ResponseCache.shared.writeToken
                             guard let refreshed = try? await self.api.collections(),
