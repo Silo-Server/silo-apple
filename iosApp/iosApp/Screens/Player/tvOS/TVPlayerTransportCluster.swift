@@ -1,8 +1,9 @@
 #if os(tvOS)
 import SwiftUI
 
-/// Transport controls under the scrubber: an icon-only row with no container
+/// Transport controls under the scrubber: a row of discs with no container
 /// pill, floating on the bottom gradient so the overlay stays visually quiet.
+/// Next Up and the menu button carry their name beside the icon.
 /// A single `focusSection()` keeps D-pad left/right pinned within transport;
 /// vertical presses remain inside the visible controls.
 ///
@@ -67,17 +68,17 @@ struct TVPlayerTransportCluster: View {
     private var secondaryRow: some View {
         HStack(spacing: 10) {
             if viewModel.canShowNextUpScreen {
-                iconButton(
+                labeledButton(
                     systemName: "rectangle.stack.fill",
+                    title: .playerControlsNextUp,
                     focus: .nextUp,
-                    accessibilityLabel: Text(.playerControlsShowUpNext),
                     action: viewModel.showNextUpNow
                 )
             }
-            iconButton(
+            labeledButton(
                 systemName: "slider.horizontal.3",
+                title: .playerControlsPlaybackMenu,
                 focus: .options,
-                accessibilityLabel: Text(.playerAudioOptions),
                 action: onOpenHUD
             )
             iconButton(
@@ -132,6 +133,49 @@ struct TVPlayerTransportCluster: View {
             .onTapGesture(perform: action)
             .accessibilityLabel(accessibilityLabel)
             .accessibilityAddTraits(.isButton)
+    }
+
+    private static let labelTextSize: CGFloat = 24
+
+    /// A capsule the height of the discs with the icon and its visible name,
+    /// built and focused like `iconButton`. VoiceOver reads the visible name.
+    @ViewBuilder
+    private func labeledButton(
+        systemName: String,
+        title: LocalizedStringResource,
+        focus: FocusTarget,
+        action: @escaping () -> Void
+    ) -> some View {
+        let isFocused = focusedButton == focus
+
+        HStack(spacing: 10) {
+            Image(systemName: systemName)
+                .font(.system(size: Self.secondarySymbolSize, weight: .semibold))
+            Text(title)
+                .font(.system(size: Self.labelTextSize, weight: .semibold))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .foregroundStyle(isFocused ? Color.black : Color.white)
+        .padding(.horizontal, 22)
+        .frame(height: Self.buttonSize)
+        .background(
+            Capsule().fill(isFocused ? Color.white : Color.black.opacity(0.35))
+        )
+        .overlay(
+            Capsule().stroke(
+                Color.white.opacity(isFocused ? 0 : 0.22),
+                lineWidth: 1
+            )
+        )
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+        .contentShape(Capsule())
+        .focusable(allowsFocus)
+        .focused($focusedButton, equals: focus)
+        .onTapGesture(perform: action)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(title))
+        .accessibilityAddTraits(.isButton)
     }
 }
 #endif

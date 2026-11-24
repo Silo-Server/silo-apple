@@ -1412,7 +1412,7 @@ struct PlayerNextUpScreen: View {
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
                         }
-                        .frame(width: 220)
+                        .frame(minWidth: 220)
                     }
                     .buttonStyle(TVPillButtonStyle(kind: .primary))
                     .disabled(viewModel.isStartingNextUp)
@@ -1512,27 +1512,24 @@ struct PlayerNextUpScreen: View {
                 }
             }
 
-            HStack(spacing: 10) {
-                if viewModel.nextUpOffersKeepWatching {
-                    Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
-                        Text(.upNextKeepWatching)
-                            .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
+            if compact && hasNextEpisode && viewModel.shuffleState == nil {
+                // The toggle shares the buttons' line when everything fits.
+                // Longer translations move it to its own line rather than
+                // truncate a button.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        secondaryActions(compact: compact)
+                        // Keep Watching stretches, so the toggle claims its
+                        // width before it.
+                        autoPlayToggle.layoutPriority(1)
                     }
-                    .siloSecondaryButton()
-                    .frame(minHeight: 44)
-                    .disabled(viewModel.isStartingNextUp)
+                    VStack(spacing: 6) {
+                        secondaryActionRow(compact: compact)
+                        autoPlayFooter
+                    }
                 }
-                Button(action: onClose) {
-                    Label(.upNextClose, systemImage: "xmark")
-                        .frame(minHeight: compact ? 24 : 44)
-                }
-                .siloSecondaryButton()
-                .frame(minHeight: 44)
-                if compact && hasNextEpisode && viewModel.shuffleState == nil {
-                    // Keep Watching stretches, so the toggle claims its width
-                    // first; a longer translation would otherwise truncate it.
-                    autoPlayToggle.layoutPriority(1)
-                }
+            } else {
+                secondaryActionRow(compact: compact)
             }
             // With Stop shuffling beside it, the footer needs its own line.
             if compact && hasNextEpisode && viewModel.shuffleState != nil { autoPlayFooter }
@@ -1542,6 +1539,39 @@ struct PlayerNextUpScreen: View {
         .frame(maxWidth: compact ? 560 : 380)
         #endif
     }
+
+    #if !os(tvOS)
+    /// Keep Watching and Exit Playback share a line, or stack when a
+    /// translation is too long for both to show in full.
+    private func secondaryActionRow(compact: Bool) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { secondaryActions(compact: compact) }
+            VStack(spacing: compact ? 6 : 10) { secondaryActions(compact: compact, stacked: true) }
+        }
+    }
+
+    @ViewBuilder
+    private func secondaryActions(compact: Bool, stacked: Bool = false) -> some View {
+        if viewModel.nextUpOffersKeepWatching {
+            Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
+                Text(.upNextKeepWatching)
+                    .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
+            }
+            .siloSecondaryButton()
+            .frame(minHeight: 44)
+            .disabled(viewModel.isStartingNextUp)
+        }
+        Button(action: onClose) {
+            Label(.upNextClose, systemImage: "xmark")
+                .frame(maxWidth: stacked ? .infinity : nil, minHeight: compact ? 24 : 44)
+        }
+        .siloSecondaryButton()
+        .frame(minHeight: 44)
+        // On a shared line, claim the full label width before the auto-play
+        // toggle and Keep Watching; an even split would truncate it.
+        .layoutPriority(stacked ? 0 : 2)
+    }
+    #endif
 
     private var autoPlayToggle: some View {
         Button {
