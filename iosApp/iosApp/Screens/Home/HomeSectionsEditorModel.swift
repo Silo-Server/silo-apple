@@ -163,24 +163,19 @@ final class HomeSectionsEditorModel {
                 saveError = message
                 return
             }
-            await readBack(after: sent, failure: message)
+            await readBack(after: sent, owner: auth, failure: message)
         }
     }
 
-    /// Reconciles with the server after a failed save of `sent`: shows what
-    /// it holds, refreshes Home when that is the change after all, and
-    /// otherwise reports `failure`. If the read fails too, the last confirmed
-    /// rows come back.
-    private func readBack(after sent: [APIv2ProfileSectionSetting], failure: String) async {
+    /// Reconciles with the server after a failed save of `sent` for
+    /// `owner`: shows what it holds, refreshes Home when that changed, and
+    /// otherwise reports `failure`. The read is for `owner` only, so after a
+    /// profile switch it is refused rather than loading someone else's
+    /// layout. If the read fails, the last confirmed rows come back.
+    private func readBack(after sent: [APIv2ProfileSectionSetting], owner: CapturedOrdinaryRequestAuth,
+                          failure: String) async {
         let generation = editGeneration
-        // Only this editor's profile: after a switch the read is refused
-        // rather than loading someone else's layout.
-        let layout: APIv2ProfileHomeLayoutRead?
-        if let auth {
-            layout = try? await api.profileHomeLayout(owner: auth)
-        } else {
-            layout = nil
-        }
+        let layout = try? await api.profileHomeLayout(owner: owner)
         guard generation == editGeneration else {
             serverMayDiffer = true
             saveError = failure
@@ -192,16 +187,18 @@ final class HomeSectionsEditorModel {
             saveError = failure
             return
         }
-        let homeHad = confirmedRows
-        adopt(layout)
         // The server rewrites positions and `customized` once it stores a
         // change, so compare what the editor changes: order and visibility.
-        // Home refreshes whenever the server's layout moved, even when what
-        // it holds is an earlier save rather than this one.
-        if Self.arrangement(layout.rows) != Self.arrangement(homeHad) {
-            Self.refreshHome()
-        }
-        saveError = Self.arrangement(layout.rows) == Self.arrangement(sent) ? nil : failure
+        let held = Self.arrangement(layout.rows)
+        let stored = held == Self.arrangement(sent)
+        // Home refreshes when the server holds this save, or when its layout
+        // moved anyway (an earlier save whose reply was lost). Home may
+        // already have read such an earlier save, so a stored save refreshes
+        // even when it puts back the last confirmed layout.
+        let moved = held != Self.arrangement(confirmedRows)
+        adopt(layout)
+        if stored || moved { Self.refreshHome() }
+        saveError = stored ? nil : failure
     }
 
     private static func arrangement(_ rows: [APIv2ProfileSectionSetting]) -> [String] {
