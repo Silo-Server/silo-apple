@@ -55,6 +55,9 @@ struct IOSHomeCustomizeView: View {
     @State private var autoScrollTask: Task<Void, Never>?
 
     @Environment(\.locale) private var locale
+    #if os(iOS)
+    @Environment(PageDockHost.self) private var dockHost: PageDockHost?
+    #endif
 
     private let cardSpacing: CGFloat = 10
 
@@ -70,9 +73,17 @@ struct IOSHomeCustomizeView: View {
         }
         .onAppear {
             editor.seedPreviewRowsIfEmpty(from: loadedSections, locale: locale)
+            #if os(iOS)
+            // The editor's bar floats over the page; a tab bar minimising
+            // under it left the two out of step.
+            dockHost?.holdTabBarExpanded()
+            #endif
         }
         .onDisappear {
             stopAutoScrollLoop()
+            #if os(iOS)
+            dockHost?.releaseTabBarExpanded()
+            #endif
         }
         .task(id: ObjectIdentifier(editor)) {
             stopAutoScrollLoop()

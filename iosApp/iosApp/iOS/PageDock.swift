@@ -91,6 +91,19 @@ final class PageDockHost {
         if pageIsTooShortToMinimize != isShort { pageIsTooShortToMinimize = isShort }
     }
 
+    /// Screens open that keep the tab bar expanded, such as the row editor,
+    /// whose own floating bar would otherwise stay put while the tab bar
+    /// minimised under it.
+    private var expandedHolds = 0
+
+    func holdTabBarExpanded() { expandedHolds += 1 }
+    func releaseTabBarExpanded() { expandedHolds = max(expandedHolds - 1, 0) }
+
+    /// The tab bar minimises when the page scrolls down.
+    var tabBarMinimizesOnScroll: Bool {
+        !pageIsTooShortToMinimize && expandedHolds == 0
+    }
+
     /// The tab bar can host the dock: iOS 26.1 and later, where the slot
     /// toggles without rebuilding the tabs. iOS 26.0 could only add the slot
     /// by restructuring the TabView, which would reset every tab whenever
