@@ -11,6 +11,24 @@ struct InterfaceCustomizationView: View {
 
     var body: some View {
         List {
+            Section {
+                NavigationLink {
+                    IOSHomeSectionsSettingsView()
+                } label: {
+                    #if os(iOS)
+                    SettingsOverviewRow(
+                        title: .homeCustomizeHomeScreen,
+                        subtitle: .homeCustomizeSettingsDescription,
+                        systemImage: "slider.horizontal.3"
+                    )
+                    #else
+                    Label(.homeCustomizeHomeScreen, systemImage: "slider.horizontal.3")
+                    #endif
+                }
+            } header: {
+                Text(.tabHome)
+            }
+
             if titleArt.isOffered {
                 TitleArtSettingsSection(preferences: titleArt)
             }

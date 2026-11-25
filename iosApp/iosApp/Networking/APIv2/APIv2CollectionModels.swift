@@ -17,8 +17,12 @@ struct APIv2CollectionCapabilities: Decodable {
     let state: String
     let allowed: Bool
     let groups: Bool
+    let loginSharing: Bool?
+    let containsItem: Bool?
 
     var supportsGroups: Bool { allowed && state == "available" && groups }
+    var supportsLoginSharing: Bool { allowed && state == "available" && loginSharing == true }
+    var supportsContainsItem: Bool { allowed && state == "available" && containsItem == true }
 }
 
 /// The version a collection or group edit is based on: the strong `ETag` of

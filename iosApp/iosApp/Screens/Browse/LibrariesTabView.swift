@@ -173,6 +173,8 @@ struct LibrariesTabView: View {
     /// header's count again.
     @State private var countRefreshes = 0
     @State private var isDockVisible = false
+    @State private var isPageVisible = false
+    @State private var customizerOwnerToken = UUID()
     @Environment(PageDockHost.self) private var dockHost: PageDockHost?
     @Environment(SiloControlClient.self) private var siloControl
     @Environment(AudioPlaybackStore.self) private var audioStore
@@ -244,6 +246,19 @@ struct LibrariesTabView: View {
         .onChange(of: navPrefs.showAudiobooks) {
             applyLibrarySelection()
         }
+        #if os(iOS)
+        .onAppear {
+            isPageVisible = true
+            syncActiveCustomizableLibrary()
+        }
+        .onChange(of: selectedTab) { syncActiveCustomizableLibrary() }
+        .onChange(of: activeLibrary?.id) { syncActiveCustomizableLibrary() }
+        .onChange(of: activeLibrary?.name) { syncActiveCustomizableLibrary() }
+        .onDisappear {
+            isPageVisible = false
+            clearOwnedCustomizableLibrary()
+        }
+        #endif
         .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) {
             notification in
             guard let response = notification.object as? LibrariesResponse else { return }
@@ -268,11 +283,30 @@ struct LibrariesTabView: View {
         if let library = visibleLibraries.first(where: { $0.id == id }) {
             showInDock(library)
         }
+        syncActiveCustomizableLibrary()
         #endif
         persistLibrarySelection(id)
         showPicker = false
         StartupContentPrefetcher.prefetchLibraryLanding(libraryId: id)
     }
+
+    #if os(iOS)
+    private func syncActiveCustomizableLibrary() {
+        guard isPageVisible else { return }
+        if selectedTab == .recommended, let activeLibrary {
+            router.activeCustomizableLibraryOwner = customizerOwnerToken
+            router.activeCustomizableLibrary = (id: activeLibrary.id, name: activeLibrary.name)
+        } else {
+            clearOwnedCustomizableLibrary()
+        }
+    }
+
+    private func clearOwnedCustomizableLibrary() {
+        guard router.activeCustomizableLibraryOwner == customizerOwnerToken else { return }
+        router.activeCustomizableLibraryOwner = nil
+        router.activeCustomizableLibrary = nil
+    }
+    #endif
 
     @ViewBuilder
     private func loadedContent(activeLibrary: Library) -> some View {
@@ -353,6 +387,10 @@ struct LibrariesTabView: View {
                     router.switchProfile()
                 },
                 onSignOut: { router.signOutAndReset() },
+                customizePageTitle: selectedTab == .recommended ? AppLanguage.string(.homeCustomizeTitleNamed(activeLibrary.name), locale: locale) : nil,
+                onCustomizePage: selectedTab == .recommended ? {
+                    NotificationCenter.default.post(name: .libraryCustomizeRequested, object: activeLibrary.id)
+                } : nil,
                 chromeScrollState: chromeScrollState
             )
             .padding(.horizontal, SiloTheme.padding)
@@ -496,6 +534,10 @@ struct LibrariesTabView: View {
                     onOpenRequests: { router.navigate(to: .requestsHub) },
                     onSwitchProfile: { router.switchProfile() },
                     onSignOut: { router.signOutAndReset() },
+                    customizePageTitle: selectedTab == .recommended ? AppLanguage.string(.homeCustomizeTitleNamed(activeLibrary.name), locale: locale) : nil,
+                    onCustomizePage: selectedTab == .recommended ? {
+                        NotificationCenter.default.post(name: .libraryCustomizeRequested, object: activeLibrary.id)
+                    } : nil,
                     chromeScrollState: pageChromeStates[selectedTab] ?? chromeScrollState
                 )
             }
@@ -774,6 +816,8 @@ private struct LibrariesTopBar: View {
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
     let onSignOut: () -> Void
+    var customizePageTitle: String? = nil
+    var onCustomizePage: (() -> Void)? = nil
     let chromeScrollState: PageChromeScrollState
 
     var body: some View {
@@ -800,6 +844,8 @@ private struct LibrariesTopBar: View {
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
                 onSignOut: onSignOut,
+                customizePageTitle: customizePageTitle,
+                onCustomizePage: onCustomizePage,
                 chromeScrollState: chromeScrollState
             )
         }

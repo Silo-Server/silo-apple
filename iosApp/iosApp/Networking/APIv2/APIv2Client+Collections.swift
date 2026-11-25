@@ -17,8 +17,10 @@ extension APIv2Client {
     }
 
     /// The acting profile's collections and the account's groups.
-    func personalCollections(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PersonalCollections {
-        let raw = try await collectionRequest("GET", path: "/api/v2/collections", status: 200, auth: auth)
+    /// Pass `containsItem` only when `getCollectionCapabilities` advertises `contains_item`.
+    func personalCollections(containsItem: String? = nil, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PersonalCollections {
+        let query = containsItem.map { ["contains_item": $0] } ?? [:]
+        let raw = try await collectionRequest("GET", path: "/api/v2/collections", query: query, status: 200, auth: auth)
         let list = try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2PersonalCollections.self, from: raw.data)
         guard list.page?.hasMore != true else { throw APIv2Error.incompleteCollection }
         return list
@@ -71,6 +73,54 @@ extension APIv2Client {
     /// `version` comes from ``collectionGroupEditor(id:auth:)``.
     func deleteCollectionGroup(_ version: CollectionEditVersion) async throws {
         _ = try await collectionRequest("DELETE", path: version.path, ifMatch: version.etag, status: 204, auth: version.auth)
+    }
+
+    /// `204`: adds `itemId` to a manual personal collection.
+    func addItemToCollection(
+        collectionId: String,
+        itemId: String,
+        position: Int = 0,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws {
+        struct AddItemBody: Encodable { let position: Int }
+        let path = "/api/v2/collections/\(try catalogPathSegment(collectionId))/items/\(try catalogPathSegment(itemId))"
+        let body = try Self.collectionEncoder.encode(AddItemBody(position: position))
+        _ = try await collectionRequest("PUT", path: path, body: body, status: 204, auth: auth)
+    }
+
+    /// `204`: removes `itemId` from a manual personal collection.
+    func removeItemFromCollection(
+        collectionId: String,
+        itemId: String,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws {
+        let path = "/api/v2/collections/\(try catalogPathSegment(collectionId))/items/\(try catalogPathSegment(itemId))"
+        _ = try await collectionRequest("DELETE", path: path, status: 204, auth: auth)
+    }
+
+    /// `200`: updates whether the collection is shared with household profiles.
+    func setCollectionShared(_ version: CollectionEditVersion, isShared: Bool) async throws -> UserCollection {
+        struct UpdateSharedBody: Encodable { let isShared: Bool }
+        let body = try Self.collectionEncoder.encode(UpdateSharedBody(isShared: isShared))
+        let raw = try await collectionRequest("PATCH", path: version.path, body: body, ifMatch: version.etag,
+                                              status: 200, auth: version.auth)
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(UserCollection.self, from: raw.data)
+    }
+
+    /// `GET /api/v2/catalog/items/{id}/collections`: returns the IDs of all
+    /// collections (server and personal) that currently store `itemId`.
+    func catalogItemCollectionIds(
+        itemId: String,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws -> Set<String> {
+        struct Wire: Decodable {
+            struct Entry: Decodable { let id: String }
+            let items: [Entry]
+        }
+        let path = "/api/v2/catalog/items/\(try catalogPathSegment(itemId))/collections"
+        let raw = try await collectionRequest("GET", path: path, status: 200, auth: auth)
+        let decoded = try HTTPClient.makeJSONDecoder().decode(Wire.self, from: raw.data)
+        return Set(decoded.items.map(\.id))
     }
 
     /// The display cards of a personal collection, read as catalog pages

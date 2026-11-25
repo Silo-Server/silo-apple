@@ -14,6 +14,8 @@ struct TVActionPopoverItem: Identifiable, Equatable {
     var startsSection = false
     /// Non-empty children turn this row into an in-place submenu trigger.
     var children: [TVActionPopoverItem]? = nil
+    /// Selecting this row pops the current submenu (equivalent to pressing Back).
+    var navigatesBack = false
 
     var hasSubmenu: Bool {
         guard let children else { return false }
@@ -166,7 +168,9 @@ struct TVActionPopoverMenu: View {
     }
 
     private func handleRowAction(_ item: TVActionPopoverItem) {
-        if item.hasSubmenu {
+        if item.navigatesBack {
+            handleExit()
+        } else if item.hasSubmenu {
             enterSubmenu(item)
         } else {
             onSelect(item)

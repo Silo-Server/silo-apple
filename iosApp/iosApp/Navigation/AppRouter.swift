@@ -380,6 +380,15 @@ final class AppRouter {
     /// Set by the open detail while its TV remote or a TV picker is up.
     /// They live in the detail's own state, which a refit would discard.
     var itemDetailShowsControl = false
+    /// Active detail-owned sheets (such as Add to Collection) that must finish
+    /// dismissing before `refitItemDetail()` reconstructs the presentation.
+    var itemDetailDeferredRefitCount = 0
+    /// Currently visible library Recommended tab that supports in-place
+    /// customization from the iPhone Duo status column.
+    var activeCustomizableLibrary: (id: Int, name: String)?
+    /// Owning `LibrariesTabView` token so hidden or disappearing instances
+    /// never overwrite or clear another visible instance's registration.
+    @ObservationIgnored var activeCustomizableLibraryOwner: UUID?
     /// The season and episode chosen on the open detail's series page, so a
     /// refit reopens it there rather than where it first opened.
     @ObservationIgnored private var itemDetailSeriesSelection: SeriesDetailContext?
@@ -408,7 +417,10 @@ final class AppRouter {
     /// remote, or a TV picker is up over the detail, since the move would
     /// close it; each calls this again once it has dismissed.
     func refitItemDetail() {
-        guard presentedPlayer == nil, !itemDetailShowsControl, var presentation = presentedItemDetail,
+        guard presentedPlayer == nil,
+              !itemDetailShowsControl,
+              itemDetailDeferredRefitCount == 0,
+              var presentation = presentedItemDetail,
               presentation.fillsWindow != fillsWindow(presentation)
         else { return }
         if let selection = itemDetailSeriesSelection {

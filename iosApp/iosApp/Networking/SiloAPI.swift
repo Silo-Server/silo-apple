@@ -307,6 +307,10 @@ actor SiloAPI {
 
     /// The owner a write is sent for. Without one nothing is sent, which the
     /// error says, so the write reads as a definite failure.
+    func captureMutationAuth() async throws -> CapturedOrdinaryRequestAuth {
+        try await mutationAuth()
+    }
+
     private func mutationAuth() async throws -> CapturedOrdinaryRequestAuth {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
             throw APIv2OwnerChangedBeforeDispatch()
@@ -559,20 +563,34 @@ actor SiloAPI {
 
     /// The acting profile's collections and the account's groups. A list read
     /// for one profile is never returned once the session acts as another.
-    func collections() async throws -> CollectionsResponse {
+    func collections(containsItem: String? = nil) async throws -> CollectionsResponse {
         let auth = try await detailReadAuth()
-        let list = try await apiV2Client.personalCollections(auth: auth)
+        let list = try await apiV2Client.personalCollections(containsItem: containsItem, auth: auth)
         let response = CollectionsResponse(collections: list.items, groups: list.groups)
         try await requireCurrentOwner(auth)
         return response
     }
 
-    /// Whether the acting account's store supports collection groups.
+    /// Whether the acting account's store supports collection groups, sharing, and `contains_item`.
     func collectionCapabilities() async throws -> APIv2CollectionCapabilities {
         let auth = try await detailReadAuth()
         let capabilities = try await apiV2Client.collectionCapabilities(auth: auth)
         try await requireCurrentOwner(auth)
         return capabilities
+    }
+
+    /// Reads collection capabilities, returning `nil` only when the server does
+    /// not expose the capabilities route (v1-only or 404). Any other failure throws.
+    func collectionCapabilitiesIfSupported() async throws -> APIv2CollectionCapabilities? {
+        do {
+            return try await collectionCapabilities()
+        } catch let error as APIv2Error {
+            switch error {
+            case .serverUpdateRequired, .httpStatus(404): return nil
+            case .problem(let problem) where problem.status == 404: return nil
+            default: throw error
+            }
+        }
     }
 
     /// Every display card in a personal collection, read as catalog pages.
@@ -587,8 +605,17 @@ actor SiloAPI {
 
     /// `non_retryable`: dispatched once. A lost answer may still have created
     /// the collection, so the caller re-reads the list instead of resending.
-    func createCollection(name: String) async throws -> UserCollection {
-        try await apiV2Client.createCollection(name: name, auth: try await mutationAuth())
+    func createCollection(
+        name: String,
+        auth: CapturedOrdinaryRequestAuth? = nil
+    ) async throws -> UserCollection {
+        let resolvedAuth: CapturedOrdinaryRequestAuth
+        if let auth {
+            resolvedAuth = auth
+        } else {
+            resolvedAuth = try await mutationAuth()
+        }
+        return try await apiV2Client.createCollection(name: name, auth: resolvedAuth)
     }
 
     /// The canonical collection and the version an edit of it must send.
@@ -607,6 +634,88 @@ actor SiloAPI {
     /// Ungrouped). Returns the updated collection.
     func moveCollection(_ version: CollectionEditVersion, toGroupId groupId: String?) async throws -> UserCollection {
         try await apiV2Client.moveCollection(version, toGroupId: groupId)
+    }
+
+    func addItemToCollection(
+        collectionId: String,
+        itemId: String,
+        position: Int = 0,
+        auth: CapturedOrdinaryRequestAuth? = nil
+    ) async throws {
+        let resolvedAuth: CapturedOrdinaryRequestAuth
+        if let auth {
+            resolvedAuth = auth
+        } else {
+            resolvedAuth = try await mutationAuth()
+        }
+        try await apiV2Client.addItemToCollection(
+            collectionId: collectionId,
+            itemId: itemId,
+            position: position,
+            auth: resolvedAuth
+        )
+    }
+
+    func removeItemFromCollection(
+        collectionId: String,
+        itemId: String,
+        auth: CapturedOrdinaryRequestAuth? = nil
+    ) async throws {
+        let resolvedAuth: CapturedOrdinaryRequestAuth
+        if let auth {
+            resolvedAuth = auth
+        } else {
+            resolvedAuth = try await mutationAuth()
+        }
+        try await apiV2Client.removeItemFromCollection(
+            collectionId: collectionId,
+            itemId: itemId,
+            auth: resolvedAuth
+        )
+    }
+
+    func setCollectionShared(_ version: CollectionEditVersion, isShared: Bool) async throws -> UserCollection {
+        try await apiV2Client.setCollectionShared(version, isShared: isShared)
+    }
+
+    func catalogItemCollectionIds(itemId: String) async throws -> Set<String> {
+        let auth = try await detailReadAuth()
+        let ids = try await apiV2Client.catalogItemCollectionIds(itemId: itemId, auth: auth)
+        try await requireCurrentOwner(auth)
+        return ids
+    }
+
+    // --- Profile Sections Layout ---
+
+    func profileLayout(scope: ProfileSectionsScope = .home) async throws -> APIv2ProfileLayoutRead {
+        let auth = try await detailReadAuth()
+        async let rows = apiV2Client.profileSectionSettings(scope: scope, auth: auth)
+        async let saved = apiV2Client.profileSectionOverrides(scope: scope, auth: auth)
+        let (resolvedRows, resolvedSaved) = try await (rows, saved)
+        try await requireCurrentOwner(auth)
+        return APIv2ProfileLayoutRead(auth: auth, scope: scope, rows: resolvedRows, saved: resolvedSaved)
+    }
+
+    func saveProfileLayout(
+        _ overrides: [APIv2SectionOverride],
+        scope: ProfileSectionsScope = .home,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws {
+        try await apiV2Client.replaceProfileSectionOverrides(overrides, scope: scope, auth: auth)
+    }
+
+    func resetProfileLayout(
+        scope: ProfileSectionsScope = .home,
+        auth: CapturedOrdinaryRequestAuth
+    ) async throws {
+        try await apiV2Client.resetProfileSectionOverrides(scope: scope, auth: auth)
+    }
+
+    func sectionRecipeCatalog() async throws -> APIv2RecipeCatalog {
+        let auth = try await detailReadAuth()
+        let catalog = try await apiV2Client.sectionRecipeCatalog(auth: auth)
+        try await requireCurrentOwner(auth)
+        return catalog
     }
 
     // --- Theme music ---

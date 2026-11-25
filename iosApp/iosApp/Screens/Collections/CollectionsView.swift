@@ -213,7 +213,7 @@ struct CollectionsView: View {
 
     private func collectionRow(_ collection: UserCollection) -> some View {
         Button {
-            router.navigate(to: .collectionDetail(collectionId: collection.id))
+            router.navigate(to: .collectionDetail(collectionId: collection.id, title: collection.name))
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
@@ -823,23 +823,41 @@ struct LibraryCollectionDetailView: View {
         .refreshable {
             await loadItems(reset: true)
         }
+        // Adding or removing a title from this personal collection elsewhere
+        // reloads the grid.
+        .onReceive(NotificationCenter.default.publisher(for: .collectionItemsDidChange)) { note in
+            guard kind == .userCollections, (note.object as? String) == collectionId else { return }
+            Task { await loadItems(reset: true) }
+        }
+        #if os(tvOS)
+        .tvActionPopoverHost()
+        #endif
     }
 
     private var content: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
-                HStack(spacing: SiloTheme.padding) {
+                HStack(spacing: 12) {
                     if offersShuffle {
                         ShuffleButton(isStarting: shuffleLauncher.isStarting) {
                             shuffleLauncher.start(ShuffleScopeRequest(kind: shuffleKind, id: collectionId), router: router)
                         }
+                    }
+                    if kind == nil || kind == .regular {
+                        CollectionPinActionBar(
+                            collectionId: collectionId,
+                            title: title,
+                            isUserCollection: false,
+                            sourceLibraryId: libraryId
+                        )
+                        .id("\(collectionId)-\(libraryId)")
                     }
                     Text(countLabel)
                         .font(.siloCaption)
                         .foregroundColor(.siloSecondaryText)
                 }
                 #if os(tvOS)
-                // Up from any grid column reaches the Shuffle button.
+                // Up from any grid column reaches Shuffle & Pin to Home.
                 .focusSection()
                 #endif
 

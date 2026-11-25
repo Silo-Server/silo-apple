@@ -17,6 +17,10 @@ struct TabTopBarActions: View {
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
     let onSignOut: () -> Void
+    /// Optional in-place page customization action placed inside the Profile menu
+    /// (e.g. "Customize Home" on Home, "Customize Movies" on a Library page).
+    var customizePageTitle: String? = nil
+    var onCustomizePage: (() -> Void)? = nil
     /// Vertical in the iPhone Duo's status column (`StatusColumnBar`).
     var axis: Axis = .horizontal
     /// The page's chrome scroll state. With one, the cluster sits in a glass
@@ -81,7 +85,9 @@ struct TabTopBarActions: View {
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
-                onSignOut: onSignOut
+                onSignOut: onSignOut,
+                customizePageTitle: customizePageTitle,
+                onCustomizePage: onCustomizePage
             )
         }
         .pageChromePill(scrollState: axis == .horizontal ? chromeScrollState : nil)
@@ -138,6 +144,8 @@ struct ProfileAvatarMenu: View {
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
     let onSignOut: () -> Void
+    var customizePageTitle: String? = nil
+    var onCustomizePage: (() -> Void)? = nil
     private let directory = AccountDirectory.shared
 
     #if os(iOS)
@@ -164,6 +172,13 @@ struct ProfileAvatarMenu: View {
     #if !os(iOS)
     @ViewBuilder
     private var featureActions: some View {
+        if let customizePageTitle, let onCustomizePage {
+            Button {
+                onCustomizePage()
+            } label: {
+                Label(customizePageTitle, systemImage: "slider.horizontal.3")
+            }
+        }
         if requestsEnabled {
             Button {
                 onOpenRequests()
@@ -299,7 +314,7 @@ struct ProfileAvatarMenu: View {
         // the account actions, then Sign Out on its own. The header titles
         // whichever group comes first.
         Menu {
-            if requestsEnabled || showsWatchParty {
+            if customizePageTitle != nil || requestsEnabled || showsWatchParty {
                 titledSection { featureActions }
                 Section { accountActions }
             } else {
@@ -355,6 +370,13 @@ struct ProfileAvatarMenu: View {
     /// The panel's rows, in the same order and groups as the system menu.
     private var panelSections: [[ProfileMenuPanel.Row]] {
         var features: [ProfileMenuPanel.Row] = []
+        if let customizePageTitle, let onCustomizePage {
+            features.append(.init(
+                title: .verbatim(customizePageTitle),
+                systemImage: "slider.horizontal.3",
+                action: onCustomizePage
+            ))
+        }
         if requestsEnabled {
             features.append(.init(
                 title: .menuRequests,

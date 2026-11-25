@@ -145,6 +145,7 @@ struct TVCircleMenuButton: View {
     /// Header shown inside the popover. Defaults to `title`.
     let menuTitle: String?
     let items: () -> [TVActionPopoverItem]
+    let onOpen: (() -> Void)?
     let onSelect: (TVActionPopoverItem) -> Void
 
     @Environment(\.isEnabled) private var isEnabled
@@ -161,6 +162,7 @@ struct TVCircleMenuButton: View {
         stabilizesFocusMotion: Bool = false,
         menuTitle: String? = nil,
         items: @escaping () -> [TVActionPopoverItem],
+        onOpen: (() -> Void)? = nil,
         onSelect: @escaping (TVActionPopoverItem) -> Void
     ) {
         self.icon = icon
@@ -169,6 +171,7 @@ struct TVCircleMenuButton: View {
         self.stabilizesFocusMotion = stabilizesFocusMotion
         self.menuTitle = menuTitle
         self.items = items
+        self.onOpen = onOpen
         self.onSelect = onSelect
     }
 
@@ -219,6 +222,7 @@ struct TVCircleMenuButton: View {
 
     private func open() {
         guard isEnabled, !isPresented else { return }
+        onOpen?()
         presentationId = UUID()
         isPresented = true
     }

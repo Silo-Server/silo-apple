@@ -98,6 +98,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         let watchState: LeafItemUserData?
     }
     @State private var pendingResume: PendingResume?
+    @State private var isShowingAddToCollection = false
+    #if os(iOS)
+    @State private var hasDeferredRefitForCollectionSheet = false
+    #endif
     /// The Play tap's in-flight watch-state read. A second tap replaces it.
     @State private var resumeLookupTask: Task<Void, Never>?
     @State private var isUpdatingWatched = false
@@ -161,6 +165,27 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             resumeLookupTask?.cancel()
             resumeLookupTask = nil
             pendingEpisodePlayRequest = nil
+            #if os(iOS)
+            if hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = false
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+                if !isShowingAddToCollection {
+                    router.refitItemDetail()
+                }
+            }
+            isShowingAddToCollection = false
+            #endif
+        }
+        .sheet(isPresented: $isShowingAddToCollection, onDismiss: {
+            #if os(iOS)
+            if hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = false
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+            }
+            router.refitItemDetail()
+            #endif
+        }) {
+            IOSAddToCollectionSheet(contentId: detail.seriesId ?? detail.contentId, itemTitle: detail.title)
         }
         .onChange(of: hierarchyError) { _, error in
             if error != nil { pendingEpisodePlayRequest = nil }
@@ -417,6 +442,17 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             )
         }
         .disabled(isUpdatingWatched)
+        Button {
+            #if os(iOS)
+            if !hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = true
+                router.itemDetailDeferredRefitCount += 1
+            }
+            #endif
+            isShowingAddToCollection = true
+        } label: {
+            Label(.collectionsAddToMenuAction, systemImage: "folder.badge.plus")
+        }
         Divider()
         Button(action: onFindTrailers) {
             Label(.detailMoreFindTrailers, systemImage: "film")
