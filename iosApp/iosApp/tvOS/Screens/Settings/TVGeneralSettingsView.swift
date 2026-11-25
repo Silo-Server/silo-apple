@@ -122,8 +122,8 @@ struct TVGeneralSettingsPane: View {
             TVSettingsSectionHeader(.settingsGeneralTopMenuHeaderTv)
 
             TVSettingsPickerRow(
-                title: .verbatim("Home Sections"),
-                value: .verbatim("Customize")
+                title: .homeCustomizeHomeScreen,
+                value: .homeCustomizeRowsButton
             ) {
                 isShowingHomeSections = true
             }

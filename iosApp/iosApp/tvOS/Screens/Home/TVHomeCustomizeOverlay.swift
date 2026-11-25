@@ -75,16 +75,14 @@ struct TVHomeCustomizeOverlay: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            // Calm darkened backdrop veil so the compact poster-strip rows read
-            // clearly while keeping Skyline's ambient color washes alive.
+            // Opaque page so nothing behind the editor (Settings, Home) shows
+            // through the rows; a faint top glow keeps it from reading flat.
+            Color.siloBackground
+                .ignoresSafeArea()
             LinearGradient(
-                colors: [
-                    Color.black.opacity(0.76),
-                    Color.black.opacity(0.86),
-                    Color.black.opacity(0.92),
-                ],
+                colors: [Color.white.opacity(0.06), Color.clear],
                 startPoint: .top,
-                endPoint: .bottom
+                endPoint: .center
             )
             .ignoresSafeArea()
 
@@ -294,9 +292,9 @@ struct TVHomeCustomizeOverlay: View {
                     }
                 }
 
-                Text(.homeCustomizeSubtitle)
+                Text(grabbedRowId != nil ? .homeCustomizeTvMovingSubtitle : .homeCustomizeTvSubtitle)
                     .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.65))
+                    .foregroundStyle(Color.white.opacity(0.7))
             }
 
             Spacer(minLength: 0)
@@ -395,9 +393,27 @@ struct TVHomeCustomizeOverlay: View {
                         }
                     }
                 }
-                .padding(.vertical, 8)
-                .padding(.horizontal, 6)
+                // Room for the highlighted or grabbed card's scale, border and
+                // shadow, so the scroll view doesn't clip them at its edges.
+                .padding(.vertical, Self.rowBleed)
+                .padding(.horizontal, Self.rowBleed)
             }
+            // Fade rows out at the top and bottom instead of cutting them off
+            // flush against the banner and footer while scrolling. Applied
+            // before the negative padding so the mask covers the extended area.
+            .mask {
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                        .frame(height: Self.rowBleed / 2)
+                    Color.black
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: Self.rowBleed / 2)
+                }
+            }
+            // Extend the scroll view by the same amount, so the rows stay aligned
+            // with the banner and footer while their effects draw unclipped.
+            .padding(.horizontal, -Self.rowBleed)
+            .padding(.vertical, -Self.rowBleed / 2)
             .onChange(of: highlighted) { _, target in
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
                     proxy.scrollTo(target, anchor: .center)
@@ -413,6 +429,8 @@ struct TVHomeCustomizeOverlay: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
+    private static let rowBleed: CGFloat = 32
 
     // MARK: - Footer Glass Action Pills
 
@@ -546,7 +564,7 @@ struct TVHomeCustomizeOverlay: View {
         case .hiddenRow(let id):
             return AppLanguage.string(.homeCustomizeA11YShowRow(rowTitle(for: id)), locale: locale)
         case .footer:
-            return AppLanguage.string(.homeCustomizeSubtitle, locale: locale)
+            return AppLanguage.string(.homeCustomizeTvSubtitle, locale: locale)
         }
     }
 
@@ -1081,11 +1099,6 @@ private struct TVArrangeRowCard: View {
                     }
                 }
 
-                if isGrabbed {
-                    Text(.homeCustomizeA11YReorderRow(effectiveTitle))
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(Color.black.opacity(0.75))
-                }
             }
 
             Spacer(minLength: 16)
@@ -1093,18 +1106,13 @@ private struct TVArrangeRowCard: View {
             // Visibility + affordance cue
             HStack(spacing: 12) {
                 if isGrabbed {
-                    Label {
-                        Text(.homeCustomizeA11YReorderRow(effectiveTitle))
-                    } icon: {
-                        Image(systemName: "arrow.up.and.down")
-                    }
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 7)
-                    .background(Capsule().fill(Color.black.opacity(0.82)))
-                } else if isHighlighted {
-                    Text(isHidden ? .homeCustomizeShowRow : .homeCustomizeOptions)
+                    Image(systemName: "arrow.up.and.down")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 34)
+                        .background(Capsule().fill(Color.black.opacity(0.82)))
+                } else if isHighlighted && isHidden {
+                    Text(.homeCustomizeShowRow)
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(Color.black.opacity(0.65))
                 }
@@ -1198,13 +1206,13 @@ private struct TVArrangeRowCard: View {
     private var cardBackgroundColor: Color {
         if isGrabbed { return Color.white }
         if isHighlighted { return Color.white.opacity(0.95) }
-        return Color.white.opacity(isHidden ? 0.04 : 0.08)
+        return Color.white.opacity(isHidden ? 0.04 : 0.09)
     }
 
     private var borderColor: Color {
         if isGrabbed { return Color.white }
         if isHighlighted { return Color.white }
-        return Color.white.opacity(0.10)
+        return Color.white.opacity(0.14)
     }
 
     private var primaryTextColor: Color {
@@ -1263,9 +1271,6 @@ struct TVAddRowModal: View {
                     Text(.homeCustomizeAddRow)
                         .font(.system(size: 38, weight: .bold))
                         .foregroundStyle(.white)
-                    Text(.homeCustomizeSubtitle)
-                        .font(.system(size: 21))
-                        .foregroundStyle(.white.opacity(0.65))
                 }
                 Spacer()
                 Button(.commonDone, action: onClose)

@@ -384073,6 +384073,486 @@
         }
       }
     },
+    "home.customize.tvMovingSubtitle" : {
+      "comment" : "Apple TV: instruction line in the Customize Home banner while a row is picked up for moving. Up, Down, Select and Menu are Siri Remote buttons; Menu puts the row back where it was.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "el" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Up or Down to move · Select to place · Menu to cancel"
+          }
+        }
+      }
+    },
+    "home.customize.tvSubtitle" : {
+      "comment" : "Apple TV: instruction line in the Customize Home banner. Select, Play/Pause and Menu are Siri Remote buttons; Play/Pause opens options for the highlighted row, Menu closes the editor.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "bg" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "ca" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "cs" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "el" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "et" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "fi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "he" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "hi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "hr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "hu" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "id" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "ko" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "lt" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "lv" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "ms" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "nb" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "pt-PT" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "ro" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "sk" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "sl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "sv" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "th" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "tr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "uk" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "vi" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        },
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Select a row to move it · Play/Pause for row options · Menu when done"
+          }
+        }
+      }
+    },
     "home.empty" : {
       "comment" : "Heading on Home when there is nothing to show yet.",
       "extractionState" : "manual",
