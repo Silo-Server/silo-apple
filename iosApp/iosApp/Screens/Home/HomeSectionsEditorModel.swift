@@ -85,6 +85,11 @@ final class HomeSectionsEditorModel {
     private(set) var serverCollectionsError: String?
     @ObservationIgnored private var hasLoadedPickerCatalog = false
     @ObservationIgnored private var pickerCatalogIdentity: HTTPRequestIdentity?
+    /// Whether `recipeCatalog` came from a successful server read, and for
+    /// which server and profile. Tracked apart from the combined picker state
+    /// so a failed refresh of another part doesn't discard valid recipes.
+    @ObservationIgnored private var hasServerRecipeCatalog = false
+    @ObservationIgnored private var recipeCatalogIdentity: HTTPRequestIdentity?
     @ObservationIgnored private var pickerCatalogCacheToken: UInt64 = 0
 
     @ObservationIgnored private let api: SiloAPI
@@ -312,16 +317,19 @@ final class HomeSectionsEditorModel {
 
             var allSucceeded = true
             let nextRecipeCatalog: APIv2RecipeCatalog
+            let nextHasServerRecipeCatalog: Bool
             switch fetchedRecipes {
             case .success(let catalog) where !catalog.categories.isEmpty:
                 nextRecipeCatalog = catalog
+                nextHasServerRecipeCatalog = true
             case .success:
                 nextRecipeCatalog = .curatedFallback
+                nextHasServerRecipeCatalog = true
             case .failure:
                 // Keep the previous catalog only if it came from this server and profile.
-                nextRecipeCatalog = hasLoadedPickerCatalog && pickerCatalogIdentity == startIdentity
-                    ? recipeCatalog
-                    : .curatedFallback
+                let keepsPrevious = hasServerRecipeCatalog && recipeCatalogIdentity == startIdentity
+                nextRecipeCatalog = keepsPrevious ? recipeCatalog : .curatedFallback
+                nextHasServerRecipeCatalog = keepsPrevious
                 allSucceeded = false
             }
 
@@ -429,6 +437,8 @@ final class HomeSectionsEditorModel {
             }
 
             recipeCatalog = nextRecipeCatalog
+            hasServerRecipeCatalog = nextHasServerRecipeCatalog
+            recipeCatalogIdentity = startIdentity
             personalCollections = nextPersonalCollections
             personalCollectionsError = nextPersonalError
             availableLibraries = nextAvailableLibraries
