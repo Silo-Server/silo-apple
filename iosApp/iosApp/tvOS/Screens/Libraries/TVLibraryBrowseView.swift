@@ -91,10 +91,13 @@ struct TVLibraryBrowseView: View {
         .environment(\.browseLibraryId, library.id)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await loadContent() }
-        // A layout save for this library (for example, pinning a collection
-        // to it) drops its cached rows; re-read them so the page shows it.
+        // Re-read rows after a layout, collection, or watch-state change,
+        // unless the notification names a different library.
         .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { note in
-            guard (note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.libraryId] as? Int) == library.id else { return }
+            if let targetLibraryId = note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.libraryId] as? Int,
+               targetLibraryId != library.id {
+                return
+            }
             Task { await loadContent() }
         }
     }

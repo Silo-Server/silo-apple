@@ -23,11 +23,18 @@ struct CollectionDetailView: View {
             } else if isLoading {
                 Color.clear
             } else {
-                EmptyStateView(
-                    icon: "square.stack",
-                    title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
-                    subtitle: AppLanguage.string(.collectionsEmptyItemsHint, locale: locale)
-                )
+                // Pinning and sharing apply to the collection, so keep them
+                // reachable when it has no titles (for example, right after
+                // its last title was removed).
+                VStack(spacing: 0) {
+                    actionBar(showsShuffle: false)
+                    EmptyStateView(
+                        icon: "square.stack",
+                        title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
+                        subtitle: AppLanguage.string(.collectionsEmptyItemsHint, locale: locale)
+                    )
+                    .frame(maxHeight: .infinity)
+                }
             }
         }
         .siloPageBackground()
@@ -49,28 +56,32 @@ struct CollectionDetailView: View {
         #endif
     }
 
+    private func actionBar(showsShuffle: Bool) -> some View {
+        HStack(spacing: 12) {
+            if showsShuffle && ShuffleFeatureStore.shared.supports(.userCollection) {
+                ShuffleButton(isStarting: shuffleLauncher.isStarting) {
+                    shuffleLauncher.start(ShuffleScopeRequest(kind: .userCollection, id: collectionId), router: router)
+                }
+            }
+            CollectionPinActionBar(
+                collectionId: collectionId,
+                title: title,
+                isUserCollection: true
+            )
+            .id(collectionId)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, SiloTheme.padding)
+        .padding(.top, SiloTheme.smallPadding)
+        #if os(tvOS)
+        // Up from any grid column reaches Shuffle & Pin to Home.
+        .focusSection()
+        #endif
+    }
+
     private var gridContent: some View {
         ScrollView {
-            HStack(spacing: 12) {
-                if ShuffleFeatureStore.shared.supports(.userCollection) {
-                    ShuffleButton(isStarting: shuffleLauncher.isStarting) {
-                        shuffleLauncher.start(ShuffleScopeRequest(kind: .userCollection, id: collectionId), router: router)
-                    }
-                }
-                CollectionPinActionBar(
-                    collectionId: collectionId,
-                    title: title,
-                    isUserCollection: true
-                )
-                .id(collectionId)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, SiloTheme.padding)
-            .padding(.top, SiloTheme.smallPadding)
-            #if os(tvOS)
-            // Up from any grid column reaches Shuffle & Pin to Home.
-            .focusSection()
-            #endif
+            actionBar(showsShuffle: true)
             VStack(alignment: .leading, spacing: 0) {
                 CatalogGrid(
                     items: items,

@@ -1239,13 +1239,19 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertFalse(model.hasReconcilingKeys)
 
         // 3) A retryable failure followed by `serverUpgradeRequired` preserves the
-        //    terminal upgrade classification instead of wrapping in `HeldChange`.
+        //    terminal upgrade classification instead of wrapping it in
+        //    `UncertainRefusal`, even for a caller that opts into uncertainty.
         writeTransport.queuedErrors = [
             SettingsAPIError.transport(description: "response lost"),
             SettingsAPIError.serverUpgradeRequired,
         ]
         do {
-            try await writer.write(.homeHideWatchedItems, value: .bool(false), profileId: identity.profileId)
+            try await writer.write(
+                .homeHideWatchedItems,
+                value: .bool(false),
+                profileId: identity.profileId,
+                reportsUncertainRefusal: true
+            )
             XCTFail("Expected serverUpgradeRequired to be thrown")
         } catch let error as SettingsAPIError {
             XCTAssertEqual(error, .serverUpgradeRequired)

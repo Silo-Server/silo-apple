@@ -318,7 +318,10 @@ final class HomeSectionsEditorModel {
             case .success:
                 nextRecipeCatalog = .curatedFallback
             case .failure:
-                nextRecipeCatalog = hasLoadedPickerCatalog ? recipeCatalog : .curatedFallback
+                // Keep the previous catalog only if it came from this server and profile.
+                nextRecipeCatalog = hasLoadedPickerCatalog && pickerCatalogIdentity == startIdentity
+                    ? recipeCatalog
+                    : .curatedFallback
                 allSucceeded = false
             }
 
