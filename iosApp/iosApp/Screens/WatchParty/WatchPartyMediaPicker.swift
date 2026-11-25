@@ -593,7 +593,9 @@ struct WatchPartyMediaPicker: View {
     private var searchResults: some View {
         let results = search.results.filter(isPlayable)
         if let error = search.error {
-            ErrorView(state: error, onRetry: { Task { await search.performSearch() } })
+            // The picker can open over a detail card's player, so Back must
+            // close the picker, not fall back to the router's card rule.
+            ErrorView(state: error, onRetry: { Task { await search.performSearch() } }, onGoBack: { dismiss() })
         } else if results.isEmpty {
             if search.isSearching || !search.hasSearched {
                 ProgressView().tint(Color.siloSecondaryText)
@@ -766,6 +768,7 @@ private struct WatchPartySearchPage: View {
     @State private var viewModel = SearchViewModel()
     /// The app language, so a switch re-renders the resolved labels.
     @Environment(\.locale) private var locale
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ScrollView {
@@ -773,7 +776,7 @@ private struct WatchPartySearchPage: View {
                 if viewModel.isSearching && viewModel.results.isEmpty {
                     Color.clear
                 } else if let error = viewModel.error {
-                    ErrorView(state: error, onRetry: { Task { await viewModel.performSearch() } })
+                    ErrorView(state: error, onRetry: { Task { await viewModel.performSearch() } }, onGoBack: { dismiss() })
                 } else if viewModel.hasSearched && viewModel.results.isEmpty {
                     EmptyStateView(icon: "magnifyingglass", title: AppLanguage.string(.watchPartyPickerNoResults),
                                    subtitle: AppLanguage.string(.watchPartyPickerNoResultsBody))
