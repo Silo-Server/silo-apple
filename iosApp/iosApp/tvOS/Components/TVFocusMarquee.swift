@@ -189,7 +189,10 @@ extension TVMarqueeContent {
 
         var meta: [String] = []
         if isEpisode {
-            if let token = Self.episodeToken(season: item.seasonNumber, episode: item.episodeNumber) {
+            if let token = Self.episodeToken(
+                season: item.seasonNumber, episode: item.episodeNumber,
+                labels: item.episodeLabels, airDate: item.airDate
+            ) {
                 meta.append(token)
             }
             meta.append(item.title)
@@ -299,9 +302,11 @@ extension TVMarqueeContent {
         return badges
     }
 
-    private static func episodeToken(season: Int?, episode: Int?) -> String? {
+    /// "S1 E2", or the air date for an episode of a date-labeled series.
+    private static func episodeToken(season: Int?, episode: Int?, labels: String?, airDate: String?) -> String? {
         switch (season, episode) {
-        case let (season?, episode?): return AppLanguage.string(.homeSeasonEpisode(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
+        case let (season?, episode?):
+            return EpisodeLabel.text(season: season, episode: episode, style: .spaced, labels: labels, airDate: airDate)
         case let (season?, nil): return AppLanguage.string(.homeSeasonOnly(LocaleFormat.integer(season)))
         case let (nil, episode?): return AppLanguage.string(.homeEpisodeOnly(LocaleFormat.integer(episode)))
         default: return nil

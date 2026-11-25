@@ -1274,7 +1274,9 @@ final class DownloadManager {
 
     /// `seasonNumber` and `episodeNumber` let the row show its season and
     /// episode in the app language before the manifest arrives;
-    /// `displaySubtitle` is stored as is.
+    /// `displaySubtitle` is stored as is. `episodeLabels` and `airDate` name
+    /// the episode of a date-labeled series by its air date; the offline
+    /// manifest carries neither, so only the request can store them.
     func downloadEpisode(
         seriesId: String,
         episodeId: String,
@@ -1282,6 +1284,8 @@ final class DownloadManager {
         displaySubtitle: String?,
         seasonNumber: Int? = nil,
         episodeNumber: Int? = nil,
+        episodeLabels: String? = nil,
+        airDate: String? = nil,
         posterThumbhash: String?,
         fileId: Int? = nil,
         quality: String? = nil
@@ -1296,6 +1300,7 @@ final class DownloadManager {
             displayTitle: displayTitle,
             displaySubtitle: displaySubtitle,
             displayNumbers: (seasonNumber, episodeNumber),
+            displayEpisodeDate: (episodeLabels, airDate),
             posterThumbhash: posterThumbhash
         )
     }
@@ -1373,6 +1378,7 @@ final class DownloadManager {
         displayTitle: String? = nil,
         displaySubtitle: String? = nil,
         displayNumbers: (season: Int?, episode: Int?) = (nil, nil),
+        displayEpisodeDate: (labels: String?, airDate: String?) = (nil, nil),
         posterThumbhash: String? = nil
     ) async throws {
         guard downloadsEnabled else { throw DownloadError.unavailable }
@@ -1436,6 +1442,7 @@ final class DownloadManager {
                     displayTitle: displayTitle,
                     displaySubtitle: displaySubtitle,
                     displayNumbers: displayNumbers,
+                    displayEpisodeDate: displayEpisodeDate,
                     type: type,
                     seriesId: seriesId,
                     posterThumbhash: posterThumbhash
@@ -1445,7 +1452,10 @@ final class DownloadManager {
             // A scope change or an all-skipped batch: nothing to reconcile.
             throw error
         } catch {
-            try await settleFailedCreate(error, leafId: isBatch ? nil : registrationContentId, owner: owner)
+            try await settleFailedCreate(
+                error, leafId: isBatch ? nil : registrationContentId,
+                displayEpisodeDate: isBatch ? (nil, nil) : displayEpisodeDate, owner: owner
+            )
         }
     }
 
@@ -1498,6 +1508,7 @@ final class DownloadManager {
         displayTitle: String?,
         displaySubtitle: String?,
         displayNumbers: (season: Int?, episode: Int?) = (nil, nil),
+        displayEpisodeDate: (labels: String?, airDate: String?) = (nil, nil),
         type: String?,
         seriesId: String?,
         posterThumbhash: String?
@@ -1517,6 +1528,7 @@ final class DownloadManager {
                 displayTitle: entries.count == 1 ? displayTitle : nil,
                 displaySubtitle: entries.count == 1 ? displaySubtitle : nil,
                 displayNumbers: entries.count == 1 ? displayNumbers : (nil, nil),
+                displayEpisodeDate: entries.count == 1 ? displayEpisodeDate : (nil, nil),
                 type: type,
                 seriesId: seriesId,
                 posterThumbhash: entries.count == 1 ? posterThumbhash : nil
@@ -1533,7 +1545,12 @@ final class DownloadManager {
     /// never sent again on its own: a conflict or an uncertain outcome reads
     /// the registry instead, and when that read shows a live entry for the
     /// item, the download goes ahead from it.
-    private func settleFailedCreate(_ error: Error, leafId: String?, owner: ScopeOwner) async throws {
+    private func settleFailedCreate(
+        _ error: Error,
+        leafId: String?,
+        displayEpisodeDate: (labels: String?, airDate: String?) = (nil, nil),
+        owner: ScopeOwner
+    ) async throws {
         let failure = APIv2Client.downloadRegistryFailure(error)
         Self.logger.warning("download create failed (\(String(describing: failure), privacy: .public)): \(String(describing: error), privacy: .public)")
         guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
@@ -1549,8 +1566,19 @@ final class DownloadManager {
             sendPendingServerDeletes()
             await serverDeleteTask?.value
             guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
-            if let leafId, let record = record(forContentId: leafId),
+            if let leafId, var record = record(forContentId: leafId),
                record.localStatus != .failed, record.localStatus != .revoked {
+                // The reconciled row has no air date, and the manifest
+                // carries none, so keep the request's. Each field fills only
+                // a gap, as on the success path.
+                let labels = record.episodeLabels ?? displayEpisodeDate.labels
+                let airDate = record.airDate ?? displayEpisodeDate.airDate
+                if labels != record.episodeLabels || airDate != record.airDate {
+                    record.episodeLabels = labels
+                    record.airDate = airDate
+                    file.records[record.id] = record
+                    persist()
+                }
                 return
             }
             throw failure == .conflict ? DownloadError.registryChanged : DownloadError.registrationUncertain
@@ -4552,12 +4580,15 @@ final class DownloadManager {
         displayTitle: String?,
         displaySubtitle: String?,
         displayNumbers: (season: Int?, episode: Int?),
+        displayEpisodeDate: (labels: String?, airDate: String?) = (nil, nil),
         type: String?,
         seriesId: String?,
         posterThumbhash: String?
     ) {
         if let existing = records[row.id] {
             var merged = mergeExistingRecord(existing, with: row)
+            merged.episodeLabels = merged.episodeLabels ?? displayEpisodeDate.labels
+            merged.airDate = merged.airDate ?? displayEpisodeDate.airDate
             if existing.localStatus == .failed || existing.localStatus == .revoked {
                 merged.localStatus = Self.mapInitialStatus(row.status)
                 merged.lastError = nil
@@ -4571,6 +4602,8 @@ final class DownloadManager {
         record.subtitle = displaySubtitle
         record.requestSeasonNumber = displayNumbers.season
         record.requestEpisodeNumber = displayNumbers.episode
+        record.episodeLabels = displayEpisodeDate.labels
+        record.airDate = displayEpisodeDate.airDate
         record.seriesId = seriesId ?? record.seriesId
         record.posterThumbhash = posterThumbhash
         records[row.id] = record

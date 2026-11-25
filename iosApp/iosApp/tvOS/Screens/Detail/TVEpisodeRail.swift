@@ -24,6 +24,8 @@ struct TVEpisodeRail: View {
     /// When non-nil, the matching card is visually highlighted and anchored
     /// at first appearance.
     var currentContentId: String? = nil
+    /// The series' episode labels; "air_date" names episodes by date.
+    var episodeLabels: String? = nil
     var favoriteStates: [String: Bool] = [:]
     var watchlistStates: [String: Bool] = [:]
     /// Card width before the poster-size scale.
@@ -224,6 +226,7 @@ struct TVEpisodeRail: View {
         TVEpisodeCard(
             episode: episode,
             isCurrent: currentContentId == episode.contentId,
+            episodeLabels: episodeLabels,
             baseCardWidth: baseCardWidth,
             posterSize: uiCustomization.cardPresentation.posterSize,
             onSelect: { onSelect(episode.contentId) },
@@ -518,6 +521,8 @@ struct TVEpisodeCard: View {
     @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     var isCurrent: Bool = false
+    /// The series' episode labels; "air_date" names episodes by date.
+    var episodeLabels: String? = nil
     var baseCardWidth: CGFloat = 480
     var posterSize: CardPosterSize = .standard
     let onSelect: () -> Void
@@ -551,6 +556,7 @@ struct TVEpisodeCard: View {
                     for: EpisodeWatchState(episode.userData, playedOverride: playedOverride), isEpisodeStill: episode.stillIsEpisodeStill
                 ),
                 isCurrent: isCurrent,
+                episodeLabels: episodeLabels,
                 cardWidth: cardWidth,
                 stillHeight: stillHeight,
                 stillCornerRadius: stillCornerRadius,
@@ -607,6 +613,8 @@ struct TVEpisodeCard: View {
             metadata: EpisodeCardCaption.railMetadata(for: episode),
             isCurrent: isCurrent,
             isPlayed: isPlayed,
+            episodeLabels: episodeLabels,
+            airDate: episode.airDate,
             locale: locale
         )
     }
@@ -696,6 +704,7 @@ private struct EpisodeCardLabel: View {
     /// started.
     var hidesStill = false
     let isCurrent: Bool
+    let episodeLabels: String?
     let cardWidth: CGFloat
     let stillHeight: CGFloat
     let stillCornerRadius: CGFloat
@@ -713,7 +722,7 @@ private struct EpisodeCardLabel: View {
             // episode's synopsis is already in the hero above the rail.
             VStack(alignment: .leading, spacing: TVEpisodeCardCaptionMetrics.lineSpacing) {
                 captionLine(
-                    EpisodeCardCaption.railTitle(for: episode, locale: locale),
+                    EpisodeCardCaption.railTitle(for: episode, episodeLabels: episodeLabels, locale: locale),
                     font: .system(size: usesAnchoredStyle ? 20 : 24, weight: .semibold),
                     height: usesAnchoredStyle
                         ? TVEpisodeCardCaptionMetrics.anchoredTitleHeight

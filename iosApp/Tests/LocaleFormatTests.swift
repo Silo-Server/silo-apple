@@ -134,10 +134,10 @@ final class LocaleFormatTests: XCTestCase {
     /// language (D78), "S2021E01" included; the spoken "Season, Episode"
     /// phrase follows the locale's digits like any other number.
     func testEpisodeCodesStayLatin() {
-        assertDigits(EpisodeCardCaption.code(season: 2021, episode: 1, locale: arabic), "202101")
-        assertDigits(EpisodeCardCaption.code(season: 1, episode: 5, locale: arabic), "0105")
-        XCTAssertEqual(EpisodeCardCaption.code(season: 1, episode: 5, locale: english), "S01E05")
-        assertDigits(EpisodeCardCaption.spokenCode(season: 2021, episode: 1, locale: arabic), "٢٠٢١١")
+        assertDigits(EpisodeLabel.code(season: 2021, episode: 1, locale: arabic), "202101")
+        assertDigits(EpisodeLabel.code(season: 1, episode: 5, locale: arabic), "0105")
+        XCTAssertEqual(EpisodeLabel.code(season: 1, episode: 5, locale: english), "S01E05")
+        assertDigits(EpisodeLabel.code(season: 2021, episode: 1, style: .spoken, locale: arabic), "٢٠٢١١")
     }
 
     /// The buffer-ahead choices take their durations as counts (D79), so

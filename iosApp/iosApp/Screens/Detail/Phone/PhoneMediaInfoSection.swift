@@ -15,6 +15,8 @@ struct PhoneMediaInfoSection: View {
     /// The episode the version belongs to on a series page, named in the
     /// header. Nil on a movie page.
     var episode: EpisodeListItem? = nil
+    /// The series' episode labels; "air_date" names the episode by date.
+    var episodeLabels: String? = nil
     /// Owned by the page, so the section stays open when the page changes
     /// between its one-column and split layouts, and while an episode loads.
     @Binding var isExpanded: Bool
@@ -71,21 +73,17 @@ struct PhoneMediaInfoSection: View {
     /// "S1·E3", as the page's Play button names the episode.
     private var episodeCode: String? {
         guard let episode else { return nil }
-        return AppLanguage.string(
-            .detailEpisodeCode(
-                LocaleFormat.codeNumber(episode.seasonNumber),
-                LocaleFormat.codeNumber(episode.episodeNumber)
-            ),
-            locale: locale
+        return EpisodeLabel.text(
+            season: episode.seasonNumber, episode: episode.episodeNumber, style: .dotted,
+            labels: episodeLabels, airDate: episode.airDate, locale: locale
         )
     }
 
     private var spokenEpisode: String? {
         guard let episode else { return nil }
-        return EpisodeCardCaption.spokenCode(
-            season: episode.seasonNumber,
-            episode: episode.episodeNumber,
-            locale: locale
+        return EpisodeLabel.text(
+            season: episode.seasonNumber, episode: episode.episodeNumber, style: .spoken,
+            labels: episodeLabels, airDate: episode.airDate, locale: locale
         )
     }
 }

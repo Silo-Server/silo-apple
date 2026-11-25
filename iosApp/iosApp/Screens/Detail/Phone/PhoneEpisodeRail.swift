@@ -8,6 +8,8 @@ struct PhoneEpisodeRail: View {
     let onSelect: (String) -> Void
     var onPlay: ((String) -> Void)? = nil
     var currentContentId: String? = nil
+    /// The series' episode labels; "air_date" names episodes by date.
+    var episodeLabels: String? = nil
     var selectsCenteredEpisode = false
     var onSetWatched: ((EpisodeListItem, Bool) -> Void)? = nil
     var isUpdatingWatched = false
@@ -35,6 +37,7 @@ struct PhoneEpisodeRail: View {
                     PhoneEpisodeCard(
                         episode: episode,
                         isCurrent: currentContentId == episode.contentId,
+                        episodeLabels: episodeLabels,
                         cardWidth: cardWidth,
                         stillHeight: stillHeight,
                         stillCornerRadius: stillCornerRadius,
@@ -146,6 +149,7 @@ private struct PhoneEpisodeCard: View {
     @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     let isCurrent: Bool
+    let episodeLabels: String?
     let cardWidth: CGFloat
     let stillHeight: CGFloat
     let stillCornerRadius: CGFloat
@@ -194,9 +198,7 @@ private struct PhoneEpisodeCard: View {
                         .background(Circle().fill(Color.white.opacity(0.94)))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(
-                    Text(.detailPlaySeasonEpisode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))
-                )
+                .accessibilityLabel(playButtonAccessibilityLabel)
             }
         }
         #if os(iOS)
@@ -232,7 +234,7 @@ private struct PhoneEpisodeCard: View {
                 nowViewingTag
             }
 
-            Text(EpisodeCardCaption.railTitle(for: episode, locale: locale))
+            Text(EpisodeCardCaption.railTitle(for: episode, episodeLabels: episodeLabels, locale: locale))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(titleColor)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
@@ -294,8 +296,22 @@ private struct PhoneEpisodeCard: View {
             .background(Capsule().fill(Color.white))
     }
 
+    /// "Play season 1, episode 2", or "Play Lakers vs Celtics" for a
+    /// date-labeled series (its date when untitled).
+    private var playButtonAccessibilityLabel: Text {
+        if let name = EpisodeLabel.datedSeriesName(
+            title: episode.title, season: episode.seasonNumber, episode: episode.episodeNumber, style: .spoken,
+            labels: episodeLabels, airDate: episode.airDate, locale: locale
+        ) {
+            return Text(.detailPlayEpisodeCode(name))
+        }
+        return Text(.detailPlaySeasonEpisode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))
+    }
+
     private var accessibilityDescription: String {
-        PhoneEpisodeFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent, locale: locale)
+        PhoneEpisodeFormatting.accessibilityDescription(
+            for: episode, isCurrent: isCurrent, episodeLabels: episodeLabels, locale: locale
+        )
     }
 
     private var spoilers: EpisodeSpoilerSettings {

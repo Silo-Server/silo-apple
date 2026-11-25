@@ -26,20 +26,14 @@ struct PreparedPlayback {
         self.protocolV3 = protocolV3
     }
 
+    /// "Series • S01E02 • Title", or "Series • Nov 20, 2026 • Title" when the
+    /// watch detail says the series labels episodes by date.
     var displayTitle: String {
         if watchDetail.type == "episode" {
-            let episodeTag: String = {
-                switch (watchDetail.seasonNumber, watchDetail.episodeNumber) {
-                case let (season?, episode?):
-                    return AppLanguage.string(.catalogEpisodeTag(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
-                case let (season?, nil):
-                    return AppLanguage.string(.calendarSeasonShort(LocaleFormat.codeNumber(season)))
-                case let (nil, episode?):
-                    return AppLanguage.string(.calendarEpisodeShort(LocaleFormat.codeNumber(episode)))
-                case (nil, nil):
-                    return ""
-                }
-            }()
+            let episodeTag = Self.episodeTag(
+                season: watchDetail.seasonNumber, episode: watchDetail.episodeNumber,
+                style: .tag, labels: watchDetail.episodeLabels, airDate: watchDetail.airDate
+            ) ?? ""
 
             if let seriesTitle = watchDetail.seriesTitle, !seriesTitle.isEmpty, !episodeTag.isEmpty {
                 return "\(seriesTitle) • \(episodeTag) • \(watchDetail.title)"
@@ -49,24 +43,35 @@ struct PreparedPlayback {
         return watchDetail.title
     }
 
+    /// "S1 · E2" (or the air date for a date-labeled series), "S1" or "E2".
+    private static func episodeTag(
+        season: Int?, episode: Int?, style: EpisodeLabel.Style, labels: String?, airDate: String?
+    ) -> String? {
+        switch (season, episode) {
+        case let (season?, episode?):
+            return EpisodeLabel.text(season: season, episode: episode, style: style, labels: labels, airDate: airDate)
+        case let (season?, nil):
+            return AppLanguage.string(.calendarSeasonShort(LocaleFormat.codeNumber(season)))
+        case let (nil, episode?):
+            return AppLanguage.string(.calendarEpisodeShort(LocaleFormat.codeNumber(episode)))
+        case (nil, nil):
+            return nil
+        }
+    }
+
     /// Build the hero-strip metadata bundle for the tvOS overlay. Reads
     /// everything off the already-fetched `WatchDetail` + `FileVersion` so
     /// the overlay doesn't need a second API call — we only transform the
-    /// shapes the server already gave us into display strings.
+    /// shapes the server already gave us into display strings, including a
+    /// date-labeled episode's air date in place of its numbers.
     func playerMetadata() -> PlayerMetadata {
         let isEpisode = watchDetail.type == "episode"
         let episodeTag: () -> String? = {
             guard isEpisode else { return nil }
-            switch (watchDetail.seasonNumber, watchDetail.episodeNumber) {
-            case let (season?, episode?):
-                return AppLanguage.string(.catalogEpisodeCaption(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
-            case let (season?, nil):
-                return AppLanguage.string(.calendarSeasonShort(LocaleFormat.codeNumber(season)))
-            case let (nil, episode?):
-                return AppLanguage.string(.calendarEpisodeShort(LocaleFormat.codeNumber(episode)))
-            case (nil, nil):
-                return nil
-            }
+            return Self.episodeTag(
+                season: watchDetail.seasonNumber, episode: watchDetail.episodeNumber,
+                style: .caption, labels: watchDetail.episodeLabels, airDate: watchDetail.airDate
+            )
         }
 
         return PlayerMetadata(

@@ -28,13 +28,18 @@ enum DetailPlayLabel {
         AppLanguage.string(resumePosition(userData, shown: shown, in: versions) == nil ? .commonPlay : .detailResume)
     }
 
-    /// "Resume S1·E2" or "Play S1·E2" for the series page's next-up episode.
+    /// "Resume S1·E2" or "Play S1·E2" for the series page's next-up episode;
+    /// "Play Nov 20, 2026" for a date-labeled series (`episodeLabels`).
     static func episode(
         _ episode: EpisodeListItem,
+        episodeLabels: String? = nil,
         shown: FileVersion? = nil,
         in versions: [FileVersion] = []
     ) -> String {
-        let code = AppLanguage.string(.detailEpisodeCode(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber)))
+        let code = EpisodeLabel.text(
+            season: episode.seasonNumber, episode: episode.episodeNumber, style: .dotted,
+            labels: episodeLabels, airDate: episode.airDate
+        )
         return AppLanguage.string(resumePosition(episode.userData, shown: shown, in: versions) == nil
             ? .detailPlayEpisodeCode(code)
             : .detailResumeEpisodeCode(code))

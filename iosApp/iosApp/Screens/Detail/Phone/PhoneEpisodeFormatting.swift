@@ -17,6 +17,7 @@ enum PhoneEpisodeFormatting {
     static func accessibilityDescription(
         for episode: EpisodeListItem,
         isCurrent: Bool,
+        episodeLabels: String? = nil,
         locale: Locale = AppLanguage.formattingLocale
     ) -> String {
         episodeRailAccessibilityLabel(
@@ -26,6 +27,8 @@ enum PhoneEpisodeFormatting {
             metadata: EpisodeCardCaption.railMetadata(for: episode),
             isCurrent: isCurrent,
             isPlayed: episode.userData?.played == true,
+            episodeLabels: episodeLabels,
+            airDate: episode.airDate,
             locale: locale
         )
     }

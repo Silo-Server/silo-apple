@@ -101,7 +101,9 @@ enum OfflinePlaybackBuilder {
                 explicitPosition: resumePositionOverride,
                 storedPosition: manager.localProgress(forMediaItemId: leafId)?.position,
                 duration: manifest.durationSeconds
-            )
+            ),
+            episodeLabels: record.episodeLabels,
+            airDate: record.airDate
         )
         let posterFileURL = manager.posterImageURL(for: record)
         return OfflinePreparedPlayback(
@@ -231,7 +233,9 @@ enum OfflinePlaybackBuilder {
         subtitleURLs: [SubtitleUrl],
         subtitlePrefs: EffectiveSubtitlePrefs? = nil,
         audioPref: AudioPrefRequest? = nil,
-        resumePosition: Double?
+        resumePosition: Double?,
+        episodeLabels: String? = nil,
+        airDate: String? = nil
     ) -> PreparedPlayback {
         // The player's models still key files by integer id. A download plays
         // from its local file, so a non-numeric id only turns off what asks
@@ -266,12 +270,16 @@ enum OfflinePlaybackBuilder {
             }
         )
 
-        let watchDetail = WatchDetail(
+        var watchDetail = WatchDetail(
             offlineLeafContentId: leafContentId,
             manifest: manifest,
             version: version,
             subtitlePrefs: subtitlePrefs
         )
+        // The manifest carries neither; the download record stored them from
+        // the request, so a downloaded game plays under its date.
+        watchDetail.episodeLabels = episodeLabels
+        watchDetail.airDate = airDate
 
         let session = PlaybackSessionResponse(
             sessionId: "offline-\(manifest.downloadId)",

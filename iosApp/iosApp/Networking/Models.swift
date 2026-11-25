@@ -20,6 +20,12 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     var positionSeconds: Double? = nil
     var durationSeconds: Double? = nil
     var progressUpdatedAt: String? = nil
+    /// The series' episode labels: "air_date" when its numbers are synthetic
+    /// (see `EpisodeLabel`). Absent from older servers: show the numbers.
+    var episodeLabels: String? = nil
+    /// An episode's air date, "2026-11-20". Section cards carry it when
+    /// `episodeLabels` is "air_date".
+    var airDate: String? = nil
     let year: Int?
     let genres: [String]?
     let contentRating: String?
@@ -176,6 +182,12 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let positionSeconds: Double?
     let durationSeconds: Double?
     let progressUpdatedAt: String?
+    /// The series' episode labels: "air_date" when its numbers are synthetic
+    /// (see `EpisodeLabel`). Absent from older servers: show the numbers.
+    var episodeLabels: String? = nil
+    /// An episode's air date, "2026-11-20". Section cards carry it when
+    /// `episodeLabels` is "air_date".
+    var airDate: String? = nil
     var posterIsEpisodeStill: Bool? = nil
     var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
@@ -232,6 +244,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
         self.positionSeconds = positionSeconds ?? item.positionSeconds
         self.durationSeconds = durationSeconds ?? item.durationSeconds
         progressUpdatedAt = item.progressUpdatedAt
+        episodeLabels = item.episodeLabels
+        airDate = item.airDate
         posterIsEpisodeStill = item.posterIsEpisodeStill
         backdropIsEpisodeStill = item.backdropIsEpisodeStill
         posterUrl = item.posterUrl
@@ -367,6 +381,8 @@ extension BrowseItem {
             positionSeconds: item.positionSeconds,
             durationSeconds: item.durationSeconds,
             progressUpdatedAt: item.progressUpdatedAt,
+            episodeLabels: item.episodeLabels,
+            airDate: item.airDate,
             year: item.year,
             genres: item.genres,
             contentRating: item.contentRating,
@@ -817,6 +833,9 @@ struct ItemDetail: Codable {
     let episodeNumber: Int?
     let episodeCount: Int?
     let airDate: String?
+    /// The series' episode labels, on a series, season or episode detail:
+    /// "air_date" when its numbers are synthetic (see `EpisodeLabel`).
+    var episodeLabels: String? = nil
     let isSpecials: Bool?
     let userData: LeafItemUserData?
     let versions: [FileVersion]?
@@ -1609,6 +1628,11 @@ struct WatchDetail {
     let seriesTitle: String?
     let seasonNumber: Int?
     let episodeNumber: Int?
+    /// The series' episode labels ("air_date") and the episode's air date,
+    /// from `/watch`; the player names a date-labeled episode by its date.
+    /// Nil offline and from older servers: the player shows the numbers.
+    var episodeLabels: String? = nil
+    var airDate: String? = nil
     /// Server-resolved subtitle policy for this content. Computed from
     /// per-series → library → profile prefs cascade. Absent when the
     /// user hasn't configured anything that applies. Consumed by the

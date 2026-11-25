@@ -27,6 +27,10 @@ struct DownloadActionButton: View {
     private let displaySubtitle: String?
     private let seasonNumber: Int?
     private let episodeNumber: Int?
+    /// The series' episode labels and the episode's air date, stored so the
+    /// Downloads rows of a date-labeled series show the date.
+    private let episodeLabels: String?
+    private let airDate: String?
     private let year: Int?
     private let posterThumbhash: String?
     /// Full version metadata for the options sheet and the large-file guard.
@@ -74,6 +78,8 @@ struct DownloadActionButton: View {
         )
         seasonNumber = detail.seasonNumber
         episodeNumber = detail.episodeNumber
+        episodeLabels = detail.episodeLabels
+        airDate = detail.airDate
         year = detail.year
         posterThumbhash = detail.posterThumbhash
         self.versions = versions
@@ -100,6 +106,8 @@ struct DownloadActionButton: View {
         displaySubtitle = author
         seasonNumber = nil
         episodeNumber = nil
+        episodeLabels = nil
+        airDate = nil
         year = nil
         posterThumbhash = detail.posterThumbhash
         versions = [part]
@@ -349,6 +357,8 @@ struct DownloadActionButton: View {
                         displaySubtitle: displaySubtitle,
                         seasonNumber: seasonNumber,
                         episodeNumber: episodeNumber,
+                        episodeLabels: episodeLabels,
+                        airDate: airDate,
                         posterThumbhash: posterThumbhash,
                         fileId: options.fileId,
                         quality: options.quality

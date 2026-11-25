@@ -495,6 +495,11 @@ struct TVSeriesDetailView: View {
         guard let episode = displayedEpisode else {
             return TVHeroMetadata.seriesSourceTokens(from: detail)
         }
+        // A date-labeled series (sports): the facts line below already shows
+        // the air date, which replaces the synthetic season and episode.
+        if EpisodeLabel.isNamedByDate(labels: detail.episodeLabels, airDate: episode.airDate) {
+            return []
+        }
         let season = AppLanguage.string(
             episode.seasonNumber == 0 ? .detailSpecials : .detailSeason(LocaleFormat.integer(episode.seasonNumber)),
             locale: locale
@@ -612,6 +617,13 @@ struct TVSeriesDetailView: View {
             && DetailVersionSelection.savedPositionIsInEdition(
                 of: shown, in: nextUpVersions, userData: episode.userData
             )
+        // A date-labeled series (sports): "Play Nov 20, 2026".
+        if let date = EpisodeLabel.airDate(labels: detail.episodeLabels, airDate: episode.airDate, locale: locale) {
+            return AppLanguage.string(
+                resumes ? .detailResumeEpisodeCode(date) : .detailPlayEpisodeCode(date),
+                locale: locale
+            )
+        }
         return AppLanguage.string(
             resumes
                 ? .detailResumeEpisode(season, number)
@@ -898,6 +910,7 @@ struct TVSeriesDetailView: View {
                 onSetFavorite: onSetEpisodeFavorite,
                 onSetWatchlist: onSetEpisodeWatchlist,
                 currentContentId: displayedEpisode?.contentId,
+                episodeLabels: detail.episodeLabels,
                 favoriteStates: episodeFavoriteStates,
                 watchlistStates: episodeWatchlistStates,
                 baseCardWidth: SiloTheme.thumbnailCardWidth,
@@ -1004,13 +1017,11 @@ struct TVSeriesDetailView: View {
         return ShuffleAvailability.hasEnoughToShuffle(playableCount: playable.count) ? selectedSeason : nil
     }
 
+    /// "S1·E2", or the air date for a date-labeled series (sports).
     private func episodeCode(for episode: EpisodeListItem) -> String {
-        AppLanguage.string(
-            .detailEpisodeCode(
-                LocaleFormat.codeNumber(episode.seasonNumber),
-                LocaleFormat.codeNumber(episode.episodeNumber)
-            ),
-            locale: locale
+        EpisodeLabel.text(
+            season: episode.seasonNumber, episode: episode.episodeNumber, style: .dotted,
+            labels: detail.episodeLabels, airDate: episode.airDate, locale: locale
         )
     }
 

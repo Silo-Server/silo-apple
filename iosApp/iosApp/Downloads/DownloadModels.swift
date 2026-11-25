@@ -742,6 +742,11 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// them until the manifest's `seasonNumber` and `episodeNumber` arrive.
     var requestSeasonNumber: Int? = nil
     var requestEpisodeNumber: Int? = nil
+    /// The series' episode labels ("air_date") and the episode's air date,
+    /// stored from a single-episode request; the offline manifest carries
+    /// neither. A date-labeled episode's rows show its date for its code.
+    var episodeLabels: String? = nil
+    var airDate: String? = nil
     var posterThumbhash: String?
     /// ThumbHash of the parent series poster, for an episode download.
     var seriesPosterThumbhash: String? = nil
@@ -818,6 +823,10 @@ extension DownloadRecord {
         locale: Locale = AppLanguage.formattingLocale,
         both: (String, String) -> LocalizedStringResource = { .catalogEpisodeCaption($0, $1) }
     ) -> String? {
+        if shownNumbers.season != nil, shownNumbers.episode != nil,
+           let date = EpisodeLabel.airDate(labels: episodeLabels, airDate: airDate, locale: locale) {
+            return date
+        }
         let season = shownNumbers.season.map { LocaleFormat.codeNumber($0) }
         let episode = shownNumbers.episode.map { LocaleFormat.codeNumber($0) }
         let resource: LocalizedStringResource
@@ -838,6 +847,19 @@ extension DownloadRecord {
         // A movie's year is stored in ASCII digits (D44).
         guard let subtitle, subtitle.allSatisfy({ $0.isASCII && $0.isNumber }), let year = Int(subtitle) else { return subtitle }
         return LocaleFormat.integer(year, locale: locale)
+    }
+
+    /// A game of a date-labeled series (sports) as "Nov 20, 2026 · Lakers vs
+    /// Kings", the code-and-title shape of episode cards, so two games of one
+    /// league on one day stay apart; the series name for an untitled game
+    /// (stored as "Episode N"). Nil for every other record.
+    func datedGameName(locale: Locale = AppLanguage.formattingLocale) -> String? {
+        guard type == "episode", let episode = shownNumbers.episode,
+              let date = EpisodeLabel.airDate(labels: episodeLabels, airDate: airDate, locale: locale) else { return nil }
+        let game = title.flatMap { $0.isEmpty || $0 == Self.storedEpisodeName(episode) ? nil : $0 }
+        guard let name = game ?? seriesTitle, !name.isEmpty else { return date }
+        let isolated = AppLanguage.isolated(name, language: AppLanguage.language(of: locale))
+        return EpisodeCardCaption.titled(code: date, title: isolated, locale: locale)
     }
 
     /// The name stored for an untitled episode: English "Episode 2" (D44).

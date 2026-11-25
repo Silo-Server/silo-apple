@@ -8,6 +8,8 @@ struct PhoneEpisodeCarousel: View {
     let onSelect: (String) -> Void
     var onPlay: ((String) -> Void)? = nil
     var currentContentId: String? = nil
+    /// The series' episode labels; "air_date" names episodes by date.
+    var episodeLabels: String? = nil
     var selectsCenteredEpisode = false
     var onSetWatched: ((EpisodeListItem, Bool) -> Void)? = nil
     var isUpdatingWatched = false
@@ -38,6 +40,7 @@ struct PhoneEpisodeCarousel: View {
                     onSelect: onSelect,
                     onPlay: onPlay,
                     currentContentId: currentContentId,
+                    episodeLabels: episodeLabels,
                     selectsCenteredEpisode: selectsCenteredEpisode,
                     onSetWatched: onSetWatched,
                     isUpdatingWatched: isUpdatingWatched,

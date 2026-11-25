@@ -70,8 +70,10 @@ private struct WatchPartyMediaChoice: Hashable {
         contentId = episode.contentId
         type = "episode"
         title = series.title
-        subtitle = "S\(episode.seasonNumber) · E\(episode.episodeNumber)" + (episode.title.map { " · \($0)" } ?? "")
-        shownSubtitle = Self.episodeLine(season: episode.seasonNumber, episode: episode.episodeNumber, title: episode.title)
+        subtitle = Self.sentEpisodeLine(season: episode.seasonNumber, episode: episode.episodeNumber,
+                                        labels: series.episodeLabels, airDate: episode.airDate, title: episode.title)
+        shownSubtitle = Self.episodeLine(season: episode.seasonNumber, episode: episode.episodeNumber,
+                                         labels: series.episodeLabels, airDate: episode.airDate, title: episode.title)
         posterURL = series.posterUrl
         posterIsEpisodeStill = false
         posterThumbhash = series.posterThumbhash
@@ -82,7 +84,8 @@ private struct WatchPartyMediaChoice: Hashable {
         episodeWatchState = EpisodeWatchState(episode.userData)
         if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { facts = [runtime] }
         lobbyTitle = episode.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber)))
-        lobbySubtitle = Self.lobbyLine(series: series.title, season: episode.seasonNumber, episode: episode.episodeNumber)
+        lobbySubtitle = Self.lobbyLine(series: series.title, season: episode.seasonNumber, episode: episode.episodeNumber,
+                                       labels: series.episodeLabels, airDate: episode.airDate)
         runtimeMinutes = episode.runtime
     }
 
@@ -93,8 +96,10 @@ private struct WatchPartyMediaChoice: Hashable {
         type = "episode"
         title = item.seriesTitle ?? item.title
         if let season = item.seasonNumber, let episode = item.episodeNumber {
-            subtitle = "S\(season) · E\(episode)" + (item.seriesTitle != nil ? " · \(item.title)" : "")
-            shownSubtitle = Self.episodeLine(season: season, episode: episode, title: item.seriesTitle != nil ? item.title : nil)
+            subtitle = Self.sentEpisodeLine(season: season, episode: episode, labels: item.episodeLabels,
+                                            airDate: item.airDate, title: item.seriesTitle != nil ? item.title : nil)
+            shownSubtitle = Self.episodeLine(season: season, episode: episode, labels: item.episodeLabels,
+                                             airDate: item.airDate, title: item.seriesTitle != nil ? item.title : nil)
         } else {
             subtitle = item.seriesTitle != nil ? item.title : nil
             shownSubtitle = subtitle
@@ -119,10 +124,12 @@ private struct WatchPartyMediaChoice: Hashable {
                                     posterUrl: posterIsStill ? nil : item.posterUrl,
                                     posterThumbhash: posterIsStill ? nil : item.posterThumbhash,
                                     backdropUrl: backdropIsStill ? nil : item.backdropUrl,
-                                    backdropThumbhash: backdropIsStill ? nil : item.backdropThumbhash)
+                                    backdropThumbhash: backdropIsStill ? nil : item.backdropThumbhash,
+                                    episodeLabels: item.episodeLabels)
         }
         if let seriesTitle = item.seriesTitle, let season = item.seasonNumber, let episode = item.episodeNumber {
-            lobbySubtitle = Self.lobbyLine(series: seriesTitle, season: season, episode: episode)
+            lobbySubtitle = Self.lobbyLine(series: seriesTitle, season: season, episode: episode,
+                                           labels: item.episodeLabels, airDate: item.airDate)
         } else {
             lobbySubtitle = item.seriesTitle
         }
@@ -133,8 +140,11 @@ private struct WatchPartyMediaChoice: Hashable {
         contentId = nextUp.contentId
         type = "episode"
         title = series.title
-        subtitle = "S\(nextUp.seasonNumber) · E\(nextUp.episodeNumber)" + (nextUp.title.map { " · \($0)" } ?? "")
-        shownSubtitle = Self.episodeLine(season: nextUp.seasonNumber, episode: nextUp.episodeNumber, title: nextUp.title)
+        // The party's next-up carries no air date, so it keeps the numbers.
+        subtitle = Self.sentEpisodeLine(season: nextUp.seasonNumber, episode: nextUp.episodeNumber,
+                                        labels: nil, airDate: nil, title: nextUp.title)
+        shownSubtitle = Self.episodeLine(season: nextUp.seasonNumber, episode: nextUp.episodeNumber,
+                                         labels: nil, airDate: nil, title: nextUp.title)
         posterURL = series.posterUrl
         posterIsEpisodeStill = false
         posterThumbhash = series.posterThumbhash
@@ -142,31 +152,45 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropThumbhash = series.backdropThumbhash
         backdropIsEpisodeStill = false
         lobbyTitle = nextUp.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(nextUp.episodeNumber)))
-        lobbySubtitle = Self.lobbyLine(series: series.title, season: nextUp.seasonNumber, episode: nextUp.episodeNumber)
+        lobbySubtitle = Self.lobbyLine(series: series.title, season: nextUp.seasonNumber, episode: nextUp.episodeNumber,
+                                       labels: nil, airDate: nil)
         seriesLink = series
         seasonNumber = nextUp.seasonNumber
     }
 
-    /// "S1 · E2 · Title" on this page.
-    private static func episodeLine(season: Int, episode: Int, title: String?) -> String {
-        AppLanguage.string(.watchPartyEpisodesLine(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode))) + (title.map { " · \(AppLanguage.isolated($0))" } ?? "")
+    /// "S1 · E2 · Title" on this page, or "Nov 20, 2026 · Title" for a
+    /// date-labeled series (sports).
+    private static func episodeLine(season: Int, episode: Int, labels: String?, airDate: String?, title: String?) -> String {
+        EpisodeLabel.text(season: season, episode: episode, style: .watchPartyLine, labels: labels, airDate: airDate)
+            + (title.map { " · \(AppLanguage.isolated($0))" } ?? "")
     }
 
-    /// "Series · S1:E2" under the episode's title in the lobby.
-    private static func lobbyLine(series: String, season: Int, episode: Int) -> String {
-        "\(AppLanguage.isolated(series)) · " + AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
+    /// `episodeLine` as the party is sent it: in English (D44).
+    private static func sentEpisodeLine(season: Int, episode: Int, labels: String?, airDate: String?, title: String?) -> String {
+        AppLanguage.inEnglish {
+            EpisodeLabel.text(season: season, episode: episode, style: .caption, labels: labels, airDate: airDate)
+        } + (title.map { " · \($0)" } ?? "")
+    }
+
+    /// "Series · S1:E2" under the episode's title in the lobby, or
+    /// "Series · Nov 20, 2026" for a date-labeled series.
+    private static func lobbyLine(series: String, season: Int, episode: Int, labels: String?, airDate: String?) -> String {
+        "\(AppLanguage.isolated(series)) · "
+            + EpisodeLabel.text(season: season, episode: episode, style: .watchParty, labels: labels, airDate: airDate)
     }
 }
 
 private extension BrowseItem {
     /// A series row built from what an episode card already carries, enough
-    /// for the episode picker, which loads the seasons itself.
+    /// for the episode picker, which loads the seasons itself. The card's
+    /// `episodeLabels` keep a date-labeled league's episodes named by date.
     init(seriesId: String, title: String, posterUrl: String?, posterThumbhash: String?,
-         backdropUrl: String?, backdropThumbhash: String?) {
+         backdropUrl: String?, backdropThumbhash: String?, episodeLabels: String?) {
         self.init(
             contentId: seriesId, type: "series", title: title,
             seriesId: nil, seriesTitle: nil, seasonNumber: nil, episodeNumber: nil,
             itemSource: nil, positionSeconds: nil, durationSeconds: nil, progressUpdatedAt: nil,
+            episodeLabels: episodeLabels,
             year: nil, genres: nil, contentRating: nil,
             advisoryAge: nil, advisorySource: nil, status: nil,
             ratingImdb: nil, ratingTmdb: nil, ratingRtCritic: nil, ratingRtAudience: nil,
@@ -931,6 +955,7 @@ private struct WatchPartyEpisodePicker: View {
                             },
                             onFocusedEpisodeChange: { id in if let id { focusedEpisodeId = id } },
                             currentContentId: resumeEpisode?.contentId,
+                            episodeLabels: series.episodeLabels,
                             baseCardWidth: 400,
                             cardSpacing: 36
                         )
@@ -949,7 +974,8 @@ private struct WatchPartyEpisodePicker: View {
     }
 
     private func episodeLine(_ episode: EpisodeListItem) -> String {
-        var parts = [AppLanguage.string(.watchPartyEpisodesLine(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber)))]
+        var parts = [EpisodeLabel.text(season: episode.seasonNumber, episode: episode.episodeNumber, style: .watchPartyLine,
+                                       labels: series.episodeLabels, airDate: episode.airDate)]
         if let title = episode.title, !title.isEmpty { parts.append(title) }
         if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { parts.append(runtime) }
         return parts.joined(separator: " · ")
@@ -1033,13 +1059,12 @@ private struct WatchPartyEpisodePicker: View {
             .frame(width: Self.stillWidth, height: Self.stillWidth * 9 / 16)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 4) {
-                Text(.watchPartyEpisodesNumbered(LocaleFormat.integer(episode.episodeNumber),
-                                                 episode.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber)))))
+                Text(verbatim: phoneRowTitle(episode))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(2)
-                if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
-                    Text(runtime)
+                if let metadata = phoneRowMetadata(episode) {
+                    Text(metadata)
                         .font(.caption)
                         .foregroundStyle(Color.siloSecondaryText)
                 }
@@ -1055,6 +1080,31 @@ private struct WatchPartyEpisodePicker: View {
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
+    }
+
+    /// "2. Pilot"; a date-labeled series (sports) leads with the title alone,
+    /// or the air date when untitled, since its numbers are synthetic.
+    private func phoneRowTitle(_ episode: EpisodeListItem) -> String {
+        if let name = EpisodeLabel.datedSeriesName(
+            title: episode.title, season: episode.seasonNumber, episode: episode.episodeNumber,
+            labels: series.episodeLabels, airDate: episode.airDate
+        ) {
+            return name
+        }
+        return AppLanguage.string(.watchPartyEpisodesNumbered(
+            LocaleFormat.integer(episode.episodeNumber),
+            episode.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber)))
+        ))
+    }
+
+    /// The runtime, after the air date for a date-labeled series.
+    private func phoneRowMetadata(_ episode: EpisodeListItem) -> String? {
+        var parts: [String] = []
+        if let date = EpisodeLabel.airDate(labels: series.episodeLabels, airDate: episode.airDate) {
+            parts.append(date)
+        }
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { parts.append(runtime) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
     #endif
 

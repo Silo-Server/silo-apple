@@ -42,11 +42,22 @@ func episodeRailAccessibilityLabel(
     metadata: String?,
     isCurrent: Bool,
     isPlayed: Bool,
+    episodeLabels: String? = nil,
+    airDate: String? = nil,
     locale: Locale = AppLanguage.formattingLocale
 ) -> String {
-    var components = [EpisodeCardCaption.spokenCode(season: seasonNumber, episode: episodeNumber, locale: locale)]
-    if let title, !title.isEmpty {
-        components.append(title)
+    var components: [String] = []
+    if let name = EpisodeLabel.datedSeriesName(
+        title: title, season: seasonNumber, episode: episodeNumber, style: .spoken,
+        labels: episodeLabels, airDate: airDate, locale: locale
+    ) {
+        // A date-labeled series (sports): the code means nothing.
+        components.append(name)
+    } else {
+        components.append(EpisodeLabel.code(season: seasonNumber, episode: episodeNumber, style: .spoken, locale: locale))
+        if let title, !title.isEmpty {
+            components.append(title)
+        }
     }
     if let metadata, !metadata.isEmpty {
         components.append(metadata)
