@@ -727,6 +727,10 @@ private struct ItemDetailPhoneContent: View {
             guard hasStartedDetailLoad, isPageVisible, let playback = takePlaybackReturn() else { return }
             Task { await applySeriesPlaybackReturn(playback) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .collectionItemsDidChange)) { _ in
+            guard hasStartedDetailLoad else { return }
+            viewModel.reloadItemCollections()
+        }
         .alert(
             Text(.detailOfflineChoiceTitle),
             isPresented: Binding(

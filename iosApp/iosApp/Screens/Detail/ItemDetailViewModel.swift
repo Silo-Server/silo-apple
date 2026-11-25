@@ -556,6 +556,13 @@ class ItemDetailViewModel {
         }
     }
 
+    /// Rereads the collections row after a collection's titles change, for
+    /// example when this title is added to one from its own page.
+    func reloadItemCollections() {
+        guard let detail else { return }
+        refreshItemCollections(for: detail)
+    }
+
     /// Reads the collections holding the movie or series beside the page's
     /// own refresh. As with the box set and on web, a failed reread keeps
     /// the row on screen; the server answering "none" removes it.
