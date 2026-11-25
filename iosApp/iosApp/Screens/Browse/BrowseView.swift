@@ -591,17 +591,10 @@ private class LibraryRecommendedViewModel {
     var scopeIncomplete = false
     private var identity: String?
     private var generation = 0
-    private var invalidationGeneration = 0
 
-    func noteInvalidation() {
-        invalidationGeneration += 1
-    }
-
-    @discardableResult
-    func loadSections(libraryId: Int, mediaScope: LibraryVideoScope?) async -> Bool {
+    func loadSections(libraryId: Int, mediaScope: LibraryVideoScope?) async {
         generation += 1
         let run = generation
-        let startInvalidation = invalidationGeneration
         let key = CacheKey.librarySections(libraryId) + (mediaScope.map { ".type-\($0.rawValue)" } ?? "")
         if identity != key {
             identity = key
@@ -621,11 +614,6 @@ private class LibraryRecommendedViewModel {
         isLoading = sections.isEmpty
         error = nil
         let writeToken = ResponseCache.shared.writeToken
-        defer {
-            if run == generation {
-                isLoading = false
-            }
-        }
 
         do {
             let read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: libraryId)
@@ -658,28 +646,21 @@ private class LibraryRecommendedViewModel {
                 incomplete = false
             }
             guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
-            guard run == generation,
-                  invalidationGeneration == startInvalidation,
-                  !Task.isCancelled,
-                  !ResponseCache.shared.wasInvalidated(key, after: writeToken) else { return false }
+            guard run == generation, !Task.isCancelled else { return }
             sections = loaded.filter(\.hasCards)
             scopeIncomplete = incomplete
             if mediaScope != nil {
                 ResponseCache.shared.set((sections: sections, incomplete: incomplete), for: key, fetchedAt: writeToken)
             }
-            return true
         } catch {
-            guard run == generation,
-                  invalidationGeneration == startInvalidation,
-                  !Task.isCancelled,
-                  !ResponseCache.shared.wasInvalidated(key, after: writeToken) else { return false }
-            if error is CancellationError { return false }
+            guard run == generation, !Task.isCancelled else { return }
+            if error is CancellationError { return }
             if case HTTPError.requestIdentityChanged = error { sections = [] }
             if case HTTPError.authorityChanged = error { sections = [] }
             if sections.isEmpty { self.error = ErrorState(error) }
             scopeIncomplete = mediaScope != nil
-            return false
         }
+        isLoading = false
     }
 
     private static func displayed(_ sections: [ResolvedSection]) -> [ResolvedSection] {
@@ -690,15 +671,8 @@ private class LibraryRecommendedViewModel {
 struct LibraryRecommendedView: View {
     let libraryId: Int
     var mediaScope: LibraryVideoScope? = nil
-    /// Whether this tab is currently selected inside `LibrariesTabView`, which
-    /// keeps hidden tabs mounted at zero opacity on iPhone.
-    var isActivePage: Bool = true
 
     @State private var viewModel = LibraryRecommendedViewModel()
-    @State private var isVisible = false
-    @State private var hasPendingRefresh = false
-    @State private var refreshInvalidationGen = 0
-    @State private var refreshTask: Task<Void, Never>?
     #if !os(tvOS)
     @State private var isCustomizing = false
     @State private var libraryEditor: HomeSectionsEditorModel?
@@ -774,55 +748,22 @@ struct LibraryRecommendedView: View {
             isCustomizing = false
             libraryEditor = HomeSectionsEditorModel(scope: .library(libraryId))
             #endif
-            refreshTask?.cancel()
-            refreshTask = nil
-            await runFencedLoad()
+            await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
         }
         .refreshable {
-            refreshTask?.cancel()
-            refreshTask = nil
-            await runFencedLoad()
+            await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
             pageDidRefresh?()
-        }
-        .onAppear {
-            isVisible = true
-            if isActivePage && hasPendingRefresh {
-                scheduleRefresh(delay: nil)
-            }
-        }
-        .onDisappear {
-            isVisible = false
-            refreshTask?.cancel()
-            refreshTask = nil
-        }
-        .onChange(of: isActivePage) { _, active in
-            if active {
-                if isVisible && hasPendingRefresh {
-                    scheduleRefresh(delay: nil)
-                }
-            } else {
-                refreshTask?.cancel()
-                refreshTask = nil
-            }
         }
         // The Libraries tab keeps this page alive under its others, so a
         // title marked watched elsewhere would otherwise keep its old card
         // in Continue Watching and Next Up. Home reloads on the same signal.
+        // A layout save for another library leaves this page's rows alone.
         .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { note in
             if let targetLibraryId = note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.libraryId] as? Int,
                targetLibraryId != libraryId {
                 return
             }
-            viewModel.noteInvalidation()
-            refreshInvalidationGen += 1
-            hasPendingRefresh = true
-            if isVisible && isActivePage {
-                let isCollectionEdit = note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.collectionId] != nil
-                scheduleRefresh(delay: isCollectionEdit ? .milliseconds(350) : nil)
-            } else {
-                refreshTask?.cancel()
-                refreshTask = nil
-            }
+            Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) }
         }
         #if !os(tvOS)
         .onReceive(NotificationCenter.default.publisher(for: .libraryCustomizeRequested)) { note in
@@ -835,25 +776,6 @@ struct LibraryRecommendedView: View {
             }
         }
         #endif
-    }
-
-    private func scheduleRefresh(delay: Duration?) {
-        refreshTask?.cancel()
-        refreshTask = Task {
-            if let delay {
-                try? await Task.sleep(for: delay)
-            }
-            guard !Task.isCancelled else { return }
-            await runFencedLoad()
-        }
-    }
-
-    private func runFencedLoad() async {
-        let startGen = refreshInvalidationGen
-        let published = await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
-        if published, !Task.isCancelled, refreshInvalidationGen == startGen {
-            hasPendingRefresh = false
-        }
     }
 
     private var content: some View {

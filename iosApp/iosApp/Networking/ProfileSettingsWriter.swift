@@ -143,9 +143,9 @@ final class ProfileSettingsWriter: Sendable {
     }
 
     /// An earlier retryable attempt in this write may have applied on the
-    /// server, and a later attempt returned a non-retry refusal. Callers must
-    /// reconcile from the server instead of rolling back blindly or offering
-    /// to resend the refused value.
+    /// server, and a later attempt returned a non-retry refusal. Thrown only
+    /// when the caller passes `reportsUncertainRefusal: true`; such a caller
+    /// reconciles from the server instead of rolling back blindly.
     struct UncertainRefusal: Error, Equatable {
         let cause: SettingsAPIError
     }
@@ -213,12 +213,15 @@ final class ProfileSettingsWriter: Sendable {
     /// Throws ``SettingsAPIError`` for a failure retrying cannot fix (so a
     /// caller can tell "this server is too old" and "no profile selected" from
     /// a value the contract refused), ``HeldChange`` once the bound runs out,
-    /// and ``Superseded`` when `isLatest` turns false between attempts.
+    /// and ``Superseded`` when `isLatest` turns false between attempts. With
+    /// `reportsUncertainRefusal`, a refusal after a retryable failure throws
+    /// ``UncertainRefusal`` instead of the bare ``SettingsAPIError``.
     func write(
         _ key: SettingKey,
         value: SettingJSONValue,
         profileId: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil,
+        reportsUncertainRefusal: Bool = false,
         isLatest: @escaping @MainActor () -> Bool = { true }
     ) async throws {
         var failedAttempts = 0
@@ -241,7 +244,7 @@ final class ProfileSettingsWriter: Sendable {
                         "\(key.rawValue, privacy: .public): the server refused the profile write: \(String(describing: failure), privacy: .public)"
                     )
                 }
-                if failedAttempts > 0, failure != .serverUpgradeRequired {
+                if reportsUncertainRefusal, failedAttempts > 0, failure != .serverUpgradeRequired {
                     // An earlier attempt in this write failed in a retryable way
                     // (for example, a lost response), so it may already have
                     // applied on the server. Report uncertainty instead of a

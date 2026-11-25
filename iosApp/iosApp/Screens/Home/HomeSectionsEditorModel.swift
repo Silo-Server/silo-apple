@@ -86,7 +86,6 @@ final class HomeSectionsEditorModel {
     @ObservationIgnored private var hasLoadedPickerCatalog = false
     @ObservationIgnored private var pickerCatalogIdentity: HTTPRequestIdentity?
     @ObservationIgnored private var pickerCatalogCacheToken: UInt64 = 0
-    @ObservationIgnored private var pickerCatalogLibrariesRevision = -1
 
     @ObservationIgnored private let api: SiloAPI
     @ObservationIgnored private let newID: () -> String
@@ -272,10 +271,8 @@ final class HomeSectionsEditorModel {
         let currentIdentity = requestIdentity()
         let collectionsInvalidated = hasLoadedPickerCatalog
             && ResponseCache.shared.wasInvalidated(CacheKey.collections, after: pickerCatalogCacheToken)
-        let librariesChanged = hasLoadedPickerCatalog && (
-            ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: pickerCatalogCacheToken)
-                || pickerCatalogLibrariesRevision != StartupContentPrefetcher.userLibrariesRevision
-        )
+        let librariesChanged = hasLoadedPickerCatalog
+            && ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: pickerCatalogCacheToken)
         guard force
             || !hasLoadedPickerCatalog
             || pickerCatalogIdentity != currentIdentity
@@ -302,9 +299,9 @@ final class HomeSectionsEditorModel {
                 do { return .success(try await api.collections()) }
                 catch { return .failure(error) }
             }()
-            async let librariesResult: Result<(response: LibrariesResponse, revision: Int), Error> = {
+            async let librariesResult: Result<LibrariesResponse, Error> = {
                 do {
-                    return .success(try await StartupContentPrefetcher.fetchUserLibrariesWithRevision(reusingRecent: !force && attempt == 0))
+                    return .success(try await StartupContentPrefetcher.fetchUserLibraries(reusingRecent: !force && attempt == 0))
                 } catch {
                     return .failure(error)
                 }
@@ -340,10 +337,8 @@ final class HomeSectionsEditorModel {
             let nextAvailableLibraries: [Library]
             let nextServerCollections: [ServerCollectionOption]
             let nextServerError: String?
-            let capturedLibrariesRevision: Int?
             switch fetchedLibraries {
-            case .success(let (response, librariesRevision)):
-                capturedLibrariesRevision = librariesRevision
+            case .success(let response):
                 let libraries = response.libraries
                 nextAvailableLibraries = libraries
                 let librariesForCollections: [Library]
@@ -411,19 +406,14 @@ final class HomeSectionsEditorModel {
                     nextServerError = nil
                 }
             case .failure(let error):
-                capturedLibrariesRevision = nil
                 nextAvailableLibraries = []
                 nextServerCollections = []
                 nextServerError = ErrorState(error).message
                 allSucceeded = false
             }
 
-            let librariesRevisionChanged = capturedLibrariesRevision.map {
-                $0 != StartupContentPrefetcher.userLibrariesRevision
-            } ?? false
             if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startCacheToken)
-                || ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startCacheToken)
-                || librariesRevisionChanged {
+                || ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: startCacheToken) {
                 if attempt < 2 {
                     continue
                 }
@@ -444,7 +434,6 @@ final class HomeSectionsEditorModel {
             hasLoadedPickerCatalog = allSucceeded
             pickerCatalogIdentity = allSucceeded ? startIdentity : nil
             pickerCatalogCacheToken = startCacheToken
-            pickerCatalogLibrariesRevision = capturedLibrariesRevision ?? StartupContentPrefetcher.userLibrariesRevision
             return
         }
     }
@@ -1934,6 +1923,7 @@ final class HomePreferencesModel {
                     value: value,
                     profileId: identity.profileId,
                     requestIdentity: identity,
+                    reportsUncertainRefusal: true,
                     isLatest: { [weak self] in
                         self?.keyGeneration[scope] == generation
                             && self?.isAuthorizedForWrite(key, identity: identity) == true

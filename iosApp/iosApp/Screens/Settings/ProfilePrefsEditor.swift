@@ -153,8 +153,6 @@ final class ProfilePrefsEditor {
     static let serverUpgradeMessage: LocalizedStringResource = .settingsProfilePrefsServerUpgrade
 
     private let writer: ProfileSettingsWriter
-    private let requestIdentity: @MainActor () -> HTTPRequestIdentity?
-    private var loadGeneration = 0
 
     /// The profile whose values this editor currently represents. Every write
     /// captures this before its first suspension so a later session switch
@@ -175,56 +173,16 @@ final class ProfilePrefsEditor {
     /// Writes taken from the queue whose request has not settled yet.
     private var inFlightSubtitleWrites: Set<SubtitleWriteIdentity> = []
 
-    private struct RequestIdentityKey: Hashable {
-        let serverId: String
-        let serverURL: String
-        let profileId: String?
-        let clientFamily: String
-        let localAccountId: String?
-
-        init(_ identity: HTTPRequestIdentity) {
-            self.serverId = identity.serverId
-            self.serverURL = identity.serverURL
-            self.profileId = identity.profileId
-            self.clientFamily = identity.clientFamily
-            self.localAccountId = identity.localAccountId
-        }
-    }
-
-    private struct ReconciliationScope: Hashable {
-        let key: SettingKey
-        let profileId: String?
-        let requestIdentity: RequestIdentityKey?
-
-        init(key: SettingKey, profileId: String?, requestIdentity: HTTPRequestIdentity?) {
-            self.key = key
-            self.profileId = profileId
-            self.requestIdentity = requestIdentity.map(RequestIdentityKey.init)
-        }
-    }
-
     /// Subtitle values that ran out of automatic retries.
     /// A held value is not sent again until the user retries it, edits that
     /// control, or discards it.
     private var heldSubtitleEditorValues: [SubtitleWriteIdentity: String] = [:]
-    /// Keys whose post-retry refusal still needs an authoritative server read,
-    /// keyed by `(key, profileId, requestIdentity)` and mapped to the hold
-    /// generation created when reconciliation failed. Retrying reads from the
-    /// server instead of resending the refused value.
-    private var reconciliationHolds: [ReconciliationScope: Int] = [:]
-    private var reconciliationHoldGeneration = 0
     /// The metadata language write that ran out of automatic retries.
     private var heldMetadataWrite: MetadataWrite?
 
-    /// True while any change is held (or awaiting reconciliation read) for the
-    /// profile and request identity this editor shows.
-    @MainActor
+    /// True while any change is held for the profile this editor shows.
     var hasHeldChanges: Bool {
-        let currentIdentity = requestIdentity().map(RequestIdentityKey.init)
-        return heldSubtitleEditorValues.keys.contains { $0.profileId == boundProfileId }
-            || reconciliationHolds.keys.contains {
-                $0.profileId == boundProfileId && $0.requestIdentity == currentIdentity
-            }
+        heldSubtitleEditorValues.keys.contains { $0.profileId == boundProfileId }
             || (heldMetadataWrite.map { $0.profileId == boundProfileId } ?? false)
     }
 
@@ -241,12 +199,8 @@ final class ProfilePrefsEditor {
         ProfileSettingKeys.showForcedSubtitles,
     ]
 
-    init(
-        writer: ProfileSettingsWriter = ProfileSettingsWriter(),
-        requestIdentity: @escaping @MainActor () -> HTTPRequestIdentity? = SeekIntervalPreferences.activeRequestIdentity
-    ) {
+    init(writer: ProfileSettingsWriter = ProfileSettingsWriter()) {
         self.writer = writer
-        self.requestIdentity = requestIdentity
     }
 
     /// Bind subsequent edits to the profile painted into this editor.
@@ -261,62 +215,15 @@ final class ProfilePrefsEditor {
     /// Read the profile preferences from the batched effective endpoint.
     @MainActor
     func load() async {
-        loadGeneration += 1
-        let myLoadGen = loadGeneration
-        let startIdentity = requestIdentity()
-        let startProfileId = boundProfileId
         let generations = editGenerations
-        let capturedHolds = reconciliationHolds
         do {
             let (preferences, byKey) = try await writer.load()
-            guard loadGeneration == myLoadGen,
-                  requestIdentity() == startIdentity,
-                  boundProfileId == startProfileId else { return }
             serverUpgradeRequired = false
-            let startIdentityKey = startIdentity.map(RequestIdentityKey.init)
-            let heldReconciliationKeys = Set(reconciliationHolds.keys.compactMap { scope -> SettingKey? in
-                scope.profileId == startProfileId && scope.requestIdentity == startIdentityKey ? scope.key : nil
-            })
-            let missingHeldKeys = heldReconciliationKeys.filter { byKey[$0] == nil }
-            apply(preferences, editedSince: generations, skippingKeys: missingHeldKeys)
-            var reconciledSubtitleLanguage = false
-            var reconciledMetadataLanguage = false
-            for (scope, capturedGen) in capturedHolds
-            where scope.profileId == startProfileId
-                && scope.requestIdentity == startIdentityKey
-                && reconciliationHolds[scope] == capturedGen {
-                guard editGenerations[scope.key] == generations[scope.key],
-                      byKey[scope.key] != nil else { continue }
-                reconciliationHolds.removeValue(forKey: scope)
-                if scope.key == ProfileSettingKeys.subtitleLanguage {
-                    reconciledSubtitleLanguage = true
-                } else if scope.key == ProfileSettingKeys.metadataLanguage {
-                    reconciledMetadataLanguage = true
-                }
-            }
-            if reconciledSubtitleLanguage {
-                ProfilePrefsStore.shared.setPreferredSubtitleLanguage(preferences.subtitleLanguage)
-            }
-            if reconciledMetadataLanguage {
-                Self.invalidateMetadataCaches()
-            }
+            apply(preferences, editedSince: generations)
             showHeldValues()
             resolvedSources = byKey.compactMapValues { $0.source }
             adoptLanguageSuggestions(from: byKey)
-            let hasNewerHold = reconciliationHolds.contains { scope, gen in
-                scope.profileId == startProfileId
-                    && scope.requestIdentity == startIdentityKey
-                    && capturedHolds[scope] != gen
-            }
-            if hasNewerHold {
-                await load()
-            } else if !hasHeldChanges && saveState == .held {
-                saveState = nil
-            }
         } catch SettingsAPIError.serverUpgradeRequired {
-            guard loadGeneration == myLoadGen,
-                  requestIdentity() == startIdentity,
-                  boundProfileId == startProfileId else { return }
             serverUpgradeRequired = true
         } catch {
             // Offline or transient: leave whatever is on screen rather than
@@ -325,17 +232,13 @@ final class ProfilePrefsEditor {
     }
 
     @MainActor
-    private func apply(
-        _ preferences: ProfilePreferences,
-        editedSince generations: [SettingKey: Int],
-        skippingKeys: Set<SettingKey> = []
-    ) {
+    private func apply(_ preferences: ProfilePreferences, editedSince generations: [SettingKey: Int]) {
         paintServerValues(ServerValues(
             subtitleLanguage: preferences.subtitleLanguage ?? PlaybackPrefSentinel.none,
             subtitleMode: preferences.subtitleMode,
             showForcedSubtitles: preferences.showForcedSubtitles ? "on" : "off",
             metadataLanguage: preferences.metadataLanguage ?? PlaybackPrefSentinel.none
-        ), editedSince: generations, skippingKeys: skippingKeys)
+        ), editedSince: generations)
     }
 
     /// Record what the server holds, and show it in every control whose
@@ -347,13 +250,8 @@ final class ProfilePrefsEditor {
     /// were captured keeps both its control and its recorded server value:
     /// the read may predate the edit even if the edit's write has settled.
     @MainActor
-    private func paintServerValues(
-        _ values: ServerValues,
-        editedSince generations: [SettingKey: Int]? = nil,
-        skippingKeys: Set<SettingKey> = []
-    ) {
+    private func paintServerValues(_ values: ServerValues, editedSince generations: [SettingKey: Int]? = nil) {
         for key in Self.subtitleKeys + [ProfileSettingKeys.metadataLanguage] {
-            if skippingKeys.contains(key) { continue }
             if let generations, editGenerations[key] != generations[key] { continue }
             let value = values.value(for: key)
             recordServerValue(for: key, value: value)
@@ -420,10 +318,6 @@ final class ProfilePrefsEditor {
     /// budget.
     @MainActor
     func retryHeldChanges() async {
-        let currentIdentityKey = requestIdentity().map(RequestIdentityKey.init)
-        let needsReconciliationRead = reconciliationHolds.keys.contains {
-            $0.profileId == boundProfileId && $0.requestIdentity == currentIdentityKey
-        }
         for (identity, value) in heldSubtitleEditorValues where pendingSubtitleEditorValues[identity] == nil {
             pendingSubtitleEditorValues[identity] = value
         }
@@ -434,12 +328,6 @@ final class ProfilePrefsEditor {
         await drainSubtitleWrites()
         if let heldMetadata {
             await saveMetadataLanguage(retrying: heldMetadata)
-        }
-        if needsReconciliationRead {
-            await load()
-            if hasHeldChanges {
-                saveState = .held
-            }
         }
     }
 
@@ -453,7 +341,6 @@ final class ProfilePrefsEditor {
     /// has since moved shows a newer edit, which is not discarded.
     @MainActor
     func discardHeldChanges() async {
-        let currentIdentityKey = requestIdentity().map(RequestIdentityKey.init)
         for (identity, held) in heldSubtitleEditorValues
         where identity.profileId == boundProfileId && currentEditorValue(for: identity.key) == held {
             if pendingSubtitleEditorValues[identity] == held {
@@ -469,21 +356,10 @@ final class ProfilePrefsEditor {
             if pendingMetadataWrite == held { pendingMetadataWrite = nil }
             preferredMetadataLanguage = serverValues.metadataLanguage ?? PlaybackPrefSentinel.none
         }
-        for scope in reconciliationHolds.keys
-        where scope.profileId == boundProfileId
-            && scope.requestIdentity == currentIdentityKey
-            && !hasUnsettledEdit(for: scope.key) {
-            if let confirmed = serverValue(for: scope.key) {
-                setEditorValue(confirmed, for: scope.key)
-            }
-        }
         heldSubtitleEditorValues.removeAll()
         heldMetadataWrite = nil
         saveState = nil
         await load()
-        if hasHeldChanges {
-            saveState = .held
-        }
     }
 
     @MainActor
@@ -633,13 +509,6 @@ final class ProfilePrefsEditor {
                         key: write.key,
                         profileId: write.profileId
                     )
-                    let startEditGen = editGenerations[write.key, default: 0]
-                    let startRequestIdentity = requestIdentity()
-                    let reconciliationScope = ReconciliationScope(
-                        key: write.key,
-                        profileId: write.profileId,
-                        requestIdentity: startRequestIdentity
-                    )
                     defer { inFlightSubtitleWrites.remove(identity) }
                     do {
                         try await writer.write(
@@ -651,7 +520,6 @@ final class ProfilePrefsEditor {
                             }
                         )
                         failures.removeValue(forKey: identity)
-                        reconciliationHolds.removeValue(forKey: reconciliationScope)
                         let stillEditingWrittenProfile = boundProfileId == write.profileId
                         if stillEditingWrittenProfile {
                             recordServerValue(for: write.key, value: write.editorValue)
@@ -679,50 +547,6 @@ final class ProfilePrefsEditor {
                     } catch is ProfileSettingsWriter.HeldChange {
                         failures.removeValue(forKey: identity)
                         heldSubtitleEditorValues[identity] = write.editorValue
-                    } catch let refusal as ProfileSettingsWriter.UncertainRefusal {
-                        // An earlier retryable attempt may have applied before
-                        // the server refused a later retry. Read the server's
-                        // authoritative value fenced by scope, request identity,
-                        // load generation, and edit generation; if the read fails,
-                        // track reconciliation-only state so "Try Again" retries
-                        // the read without resending the refused value.
-                        let startLoadGen = loadGeneration
-                        if boundProfileId == write.profileId,
-                           requestIdentity() == startRequestIdentity,
-                           let (prefs, byKey) = try? await writer.load(),
-                           let row = byKey[write.key],
-                           loadGeneration == startLoadGen,
-                           requestIdentity() == startRequestIdentity,
-                           boundProfileId == write.profileId {
-                            let authoritative: String = {
-                                if write.key == ProfileSettingKeys.subtitleLanguage {
-                                    return prefs.subtitleLanguage ?? PlaybackPrefSentinel.none
-                                } else if write.key == ProfileSettingKeys.subtitleMode {
-                                    return prefs.subtitleMode
-                                } else {
-                                    return prefs.showForcedSubtitles ? "on" : "off"
-                                }
-                            }()
-                            let hadNewerEdit = editGenerations[write.key, default: 0] != startEditGen
-                            recordServerValue(for: write.key, value: authoritative)
-                            noteEdit(for: write.key)
-                            reconciliationHolds.removeValue(forKey: reconciliationScope)
-                            resolvedSources[write.key] = row.source
-                            if write.key == ProfileSettingKeys.subtitleLanguage {
-                                ProfilePrefsStore.shared.setPreferredSubtitleLanguage(prefs.subtitleLanguage)
-                            }
-                            if !hadNewerEdit && pendingSubtitleEditorValues[identity] == nil {
-                                setEditorValue(authoritative, for: write.key)
-                            }
-                            failures[identity] = refusal.cause
-                        } else {
-                            reconciliationHoldGeneration += 1
-                            reconciliationHolds[reconciliationScope] = reconciliationHoldGeneration
-                            if boundProfileId == write.profileId,
-                               requestIdentity() == startRequestIdentity {
-                                failures.removeValue(forKey: identity)
-                            }
-                        }
                     } catch {
                         if Self.isServerUpgradeRequired(error) {
                             serverUpgradeRequired = true
@@ -942,13 +766,6 @@ final class ProfilePrefsEditor {
 
     @MainActor
     private func writeMetadataLanguage(_ write: MetadataWrite) async {
-        let startEditGen = editGenerations[ProfileSettingKeys.metadataLanguage, default: 0]
-        let startRequestIdentity = requestIdentity()
-        let reconciliationScope = ReconciliationScope(
-            key: ProfileSettingKeys.metadataLanguage,
-            profileId: write.profileId,
-            requestIdentity: startRequestIdentity
-        )
         saveState = .saving
         do {
             try await writer.write(
@@ -962,8 +779,17 @@ final class ProfilePrefsEditor {
                         && Self.outboundLanguage(self.preferredMetadataLanguage) == write.language
                 }
             )
-            reconciliationHolds.removeValue(forKey: reconciliationScope)
-            Self.invalidateMetadataCaches()
+            ResponseCache.shared.invalidateAllItemMetadata()
+            #if os(tvOS)
+            ItemDetailCache.shared.clearAll()
+            #endif
+            // Section cards, library and collection grids carry localized
+            // titles and descriptions too: drop their caches and have a
+            // mounted Home re-read its rows, so no screen keeps the previous
+            // language's text. Hero translations landed for that language
+            // no longer apply either.
+            PersonalStateSync.invalidateDerivedLists()
+            CardDescriptionTranslation.shared.reset()
             // A newer edit landed while this was in flight; let its own pass
             // report, or this one would announce a value already superseded.
             guard Self.outboundLanguage(preferredMetadataLanguage) == write.language,
@@ -988,44 +814,6 @@ final class ProfilePrefsEditor {
             } else if pendingMetadataWrite == nil {
                 saveState = nil
             }
-        } catch let refusal as ProfileSettingsWriter.UncertainRefusal {
-            let startLoadGen = loadGeneration
-            if boundProfileId == write.profileId,
-               requestIdentity() == startRequestIdentity,
-               let (prefs, byKey) = try? await writer.load(),
-               let row = byKey[ProfileSettingKeys.metadataLanguage],
-               loadGeneration == startLoadGen,
-               requestIdentity() == startRequestIdentity,
-               boundProfileId == write.profileId {
-                Self.invalidateMetadataCaches()
-                let hadNewerEdit = editGenerations[ProfileSettingKeys.metadataLanguage, default: 0] != startEditGen
-                let authoritative = prefs.metadataLanguage ?? PlaybackPrefSentinel.none
-                recordServerValue(for: ProfileSettingKeys.metadataLanguage, value: authoritative)
-                noteEdit(for: ProfileSettingKeys.metadataLanguage)
-                reconciliationHolds.removeValue(forKey: reconciliationScope)
-                resolvedSources[ProfileSettingKeys.metadataLanguage] = row.source
-                if !hadNewerEdit {
-                    if pendingMetadataWrite == nil {
-                        preferredMetadataLanguage = authoritative
-                    }
-                    saveState = Self.saveState(for: refusal.cause)
-                } else if pendingMetadataWrite == nil {
-                    saveState = nil
-                }
-            } else {
-                reconciliationHoldGeneration += 1
-                reconciliationHolds[reconciliationScope] = reconciliationHoldGeneration
-                if boundProfileId == write.profileId,
-                   requestIdentity() == startRequestIdentity {
-                    if editGenerations[ProfileSettingKeys.metadataLanguage, default: 0] == startEditGen {
-                        saveState = .held
-                    } else if pendingMetadataWrite == nil {
-                        saveState = nil
-                    }
-                } else if pendingMetadataWrite == nil {
-                    saveState = nil
-                }
-            }
         } catch {
             if Self.isServerUpgradeRequired(error) {
                 serverUpgradeRequired = true
@@ -1043,16 +831,6 @@ final class ProfilePrefsEditor {
     }
 
     // MARK: - Helpers
-
-    @MainActor
-    private static func invalidateMetadataCaches() {
-        ResponseCache.shared.invalidateAllItemMetadata()
-        #if os(tvOS)
-        ItemDetailCache.shared.clearAll()
-        #endif
-        PersonalStateSync.invalidateDerivedLists()
-        CardDescriptionTranslation.shared.reset()
-    }
 
     /// The `__none__` sentinel is the picker's spelling of "no preference";
     /// the contract's is null, which ``ProfileSettingsWriter/languageValue(_:)``

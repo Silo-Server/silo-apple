@@ -29,10 +29,6 @@ struct TVLibraryBrowseView: View {
     @State private var sectionsError: ErrorState? = nil
     @State private var scopeIncomplete = false
     @State private var loadGeneration = 0
-    @State private var isVisible = false
-    @State private var hasPendingRefresh = false
-    @State private var refreshInvalidationGen = 0
-    @State private var refreshTask: Task<Void, Never>?
 
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
@@ -47,7 +43,7 @@ struct TVLibraryBrowseView: View {
 
     var body: some View {
         Group {
-            if isLoadingSections && contentSections.isEmpty {
+            if isLoadingSections && sections.isEmpty {
                 TVLibraryBrowseLoadingView(libraryName: library.name)
                     .tvPageFocusOwner(
                         focusRequest: focusRequest,
@@ -55,59 +51,35 @@ struct TVLibraryBrowseView: View {
                         accessibilityLabel: AppLanguage.string(.libraryLoadingNamed(library.name), locale: locale),
                         onMoveUp: onMoveUp
                     )
-            } else if let error = sectionsError, contentSections.isEmpty {
+            } else if let error = sectionsError, sections.isEmpty {
                 ErrorView(state: error, onRetry: { Task { await loadContent() } })
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if contentSections.isEmpty {
                 emptyHint
             } else {
-                VStack(spacing: 0) {
-                    if let error = sectionsError {
-                        HStack(spacing: 16) {
-                            Label {
-                                Text(verbatim: error.message)
-                            } icon: {
-                                Image(systemName: "exclamationmark.triangle")
-                            }
-                            .font(.callout)
-                            .foregroundStyle(Color.siloSecondaryText)
-                            .lineLimit(2)
-
-                            Spacer(minLength: 12)
-
-                            Button(.commonRetry) {
-                                Task { await loadContent() }
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                        .padding(.horizontal, 80)
-                        .padding(.vertical, 12)
-                        .focusSection()
-                    }
-                    TVSkylineSectionFeed(
-                        sections: contentSections,
-                        libraryId: library.id,
-                        focusRequest: focusRequest,
-                        isTopMenuFocused: isTopMenuFocused,
-                        onTopMenuFocusRequest: onMoveUp,
-                        onItemTap: { destinationContentId, item in
-                            router.navigate(
-                                to: .itemDetail(
-                                    destinationContentId: destinationContentId,
-                                    sectionItem: item,
-                                    libraryId: library.id
-                                )
+                TVSkylineSectionFeed(
+                    sections: contentSections,
+                    libraryId: library.id,
+                    focusRequest: focusRequest,
+                    isTopMenuFocused: isTopMenuFocused,
+                    onTopMenuFocusRequest: onMoveUp,
+                    onItemTap: { destinationContentId, item in
+                        router.navigate(
+                            to: .itemDetail(
+                                destinationContentId: destinationContentId,
+                                sectionItem: item,
+                                libraryId: library.id
                             )
-                        },
-                        onExploreAll: { section in
-                            router.navigate(to: .sectionCatalog(SectionCatalogTarget(
-                                section, scope: .library(library.id), mediaScope: mediaScope
-                            )))
-                        }
-                    )
-                    .environment(\.browseMediaScope, mediaScope)
-                    .id(library.id)
-                }
+                        )
+                    },
+                    onExploreAll: { section in
+                        router.navigate(to: .sectionCatalog(SectionCatalogTarget(
+                            section, scope: .library(library.id), mediaScope: mediaScope
+                        )))
+                    }
+                )
+                .environment(\.browseMediaScope, mediaScope)
+                .id(library.id)
             }
         }
         .overlay(alignment: .bottom) {
@@ -119,42 +91,11 @@ struct TVLibraryBrowseView: View {
         .environment(\.browseLibraryId, library.id)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await loadContent() }
-        .onAppear {
-            isVisible = true
-            if hasPendingRefresh {
-                scheduleRefresh(delay: nil)
-            }
-        }
-        .onDisappear {
-            isVisible = false
-            refreshTask?.cancel()
-            refreshTask = nil
-        }
+        // A layout save for this library (for example, pinning a collection
+        // to it) drops its cached rows; re-read them so the page shows it.
         .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { note in
-            if let targetLibraryId = note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.libraryId] as? Int,
-               targetLibraryId != library.id {
-                return
-            }
-            refreshInvalidationGen += 1
-            hasPendingRefresh = true
-            if isVisible {
-                let isCollectionEdit = note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.collectionId] != nil
-                scheduleRefresh(delay: isCollectionEdit ? .milliseconds(350) : nil)
-            } else {
-                refreshTask?.cancel()
-                refreshTask = nil
-            }
-        }
-    }
-
-    private func scheduleRefresh(delay: Duration?) {
-        refreshTask?.cancel()
-        refreshTask = Task {
-            if let delay {
-                try? await Task.sleep(for: delay)
-            }
-            guard !Task.isCancelled else { return }
-            await loadContent()
+            guard (note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.libraryId] as? Int) == library.id else { return }
+            Task { await loadContent() }
         }
     }
 
@@ -188,19 +129,17 @@ struct TVLibraryBrowseView: View {
     private func loadContent() async {
         loadGeneration += 1
         let requestGeneration = loadGeneration
-        let startRefreshGen = refreshInvalidationGen
         defer {
             if requestGeneration == loadGeneration { isLoadingSections = false }
         }
-        let baseCacheKey = CacheKey.librarySections(library.id)
-        let scopedCacheKey = mediaScope.map { baseCacheKey + ".type-\($0.rawValue)" }
+        let scopedCacheKey = mediaScope.map { CacheKey.librarySections(library.id) + ".type-\($0.rawValue)" }
         if sections.isEmpty, let scopedCacheKey,
            let cached: (sections: [ResolvedSection], incomplete: Bool) = ResponseCache.shared.get(scopedCacheKey) {
             sections = cached.sections
             scopeIncomplete = cached.incomplete
         }
         if sections.isEmpty,
-           let cached: SectionsResponse = ResponseCache.shared.get(baseCacheKey) {
+           let cached: SectionsResponse = ResponseCache.shared.get(CacheKey.librarySections(library.id)) {
             sections = cached.sections.map { row in
                 guard let mediaScope else { return row }
                 return mediaScope.section(row, items: row.items.filter { mediaScope.contains($0.type) })
@@ -208,131 +147,44 @@ struct TVLibraryBrowseView: View {
         }
         isLoadingSections = true
         sectionsError = nil
-        let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
-        for attempt in 0..<2 {
-            let startToken = ResponseCache.shared.writeToken
-            var capturedAuth: CapturedOrdinaryRequestAuth?
-            do {
-                if let mediaScope {
-                    let read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: library.id)
-                    capturedAuth = read.auth
-                    let visibleRows = read.response.sections.filter { !$0.isFeatured }
-                    let isStillCurrent: @Sendable () async -> Bool = { @MainActor in
-                        requestGeneration == loadGeneration && refreshInvalidationGen == startRefreshGen
-                    }
-                    let scoped = try await mediaScope.refillSections(visibleRows) { [libraryID = library.id] (row: ResolvedSection, cursor: APIv2CatalogContinuation?) in
-                        try Task.checkCancellation()
-                        guard await isStillCurrent() else { throw CancellationError() }
-                        guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
-                        let page: CatalogListPage
-                        if let cursor { page = try await SiloAPI.shared.nextCatalogPage(cursor) }
-                        else {
-                            var query = APIv2CatalogQuery()
-                            query.source = "section"; query.scope = "library"
-                            query.libraryId = String(libraryID); query.sectionId = row.id; query.limit = 100
-                            page = try await SiloAPI.shared.catalogPage(query)
-                        }
-                        try Task.checkCancellation()
-                        guard await isStillCurrent() else { throw CancellationError() }
-                        guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
-                        return LibraryScopedPage(items: page.response.items.map { SectionItem(browseItem: $0) },
-                                                 next: page.continuation, startsOver: page.startsOver)
+        do {
+            if let mediaScope {
+                let read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: library.id)
+                let visibleRows = read.response.sections.filter { !$0.isFeatured }
+                let scoped = try await mediaScope.refillSections(visibleRows) { [libraryID = library.id] (row: ResolvedSection, cursor: APIv2CatalogContinuation?) in
+                    guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
+                    let page: CatalogListPage
+                    if let cursor { page = try await SiloAPI.shared.nextCatalogPage(cursor) }
+                    else {
+                        var query = APIv2CatalogQuery()
+                        query.source = "section"; query.scope = "library"
+                        query.libraryId = String(libraryID); query.sectionId = row.id; query.limit = 100
+                        page = try await SiloAPI.shared.catalogPage(query)
                     }
                     guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
-                    let invalidated = ResponseCache.shared.wasInvalidated(baseCacheKey, after: startToken)
-                        || (scopedCacheKey.map { ResponseCache.shared.wasInvalidated($0, after: startToken) } ?? false)
-                    guard requestGeneration == loadGeneration,
-                          refreshInvalidationGen == startRefreshGen,
-                          !Task.isCancelled else { return }
-                    if invalidated {
-                        hasPendingRefresh = true
-                        if isVisible && attempt == 0 { continue }
-                        if isVisible && contentSections.isEmpty {
-                            sectionsError = ErrorState(
-                                statusCode: nil,
-                                message: AppLanguage.string(.statusErrorGeneric, locale: locale)
-                            )
-                        }
-                        return
-                    }
-                    sections = scoped.map(\.section)
-                    scopeIncomplete = scoped.contains { $0.incomplete }
-                    hasPendingRefresh = false
-                    if let scopedCacheKey {
-                        ResponseCache.shared.set(
-                            (sections: sections, incomplete: scopeIncomplete),
-                            for: scopedCacheKey,
-                            fetchedAt: startToken
-                        )
-                    }
-                    return
-                } else {
-                    let read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: library.id)
-                    capturedAuth = read.auth
-                    guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
-                    guard requestGeneration == loadGeneration,
-                          refreshInvalidationGen == startRefreshGen,
-                          !Task.isCancelled else { return }
-                    if ResponseCache.shared.wasInvalidated(baseCacheKey, after: startToken) {
-                        hasPendingRefresh = true
-                        if isVisible && attempt == 0 { continue }
-                        if isVisible && contentSections.isEmpty {
-                            sectionsError = ErrorState(
-                                statusCode: nil,
-                                message: AppLanguage.string(.statusErrorGeneric, locale: locale)
-                            )
-                        }
-                        return
-                    }
-                    sections = read.response.sections
-                    hasPendingRefresh = false
-                    return
+                    return LibraryScopedPage(items: page.response.items.map { SectionItem(browseItem: $0) },
+                                             next: page.continuation, startsOver: page.startsOver)
                 }
-            } catch {
-                guard requestGeneration == loadGeneration,
-                      refreshInvalidationGen == startRefreshGen,
-                      !Task.isCancelled else { return }
-                if error is CancellationError { return }
-                let ownerChanged: Bool
-                if let capturedAuth {
-                    ownerChanged = !(await SiloAPI.shared.isCurrentOwner(capturedAuth))
-                } else {
-                    ownerChanged = SeekIntervalPreferences.activeRequestIdentity() != startIdentity
+                guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
+                guard requestGeneration == loadGeneration, !Task.isCancelled else { return }
+                sections = scoped.map(\.section)
+                scopeIncomplete = scoped.contains { $0.incomplete }
+                if let scopedCacheKey {
+                    ResponseCache.shared.set((sections: sections, incomplete: scopeIncomplete), for: scopedCacheKey)
                 }
-                guard requestGeneration == loadGeneration,
-                      refreshInvalidationGen == startRefreshGen,
-                      !Task.isCancelled else { return }
-                let isIdentityError: Bool
-                if case HTTPError.requestIdentityChanged = error {
-                    isIdentityError = true
-                } else if case HTTPError.authorityChanged = error {
-                    isIdentityError = true
-                } else {
-                    isIdentityError = ownerChanged
-                }
-                if isIdentityError {
-                    sections = []
-                    sectionsError = ErrorState(HTTPError.requestIdentityChanged)
-                    scopeIncomplete = false
-                    return
-                }
-                let invalidated = ResponseCache.shared.wasInvalidated(baseCacheKey, after: startToken)
-                    || (scopedCacheKey.map { ResponseCache.shared.wasInvalidated($0, after: startToken) } ?? false)
-                if invalidated {
-                    hasPendingRefresh = true
-                    if isVisible && attempt == 0 { continue }
-                    if isVisible && contentSections.isEmpty {
-                        sectionsError = ErrorState(
-                            statusCode: nil,
-                            message: AppLanguage.string(.statusErrorGeneric, locale: locale)
-                        )
-                    }
-                    return
-                }
-                sectionsError = ErrorState(error)
-                scopeIncomplete = mediaScope != nil && !contentSections.isEmpty
-                return
+            } else {
+                let read = try await StartupContentPrefetcher.fetchLibrarySectionsRead(libraryId: library.id)
+                guard await SiloAPI.shared.isCurrentOwner(read.auth) else { throw HTTPError.requestIdentityChanged }
+                guard requestGeneration == loadGeneration, !Task.isCancelled else { return }
+                sections = read.response.sections
             }
+        } catch {
+            guard requestGeneration == loadGeneration, !Task.isCancelled else { return }
+            if error is CancellationError { return }
+            if case HTTPError.requestIdentityChanged = error { sections = [] }
+            if case HTTPError.authorityChanged = error { sections = [] }
+            sectionsError = ErrorState(error)
+            scopeIncomplete = mediaScope != nil && !sections.isEmpty
         }
     }
 }

@@ -41,13 +41,8 @@ struct CollectionsView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 0) {
-                if let refreshError = viewModel.refreshError {
-                    refreshErrorNotice(refreshError.message)
-                }
-                if case .unknown(let message) = viewModel.groupSupport {
-                    groupSupportNotice(message)
-                }
+            if case .unknown(let message) = viewModel.groupSupport {
+                groupSupportNotice(message)
             }
         }
         .siloPageBackground()
@@ -200,22 +195,6 @@ struct CollectionsView: View {
 
     /// The capability read failed: groups can't be managed until it is
     /// retried, but nothing concludes they are unsupported.
-    private func refreshErrorNotice(_ message: String) -> some View {
-        HStack(spacing: SiloTheme.padding) {
-            Text(message)
-                .font(.siloCaption)
-                .foregroundColor(.siloSecondaryText)
-            Spacer()
-            Button(.commonRetry) {
-                Task { await viewModel.loadCollections() }
-            }
-            .foregroundColor(.siloPrimary)
-        }
-        .padding(.horizontal, SiloTheme.padding)
-        .padding(.vertical, 8)
-        .background(Color.siloSurface)
-    }
-
     private func groupSupportNotice(_ message: String) -> some View {
         HStack(spacing: SiloTheme.padding) {
             Text(message)
@@ -801,11 +780,6 @@ struct LibraryCollectionDetailView: View {
 
     @State private var viewModel = LibraryCollectionDetailViewModel()
     @State private var shuffleLauncher = ShuffleLauncher()
-    @State private var isVisible = false
-    @State private var hasPendingInvalidation = false
-    @State private var invalidationGeneration = 0
-    @State private var resetGeneration = 0
-    @State private var reloadTask: Task<Void, Never>?
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
 
@@ -821,37 +795,12 @@ struct LibraryCollectionDetailView: View {
 
     var body: some View {
         Group {
-            if viewModel.items.isEmpty, let error = viewModel.error {
-                ErrorView(state: error, onRetry: { scheduleReload(delay: nil) })
-            } else if viewModel.items.isEmpty && !viewModel.hasLoadedOnce {
-                Color.clear
-                    #if os(tvOS)
-                    .tvPageFocusOwner(
-                        focusRequest: 0,
-                        isTopMenuFocused: false,
-                        accessibilityLabel: AppLanguage.string(.commonLoading, locale: locale),
-                        onMoveUp: nil
-                    )
-                    #endif
-            } else if !viewModel.items.isEmpty || kind == nil || kind == .regular {
+            if !viewModel.items.isEmpty {
                 content
-            } else if let refreshError = viewModel.refreshError {
-                ErrorView(state: refreshError, onRetry: { scheduleReload(delay: nil) })
-            } else if viewModel.hasMore && viewModel.paginationError == nil {
-                ProgressView()
-                    #if os(tvOS)
-                    .tvPageFocusOwner(
-                        focusRequest: 0,
-                        isTopMenuFocused: false,
-                        accessibilityLabel: AppLanguage.string(.commonLoading, locale: locale),
-                        onMoveUp: nil
-                    )
-                    #endif
-                    .task(id: "\(viewModel.items.count)-\(viewModel.hasMore)-\(viewModel.pageSequence)-\(viewModel.paginationError == nil)-\(viewModel.refreshError == nil)") {
-                        await loadMoreIfNeeded()
-                    }
-            } else if let paginationError = viewModel.paginationError {
-                ErrorView(state: paginationError, onRetry: { Task { await loadItems(reset: false) } })
+            } else if let error = viewModel.error {
+                ErrorView(state: error, onRetry: { Task { await loadItems(reset: true) } })
+            } else if viewModel.isLoading {
+                Color.clear
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up.fill",
@@ -868,38 +817,17 @@ struct LibraryCollectionDetailView: View {
         .navigationTitle(title.map { Text($0) } ?? Text(.collectionsCollection))
         .siloNavigationTitleDisplayMode(.large)
         .task(id: "\(libraryId)-\(collectionId)-\(mediaScope?.rawValue ?? "all")-\(kind?.rawValue ?? "regular")") {
-            reloadTask?.cancel()
-            reloadTask = nil
             await loadItems(reset: true)
         }
         .shuffleFailureAlert(shuffleLauncher)
         .refreshable {
-            reloadTask?.cancel()
-            reloadTask = nil
             await loadItems(reset: true)
         }
-        .onAppear {
-            isVisible = true
-            if hasPendingInvalidation {
-                scheduleReload(delay: nil)
-            }
-        }
-        .onDisappear {
-            isVisible = false
-            reloadTask?.cancel()
-            reloadTask = nil
-        }
+        // Adding or removing a title from this personal collection elsewhere
+        // reloads the grid.
         .onReceive(NotificationCenter.default.publisher(for: .collectionItemsDidChange)) { note in
             guard kind == .userCollections, (note.object as? String) == collectionId else { return }
-            viewModel.noteInvalidation()
-            invalidationGeneration += 1
-            hasPendingInvalidation = true
-            if isVisible {
-                scheduleReload(delay: .milliseconds(350))
-            } else {
-                reloadTask?.cancel()
-                reloadTask = nil
-            }
+            Task { await loadItems(reset: true) }
         }
         #if os(tvOS)
         .tvActionPopoverHost()
@@ -910,7 +838,7 @@ struct LibraryCollectionDetailView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
                 HStack(spacing: 12) {
-                    if !viewModel.items.isEmpty && offersShuffle {
+                    if offersShuffle {
                         ShuffleButton(isStarting: shuffleLauncher.isStarting) {
                             shuffleLauncher.start(ShuffleScopeRequest(kind: shuffleKind, id: collectionId), router: router)
                         }
@@ -918,110 +846,33 @@ struct LibraryCollectionDetailView: View {
                     if kind == nil || kind == .regular {
                         CollectionPinActionBar(
                             collectionId: collectionId,
-                            title: title ?? AppLanguage.string(.collectionsCollection, locale: locale),
+                            title: title,
                             isUserCollection: false,
                             sourceLibraryId: libraryId
                         )
                         .id("\(collectionId)-\(libraryId)")
                     }
-                    if !viewModel.items.isEmpty {
-                        Text(countLabel)
-                            .font(.siloCaption)
-                            .foregroundColor(.siloSecondaryText)
-                    }
+                    Text(countLabel)
+                        .font(.siloCaption)
+                        .foregroundColor(.siloSecondaryText)
                 }
                 #if os(tvOS)
                 // Up from any grid column reaches Shuffle & Pin to Home.
                 .focusSection()
                 #endif
 
-                if let refreshError = viewModel.refreshError {
-                    HStack(spacing: 10) {
-                        Label(refreshError.message, systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(Color.siloSecondaryText)
-                            .lineLimit(2)
-                        Spacer(minLength: 8)
-                        Button(.commonRetry) {
-                            scheduleReload(delay: nil)
-                        }
-                        .font(.footnote.weight(.semibold))
-                        #if os(tvOS)
-                        .buttonStyle(.bordered)
-                        #endif
+                CatalogGrid(
+                    items: viewModel.items,
+                    isLoading: viewModel.isLoading,
+                    hasMore: viewModel.hasMore,
+                    forcesThreeColumnsOnPhone: true,
+                    onItemTap: { item in
+                        router.navigate(to: .itemDetail(browseItem: item))
+                    },
+                    onLoadMore: {
+                        Task { await loadMoreIfNeeded() }
                     }
-                }
-
-                if viewModel.items.isEmpty && !viewModel.hasMore && viewModel.paginationError == nil {
-                    if viewModel.isLoading {
-                        HStack {
-                            Spacer()
-                            ProgressView()
-                            Spacer()
-                        }
-                        .padding(.vertical, SiloTheme.largePadding)
-                    } else {
-                        EmptyStateView(
-                            icon: "square.stack.3d.up.fill",
-                            title: AppLanguage.string(.collectionsEmptyItemsTitle, locale: locale),
-                            subtitle: AppLanguage.string(.collectionsEmptyItemsBody, locale: locale)
-                        )
-                        .padding(.top, SiloTheme.largePadding)
-                    }
-                } else if viewModel.items.isEmpty && viewModel.hasMore && viewModel.paginationError == nil && viewModel.refreshError == nil {
-                    HStack {
-                        Spacer()
-                        ProgressView()
-                            #if os(tvOS)
-                            .tvPageFocusOwner(
-                                focusRequest: 0,
-                                isTopMenuFocused: false,
-                                accessibilityLabel: AppLanguage.string(.commonLoading, locale: locale),
-                                onMoveUp: nil
-                            )
-                            #endif
-                        Spacer()
-                    }
-                    .padding(.vertical, SiloTheme.largePadding)
-                    .task(id: "\(viewModel.items.count)-\(viewModel.hasMore)-\(viewModel.pageSequence)-\(viewModel.paginationError == nil)-\(viewModel.refreshError == nil)") {
-                        await loadMoreIfNeeded()
-                    }
-                } else {
-                    CatalogGrid(
-                        items: viewModel.items,
-                        isLoading: viewModel.isLoading,
-                        hasMore: viewModel.hasMore,
-                        forcesThreeColumnsOnPhone: true,
-                        onItemTap: { item in
-                            router.navigate(to: .itemDetail(browseItem: item))
-                        },
-                        onLoadMore: {
-                            Task { await loadMoreIfNeeded() }
-                        }
-                    )
-                    .task(id: "\(viewModel.items.count)-\(viewModel.hasMore)-\(viewModel.paginationError == nil)-\(viewModel.refreshError == nil)") {
-                        if viewModel.items.count < CatalogGrid.loadMoreLead {
-                            await loadMoreIfNeeded()
-                        }
-                    }
-                }
-
-                if let paginationError = viewModel.paginationError {
-                    HStack(spacing: 10) {
-                        Label(paginationError.message, systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(Color.siloSecondaryText)
-                            .lineLimit(2)
-                        Spacer(minLength: 8)
-                        Button(.commonRetry) {
-                            Task { await loadItems(reset: false) }
-                        }
-                        .font(.footnote.weight(.semibold))
-                        #if os(tvOS)
-                        .buttonStyle(.bordered)
-                        #endif
-                    }
-                }
+                )
             }
             .padding(.horizontal, SiloTheme.padding)
             .padding(.top, SiloTheme.smallPadding)
@@ -1038,41 +889,12 @@ struct LibraryCollectionDetailView: View {
     }
 
     private func loadMoreIfNeeded() async {
-        guard viewModel.hasMore,
-              !viewModel.isLoading,
-              viewModel.refreshError == nil,
-              viewModel.paginationError == nil else { return }
+        guard viewModel.hasMore, !viewModel.isLoading else { return }
         await loadItems(reset: false)
     }
 
-    private func scheduleReload(delay: Duration?) {
-        reloadTask?.cancel()
-        reloadTask = Task {
-            if let delay {
-                try? await Task.sleep(for: delay)
-            }
-            guard !Task.isCancelled else { return }
-            await loadItems(reset: true)
-        }
-    }
-
     private func loadItems(reset: Bool) async {
-        let startGen = invalidationGeneration
-        if reset { resetGeneration += 1 }
-        let myResetGen = resetGeneration
-        let succeeded = await viewModel.load(
-            libraryId: libraryId,
-            collectionId: collectionId,
-            kind: kind ?? .regular,
-            mediaScope: mediaScope,
-            reset: reset
-        )
-        if reset, !Task.isCancelled, invalidationGeneration == startGen, resetGeneration == myResetGen {
-            if succeeded || viewModel.lastResetReplacedPageOne {
-                hasPendingInvalidation = false
-            } else if viewModel.refreshError != nil {
-                hasPendingInvalidation = true
-            }
-        }
+        await viewModel.load(libraryId: libraryId, collectionId: collectionId,
+                             kind: kind ?? .regular, mediaScope: mediaScope, reset: reset)
     }
 }

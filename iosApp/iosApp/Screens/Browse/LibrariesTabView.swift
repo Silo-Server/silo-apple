@@ -350,11 +350,7 @@ struct LibrariesTabView: View {
     private func page(_ tab: LibraryPageTab, activeLibrary: Library) -> some View {
         switch tab {
         case .recommended:
-            LibraryRecommendedView(
-                libraryId: activeLibrary.id,
-                mediaScope: videoScope(for: activeLibrary),
-                isActivePage: selectedTab == .recommended
-            )
+            LibraryRecommendedView(libraryId: activeLibrary.id, mediaScope: videoScope(for: activeLibrary))
         case .library:
             BrowseView(libraryId: activeLibrary.id, title: nil, showsSearchShortcut: false, libraryType: activeLibrary.type, mediaScope: videoScope(for: activeLibrary))
         case .collections:

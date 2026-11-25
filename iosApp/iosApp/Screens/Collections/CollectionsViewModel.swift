@@ -38,7 +38,6 @@ class CollectionsViewModel {
     var isLoading = false
     var isRefreshing = false
     var error: ErrorState?
-    private(set) var refreshError: ErrorState?
     private(set) var groupSupport: CollectionGroupSupport = .checking
     private let api: SiloAPI
 
@@ -121,76 +120,28 @@ class CollectionsViewModel {
         return !action.needsEditor || (editorVersion != nil && !editorNeedsReload)
     }
 
-    private var loadGeneration = 0
-
     func loadCollections() async {
-        loadGeneration += 1
-        let myGen = loadGeneration
-        let startIdentity = SeekIntervalPreferences.activeRequestIdentity()
         if collections.isEmpty && groups.isEmpty {
             isLoading = true
         } else {
             isRefreshing = true
         }
-        defer {
-            if loadGeneration == myGen {
-                isLoading = false
-                isRefreshing = false
-            }
-        }
         error = nil
-        refreshError = nil
         async let support: Void = refreshGroupSupport()
-        for attempt in 0..<3 {
-            let startToken = ResponseCache.shared.writeToken
-            do {
-                let response: CollectionsResponse = try await api.collections()
-                guard !Task.isCancelled,
-                      loadGeneration == myGen,
-                      SeekIntervalPreferences.activeRequestIdentity() == startIdentity else {
-                    await support
-                    return
-                }
-                if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startToken) {
-                    if attempt < 2 {
-                        continue
-                    }
-                    let retryError = ErrorState(URLError(.cannotLoadFromNetwork))
-                    if collections.isEmpty && groups.isEmpty {
-                        self.error = retryError
-                    } else {
-                        self.refreshError = retryError
-                    }
-                    await support
-                    return
-                }
-                ResponseCache.shared.set(response, for: CacheKey.collections, fetchedAt: startToken)
-                collections = response.collections ?? []
-                groups = sortGroups(response.groups ?? [])
-                rebuildSections()
-                refreshError = nil
-                break
-            } catch let err {
-                guard !(err is CancellationError),
-                      !Task.isCancelled,
-                      loadGeneration == myGen,
-                      SeekIntervalPreferences.activeRequestIdentity() == startIdentity else {
-                    await support
-                    return
-                }
-                if ResponseCache.shared.wasInvalidated(CacheKey.collections, after: startToken),
-                   attempt < 2 {
-                    continue
-                }
-                if collections.isEmpty && groups.isEmpty {
-                    self.error = ErrorState(err)
-                } else {
-                    self.refreshError = ErrorState(err)
-                }
-                break
+        do {
+            let response: CollectionsResponse = try await api.collections()
+            ResponseCache.shared.set(response, for: CacheKey.collections)
+            collections = response.collections ?? []
+            groups = sortGroups(response.groups ?? [])
+            rebuildSections()
+        } catch let err {
+            if collections.isEmpty && groups.isEmpty {
+                self.error = ErrorState(err)
             }
         }
         await support
+        isLoading = false
+        isRefreshing = false
     }
 
     /// Re-reads group support after a failed capability read.
@@ -218,7 +169,6 @@ class CollectionsViewModel {
     /// the post-mutation state. Called from every successful add / move /
     /// rename / delete path.
     private func writeBackCache() {
-        ResponseCache.shared.remove(CacheKey.collections)
         ResponseCache.shared.set(
             CollectionsResponse(collections: collections, groups: groups),
             for: CacheKey.collections
@@ -389,11 +339,7 @@ class CollectionsViewModel {
                     itemCount: c.itemCount,
                     posterUrl: c.posterUrl,
                     posterThumbhash: c.posterThumbhash,
-                    includeInServerCollections: c.includeInServerCollections,
-                    isShared: c.isShared,
-                    creatorProfileId: c.creatorProfileId,
-                    profileId: c.profileId,
-                    contains: c.contains
+                    includeInServerCollections: c.includeInServerCollections
                 )
             }
             rebuildSections()
