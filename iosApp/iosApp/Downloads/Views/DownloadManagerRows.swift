@@ -605,8 +605,9 @@ struct DownloadEpisodeRow: View {
     }
 
     private var title: String {
-        if let episode = record.episodeNumber {
-            let code = AppLanguage.string(.calendarEpisodeShort(LocaleFormat.codeNumber(episode)), locale: locale)
+        // "E2 · Title", or the air date for a date-labeled series (sports).
+        if record.episodeNumber != nil,
+           let code = record.episodeTag(locale: locale, both: { _, episode in .calendarEpisodeShort(episode) }) {
             return EpisodeCardCaption.titled(code: code, title: record.displayTitle(locale: locale), locale: locale)
         }
         return record.displayTitle(locale: locale)

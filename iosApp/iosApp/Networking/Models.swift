@@ -20,6 +20,12 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     var positionSeconds: Double? = nil
     var durationSeconds: Double? = nil
     var progressUpdatedAt: String? = nil
+    /// The series' episode labels: "air_date" when its numbers are synthetic
+    /// (see `EpisodeLabel`). Absent from older servers: show the numbers.
+    var episodeLabels: String? = nil
+    /// An episode's air date, "2026-11-20". Section cards carry it when
+    /// `episodeLabels` is "air_date".
+    var airDate: String? = nil
     let year: Int?
     let genres: [String]?
     let contentRating: String?
@@ -176,6 +182,12 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let positionSeconds: Double?
     let durationSeconds: Double?
     let progressUpdatedAt: String?
+    /// The series' episode labels: "air_date" when its numbers are synthetic
+    /// (see `EpisodeLabel`). Absent from older servers: show the numbers.
+    var episodeLabels: String? = nil
+    /// An episode's air date, "2026-11-20". Section cards carry it when
+    /// `episodeLabels` is "air_date".
+    var airDate: String? = nil
     var posterIsEpisodeStill: Bool? = nil
     var backdropIsEpisodeStill: Bool? = nil
     @ArtworkURL var posterUrl: String? = nil
@@ -232,6 +244,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
         self.positionSeconds = positionSeconds ?? item.positionSeconds
         self.durationSeconds = durationSeconds ?? item.durationSeconds
         progressUpdatedAt = item.progressUpdatedAt
+        episodeLabels = item.episodeLabels
+        airDate = item.airDate
         posterIsEpisodeStill = item.posterIsEpisodeStill
         backdropIsEpisodeStill = item.backdropIsEpisodeStill
         posterUrl = item.posterUrl
@@ -367,6 +381,8 @@ extension BrowseItem {
             positionSeconds: item.positionSeconds,
             durationSeconds: item.durationSeconds,
             progressUpdatedAt: item.progressUpdatedAt,
+            episodeLabels: item.episodeLabels,
+            airDate: item.airDate,
             year: item.year,
             genres: item.genres,
             contentRating: item.contentRating,
@@ -817,6 +833,9 @@ struct ItemDetail: Codable {
     let episodeNumber: Int?
     let episodeCount: Int?
     let airDate: String?
+    /// The series' episode labels, on a series, season or episode detail:
+    /// "air_date" when its numbers are synthetic (see `EpisodeLabel`).
+    var episodeLabels: String? = nil
     let isSpecials: Bool?
     let userData: LeafItemUserData?
     let versions: [FileVersion]?
@@ -1609,6 +1628,11 @@ struct WatchDetail {
     let seriesTitle: String?
     let seasonNumber: Int?
     let episodeNumber: Int?
+    /// The series' episode labels ("air_date") and the episode's air date,
+    /// from `/watch`; the player names a date-labeled episode by its date.
+    /// Nil offline and from older servers: the player shows the numbers.
+    var episodeLabels: String? = nil
+    var airDate: String? = nil
     /// Server-resolved subtitle policy for this content. Computed from
     /// per-series → library → profile prefs cascade. Absent when the
     /// user hasn't configured anything that applies. Consumed by the
@@ -1644,6 +1668,18 @@ struct UserCollection: Codable, Identifiable {
     @ArtworkURL var posterUrl: String? = nil
     let posterThumbhash: String?
     let includeInServerCollections: Bool?
+    var isShared: Bool? = nil
+    var creatorProfileId: String? = nil
+    var profileId: String? = nil
+    var contains: Bool? = nil
+
+    /// True when the acting profile created this collection and can mutate it.
+    /// Older servers without `creator_profile_id` only return the acting profile's own collections.
+    func isOwnedBy(profileId activeProfileId: String?) -> Bool {
+        guard let creator = creatorProfileId, !creator.isEmpty else { return true }
+        guard let activeProfileId, !activeProfileId.isEmpty else { return false }
+        return creator == activeProfileId
+    }
 }
 
 /// A user-defined grouping bucket for personal collections: the v2
@@ -1720,6 +1756,12 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
     let kind: LibraryCollectionKind?
     /// Creator profile id, populated only for [LibraryCollectionKind.userCollections].
     let creatorProfileId: String?
+    /// Library IDs that contain this curated server collection when reported by the server.
+    let libraryIds: [String]?
+
+    var parsedLibraryIds: Set<Int> {
+        Set((libraryIds ?? []).compactMap(Int.init))
+    }
 
     /// Server emits `title`, not `name`. All other fields go through the
     /// shared `.convertFromSnakeCase` strategy — camelCase raw values
@@ -1733,6 +1775,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
         case posterThumbhash
         case kind
         case creatorProfileId
+        case libraryIds
     }
 
     /// Convenience initializer for code that constructs from a wire
@@ -1745,7 +1788,8 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
         posterUrl: String? = nil,
         posterThumbhash: String? = nil,
         kind: LibraryCollectionKind? = nil,
-        creatorProfileId: String? = nil
+        creatorProfileId: String? = nil,
+        libraryIds: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -1755,6 +1799,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
         self.posterThumbhash = posterThumbhash
         self.kind = kind
         self.creatorProfileId = creatorProfileId
+        self.libraryIds = libraryIds
     }
 
     init(from decoder: Decoder) throws {
@@ -1774,6 +1819,7 @@ struct LibraryCollection: Codable, Identifiable, Hashable {
             kind = nil
         }
         creatorProfileId = try c.decodeIfPresent(String.self, forKey: .creatorProfileId)
+        libraryIds = try c.decodeIfPresent([String].self, forKey: .libraryIds)
     }
 }
 

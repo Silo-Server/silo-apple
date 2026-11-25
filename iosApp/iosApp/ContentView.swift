@@ -2822,9 +2822,26 @@ struct MainTabView: View {
 
     #if os(iOS)
     private func statusColumnBar(_ layout: StatusColumnLayout) -> some View {
+        let activeLibrary = selectedDestinationID == .app(.libraries) ? router.activeCustomizableLibrary : nil
+        let customizePageTitle: String? = switch selectedDestinationID {
+        case .app(.home): AppLanguage.string(.homeCustomizeTitleHome, locale: locale)
+        case .app(.libraries): activeLibrary.map { AppLanguage.string(.homeCustomizeTitleNamed($0.name), locale: locale) }
+        default: nil
+        }
+        let onCustomizePage: (() -> Void)? = switch selectedDestinationID {
+        case .app(.home):
+            { NotificationCenter.default.post(name: .homeCustomizeRequested, object: nil) }
+        case .app(.libraries):
+            activeLibrary.map { lib in
+                { NotificationCenter.default.post(name: .libraryCustomizeRequested, object: lib.id) }
+            }
+        default:
+            nil
+        }
+
         // Fill the page first, then grow into the safe area, so the bar
         // lands inside the column rather than at the edge of the page.
-        HStack(spacing: 0) {
+        return HStack(spacing: 0) {
             if layout.edge == .trailing { Spacer(minLength: 0) }
             StatusColumnBar(
                 layout: layout,
@@ -2836,6 +2853,8 @@ struct MainTabView: View {
                     onOpenRequests: { router.navigate(to: .requestsHub) },
                     onSwitchProfile: { router.switchProfile() },
                     onSignOut: { router.signOutAndReset() },
+                    customizePageTitle: customizePageTitle,
+                    onCustomizePage: onCustomizePage,
                     axis: .vertical
                 )
             )

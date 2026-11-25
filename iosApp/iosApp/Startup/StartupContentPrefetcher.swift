@@ -39,6 +39,7 @@ enum StartupContentPrefetcher {
     #endif
     private static var profileScopedGeneration = 0
     private static var homeSectionsGeneration = 0
+    private static var librarySectionsGeneration: [Int: Int] = [:]
     private static var profilesGeneration = 0
 
     static func resetProfileScopedPrefetches() {
@@ -48,6 +49,7 @@ enum StartupContentPrefetcher {
         userLibraries.reset()
         librarySections.values.forEach { $0.reset() }
         librarySections.removeAll()
+        librarySectionsGeneration.removeAll()
         browseFirstPages.values.forEach { $0.reset() }
         browseFirstPages.removeAll()
         #if os(tvOS)
@@ -108,13 +110,28 @@ enum StartupContentPrefetcher {
         homeSections.reset()
     }
 
+    /// Cancels a single library's in-flight sections request and bumps its
+    /// generation so waiters on a pre-save flight never publish stale rows.
+    static func invalidateLibrarySectionsInFlight(libraryId: Int) {
+        librarySectionsGeneration[libraryId, default: 0] += 1
+        librarySections[libraryId]?.reset()
+    }
+
+    /// Cancels every library's in-flight sections request and bumps its
+    /// generation so pre-mutation library reads cannot repopulate the cache.
+    static func invalidateAllLibrarySectionsInFlight() {
+        for libraryId in librarySections.keys {
+            invalidateLibrarySectionsInFlight(libraryId: libraryId)
+        }
+    }
+
     /// A personal-state change (watched, favorite, watchlist) alters these
     /// lists: requests already in flight carry the old rows, so callers that
     /// join after the change must start a fresh one.
     static func invalidateDerivedListsInFlight() {
         invalidateHomeSectionsInFlight()
         recommendations.reset()
-        librarySections.values.forEach { $0.reset() }
+        invalidateAllLibrarySectionsInFlight()
         browseFirstPages.values.forEach { $0.reset() }
     }
 
@@ -495,7 +512,35 @@ enum StartupContentPrefetcher {
 
     /// Share the in-flight fetch while retaining its owner for follow-up section paging.
     static func fetchLibrarySectionsRead(libraryId: Int) async throws -> APIv2LibrarySectionsRead {
-        let generation = profileScopedGeneration
+        let profileGeneration = profileScopedGeneration
+        for attempt in 0..<3 {
+            try Task.checkCancellation()
+            let libraryGeneration = librarySectionsGeneration[libraryId, default: 0]
+            do {
+                return try await fetchLibrarySectionsRead(
+                    libraryId: libraryId,
+                    profileGeneration: profileGeneration,
+                    libraryGeneration: libraryGeneration
+                )
+            } catch where profileScopedGeneration == profileGeneration
+                && librarySectionsGeneration[libraryId, default: 0] != libraryGeneration {
+                // A layout save or derived-list invalidation superseded this
+                // library's in-flight read. Retry up to the bound so repeated
+                // concurrent invalidations return a retryable error instead of
+                // spinning indefinitely or publishing stale rows.
+                if attempt == 2 {
+                    throw URLError(.cannotLoadFromNetwork)
+                }
+            }
+        }
+        throw URLError(.cannotLoadFromNetwork)
+    }
+
+    private static func fetchLibrarySectionsRead(
+        libraryId: Int,
+        profileGeneration: Int,
+        libraryGeneration: Int
+    ) async throws -> APIv2LibrarySectionsRead {
         let flight = librarySections[libraryId] ?? {
             let flight = SharedFetch<APIv2LibrarySectionsRead>()
             librarySections[libraryId] = flight
@@ -518,7 +563,8 @@ enum StartupContentPrefetcher {
             // Sections belong to the profile they were fetched for. Never
             // cache or show them once the session acts as someone else.
             let isCurrentOwner = await SiloAPI.shared.isCurrentOwner(read.auth)
-            try validateProfileScopedGeneration(generation)
+            try validateProfileScopedGeneration(profileGeneration)
+            try validateLibrarySectionsGeneration(libraryGeneration, libraryId: libraryId)
             guard isCurrentOwner else { throw HTTPError.requestIdentityChanged }
             flight.finish(task, value: nil)
             #if os(iOS) || os(tvOS)
@@ -808,6 +854,12 @@ enum StartupContentPrefetcher {
 
     private static func validateHomeSectionsGeneration(_ generation: Int) throws {
         guard homeSectionsGeneration == generation else {
+            throw CancellationError()
+        }
+    }
+
+    private static func validateLibrarySectionsGeneration(_ generation: Int, libraryId: Int) throws {
+        guard librarySectionsGeneration[libraryId, default: 0] == generation else {
             throw CancellationError()
         }
     }

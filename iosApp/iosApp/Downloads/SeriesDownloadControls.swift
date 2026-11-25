@@ -49,7 +49,8 @@ struct SeriesDownloadButton: View {
                 selectedSeason: selectedSeason,
                 episode: episode,
                 episodeFileId: episodeFileId,
-                posterThumbhash: detail.posterThumbhash
+                posterThumbhash: detail.posterThumbhash,
+                episodeLabels: detail.episodeLabels
             )
         }
     }

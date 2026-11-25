@@ -283,6 +283,7 @@ struct TVSeriesDetailView: View {
     /// True while the star button edits; the season row, episodes and the
     /// rest of the page are disabled meanwhile.
     @State private var isRatingEditing = false
+    @State private var collectionsModel: AddToCollectionModel?
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.locale) private var locale
@@ -321,6 +322,22 @@ struct TVSeriesDetailView: View {
                 .ignoresSafeArea()
                 .focusScope(detailFocusNamespace)
                 .defaultFocus($focusedAction, preferredAction, priority: .userInitiated)
+                .onChange(of: detail.contentId) { _, _ in
+                    collectionsModel = nil
+                }
+                .alert(
+                    Text(.homeUpdateFailedTitle),
+                    isPresented: Binding(
+                        get: { collectionsModel?.errorMessage != nil && collectionsModel?.hasMutationError == true },
+                        set: { if !$0 { collectionsModel?.clearError() } }
+                    )
+                ) {
+                    Button(.homeUpdateFailedOk, role: .cancel) {}
+                } message: {
+                    if let error = collectionsModel?.errorMessage {
+                        Text(verbatim: error)
+                    }
+                }
                 .detailFocusScroll(
                     proxy: scrollProxy,
                     actionRowFocused: showActionRowFocused,
@@ -491,6 +508,11 @@ struct TVSeriesDetailView: View {
         guard let episode = displayedEpisode else {
             return TVHeroMetadata.seriesSourceTokens(from: detail)
         }
+        // A date-labeled series (sports): the facts line below already shows
+        // the air date, which replaces the synthetic season and episode.
+        if EpisodeLabel.isNamedByDate(labels: detail.episodeLabels, airDate: episode.airDate) {
+            return []
+        }
         let season = AppLanguage.string(
             episode.seasonNumber == 0 ? .detailSpecials : .detailSeason(LocaleFormat.integer(episode.seasonNumber)),
             locale: locale
@@ -608,6 +630,13 @@ struct TVSeriesDetailView: View {
             && DetailVersionSelection.savedPositionIsInEdition(
                 of: shown, in: nextUpVersions, userData: episode.userData
             )
+        // A date-labeled series (sports): "Play Nov 20, 2026".
+        if let date = EpisodeLabel.airDate(labels: detail.episodeLabels, airDate: episode.airDate, locale: locale) {
+            return AppLanguage.string(
+                resumes ? .detailResumeEpisodeCode(date) : .detailPlayEpisodeCode(date),
+                locale: locale
+            )
+        }
         return AppLanguage.string(
             resumes
                 ? .detailResumeEpisode(season, number)
@@ -894,6 +923,7 @@ struct TVSeriesDetailView: View {
                 onSetFavorite: onSetEpisodeFavorite,
                 onSetWatchlist: onSetEpisodeWatchlist,
                 currentContentId: displayedEpisode?.contentId,
+                episodeLabels: detail.episodeLabels,
                 favoriteStates: episodeFavoriteStates,
                 watchlistStates: episodeWatchlistStates,
                 baseCardWidth: SiloTheme.thumbnailCardWidth,
@@ -1001,13 +1031,11 @@ struct TVSeriesDetailView: View {
         return ShuffleAvailability.hasEnoughToShuffle(playableCount: playable.count) ? selectedSeason : nil
     }
 
+    /// "S1·E2", or the air date for a date-labeled series (sports).
     private func episodeCode(for episode: EpisodeListItem) -> String {
-        AppLanguage.string(
-            .detailEpisodeCode(
-                LocaleFormat.codeNumber(episode.seasonNumber),
-                LocaleFormat.codeNumber(episode.episodeNumber)
-            ),
-            locale: locale
+        EpisodeLabel.text(
+            season: episode.seasonNumber, episode: episode.episodeNumber, style: .dotted,
+            labels: detail.episodeLabels, airDate: episode.airDate, locale: locale
         )
     }
 
@@ -1139,6 +1167,78 @@ struct TVSeriesDetailView: View {
                     systemImage: isFavorite ? "heart.fill" : "heart",
                     startsSection: true
                 ))
+                let collectionChildren: [TVActionPopoverItem] = {
+                    let loadingTitle = AppLanguage.string(.collectionsAddToLoading, locale: locale)
+                    guard let model = collectionsModel else {
+                        return [TVActionPopoverItem(id: "col:loading", title: loadingTitle, isEnabled: false)]
+                    }
+                    if model.isLoading && !model.hasLoaded {
+                        return [TVActionPopoverItem(id: "col:loading", title: loadingTitle, isEnabled: false)]
+                    }
+                    if !model.hasLoaded {
+                        var rows: [TVActionPopoverItem] = []
+                        if let error = model.loadErrorMessage ?? model.errorMessage {
+                            rows.append(TVActionPopoverItem(id: "col:error", title: error, isEnabled: false))
+                        }
+                        rows.append(TVActionPopoverItem(id: "col:retry", title: AppLanguage.string(.commonRetry, locale: locale), systemImage: "arrow.clockwise"))
+                        return rows
+                    }
+                    if model.entries.isEmpty {
+                        return [
+                            TVActionPopoverItem(
+                                id: "col:empty",
+                                title: AppLanguage.string(.collectionsAddToEmptyTv, locale: locale),
+                                isEnabled: false
+                            ),
+                            TVActionPopoverItem(
+                                id: "col:close",
+                                title: AppLanguage.string(.commonBack, locale: locale),
+                                systemImage: "chevron.left",
+                                navigatesBack: true
+                            ),
+                        ]
+                    }
+                    var rows = model.entries.map { entry in
+                        let isUnconfirmed = model.unconfirmedCollectionIds.contains(entry.id)
+                        let systemImage: String = isUnconfirmed
+                            ? "exclamationmark.triangle"
+                            : (entry.containsItem == nil ? "folder.badge.plus" : "folder")
+                        return TVActionPopoverItem(
+                            id: "col:\(entry.id)",
+                            title: entry.collection.name,
+                            detail: entry.itemCount.map { count in
+                                AppLanguage.string(
+                                    .collectionsItemCount(count: count, LocaleFormat.groupedCount(count, locale: locale)),
+                                    locale: locale
+                                )
+                            },
+                            systemImage: systemImage,
+                            isSelected: !isUnconfirmed && entry.containsItem == true,
+                            isEnabled: !model.busyCollectionIds.contains(entry.id) && !isUnconfirmed
+                        )
+                    }
+                    if !model.unconfirmedCollectionIds.isEmpty && !model.isLoading {
+                        rows.insert(
+                            TVActionPopoverItem(id: "col:retry", title: AppLanguage.string(.commonRetry, locale: locale), systemImage: "arrow.clockwise"),
+                            at: 0
+                        )
+                    }
+                    return rows
+                }()
+                let emptyCollectionsHint: String? = {
+                    guard let model = collectionsModel,
+                          model.hasLoaded,
+                          model.errorMessage == nil,
+                          model.entries.isEmpty else { return nil }
+                    return AppLanguage.string(.collectionsAddToEmptyTv, locale: locale)
+                }()
+                items.append(TVActionPopoverItem(
+                    id: "add-to-collection-submenu",
+                    title: AppLanguage.string(.collectionsAddToTitle, locale: locale),
+                    detail: emptyCollectionsHint,
+                    systemImage: "folder.badge.plus",
+                    children: collectionChildren
+                ))
                 if onTranslateDescription != nil {
                     items.append(TVActionPopoverItem(
                         id: MoreAction.translate.rawValue,
@@ -1158,7 +1258,33 @@ struct TVSeriesDetailView: View {
                 }
                 return items
             },
+            onOpen: {
+                let targetId = detail.seriesId ?? detail.contentId
+                if collectionsModel == nil || collectionsModel?.contentId != targetId {
+                    let model = AddToCollectionModel(contentId: targetId)
+                    collectionsModel = model
+                    Task { await model.load() }
+                } else if let model = collectionsModel, !model.isLoading, !model.isCreating, model.busyCollectionIds.isEmpty {
+                    Task { await model.load() }
+                }
+            },
             onSelect: { item in
+                if item.id == "col:close" {
+                    return
+                }
+                if item.id == "col:retry" {
+                    if let model = collectionsModel {
+                        Task { await model.load() }
+                    }
+                    return
+                }
+                if item.id.hasPrefix("col:") {
+                    let colId = String(item.id.dropFirst(4))
+                    if let model = collectionsModel {
+                        Task { await model.toggle(collectionId: colId) }
+                    }
+                    return
+                }
                 switch MoreAction(rawValue: item.id) {
                 case .episodeWatched:
                     toggleDisplayedEpisodeWatched()

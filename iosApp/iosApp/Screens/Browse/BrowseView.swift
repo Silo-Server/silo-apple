@@ -673,6 +673,10 @@ struct LibraryRecommendedView: View {
     var mediaScope: LibraryVideoScope? = nil
 
     @State private var viewModel = LibraryRecommendedViewModel()
+    #if !os(tvOS)
+    @State private var isCustomizing = false
+    @State private var libraryEditor: HomeSectionsEditorModel?
+    #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
     @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
@@ -680,6 +684,37 @@ struct LibraryRecommendedView: View {
     var body: some View {
         ZStack(alignment: .top) {
             Group {
+                #if !os(tvOS)
+                if isCustomizing, let editor = libraryEditor {
+                    IOSHomeCustomizeView(
+                        editor: editor,
+                        loadedSections: viewModel.sections,
+                        topInset: 8,
+                        onDone: {
+                            withAnimation(.spring(response: 0.36, dampingFraction: 0.86)) {
+                                isCustomizing = false
+                            }
+                            Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) }
+                        }
+                    )
+                    .transition(.opacity)
+                } else if !viewModel.sections.isEmpty {
+                    content
+                } else if let error = viewModel.error {
+                    ErrorView(state: error, onRetry: { Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) } })
+                } else if viewModel.isLoading {
+                    PosterRowsSkeleton()
+                        .padding(.top, SiloTheme.padding)
+                } else if viewModel.scopeIncomplete {
+                    scopeNotice
+                } else {
+                    EmptyStateView(
+                        icon: "rectangle.stack.fill",
+                        title: AppLanguage.string(.libraryNoRecommendations, locale: locale),
+                        subtitle: AppLanguage.string(.libraryNoRecommendedRowsBody, locale: locale)
+                    )
+                }
+                #else
                 if !viewModel.sections.isEmpty {
                     content
                 } else if let error = viewModel.error {
@@ -696,6 +731,7 @@ struct LibraryRecommendedView: View {
                         subtitle: AppLanguage.string(.libraryNoRecommendedRowsBody, locale: locale)
                     )
                 }
+                #endif
             }
 
             if ConnectionMonitor.shared.isOffline, !viewModel.sections.isEmpty {
@@ -708,6 +744,10 @@ struct LibraryRecommendedView: View {
         .animation(.easeInOut(duration: 0.18), value: ConnectionMonitor.shared.isOffline)
         .siloPageBackground()
         .task(id: "\(libraryId):\(mediaScope?.rawValue ?? "all")") {
+            #if !os(tvOS)
+            isCustomizing = false
+            libraryEditor = HomeSectionsEditorModel(scope: .library(libraryId))
+            #endif
             await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
         }
         .refreshable {
@@ -717,9 +757,25 @@ struct LibraryRecommendedView: View {
         // The Libraries tab keeps this page alive under its others, so a
         // title marked watched elsewhere would otherwise keep its old card
         // in Continue Watching and Next Up. Home reloads on the same signal.
-        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+        // A layout save for another library leaves this page's rows alone.
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { note in
+            if let targetLibraryId = note.userInfo?[HomeSectionsEditorModel.RefreshNotificationKey.libraryId] as? Int,
+               targetLibraryId != libraryId {
+                return
+            }
             Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) }
         }
+        #if !os(tvOS)
+        .onReceive(NotificationCenter.default.publisher(for: .libraryCustomizeRequested)) { note in
+            guard let requestedId = note.object as? Int, requestedId == libraryId else { return }
+            if libraryEditor == nil {
+                libraryEditor = HomeSectionsEditorModel(scope: .library(libraryId))
+            }
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.86)) {
+                isCustomizing = true
+            }
+        }
+        #endif
     }
 
     private var content: some View {
@@ -745,6 +801,37 @@ struct LibraryRecommendedView: View {
                         }
                     )
                 }
+                #if !os(tvOS)
+                HStack {
+                    Spacer(minLength: 0)
+                    Button {
+                        if libraryEditor == nil {
+                            libraryEditor = HomeSectionsEditorModel(scope: .library(libraryId))
+                        }
+                        withAnimation(.spring(response: 0.36, dampingFraction: 0.86)) {
+                            isCustomizing = true
+                        }
+                    } label: {
+                        Label(.homeCustomizeRowsButton, systemImage: "slider.horizontal.3")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.siloSecondaryText)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                            .background(
+                                Capsule()
+                                    .fill(Color.white.opacity(0.07))
+                                    .overlay(
+                                        Capsule()
+                                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
+                                    )
+                            )
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 8)
+                #endif
             }
             .padding(.bottom, SiloTheme.largePadding)
         }

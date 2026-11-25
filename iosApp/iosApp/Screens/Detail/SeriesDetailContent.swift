@@ -100,6 +100,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         let watchState: LeafItemUserData?
     }
     @State private var pendingResume: PendingResume?
+    @State private var isShowingAddToCollection = false
+    #if os(iOS)
+    @State private var hasDeferredRefitForCollectionSheet = false
+    #endif
     /// The Play tap's in-flight watch-state read. A second tap replaces it.
     @State private var resumeLookupTask: Task<Void, Never>?
     @State private var isUpdatingWatched = false
@@ -163,6 +167,27 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             resumeLookupTask?.cancel()
             resumeLookupTask = nil
             pendingEpisodePlayRequest = nil
+            #if os(iOS)
+            if hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = false
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+                if !isShowingAddToCollection {
+                    router.refitItemDetail()
+                }
+            }
+            isShowingAddToCollection = false
+            #endif
+        }
+        .sheet(isPresented: $isShowingAddToCollection, onDismiss: {
+            #if os(iOS)
+            if hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = false
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+            }
+            router.refitItemDetail()
+            #endif
+        }) {
+            IOSAddToCollectionSheet(contentId: detail.seriesId ?? detail.contentId, itemTitle: detail.title)
         }
         .onChange(of: hierarchyError) { _, error in
             if error != nil { pendingEpisodePlayRequest = nil }
@@ -419,6 +444,17 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             )
         }
         .disabled(isUpdatingWatched)
+        Button {
+            #if os(iOS)
+            if !hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = true
+                router.itemDetailDeferredRefitCount += 1
+            }
+            #endif
+            isShowingAddToCollection = true
+        } label: {
+            Label(.collectionsAddToMenuAction, systemImage: "folder.badge.plus")
+        }
         Divider()
         Button(action: onFindTrailers) {
             Label(.detailMoreFindTrailers, systemImage: "film")
@@ -543,7 +579,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// "Resume S2·E5" when the tap offers to resume, else "Play S2·E5". The
     /// confirmation dialog still lets the user restart instead.
     private func playButtonLabel(for episode: EpisodeListItem) -> String {
-        DetailPlayLabel.episode(episode, shown: shownVersion(for: episode), in: nextUpVersions)
+        DetailPlayLabel.episode(
+            episode, episodeLabels: detail.episodeLabels, shown: shownVersion(for: episode), in: nextUpVersions
+        )
     }
 
     /// The file the page shows for `episode`, once its files have loaded.
@@ -622,7 +660,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     .padding(.horizontal, SiloTheme.safePadding)
             }
             similarSection
-            PhoneMediaInfoSection(version: mediaInfoVersion, episode: nextUpEpisode, isExpanded: $showsMediaInfo)
+            PhoneMediaInfoSection(
+                version: mediaInfoVersion, episode: nextUpEpisode, episodeLabels: detail.episodeLabels,
+                isExpanded: $showsMediaInfo
+            )
         }
     }
 
@@ -730,6 +771,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                                 handlePlayTap(for: episode)
                             },
                             currentContentId: nextUpEpisode?.contentId,
+                            episodeLabels: detail.episodeLabels,
                             selectsCenteredEpisode: true,
                             onSetWatched: setEpisodeWatched,
                             isUpdatingWatched: isUpdatingWatched,

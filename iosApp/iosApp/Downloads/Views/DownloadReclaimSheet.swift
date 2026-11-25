@@ -157,6 +157,9 @@ struct DownloadReclaimSheet: View {
 
     private func label(_ record: DownloadRecord) -> String {
         guard record.seriesId != nil else { return record.displayTitle(locale: locale) }
+        // A date-labeled game: "Nov 20, 2026 · Lakers vs Kings", so two games
+        // of one league on one day stay apart.
+        if let game = record.datedGameName(locale: locale) { return game }
         let series = record.seriesTitle ?? record.shownTitle(locale: locale) ?? ""
         guard let tag = record.episodeTag(locale: locale, both: { .catalogEpisodeTag($0, $1) }) else {
             return record.shownTitle(locale: locale) ?? series

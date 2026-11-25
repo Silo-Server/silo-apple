@@ -12,6 +12,10 @@ struct TVGeneralSettingsPane: View {
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var navPrefs = AppNavPreferences.shared
     @State private var activePicker: PickerKind?
+    /// The page whose rows the Customize editor is open for, if any.
+    @State private var customizingPage: TVCustomizablePage?
+    /// Libraries offered for row customization, from the profile's visible list.
+    @State private var customizableLibraries: [Library] = []
     @State private var registry = ServerRegistry.shared
     @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
     let activeProfile: UserProfile?
@@ -118,6 +122,26 @@ struct TVGeneralSettingsPane: View {
                 )
             }
 
+            TVSettingsSectionHeader(.homeCustomizeTvSettingsHeader)
+
+            TVSettingsPickerRow(
+                title: .tabHome,
+                value: .homeCustomizeRowsButton
+            ) {
+                customizingPage = TVCustomizablePage(scope: .home, name: nil)
+            }
+
+            ForEach(customizableLibraries) { library in
+                TVSettingsPickerRow(
+                    title: .verbatim(library.name),
+                    value: .homeCustomizeRowsButton
+                ) {
+                    customizingPage = TVCustomizablePage(scope: .library(library.id), name: library.name)
+                }
+            }
+
+            TVSettingsFooter(.homeCustomizeSettingsDescription)
+
             TVSettingsSectionHeader(.settingsGeneralTopMenuHeaderTv)
 
             TVSettingsToggleRow(
@@ -132,6 +156,19 @@ struct TVGeneralSettingsPane: View {
         }
         .fullScreenCover(item: $activePicker) { picker in
             pickerSheet(for: picker)
+        }
+        .fullScreenCover(item: $customizingPage) { page in
+            TVHomeSectionsSettingsSheet(scope: page.scope, pageName: page.name) {
+                customizingPage = nil
+            }
+        }
+        .task {
+            customizableLibraries = (try? await StartupContentPrefetcher.fetchUserLibraries())?.libraries ?? []
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) { note in
+            if let response = note.object as? LibrariesResponse {
+                customizableLibraries = response.libraries
+            }
         }
         .task {
             async let preferencesRefresh: Void = preferences.refresh()
@@ -330,3 +367,12 @@ struct TVGeneralSettingsPane: View {
     }
 }
 #endif
+
+/// A page whose rows can be customized from Apple TV Settings.
+struct TVCustomizablePage: Identifiable, Hashable {
+    let scope: ProfileSectionsScope
+    /// The library's name; nil for Home.
+    let name: String?
+
+    var id: ProfileSectionsScope { scope }
+}

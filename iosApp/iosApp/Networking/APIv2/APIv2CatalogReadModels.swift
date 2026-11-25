@@ -26,6 +26,8 @@ enum APIv2CatalogRead {
         let effectiveVersionResolution: String?
         let episodeCount: Int64?
         let episodeNumber: Int64?
+        /// The series' episode labels: "air_date" or absent.
+        let episodeLabels: String?
         let extras: [ItemExtraInfo]?
         let firstAirDate: String?
         let genres: [String]
@@ -359,6 +361,10 @@ enum APIv2CatalogRead {
         let seriesTitle: String?
         let seasonNumber: Int?
         let episodeNumber: Int?
+        /// An episode of a date-labeled series: "air_date", with the
+        /// episode's `airDate`. Absent from older servers.
+        let episodeLabels: String?
+        let airDate: String?
         let effectiveSubtitleLanguage: String?
         let effectiveSubtitleMode: String?
         let effectiveShowForcedSubtitles: Bool?

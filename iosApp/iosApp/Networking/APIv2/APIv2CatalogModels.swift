@@ -46,8 +46,8 @@ struct APIv2CatalogSearchCapabilities: Decodable {
     /// Searching and opening box sets is supported (`searchCatalogBoxSets`,
     /// `getCatalogBoxSet`). Older servers omit it.
     let boxSets: Bool?
-    /// Title pages can list the collections holding a title
-    /// (`listCatalogItemCollections`). Older servers omit it.
+    /// Reading the collections that hold a title (`GET /api/v2/catalog/items/{id}/collections`)
+    /// is supported. Older servers omit it.
     let itemCollections: Bool?
 
     var isAvailable: Bool { allowed && state == "available" }
@@ -64,11 +64,15 @@ struct CatalogSearchFeatures: Equatable {
     /// The server searches box sets. It lists only those of libraries with
     /// box sets in search, so this alone decides whether to ask.
     var boxSets = false
-    /// Movie and series pages can ask which collections hold the title.
+    /// `GET /api/v2/catalog/items/{id}/collections` is supported.
     var itemCollections = false
 
-    init(peopleMediaScope: Bool = false, videoWithEpisodesScope: Bool = false, boxSets: Bool = false,
-         itemCollections: Bool = false) {
+    init(
+        peopleMediaScope: Bool = false,
+        videoWithEpisodesScope: Bool = false,
+        boxSets: Bool = false,
+        itemCollections: Bool = false
+    ) {
         self.peopleMediaScope = peopleMediaScope
         self.videoWithEpisodesScope = videoWithEpisodesScope
         self.boxSets = boxSets
@@ -415,6 +419,7 @@ struct APIv2CuratedCollection: Decodable {
     let id: String
     let title: String
     let collectionType: String
+    let libraryIds: [String]?
     @RequiredArtworkURL var posterUrl: String
     let posterThumbhash: String?
     let itemCount: Int

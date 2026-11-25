@@ -24,6 +24,23 @@ import OSLog
 protocol ProfileSettingsTransport: AnyObject, Sendable {
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse
     func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        profileId: String?,
+        requestIdentity: HTTPRequestIdentity?
+    ) async throws
+}
+
+extension ProfileSettingsTransport {
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        profileId: String?,
+        requestIdentity: HTTPRequestIdentity?
+    ) async throws {
+        try await putValue(key: key, value: value, profileId: profileId)
+    }
 }
 
 /// The production transport: the canonical endpoints on ``SiloAPI``.
@@ -40,6 +57,21 @@ final class SiloProfileSettingsTransport: ProfileSettingsTransport {
 
     func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws {
         try await api.putValue(key: key, scope: .profile, value: value, profileId: profileId)
+    }
+
+    func putValue(
+        key: SettingKey,
+        value: SettingJSONValue,
+        profileId: String?,
+        requestIdentity: HTTPRequestIdentity?
+    ) async throws {
+        try await api.putValue(
+            key: key,
+            scope: .profile,
+            value: value,
+            profileId: profileId,
+            requestIdentity: requestIdentity
+        )
     }
 }
 
@@ -110,6 +142,14 @@ final class ProfileSettingsWriter: Sendable {
         let cause: SettingsAPIError
     }
 
+    /// An earlier retryable attempt in this write may have applied on the
+    /// server, and a later attempt returned a non-retry refusal. Thrown only
+    /// when the caller passes `reportsUncertainRefusal: true`; such a caller
+    /// reconciles from the server instead of rolling back blindly.
+    struct UncertainRefusal: Error, Equatable {
+        let cause: SettingsAPIError
+    }
+
     /// A newer local value for the key replaced this one while it waited to
     /// be retried. That value's own write supersedes this one.
     struct Superseded: Error, Equatable {}
@@ -173,18 +213,27 @@ final class ProfileSettingsWriter: Sendable {
     /// Throws ``SettingsAPIError`` for a failure retrying cannot fix (so a
     /// caller can tell "this server is too old" and "no profile selected" from
     /// a value the contract refused), ``HeldChange`` once the bound runs out,
-    /// and ``Superseded`` when `isLatest` turns false between attempts.
+    /// and ``Superseded`` when `isLatest` turns false between attempts. With
+    /// `reportsUncertainRefusal`, a refusal after a retryable failure throws
+    /// ``UncertainRefusal`` instead of the bare ``SettingsAPIError``.
     func write(
         _ key: SettingKey,
         value: SettingJSONValue,
         profileId: String? = nil,
+        requestIdentity: HTTPRequestIdentity? = nil,
+        reportsUncertainRefusal: Bool = false,
         isLatest: @escaping @MainActor () -> Bool = { true }
     ) async throws {
         var failedAttempts = 0
         while true {
             let failure: SettingsAPIError
             do {
-                try await transport.putValue(key: key, value: value, profileId: profileId)
+                try await transport.putValue(
+                    key: key,
+                    value: value,
+                    profileId: profileId,
+                    requestIdentity: requestIdentity
+                )
                 return
             } catch {
                 failure = SettingsAPIError.from(error, key: key.rawValue, scope: .profile)
@@ -194,6 +243,17 @@ final class ProfileSettingsWriter: Sendable {
                     Self.logger.warning(
                         "\(key.rawValue, privacy: .public): the server refused the profile write: \(String(describing: failure), privacy: .public)"
                     )
+                }
+                if reportsUncertainRefusal, failedAttempts > 0, failure != .serverUpgradeRequired {
+                    // An earlier attempt in this write failed in a retryable way
+                    // (for example, a lost response), so it may already have
+                    // applied on the server. Report uncertainty instead of a
+                    // clean refusal so callers reconcile rather than rolling back
+                    // or blindly offering to resend a refused value.
+                    // `serverUpgradeRequired` means the canonical settings route
+                    // does not exist on this server, so preserve that terminal
+                    // classification.
+                    throw UncertainRefusal(cause: failure)
                 }
                 throw failure
             }

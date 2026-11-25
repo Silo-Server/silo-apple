@@ -53,6 +53,10 @@ class HomeViewModel {
         }
     }
 
+    func presentActionError(message: String) {
+        actionError = ErrorState(statusCode: nil, message: message)
+    }
+
     init(
         dismissContinueWatching: @escaping DismissContinueWatching = { contentId, progressUpdatedAt in
             try await SiloAPI.shared.dismissContinueWatchingItem(

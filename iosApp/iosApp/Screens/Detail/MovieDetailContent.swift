@@ -67,6 +67,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.locale) private var locale
+    #if os(iOS)
+    @Environment(AppRouter.self) private var router
+    #endif
     /// The position the resume prompt offers; non-nil while it is shown.
     @State private var pendingResumePosition: Double?
     /// The watch state `pendingResumePosition` came from.
@@ -75,6 +78,11 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @State private var resumeLookupTask: Task<Void, Never>?
     /// The download options sheet, opened from the More menu.
     @State private var showDownloadOptions = false
+    /// Personal collection quick-add half-sheet.
+    @State private var isShowingAddToCollection = false
+    #if os(iOS)
+    @State private var hasDeferredRefitForCollectionSheet = false
+    #endif
     /// The viewer opened the Media Info section.
     @State private var showsMediaInfo = false
 
@@ -111,6 +119,27 @@ struct MovieDetailContent<BelowOverview: View>: View {
         .onDisappear {
             resumeLookupTask?.cancel()
             resumeLookupTask = nil
+            #if os(iOS)
+            if hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = false
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+                if !isShowingAddToCollection {
+                    router.refitItemDetail()
+                }
+            }
+            isShowingAddToCollection = false
+            #endif
+        }
+        .sheet(isPresented: $isShowingAddToCollection, onDismiss: {
+            #if os(iOS)
+            if hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = false
+                router.itemDetailDeferredRefitCount = max(0, router.itemDetailDeferredRefitCount - 1)
+            }
+            router.refitItemDetail()
+            #endif
+        }) {
+            IOSAddToCollectionSheet(contentId: detail.contentId, itemTitle: detail.title)
         }
     }
 
@@ -303,6 +332,17 @@ struct MovieDetailContent<BelowOverview: View>: View {
         WatchPartyMenuButton(contentId: detail.contentId, title: detail.title, type: detail.type,
             fileId: watchPartyFileId, preview: WatchPartySelectedItem(previewing: detail))
         #endif
+        Button {
+            #if os(iOS)
+            if !hasDeferredRefitForCollectionSheet {
+                hasDeferredRefitForCollectionSheet = true
+                router.itemDetailDeferredRefitCount += 1
+            }
+            #endif
+            isShowingAddToCollection = true
+        } label: {
+            Label(.collectionsAddToMenuAction, systemImage: "folder.badge.plus")
+        }
         if showsDownloadButton {
             Button {
                 showDownloadOptions = true

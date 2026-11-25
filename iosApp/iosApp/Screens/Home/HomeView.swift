@@ -2,6 +2,8 @@ import SwiftUI
 
 extension Notification.Name {
     static let homeSectionsShouldRefresh = Notification.Name("homeSectionsShouldRefresh")
+    static let homeCustomizeRequested = Notification.Name("homeCustomizeRequested")
+    static let libraryCustomizeRequested = Notification.Name("libraryCustomizeRequested")
 }
 
 /// Main home screen. iOS/macOS render resume-first section rows on a flat
@@ -19,6 +21,10 @@ struct HomeView: View {
     var onTopMenuFocusRequest: (() -> Void)? = nil
 
     @State private var viewModel = HomeViewModel()
+    #if !os(tvOS)
+    @State private var isCustomizingHome = false
+    @State private var homeEditor = HomeSectionsEditorModel(scope: .home)
+    #endif
     @State private var watchStateRefresh: Task<Void, Never>?
     @State private var watchStateRefreshPending = false
     @State private var hasObservedWatchState = false
@@ -136,8 +142,22 @@ struct HomeView: View {
                 .ignoresSafeArea()
 
             Group {
-                if !viewModel.sections.isEmpty {
+                if isCustomizingHome {
+                    IOSHomeCustomizeView(
+                        editor: homeEditor,
+                        loadedSections: viewModel.sections,
+                        topInset: topRunwaySpacing(topSafeAreaInset: 0),
+                        onDone: {
+                            withAnimation(.spring(response: 0.36, dampingFraction: 0.86)) {
+                                isCustomizingHome = false
+                            }
+                            Task { await viewModel.loadSections() }
+                        }
+                    )
+                    .transition(.opacity)
+                } else if !viewModel.sections.isEmpty {
                     scrollContent
+                        .transition(.opacity)
                 } else if let error = viewModel.error {
                     ErrorView(
                         state: error,
@@ -156,6 +176,7 @@ struct HomeView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.easeInOut(duration: 0.2), value: isCustomizingHome)
 
             HStack(alignment: .center, spacing: 12) {
                 SidebarToggleButton(chromeScrollState: chromeScrollState)
@@ -185,6 +206,12 @@ struct HomeView: View {
                         router.switchProfile()
                     },
                     onSignOut: { router.signOutAndReset() },
+                    customizePageTitle: isCustomizingHome ? nil : AppLanguage.string(.homeCustomizeTitleHome, locale: locale),
+                    onCustomizePage: isCustomizingHome ? nil : {
+                        withAnimation(.spring(response: 0.36, dampingFraction: 0.86)) {
+                            isCustomizingHome = true
+                        }
+                    },
                     chromeScrollState: chromeScrollState
                 )
             }
@@ -227,6 +254,14 @@ struct HomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
             scheduleWatchStateRefresh()
         }
+        #if !os(tvOS)
+        .onReceive(NotificationCenter.default.publisher(for: .homeCustomizeRequested)) { _ in
+            guard !isCustomizingHome else { return }
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.86)) {
+                isCustomizingHome = true
+            }
+        }
+        #endif
         .onReceive(NotificationCenter.default.publisher(for: .titleMarkedNotInterested)) { note in
             guard let contentId = note.userInfo?[NotInterestedSync.contentIdKey] as? String else { return }
             viewModel.removeNotInterested(contentId: contentId)
@@ -320,6 +355,35 @@ struct HomeView: View {
                     feedSection(section, leadsPage: section.id == sections.first?.id)
                         .onAppear { warmRows(after: section) }
                 }
+
+                // Quiet bottom-of-feed entry point (like Apple Today View / Safari Start Page)
+                // so customizing Home stays discoverable without cluttering the top bar.
+                HStack {
+                    Spacer(minLength: 0)
+                    Button {
+                        withAnimation(.spring(response: 0.36, dampingFraction: 0.86)) {
+                            isCustomizingHome = true
+                        }
+                    } label: {
+                        Label(.homeCustomizeTitleHome, systemImage: "slider.horizontal.3")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.siloSecondaryText)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                            .background(
+                                Capsule()
+                                    .fill(Color.white.opacity(0.07))
+                                    .overlay(
+                                        Capsule()
+                                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
+                                    )
+                            )
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 8)
             }
             // Clear runway under the pinned header. The first row starts right
             // below it, at the same height as on the Libraries and For You tabs.
@@ -363,7 +427,36 @@ struct HomeView: View {
             section: section,
             onExploreAll: { router.navigate(to: .sectionCatalog(SectionCatalogTarget(section, scope: .home))) },
             onRemoveFromContinueWatching: dismissContinueWatching,
-            onSetWatched: setWatched
+            onSetWatched: setWatched,
+            onMoveToTop: {
+                Task {
+                    let result = await homeEditor.performQuickAction { editor in
+                        editor.moveToTop(id: section.id)
+                    }
+                    if result.succeeded {
+                        await viewModel.loadSections()
+                    } else if let message = result.errorMessage {
+                        viewModel.presentActionError(message: message)
+                    }
+                }
+            },
+            onHideRow: {
+                Task {
+                    let result = await homeEditor.performQuickAction { editor in
+                        editor.setHidden(true, id: section.id)
+                    }
+                    if result.succeeded {
+                        await viewModel.loadSections()
+                    } else if let message = result.errorMessage {
+                        viewModel.presentActionError(message: message)
+                    }
+                }
+            },
+            onCustomizeHome: {
+                withAnimation(.spring(response: 0.36, dampingFraction: 0.86)) {
+                    isCustomizingHome = true
+                }
+            }
         )
     }
 

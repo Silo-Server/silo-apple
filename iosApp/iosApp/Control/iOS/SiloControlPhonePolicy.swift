@@ -56,11 +56,19 @@ struct SiloControlPendingReplace: Equatable {
 
 /// The handoff offer's display-only `title`, in the wording silo-android
 /// sends so every TV shows the same thing: an episode as "Series · S1 · E2",
-/// anything else by its own title.
+/// anything else by its own title. An episode of a date-labeled series
+/// (sports) is "Series · Nov 20, 2026", the date in English like all sent
+/// text (D44).
 enum SiloControlOfferTitle {
-    static func make(type: String, title: String, seriesTitle: String?, seasonNumber: Int?, episodeNumber: Int?) -> String? {
+    static func make(
+        type: String, title: String, seriesTitle: String?, seasonNumber: Int?, episodeNumber: Int?,
+        episodeLabels: String? = nil, airDate: String? = nil
+    ) -> String? {
         func blank(_ text: String) -> Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         if SiloMediaType.isEpisode(type), let series = seriesTitle, !blank(series) {
+            if let date = AppLanguage.inEnglish({ EpisodeLabel.airDate(labels: episodeLabels, airDate: airDate) }) {
+                return [series, date].joined(separator: " · ")
+            }
             return [series, seasonNumber.map { "S\($0)" }, episodeNumber.map { "E\($0)" }]
                 .compactMap { $0 }
                 .joined(separator: " · ")
@@ -70,7 +78,8 @@ enum SiloControlOfferTitle {
 
     static func make(for detail: ItemDetail) -> String? {
         make(type: detail.type, title: detail.title, seriesTitle: detail.seriesTitle,
-             seasonNumber: detail.seasonNumber, episodeNumber: detail.episodeNumber)
+             seasonNumber: detail.seasonNumber, episodeNumber: detail.episodeNumber,
+             episodeLabels: detail.episodeLabels, airDate: detail.airDate)
     }
 }
 

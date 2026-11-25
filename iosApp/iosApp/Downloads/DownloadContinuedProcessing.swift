@@ -371,6 +371,7 @@ final class DownloadContinuedProcessing {
     }
 
     nonisolated static func title(for record: DownloadRecord) -> String {
+        if let game = record.datedGameName() { return game }
         if record.type == "episode", let episode = record.displaySubtitle(), !episode.isEmpty {
             let series = record.seriesTitle ?? record.shownTitle() ?? AppLanguage.string(.downloadsProgressEpisodeFallback)
             return "\(series) · \(episode)"

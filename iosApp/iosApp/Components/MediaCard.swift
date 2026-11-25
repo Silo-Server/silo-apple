@@ -42,11 +42,22 @@ func episodeRailAccessibilityLabel(
     metadata: String?,
     isCurrent: Bool,
     isPlayed: Bool,
+    episodeLabels: String? = nil,
+    airDate: String? = nil,
     locale: Locale = AppLanguage.formattingLocale
 ) -> String {
-    var components = [EpisodeCardCaption.spokenCode(season: seasonNumber, episode: episodeNumber, locale: locale)]
-    if let title, !title.isEmpty {
-        components.append(title)
+    var components: [String] = []
+    if let name = EpisodeLabel.datedSeriesName(
+        title: title, season: seasonNumber, episode: episodeNumber, style: .spoken,
+        labels: episodeLabels, airDate: airDate, locale: locale
+    ) {
+        // A date-labeled series (sports): the code means nothing.
+        components.append(name)
+    } else {
+        components.append(EpisodeLabel.code(season: seasonNumber, episode: episodeNumber, style: .spoken, locale: locale))
+        if let title, !title.isEmpty {
+            components.append(title)
+        }
     }
     if let metadata, !metadata.isEmpty {
         components.append(metadata)
@@ -99,6 +110,7 @@ struct MediaCard: View {
     /// An episode card's series and episode. When set, a tap opens the
     /// series on that episode instead of loading the episode first.
     var seriesContext: SeriesDetailContext? = nil
+    var collectionTargetTitle: String? = nil
     /// The item behind the card. A tap offers it to the page it opens,
     /// which draws from it until its own detail loads.
     var detailSeedSource: DetailSeedSource? = nil
@@ -137,6 +149,7 @@ struct MediaCard: View {
     @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if !os(tvOS)
+    @State private var isShowingAddToCollection = false
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
     #endif
@@ -207,6 +220,14 @@ struct MediaCard: View {
         }
         .onChange(of: userState) { _, _ in
             personalState.reset()
+        }
+        .sheet(isPresented: $isShowingAddToCollection) {
+            if let targetId = addToCollectionTargetId {
+                IOSAddToCollectionSheet(
+                    contentId: targetId,
+                    itemTitle: seriesContext != nil ? collectionTargetTitle : title
+                )
+            }
         }
         .frame(width: cardWidth)
         #endif
@@ -293,8 +314,21 @@ struct MediaCard: View {
 
     private var hasStateActions: Bool { hasPersonalActions || canSetWatched }
 
+    private var addToCollectionTargetId: String? {
+        guard hasPersonalActions else { return nil }
+        if let mediaType, SiloMediaType.isEpisode(mediaType) {
+            return seriesContext?.seriesContentId
+        }
+        return seriesContext?.seriesContentId ?? contentId
+    }
+
     private var stateMenu: MediaStateMenuItems {
-        MediaStateMenuItems(
+        #if !os(tvOS)
+        let addToCollectionAction: (() -> Void)? = addToCollectionTargetId != nil ? { isShowingAddToCollection = true } : nil
+        #else
+        let addToCollectionAction: (() -> Void)? = nil
+        #endif
+        return MediaStateMenuItems(
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: isInWatchlist,
@@ -303,7 +337,8 @@ struct MediaCard: View {
             onToggleWatched: canSetWatched ? toggleWatched : nil,
             onToggleFavorite: hasPersonalActions ? togglePersonalFavorite : nil,
             onToggleWatchlist: hasPersonalActions ? togglePersonalWatchlist : nil,
-            onToggleNotInterested: offersNotInterested ? toggleNotInterested : nil
+            onToggleNotInterested: offersNotInterested ? toggleNotInterested : nil,
+            onAddToCollection: addToCollectionAction
         )
     }
 
