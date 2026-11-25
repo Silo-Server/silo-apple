@@ -54,6 +54,18 @@ actionable item can be a real focus target.
   outside its scroll view's bounds, so a row that pins the focused card to its
   leading edge must extend the scroll view one card past the visible edge
   (and mask the overflow) or the previous card is unreachable.
+- A vertical feed that pins the focused row to its top edge, like
+  `TVSkylineSectionFeed`, can't use a `LazyVStack`. The row above the resting
+  one sits outside the scroll view's bounds and unloads, and a quick run of Up
+  presses outruns its reload: the last press finds no row and lands on the top
+  bar. That feed keeps its rows in a `VStack` and builds only the first row and
+  those next to the focused one; the rest are empty spacers of their last
+  measured height, or the average when never built. Building every row fixes
+  focus too, but its memory grows with the row count.
+- A row built outside the visible band needs its leading cards built too. A
+  `LazyHStack` there builds none, and Up or Down into the row then lands on its
+  middle card instead of the one under focus, so `MediaRow` and
+  `TVCollectionsRow` build their first ten cards eagerly on tvOS.
 
 Good local examples:
 

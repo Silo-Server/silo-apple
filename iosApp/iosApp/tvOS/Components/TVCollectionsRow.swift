@@ -94,19 +94,33 @@ struct TVCollectionsRow: View {
         .padding(.horizontal, SiloTheme.safePadding)
     }
 
+    private func posterCard(_ card: SectionCollectionCard) -> some View {
+        TVCollectionPosterCard(
+            collection: card.libraryCollection,
+            action: { router.navigate(to: card.route(mediaScope: mediaScope)) },
+            cardWidth: posterWidth,
+            focusBinding: $focusedKey,
+            focusContentId: card.rowKey
+        )
+    }
+
     private func strip(_ proxy: ScrollViewProxy) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             // Top, not the rails' centre: a collection with no titles has no
             // count line, and centring would drop its poster below the others.
-            LazyHStack(alignment: .top, spacing: 40) {
-                ForEach(cards, id: \.rowKey) { card in
-                    TVCollectionPosterCard(
-                        collection: card.libraryCollection,
-                        action: { router.navigate(to: card.route(mediaScope: mediaScope)) },
-                        cardWidth: posterWidth,
-                        focusBinding: $focusedKey,
-                        focusContentId: card.rowKey
-                    )
+            // Leading cards eager, the rest lazy, as in `MediaRow`: a lazy
+            // strip outside the visible band builds no cards, and focus then
+            // enters the row at its middle card.
+            HStack(alignment: .top, spacing: 40) {
+                ForEach(cards.prefix(MediaRow.eagerLeadingCardCount), id: \.rowKey) { card in
+                    posterCard(card)
+                }
+                if cards.count > MediaRow.eagerLeadingCardCount {
+                    LazyHStack(alignment: .top, spacing: 40) {
+                        ForEach(cards.dropFirst(MediaRow.eagerLeadingCardCount), id: \.rowKey) { card in
+                            posterCard(card)
+                        }
+                    }
                 }
             }
             .padding(.vertical, cardVerticalPadding ?? 24)
@@ -147,8 +161,8 @@ struct TVCollectionsRow: View {
     // MARK: - Focus
 
     /// Scroll the first card into view without animation, then claim it a
-    /// turn later: a strip left deep in its LazyHStack can keep that card
-    /// unmounted, and the focus engine drops writes to views it can't focus.
+    /// turn later: a strip left deep in its cards holds that card outside its
+    /// bounds, and the focus engine drops writes to views it can't focus.
     private func applyFocusRequest(_ request: Int, proxy: ScrollViewProxy) {
         guard request > 0, request != lastAppliedFocusRequest,
               let target = cards.first,

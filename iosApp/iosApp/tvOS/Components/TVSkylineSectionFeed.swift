@@ -51,6 +51,19 @@ struct TVSkylineSectionFeed: View {
     /// The row that owns card focus or its context-menu dismissal flow. Unlike
     /// the marquee preview, this is cleared when focus moves into chrome.
     @State private var focusRestorationOwnerSectionId: String?
+    /// The row the built rows center on: the last row to take card focus or
+    /// an entry claim. Found by id, so rows added or removed above it don't
+    /// move the built range off the focused row. It holds while the menu has
+    /// focus.
+    @State private var builtRowCenter: BuiltRowCenter?
+    /// Each built row's last measured height, so a row that leaves the built
+    /// range keeps its exact place as an empty spacer.
+    @State private var rowHeights: [String: CGFloat] = [:]
+    /// Bumped when the row that owned focus leaves while the feed is on
+    /// screen. It rides on the detail-return request, so the row that took its
+    /// place claims focus the way it does after Back.
+    @State private var removedOwnerFocusRequest = 0
+    @State private var isOnScreen = false
     /// The card the marquee content was last built from, kept so a spoiler
     /// settings change can rebuild it. The settings load after sign-in and
     /// can land after Home has already seeded the marquee.
@@ -100,11 +113,15 @@ struct TVSkylineSectionFeed: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .environment(\.browseLibraryId, marqueeModel.libraryId)
         .onAppear {
+            isOnScreen = true
             marqueeModel.resume()
             seedMarqueeFromFirstItem()
             requestEntryFocus(focusRequest)
         }
-        .onDisappear { marqueeModel.suspend() }
+        .onDisappear {
+            isOnScreen = false
+            marqueeModel.suspend()
+        }
         .onChange(of: focusRequest) { _, request in requestEntryFocus(request) }
         .onChange(of: isTopMenuFocused) { _, isFocused in
             if isFocused {
@@ -114,7 +131,7 @@ struct TVSkylineSectionFeed: View {
         // Rows mount only after the async section load; a deferred entry
         // token re-fires once they exist.
         .onChange(of: sections.map(\.id)) { oldIds, newIds in
-            handOffFocusRestoration(from: oldIds, to: newIds)
+            handOffRemovedRows(from: oldIds, to: newIds)
             seedMarqueeFromFirstItem()
             if let pending = pendingFocusRequest { requestEntryFocus(pending) }
         }
@@ -158,16 +175,28 @@ struct TVSkylineSectionFeed: View {
             )
 
             ScrollView(.vertical, showsIndicators: false) {
-                // Bound the live view graph to nearby rows. Keeping the
-                // entire feed mounted makes focus and scroll transactions
-                // traverse offscreen card, image, and button subgraphs.
-                // The native scroll container loads directional targets;
-                // its viewport uses the corrected layout frames above.
-                LazyVStack(alignment: .leading, spacing: SiloTheme.Skyline.rowBandPreviewSpacing) {
+                // The rows near focus are built and the rest stand in as
+                // spacers, which bounds the live view graph the way a lazy
+                // stack would. A lazy stack unloads the row above the resting
+                // one, though, and a quick run of Up presses then reached a
+                // row with nothing loaded above it: the last press landed on
+                // the top bar, and the first row stayed unloaded (#1152).
+                let builtCenter = builtRowCenterIndex
+                VStack(alignment: .leading, spacing: SiloTheme.Skyline.rowBandPreviewSpacing) {
                     ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                        featuredRow(section, index: index)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .id(section.id)
+                        Group {
+                            if isRowBuilt(index, center: builtCenter) {
+                                featuredRow(section, index: index)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                                        rowHeights[section.id] = height
+                                    }
+                            } else {
+                                Color.clear
+                                    .frame(height: rowHeights[section.id] ?? estimatedRowHeight)
+                            }
+                        }
+                        .id(section.id)
                     }
                 }
                 .scrollTargetLayout()
@@ -213,19 +242,19 @@ struct TVSkylineSectionFeed: View {
             prefersDefaultFocusOnFirstItem: isFirstRow,
             defaultFocusPriority: isTopMenuFocused ? .userInitiated : .automatic,
             focusRequest: isFirstRow ? contentFocusToken : 0,
-            detailReturnFocusRequest: detailReturnFocusRequest,
+            detailReturnFocusRequest: detailReturnFocusRequest + removedOwnerFocusRequest,
             // This is the sole directional interception: Up from the first
             // content row crosses the intentional page-to-tab-bar boundary.
             // Every other vertical move remains native.
             onMoveUp: isFirstRow ? onTopMenuFocusRequest : nil,
             onItemFocus: { item in
-                focusRestorationOwnerSectionId = section.id
+                noteRowFocus(section.id)
                 previewFocusedItem(item, in: section)
             },
             // The marquee keeps the last card it previewed.
-            onExploreAllFocus: { focusRestorationOwnerSectionId = section.id },
+            onExploreAllFocus: { noteRowFocus(section.id) },
             onCollectionFocus: { card in
-                focusRestorationOwnerSectionId = section.id
+                noteRowFocus(section.id)
                 previewFocusedCollection(card, in: section)
             },
             cardWidth: SiloTheme.Skyline.denseCardWidth(for: SectionRow.layout(for: section)),
@@ -289,19 +318,87 @@ struct TVSkylineSectionFeed: View {
         guard !isTopMenuFocused,
               lastAppliedRequest == request,
               let firstSectionId = sections.first?.id else { return }
-        focusRestorationOwnerSectionId = firstSectionId
+        noteRowFocus(firstSectionId)
         contentFocusToken += 1
     }
 
+    // MARK: - Built rows
+
+    /// Rows built above the focused one. Up needs the row above built, and
+    /// each move re-centers the range, but a quick run of Up can arrive before
+    /// the re-center, so the range keeps one more row above as margin.
+    private static let builtRowsAbove = 2
+    /// Rows built below the focused one, so Down has a target.
+    private static let builtRowsBelow = 1
+    /// Leading rows that stay built, so a page entry that scrolls to the top
+    /// finds the first row there.
+    private static let alwaysBuiltLeadingRows = 1
+
+    private struct BuiltRowCenter: Equatable {
+        var id: String
+        /// The row's index when it became the center. Used only for the one
+        /// update after the row is removed and before the center is handed
+        /// off, so the rows around it stay built.
+        var index: Int
+    }
+
+    /// A card in this row took focus: it owns restoration, and the built
+    /// rows center on it.
+    private func noteRowFocus(_ sectionId: String) {
+        focusRestorationOwnerSectionId = sectionId
+        centerBuiltRows(on: sectionId)
+    }
+
+    private func centerBuiltRows(on sectionId: String) {
+        guard let index = sections.firstIndex(where: { $0.id == sectionId }) else { return }
+        builtRowCenter = BuiltRowCenter(id: sectionId, index: index)
+    }
+
+    private var builtRowCenterIndex: Int {
+        guard let center = builtRowCenter, !sections.isEmpty else { return 0 }
+        return sections.firstIndex { $0.id == center.id } ?? min(center.index, sections.count - 1)
+    }
+
+    private func isRowBuilt(_ index: Int, center: Int) -> Bool {
+        index < Self.alwaysBuiltLeadingRows
+            || (center - Self.builtRowsAbove...center + Self.builtRowsBelow).contains(index)
+    }
+
+    /// The row that takes a removed row's place: the one now at its index, or
+    /// the last row when it was last. Nil while the row is still present.
+    private static func replacementId(
+        for id: String?, from oldIds: [String], to newIds: [String]
+    ) -> String? {
+        guard let id, !newIds.contains(id),
+              let index = oldIds.firstIndex(of: id),
+              !newIds.isEmpty else { return nil }
+        return newIds[min(index, newIds.count - 1)]
+    }
+
+    /// Spacer height for a row not built yet, usually one below the built
+    /// range. A row added above, or one whose layout changed while it was a
+    /// spacer, can shift the rows below it once it is built, as rows the lazy
+    /// stack placed from estimates did.
+    private var estimatedRowHeight: CGFloat {
+        guard !rowHeights.isEmpty else { return 0 }
+        return rowHeights.values.reduce(0, +) / CGFloat(rowHeights.count)
+    }
+
     /// Not interested on a title page can empty the row it was opened from,
-    /// and Home then drops that row. Hand restoration to the row that took its
-    /// place (or the one above, when it was last), so Back still lands on a card.
-    private func handOffFocusRestoration(from oldIds: [String], to newIds: [String]) {
-        guard let ownerId = focusRestorationOwnerSectionId,
-              !newIds.contains(ownerId),
-              let ownerIndex = oldIds.firstIndex(of: ownerId),
-              !newIds.isEmpty else { return }
-        focusRestorationOwnerSectionId = newIds[min(ownerIndex, newIds.count - 1)]
+    /// and Home drops that row when it reloads after Back. Restoration and the
+    /// built rows move to the row that took its place, and while the feed is
+    /// on screen that row claims focus: the engine finds no card to move to
+    /// when the replacement was a spacer until now. The center is re-indexed
+    /// even when its row stays. Heights of removed rows are dropped.
+    private func handOffRemovedRows(from oldIds: [String], to newIds: [String]) {
+        if let owner = Self.replacementId(for: focusRestorationOwnerSectionId, from: oldIds, to: newIds) {
+            focusRestorationOwnerSectionId = owner
+            if isOnScreen { removedOwnerFocusRequest += 1 }
+        }
+        if let centerId = builtRowCenter?.id {
+            centerBuiltRows(on: Self.replacementId(for: centerId, from: oldIds, to: newIds) ?? centerId)
+        }
+        rowHeights = rowHeights.filter { newIds.contains($0.key) }
     }
 
     private func previewFocusedItem(_ item: SectionItem, in section: ResolvedSection) {

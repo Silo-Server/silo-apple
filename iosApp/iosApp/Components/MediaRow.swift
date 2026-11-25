@@ -119,7 +119,9 @@ struct MediaRow: View {
     @State private var lastFocusedItemId: String?
     @State private var focusRestorationGeneration = 0
     @State private var lastAppliedDetailReturnFocusRequest = 0
-    /// False while a pushed page covers the row (or it is scrolled away).
+    /// False while a pushed page covers the row, or while a lazy container
+    /// has scrolled it away. The tvOS Skyline feed keeps its first row and
+    /// the rows next to focus mounted while out of view.
     @State private var isOnScreen = false
     private static let focusLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -450,10 +452,29 @@ struct MediaRow: View {
 
     private func scrollStrip(_ rowProxy: ScrollViewProxy) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
+            #if os(tvOS)
+            // The leading cards are built eagerly. A lazy strip in a row
+            // outside the visible band builds none of them, so an Up or Down
+            // into the row found no card under the one focused and landed on
+            // the row's middle card. The rest stay lazy.
+            HStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
+                ForEach(items.prefix(Self.eagerLeadingCardCount)) { item in
+                    mediaCard(for: item)
+                }
+                if items.count > Self.eagerLeadingCardCount || (onExploreAll != nil && !items.isEmpty) {
+                    LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
+                        ForEach(items.dropFirst(Self.eagerLeadingCardCount)) { item in
+                            mediaCard(for: item)
+                        }
+                        exploreAllCard
+                    }
+                }
+            }
+            .padding(.vertical, verticalCardPadding)
+            #else
             LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                 ForEach(items) { item in
                     mediaCard(for: item)
-                        #if !os(tvOS)
                         .onAppear {
                             if let index = items.firstIndex(where: { $0.id == item.id }) {
                                 warmCards(after: index)
@@ -466,24 +487,14 @@ struct MediaRow: View {
                         .onDisappear {
                             DetailPrewarmer.shared.withdraw(.rowCard(item, libraryId: browseLibraryId))
                         }
-                        #endif
                 }
-                if let onExploreAll, !items.isEmpty {
-                    SectionExploreAllCard(
-                        size: exploreAllCardSize,
-                        rowTitle: title,
-                        focusedItemId: rowFocusBinding,
-                        action: onExploreAll
-                    )
-                    .id(SectionExploreAllCard.focusId)
-                }
+                exploreAllCard
             }
-            #if !os(tvOS)
             .scrollTargetLayout()
-            #endif
             .padding(.vertical, verticalCardPadding)
             .phoneMediaRailBounds()
             .mouseDragScrolling()
+            #endif
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         #if !os(tvOS)
@@ -776,6 +787,26 @@ struct MediaRow: View {
         return 6
         #endif
     }
+
+    @ViewBuilder
+    private var exploreAllCard: some View {
+        if let onExploreAll, !items.isEmpty {
+            SectionExploreAllCard(
+                size: exploreAllCardSize,
+                rowTitle: title,
+                focusedItemId: rowFocusBinding,
+                action: onExploreAll
+            )
+            .id(SectionExploreAllCard.focusId)
+        }
+    }
+
+    #if os(tvOS)
+    /// Cards built eagerly at the start of a tvOS strip: enough to span the
+    /// screen at the narrowest card (Compact posters, about 151 pt plus 40 pt
+    /// spacing across 1760 pt).
+    static let eagerLeadingCardCount = 10
+    #endif
 
     private var cardSpacing: CGFloat {
         #if os(tvOS)
