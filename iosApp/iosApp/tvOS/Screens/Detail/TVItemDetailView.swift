@@ -189,6 +189,10 @@ struct TVItemDetailView: View {
             guard hasStartedDetailLoad, isPageVisible, let playback = takePlaybackReturn() else { return }
             Task { await applySeriesPlaybackReturn(playback) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .collectionItemsDidChange)) { _ in
+            guard hasStartedDetailLoad else { return }
+            viewModel.reloadItemCollections()
+        }
     }
 
     // Selection state lives on the cached view model so a pushed player route
@@ -317,6 +321,7 @@ struct TVItemDetailView: View {
                 inWatchlist: viewModel.inWatchlist,
                 isSeriesWatched: viewModel.isWatched,
                 isSeasonWatched: viewModel.selectedSeason?.userData?.played ?? false,
+                itemCollections: viewModel.itemCollections,
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
@@ -486,6 +491,7 @@ struct TVItemDetailView: View {
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
                 boxSet: viewModel.boxSet,
+                itemCollections: viewModel.itemCollections,
                 selectedVersionFileId: preferredVersionFileId,
                 selectedEditionId: preferredEditionId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,

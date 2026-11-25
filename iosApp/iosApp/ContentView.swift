@@ -3522,6 +3522,16 @@ private struct ItemDetailSheet: View {
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         case .sectionCatalog(let target):
             SectionCatalogView(target: target)
+        case .libraryCollection(let libraryId, let collectionId, let title, let kind, let mediaScope):
+            LibraryCollectionDetailView(
+                libraryId: libraryId,
+                collectionId: collectionId,
+                title: title,
+                kind: kind,
+                mediaScope: mediaScope
+            )
+        case .collectionDetail(let id, let title):
+            CollectionDetailView(collectionId: id, title: title)
         default:
             EmptyView()
         }

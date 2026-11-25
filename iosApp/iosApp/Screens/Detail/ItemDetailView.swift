@@ -727,6 +727,10 @@ private struct ItemDetailPhoneContent: View {
             guard hasStartedDetailLoad, isPageVisible, let playback = takePlaybackReturn() else { return }
             Task { await applySeriesPlaybackReturn(playback) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .collectionItemsDidChange)) { _ in
+            guard hasStartedDetailLoad else { return }
+            viewModel.reloadItemCollections()
+        }
         .alert(
             Text(.detailOfflineChoiceTitle),
             isPresented: Binding(
@@ -1016,6 +1020,7 @@ private struct ItemDetailPhoneContent: View {
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
+                itemCollections: viewModel.itemCollections,
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
@@ -1142,6 +1147,7 @@ private struct ItemDetailPhoneContent: View {
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
                 boxSet: viewModel.boxSet,
+                itemCollections: viewModel.itemCollections,
                 selectedVersionFileId: preferredVersionFileId,
                 selectedEditionId: preferredEditionId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,

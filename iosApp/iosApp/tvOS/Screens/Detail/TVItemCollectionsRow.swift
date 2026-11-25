@@ -1,0 +1,126 @@
+#if os(tvOS)
+import SwiftUI
+
+/// The collections holding a movie or series, on its tvOS page. When one
+/// collection holds the title, its other titles show under its name, ending
+/// with an Explore all card that opens it. Otherwise an "Also in" row shows a
+/// poster card for every collection. A native focus graph like
+/// `TVSimilarRail`: one focus section, entered on the card the viewer last
+/// left while the row still shows it, else on its first card.
+struct TVItemCollectionsRow: View {
+    let content: ItemCollectionsRowContent
+    /// Each new value moves focus onto the row's entry card, for a page that
+    /// hands focus to its first supporting rail.
+    var focusRequest = 0
+    /// Reports focus entering and leaving the row.
+    var onFocusChange: ((Bool) -> Void)? = nil
+
+    @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
+    @FocusState private var focusedItemId: String?
+    /// The card the viewer last left the row on, so coming back lands there.
+    @State private var lastFocusedItemId: String?
+
+    /// The detail page's poster rails' size.
+    private let cardWidth: CGFloat = 220
+    private let cardSpacing: CGFloat = 44
+    private let railVerticalPadding: CGFloat = 12
+
+    var body: some View {
+        rows
+            .onChange(of: focusedItemId != nil) { _, focused in
+                onFocusChange?(focused)
+            }
+            .modifier(TVRowFocusObserver(focusedItemId: $focusedItemId) { lastFocusedItemId = $0 })
+            .onChange(of: focusRequest) { _, request in
+                guard request > 0, let entry = entryItemId(itemIds) else { return }
+                focusedItemId = entry
+            }
+    }
+
+    @ViewBuilder
+    private var rows: some View {
+        switch content {
+        case .titles(let collection, let items):
+            section(title: collection.title, entryItemId: entryItemId(itemIds)) {
+                titles(items, in: collection)
+            }
+        case .collections(let cards):
+            section(title: AppLanguage.string(.detailAlsoIn, locale: locale), entryItemId: entryItemId(itemIds)) {
+                collections(cards)
+            }
+        }
+    }
+
+    /// The focus ids of the row's cards, in order.
+    private var itemIds: [String] {
+        switch content {
+        case .titles(_, let items): items.map(\.contentId) + [SectionExploreAllCard.focusId]
+        case .collections(let cards): cards.map(\.rowKey)
+        }
+    }
+
+    /// The card the viewer left, while the row still shows it; else the first.
+    private func entryItemId(_ ids: [String]) -> String? {
+        if let lastFocusedItemId, ids.contains(lastFocusedItemId) { return lastFocusedItemId }
+        return ids.first
+    }
+
+    private func section(title: String, entryItemId: String?, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
+            TVSectionHeader(title: title)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: cardSpacing) {
+                    content()
+                }
+                .padding(.vertical, railVerticalPadding)
+            }
+            .focusSection()
+            .tvDefaultFocus(entryItemId, in: $focusedItemId)
+            .scrollClipDisabled()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func titles(_ items: [BrowseItem], in collection: SectionCollectionCard) -> some View {
+        ForEach(items) { item in
+            TVMediaCard(
+                title: item.title,
+                posterUrl: item.posterUrl ?? "",
+                posterThumbhash: item.posterThumbhash,
+                mediaType: item.type,
+                year: item.year,
+                userState: item.userState,
+                overlayData: OverlayData.from(item),
+                // Unscoped, as the collection's page opens them: a
+                // collection's titles can live in other libraries.
+                action: { router.navigate(to: .itemDetail(browseItem: item)) },
+                cardWidth: cardWidth,
+                focusTreatment: .ring,
+                focusBinding: $focusedItemId,
+                focusContentId: item.contentId,
+                contentId: item.contentId
+            )
+        }
+        SectionExploreAllCard(
+            size: TVMediaCard.artworkSize(cardWidth: cardWidth, aspect: .poster),
+            rowTitle: collection.title,
+            focusedItemId: $focusedItemId,
+            action: { router.navigate(to: collection.route()) }
+        )
+    }
+
+    private func collections(_ cards: [SectionCollectionCard]) -> some View {
+        ForEach(cards, id: \.rowKey) { card in
+            TVCollectionPosterCard(
+                collection: card.libraryCollection,
+                action: { router.navigate(to: card.route()) },
+                cardWidth: cardWidth,
+                focusBinding: $focusedItemId,
+                focusContentId: card.rowKey
+            )
+        }
+    }
+}
+#endif

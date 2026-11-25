@@ -618,7 +618,7 @@ struct SectionCollectionCard: Codable, Hashable, Identifiable {
 
 /// Decodes one element of a list, keeping nil for an element that fails, so
 /// one bad card leaves the rest of its row.
-private struct LossyElement<Element: Decodable>: Decodable {
+struct LossyElement<Element: Decodable>: Decodable {
     let value: Element?
 
     init(from decoder: Decoder) throws {

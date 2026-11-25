@@ -91,8 +91,15 @@ struct ErrorView: View {
         let run: () -> Void
     }
 
+    /// Back steps out of a page pushed inside an open detail card before it
+    /// touches the stack behind the card.
     private var resolvedOnGoBack: (() -> Void)? {
         if let onGoBack { return onGoBack }
+        #if os(iOS)
+        if router.presentedItemDetail != nil, !router.itemDetailPath.isEmpty {
+            return { router.goBackInItemDetail() }
+        }
+        #endif
         return router.path.isEmpty ? nil : { router.goBack() }
     }
 

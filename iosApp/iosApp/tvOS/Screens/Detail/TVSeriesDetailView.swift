@@ -184,6 +184,8 @@ struct TVSeriesDetailView: View {
     let isSeriesWatched: Bool
     /// The selected season's state for More's season entry.
     let isSeasonWatched: Bool
+    /// The collections holding the series; nil draws no row.
+    var itemCollections: CatalogItemCollections? = nil
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
@@ -263,6 +265,11 @@ struct TVSeriesDetailView: View {
     @State private var primaryFocusRegion: PrimaryFocusRegion = .outside
     @State private var supportingRailFocusRequest = 0
     @State private var supportingRailFocusGeneration = 0
+    /// The rail that led the supporting sections when the last handoff was
+    /// requested. Only it receives `supportingRailFocusRequest`, so a rail
+    /// that starts or stops leading later (the collections row loading or
+    /// going away) never takes focus on its own.
+    @State private var supportingRailHandoffTarget: SupportingRail?
     @State private var modeActivationTask: Task<Void, Never>?
     @State private var modeFocusAppearanceTask: Task<Void, Never>?
     @State private var presentedFocusedModeId: String?
@@ -297,6 +304,7 @@ struct TVSeriesDetailView: View {
                             if let cast = detail.cast, !cast.isEmpty {
                                 castSection(cast: cast)
                             }
+                            collectionsSection
                             trailersSection
                             similarSection
                             detailsSection
@@ -337,6 +345,11 @@ struct TVSeriesDetailView: View {
                 )
                 .tvActionPopoverHost()
             }
+        }
+        // A handoff belongs to the rail that led when it was asked for; once
+        // another rail leads, it is dropped rather than delivered late.
+        .onChange(of: leadingSupportingRail) { _, leader in
+            if supportingRailHandoffTarget != leader { supportingRailHandoffTarget = nil }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIFocusSystem.didUpdateNotification)) { notification in
             // Nothing resets this flag, so stop walking the hierarchy once set.
@@ -953,6 +966,7 @@ struct TVSeriesDetailView: View {
         DispatchQueue.main.async {
             guard supportingRailFocusGeneration == generation,
                   primaryFocusRegion == .outside else { return }
+            supportingRailHandoffTarget = leadingSupportingRail
             supportingRailFocusRequest &+= 1
         }
     }
@@ -1394,19 +1408,60 @@ struct TVSeriesDetailView: View {
         }
     }
 
+    /// The rails below the episodes that can lead the supporting sections,
+    /// in page order.
+    private enum SupportingRail { case cast, collections, trailers, similar }
+
+    /// The first supporting section: it takes the season row's handoff and
+    /// anchors the first reveal.
+    private var leadingSupportingRail: SupportingRail {
+        if hasCast { return .cast }
+        if ItemCollectionsRowContent(itemCollections) != nil { return .collections }
+        return trailerEntries.isEmpty ? .similar : .trailers
+    }
+
+    private func leadsSupportingRails(_ rail: SupportingRail) -> Bool {
+        leadingSupportingRail == rail
+    }
+
+    /// The handoff token for `rail`, nonzero only for the rail the last
+    /// handoff was meant for, and only while it still leads.
+    private func handoffRequest(for rail: SupportingRail) -> Int {
+        supportingRailHandoffTarget == rail && leadsSupportingRails(rail) ? supportingRailFocusRequest : 0
+    }
+
+    @ViewBuilder
+    private var collectionsSection: some View {
+        if let collections = ItemCollectionsRowContent(itemCollections) {
+            TVItemCollectionsRow(
+                content: collections,
+                focusRequest: handoffRequest(for: .collections),
+                onFocusChange: { focused in
+                    guard focused else { return }
+                    supportingRailDidFocus(centerFirstSection: leadsSupportingRails(.collections))
+                }
+            )
+            .background {
+                if leadsSupportingRails(.collections) {
+                    TVSeriesAnchorResolver { pageScrollCoordinator.supportingAnchorView = $0 }
+                }
+            }
+        }
+    }
+
     private var similarSection: some View {
         TVSimilarRail(
             contentId: detail.contentId,
             title: AppLanguage.string(.detailRecommendedSeries, locale: locale),
             onSelect: onNavigateToItem,
-            focusRequest: !hasCast && trailerEntries.isEmpty ? supportingRailFocusRequest : 0,
+            focusRequest: handoffRequest(for: .similar),
             onFocusChange: { focused in
                 guard focused else { return }
-                supportingRailDidFocus(centerFirstSection: !hasCast && trailerEntries.isEmpty)
+                supportingRailDidFocus(centerFirstSection: leadsSupportingRails(.similar))
             }
         )
         .background {
-            if !hasCast && trailerEntries.isEmpty {
+            if leadsSupportingRails(.similar) {
                 TVSeriesAnchorResolver { pageScrollCoordinator.supportingAnchorView = $0 }
             }
         }
@@ -1417,14 +1472,14 @@ struct TVSeriesDetailView: View {
             entries: trailerEntries,
             onSelect: onSelectTrailer,
             focusScale: 1.0,
-            focusRequest: hasCast ? 0 : supportingRailFocusRequest,
+            focusRequest: handoffRequest(for: .trailers),
             onFocusChange: { focused in
                 guard focused else { return }
-                supportingRailDidFocus(centerFirstSection: !hasCast)
+                supportingRailDidFocus(centerFirstSection: leadsSupportingRails(.trailers))
             }
         )
         .background {
-            if !hasCast && !trailerEntries.isEmpty {
+            if leadsSupportingRails(.trailers) {
                 TVSeriesAnchorResolver { pageScrollCoordinator.supportingAnchorView = $0 }
             }
         }
@@ -1436,7 +1491,7 @@ struct TVSeriesDetailView: View {
             TVDetailCastRail(
                 cast: cast,
                 onTap: onPersonTap,
-                focusRequest: supportingRailFocusRequest,
+                focusRequest: handoffRequest(for: .cast),
                 onFocusChange: { focused in
                     guard focused else { return }
                     supportingRailDidFocus(centerFirstSection: true)

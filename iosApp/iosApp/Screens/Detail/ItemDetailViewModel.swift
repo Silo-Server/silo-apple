@@ -44,6 +44,12 @@ class ItemDetailViewModel {
     /// loads, for a movie in no box set, and for anything but a movie.
     private(set) var boxSet: CatalogBoxSetDetail?
     @ObservationIgnored private var boxSetTask: Task<Void, Never>?
+    /// The collections holding the movie or series, drawn as a row on its
+    /// page. Nil while it loads, when the first read fails, on a server
+    /// without the read, and for anything but a movie or series. A failed
+    /// reread keeps the last answer.
+    private(set) var itemCollections: CatalogItemCollections?
+    @ObservationIgnored private var itemCollectionsTask: Task<Void, Never>?
 
     // Catalog metadata and the hierarchy finish independently. An empty array
     // is only an empty result after its request has succeeded.
@@ -68,6 +74,7 @@ class ItemDetailViewModel {
         detailLoadGeneration += 1
         _ = beginDetailWrite()
         boxSetTask?.cancel()
+        itemCollectionsTask?.cancel()
         seasonsLoadGeneration += 1
         episodeLoadGeneration += 1
         episodePersonalListRefreshGeneration += 1
@@ -314,6 +321,8 @@ class ItemDetailViewModel {
         if let detail, detail.contentId != contentId {
             boxSetTask?.cancel()
             boxSet = nil
+            itemCollectionsTask?.cancel()
+            itemCollections = nil
             self.detail = nil
             seedArtwork = nil
             userRating = nil
@@ -443,6 +452,7 @@ class ItemDetailViewModel {
             }
 
             refreshBoxSet(for: enriched)
+            refreshItemCollections(for: enriched)
 
             #if os(tvOS)
             if cachedDetailForRelatedStructure != nil {
@@ -543,6 +553,35 @@ class ItemDetailViewModel {
             }
             guard let self, !Task.isCancelled, self.detail?.contentId == contentId else { return }
             self.boxSet = fresh
+        }
+    }
+
+    /// Rereads the collections row after a collection's titles change, for
+    /// example when this title is added to one from its own page.
+    func reloadItemCollections() {
+        guard let detail else { return }
+        refreshItemCollections(for: detail)
+    }
+
+    /// Reads the collections holding the movie or series beside the page's
+    /// own refresh. As with the box set and on web, a failed reread keeps
+    /// the row on screen; the server answering "none" removes it.
+    private func refreshItemCollections(for item: ItemDetail) {
+        itemCollectionsTask?.cancel()
+        guard SiloMediaType.isMovieLibrary(item.type) || SiloMediaType.isSeries(item.type) else {
+            itemCollections = nil
+            return
+        }
+        let contentId = item.contentId
+        itemCollectionsTask = Task { [weak self, libraryId] in
+            let fresh: CatalogItemCollections?
+            do {
+                fresh = try await SiloAPI.shared.itemCollections(contentId: contentId, libraryId: libraryId)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, self.detail?.contentId == contentId else { return }
+            if self.itemCollections != fresh { self.itemCollections = fresh }
         }
     }
 
