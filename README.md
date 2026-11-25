@@ -4,9 +4,13 @@ Native Apple clients for the [Silo](https://github.com/Silo-Server/silo-server) 
 
 This repo builds iOS, tvOS, and the early macOS target. It preserves the existing Apple bundle IDs, keychain groups, and signing IDs for TestFlight and install continuity, but user-facing names, docs, and server references now use Silo.
 
-## TestFlight
+## Download
 
-Try the latest beta builds of the iOS and tvOS apps:
+Silo for iPhone, iPad, and Apple TV is on the App Store:
+
+**[Get Silo on the App Store](https://apps.apple.com/app/silo-media-player/id6784878771)**
+
+To try fixes and features before they reach the App Store, join the beta:
 
 **[Join the Silo TestFlight beta](https://testflight.apple.com/join/XZy8cu5q)**
 
@@ -15,17 +19,21 @@ Try the latest beta builds of the iOS and tvOS apps:
 ### iOS
 
 <p>
-  <img src="project-images/silo-apple-native/04-home.png" width="260" alt="iOS home screen" />
-  <img src="project-images/silo-apple-native/09-movie-detail.png" width="260" alt="iOS movie detail" />
-  <img src="project-images/silo-apple-native/12-series-detail.png" width="260" alt="iOS series detail" />
-  <img src="project-images/silo-apple-native/05-libraries.png" width="260" alt="iOS movies library" />
-  <img src="project-images/silo-apple-native/13-tv-library.png" width="260" alt="iOS TV shows library" />
+  <img src="project-images/app-store/iphone/01-library.jpg" width="260" alt="iOS home screen with Continue Watching and Trending on Server rows" />
+  <img src="project-images/app-store/iphone/02-details.jpg" width="260" alt="iOS movie detail with rating, genres, and Resume button" />
+  <img src="project-images/app-store/iphone/03-progress.jpg" width="260" alt="iOS series detail with version, audio, and subtitle details and the season's episodes" />
+  <img src="project-images/app-store/iphone/04-browse.jpg" width="260" alt="iOS movies library grid with sort and filter controls" />
+  <img src="project-images/app-store/iphone/05-tracks.jpg" width="260" alt="iOS audio track picker on a movie detail page" />
+  <img src="project-images/app-store/iphone/06-profiles.jpg" width="260" alt="iOS profile picker with a kids profile" />
 </p>
 
 ### tvOS
 
 <p>
-  <img src="project-images/silo-tvos/05-tv-home.png" width="800" alt="tvOS home screen" />
+  <img src="project-images/app-store/apple-tv/01-library.jpg" width="400" alt="tvOS home screen with a featured title and Continue Watching row" />
+  <img src="project-images/app-store/apple-tv/02-details.jpg" width="400" alt="tvOS movie detail with playback details and cast" />
+  <img src="project-images/app-store/apple-tv/03-progress.jpg" width="400" alt="tvOS series detail with Resume and the season's episodes" />
+  <img src="project-images/app-store/apple-tv/04-profiles.jpg" width="400" alt="tvOS profile picker" />
 </p>
 
 ## Layout
@@ -164,6 +172,9 @@ but forks and redistributions must not use the Silo brand as their identity and
 must remove or replace the brand assets. Publishing a Silo-branded app to an app
 store requires written permission. See [TRADEMARK.md](TRADEMARK.md) for what's
 permitted — including referential use like "compatible with Silo."
+
+The screenshots in this README show film and TV artwork that belongs to its
+respective owners and is not covered by the AGPL.
 
 Media playback is built on [AetherEngine](https://github.com/superuser404notfound/AetherEngine)
 by Vincent Herbst, used under LGPL-3.0 with its Apple Store / DRM exception.
