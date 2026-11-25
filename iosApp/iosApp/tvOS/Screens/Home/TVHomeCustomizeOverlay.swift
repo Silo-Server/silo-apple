@@ -170,7 +170,12 @@ struct TVHomeCustomizeOverlay: View {
                 break
             }
         }
-        .onChange(of: editor.rows) { _, _ in
+        .onChange(of: editor.rows) { _, rows in
+            // A row whose options are open can vanish (a rejected save rolls it
+            // back); close the popover so the editor isn't left disabled.
+            if let optionsRowId = rowOptionsRowId, !rows.contains(where: { $0.id == optionsRowId }) {
+                closeRowOptions()
+            }
             normalizeHighlight()
         }
         .onDisappear {

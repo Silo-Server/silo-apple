@@ -278,11 +278,13 @@ final class HomeSectionsEditorModel {
             && ResponseCache.shared.wasInvalidated(CacheKey.collections, after: pickerCatalogCacheToken)
         // A refreshed library list is written to the cache without an
         // invalidation, so also compare the cached list with the one loaded.
-        let cachedLibraryIds = (ResponseCache.shared.get(CacheKey.userLibraries) as LibrariesResponse?)?
-            .libraries.map(\.id)
+        // Compare names too, so a renamed library shows its new name.
+        let libraryKey: (Library) -> String = { "\($0.id)\u{1F}\($0.name)" }
+        let cachedLibraryKeys = (ResponseCache.shared.get(CacheKey.userLibraries) as LibrariesResponse?)?
+            .libraries.map(libraryKey)
         let librariesChanged = hasLoadedPickerCatalog && (
             ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: pickerCatalogCacheToken)
-                || (cachedLibraryIds.map { $0 != availableLibraries.map(\.id) } ?? false)
+                || (cachedLibraryKeys.map { $0 != availableLibraries.map(libraryKey) } ?? false)
         )
         guard force
             || !hasLoadedPickerCatalog
@@ -1084,9 +1086,15 @@ final class HomeSectionsEditorModel {
                 if !mayHaveApplied,
                    self.phase == .loaded,
                    self.pendingEditsIdentity == startIdentity,
-                   !self.pendingEdits.isEmpty,
-                   self.committedRows != self.confirmedRows {
-                    await self.saveCurrentRows()
+                   !self.pendingEdits.isEmpty {
+                    if self.committedRows != self.confirmedRows {
+                        await self.saveCurrentRows()
+                    } else {
+                        // The reloaded layout already has these edits; settle them
+                        // so a later load can't replay them over another change.
+                        self.pendingEdits.removeAll()
+                        self.pendingEditsIdentity = nil
+                    }
                 }
             }
         }
