@@ -26,7 +26,8 @@ struct TVPrimaryPillButton: View {
                 icon: icon,
                 title: title,
                 subtitle: subtitle,
-                stabilizesFocusMotion: stabilizesFocusMotion
+                stabilizesFocusMotion: stabilizesFocusMotion,
+                fitsFixedWidth: fixedWidth != nil
             )
         }
         .buttonStyle(
@@ -46,6 +47,10 @@ private struct TVPrimaryPillLabel: View {
     let title: String
     let subtitle: String?
     let stabilizesFocusMotion: Bool
+    /// The pill has a fixed width, so the text must fit the space left
+    /// beside the icon: it scales down, then truncates, instead of drawing
+    /// past the capsule. Without a fixed width the pill grows to fit.
+    let fitsFixedWidth: Bool
 
     @Environment(\.isFocused) private var isFocused
 
@@ -59,6 +64,7 @@ private struct TVPrimaryPillLabel: View {
                     Text(title)
                         .font(.system(size: 29, weight: .semibold))
                         .lineLimit(1)
+                        .minimumScaleFactor(fitsFixedWidth ? 0.7 : 1)
                     if let subtitle, !subtitle.isEmpty {
                         Text(subtitle)
                             .font(.system(size: 16, weight: .semibold))
@@ -66,7 +72,7 @@ private struct TVPrimaryPillLabel: View {
                             .lineLimit(1)
                     }
                 }
-                .fixedSize(horizontal: true, vertical: false)
+                .fixedSize(horizontal: !fitsFixedWidth, vertical: false)
                 .transition(
                     stabilizesFocusMotion
                         ? .opacity
