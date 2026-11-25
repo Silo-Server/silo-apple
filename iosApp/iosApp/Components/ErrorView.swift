@@ -4,7 +4,9 @@ import SwiftUI
 ///
 /// `onGoBack` and `onSignOut` fall back to the ambient `AppRouter`, so call
 /// sites normally only supply `onRetry`. `onGoBack` auto-hides at the root
-/// of the navigation stack. Pass an explicit closure to override either.
+/// of the navigation stack; inside an open detail card it steps back in the
+/// card, or closes the card from its first page. Pass an explicit closure to
+/// override either.
 struct ErrorView: View {
     @Environment(\.locale) private var locale
     let state: ErrorState
@@ -91,13 +93,16 @@ struct ErrorView: View {
         let run: () -> Void
     }
 
-    /// Back steps out of a page pushed inside an open detail card before it
-    /// touches the stack behind the card.
+    /// Inside an open detail card, Back steps out of a page pushed in the
+    /// card, and on the card's own page it closes the card. It never touches
+    /// the stack behind the card.
     private var resolvedOnGoBack: (() -> Void)? {
         if let onGoBack { return onGoBack }
         #if os(iOS)
-        if router.presentedItemDetail != nil, !router.itemDetailPath.isEmpty {
-            return { router.goBackInItemDetail() }
+        if router.presentedItemDetail != nil {
+            return router.itemDetailPath.isEmpty
+                ? { router.dismissItemDetail() }
+                : { router.goBackInItemDetail() }
         }
         #endif
         return router.path.isEmpty ? nil : { router.goBack() }
