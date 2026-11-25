@@ -15,6 +15,8 @@ import SwiftUI
 struct TVHomeCustomizeOverlay: View {
     @Bindable var editor: HomeSectionsEditorModel
     let loadedSections: [ResolvedSection]
+    /// The library's name when editing a library page, shown in the title.
+    var pageName: String? = nil
     let onDone: () -> Void
 
     enum FooterAction: Int, CaseIterable, Hashable {
@@ -286,7 +288,7 @@ struct TVHomeCustomizeOverlay: View {
                             .font(.system(size: 30, weight: .bold))
                             .foregroundStyle(.white)
                     } else {
-                        Text(editor.scope == .home ? .homeCustomizeTitleHome : .homeCustomizeTitleLibrary)
+                        Text(pageTitle)
                             .font(.system(size: 30, weight: .bold))
                             .foregroundStyle(.white)
                     }
@@ -432,6 +434,12 @@ struct TVHomeCustomizeOverlay: View {
 
     private static let rowBleed: CGFloat = 32
 
+    private var pageTitle: LocalizedStringResource {
+        if editor.scope == .home { return .homeCustomizeTitleHome }
+        if let pageName { return .homeCustomizeTitleNamed(pageName) }
+        return .homeCustomizeTitleLibrary
+    }
+
     // MARK: - Footer Glass Action Pills
 
     private var footerBar: some View {
@@ -486,7 +494,10 @@ struct TVHomeCustomizeOverlay: View {
                 .homeCustomizeHiddenRows(LocaleFormat.integer(editor.hiddenRows.count, locale: locale)),
                 locale: locale
             )
-        case .options: return AppLanguage.string(.homeCustomizeOptions, locale: locale)
+        case .options:
+            // Home's options include display preferences; a library page's are
+            // only its layout actions.
+            return AppLanguage.string(editor.scope == .home ? .homeCustomizeOptions : .homeCustomizeOptionsTitle, locale: locale)
         case .done: return AppLanguage.string(.commonDone, locale: locale)
         }
     }
@@ -528,7 +539,7 @@ struct TVHomeCustomizeOverlay: View {
         if let title = grabbedRowTitle {
             return AppLanguage.string(.homeCustomizeA11YReorderRow(title), locale: locale)
         }
-        return AppLanguage.string(editor.scope == .home ? .homeCustomizeTitleHome : .homeCustomizeTitleLibrary, locale: locale)
+        return AppLanguage.string(pageTitle, locale: locale)
     }
 
     private var compositeAccessibilityValue: String {
@@ -1636,17 +1647,31 @@ struct TVAddRowModal: View {
 // MARK: - Standalone tvOS Settings Sheet Wrapper
 
 struct TVHomeSectionsSettingsSheet: View {
-    @State private var editor = HomeSectionsEditorModel(scope: .home)
+    @State private var editor: HomeSectionsEditorModel
+    let pageName: String?
     let onDismiss: () -> Void
 
-    private var cachedHomeSections: [ResolvedSection] {
-        (ResponseCache.shared.get(CacheKey.homeSections) as SectionsResponse?)?.sections ?? []
+    init(scope: ProfileSectionsScope = .home, pageName: String? = nil, onDismiss: @escaping () -> Void) {
+        _editor = State(initialValue: HomeSectionsEditorModel(scope: scope))
+        self.pageName = pageName
+        self.onDismiss = onDismiss
+    }
+
+    /// The page's rows as last loaded, so row cards show artwork right away.
+    private var cachedSections: [ResolvedSection] {
+        let key: String
+        switch editor.scope {
+        case .home: key = CacheKey.homeSections
+        case .library(let libraryId): key = CacheKey.librarySections(libraryId)
+        }
+        return (ResponseCache.shared.get(key) as SectionsResponse?)?.sections ?? []
     }
 
     var body: some View {
         TVHomeCustomizeOverlay(
             editor: editor,
-            loadedSections: cachedHomeSections,
+            loadedSections: cachedSections,
+            pageName: pageName,
             onDone: onDismiss
         )
     }
