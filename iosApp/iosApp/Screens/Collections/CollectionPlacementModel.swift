@@ -495,7 +495,7 @@ final class CollectionPlacementModel {
                     title: rowTitle,
                     collectionId: collectionId,
                     isUserCollection: isUserCollection,
-                    position: nextRows.count
+                    position: ProfileHomeLayout.nextAppendPosition(after: nextRows)
                 )
                 nextRows.append(newRow)
             }

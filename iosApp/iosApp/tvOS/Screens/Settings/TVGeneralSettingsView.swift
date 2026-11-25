@@ -165,6 +165,11 @@ struct TVGeneralSettingsPane: View {
         .task {
             customizableLibraries = (try? await StartupContentPrefetcher.fetchUserLibraries())?.libraries ?? []
         }
+        .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) { note in
+            if let response = note.object as? LibrariesResponse {
+                customizableLibraries = response.libraries
+            }
+        }
         .task {
             async let preferencesRefresh: Void = preferences.refresh()
             async let titleArtRefresh: Void = titleArt.refresh()

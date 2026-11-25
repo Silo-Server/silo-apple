@@ -276,8 +276,14 @@ final class HomeSectionsEditorModel {
         let currentIdentity = requestIdentity()
         let collectionsInvalidated = hasLoadedPickerCatalog
             && ResponseCache.shared.wasInvalidated(CacheKey.collections, after: pickerCatalogCacheToken)
-        let librariesChanged = hasLoadedPickerCatalog
-            && ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: pickerCatalogCacheToken)
+        // A refreshed library list is written to the cache without an
+        // invalidation, so also compare the cached list with the one loaded.
+        let cachedLibraryIds = (ResponseCache.shared.get(CacheKey.userLibraries) as LibrariesResponse?)?
+            .libraries.map(\.id)
+        let librariesChanged = hasLoadedPickerCatalog && (
+            ResponseCache.shared.wasInvalidated(CacheKey.userLibraries, after: pickerCatalogCacheToken)
+                || (cachedLibraryIds.map { $0 != availableLibraries.map(\.id) } ?? false)
+        )
         guard force
             || !hasLoadedPickerCatalog
             || pickerCatalogIdentity != currentIdentity
@@ -834,7 +840,7 @@ final class HomeSectionsEditorModel {
                 hidden: false,
                 isCustom: true,
                 customized: true,
-                position: rows.count,
+                position: ProfileHomeLayout.nextAppendPosition(after: rows),
                 config: nonEmptyConfig
             )
             var next = rows
@@ -890,7 +896,7 @@ final class HomeSectionsEditorModel {
                 title: title,
                 collectionId: collectionId,
                 isUserCollection: isUserCollection,
-                position: rows.count,
+                position: ProfileHomeLayout.nextAppendPosition(after: rows),
                 itemLimit: itemLimit,
                 featured: featured
             )
@@ -927,7 +933,7 @@ final class HomeSectionsEditorModel {
                 hidden: false,
                 isCustom: true,
                 customized: true,
-                position: rows.count,
+                position: ProfileHomeLayout.nextAppendPosition(after: rows),
                 config: ["collections": .array(entries)]
             )
             var next = rows
@@ -1071,6 +1077,8 @@ final class HomeSectionsEditorModel {
                 self.hasLoadedFromServer = false
                 self.phase = .loading
                 self.saveError = message
+                // Count it like a failed save, so a replayed edit can't clear it unseen.
+                self.saveFailureCount += 1
                 Self.refreshScope(self.scope)
                 await self.reloadAfterReset(expectedIdentity: startIdentity, preservingError: message)
                 if !mayHaveApplied,

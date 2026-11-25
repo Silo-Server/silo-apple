@@ -1133,7 +1133,7 @@ final class ProfileHomeLayoutTests: XCTestCase {
         XCTAssertFalse(ownerModel.shareLoadFailed)
     }
 
-    func testRemovingCustomRowUpdatesSurvivingCustomRowPositionsWithoutPinningAdminOrder() {
+    func testRemovingCustomRowKeepsSurvivingCustomRowPositionWithoutPinningAdminOrder() {
         let a = makeRow(id: "admin-a", position: 0)
         let x = makeRow(id: "custom-x", isCustom: true, position: 1)
         let b = makeRow(id: "admin-b", position: 2)
@@ -1145,11 +1145,51 @@ final class ProfileHomeLayoutTests: XCTestCase {
             APIv2SectionOverride(id: "custom-y", sectionId: "", position: 3, hidden: false, isUserAdded: true, userSectionType: "collection", userTitle: "Y"),
         ]
 
-        // Remove custom-x -> [A, B, Y, C]. Surviving custom-y must update to position 2
-        // without pinning admin rows A, B, or C.
+        // Remove custom-x -> [A, B, Y, C]. Surviving custom-y keeps position 3,
+        // still between B (2) and C (4); moving it to its list index (2) would
+        // tie with B. Admin rows A, B, and C stay unpinned.
         let updated = ProfileHomeLayout.overrides(rows: [a, b, y, c], baseline: baseline, saved: saved)
         XCTAssertEqual(updated.map(\.id), ["custom-y"])
-        XCTAssertEqual(updated.first?.position, 2)
+        XCTAssertEqual(updated.first?.position, 3)
+    }
+
+    func testAppendingCustomRowOnSparseAdminPositionsLandsBelowEveryRow() {
+        let a = makeRow(id: "admin-a", position: 0)
+        let b = makeRow(id: "admin-b", position: 10)
+        let c = makeRow(id: "admin-c", position: 20)
+        let baseline = [a, b, c]
+        let x = makeRow(
+            id: "custom-x",
+            isCustom: true,
+            position: ProfileHomeLayout.nextAppendPosition(after: baseline)
+        )
+
+        let overrides = ProfileHomeLayout.overrides(rows: baseline + [x], baseline: baseline, saved: [])
+
+        // The row count (3) would sort the new row above B and C.
+        XCTAssertEqual(overrides.map(\.id), ["custom-x"])
+        XCTAssertEqual(overrides.first?.position, 21)
+    }
+
+    func testMovingNewCustomRowAboveAdminRowOrdersThePage() {
+        let a = makeRow(id: "admin-a", position: 0)
+        let b = makeRow(id: "admin-b", position: 10)
+        let baseline = [a, b]
+        let x = makeRow(id: "custom-x", isCustom: true, position: 11)
+        var counter = 0
+
+        let overrides = ProfileHomeLayout.overrides(
+            rows: [a, x, b],
+            baseline: baseline,
+            saved: [],
+            newID: {
+                counter += 1
+                return "ovr-\(counter)"
+            }
+        )
+
+        XCTAssertEqual(overrides.map { $0.sectionId.isEmpty ? $0.id : $0.sectionId }, ["admin-a", "custom-x", "admin-b"])
+        XCTAssertEqual(overrides.map(\.position), [0, 1, 2])
     }
 
     @MainActor

@@ -35,6 +35,9 @@ struct TVHomeCustomizeOverlay: View {
 
     @FocusState private var isCompositeFocused: Bool
     @State private var highlighted: Target = .footer(.done)
+    /// Set once the first row has been highlighted, so a later load finishing
+    /// doesn't move the highlight the user already moved.
+    @State private var hasSeededHighlight = false
     @State private var grabbedRowId: String?
     @State private var isHiddenExpanded = false
     @State private var rowOptionsRowId: String?
@@ -949,10 +952,10 @@ struct TVHomeCustomizeOverlay: View {
     // MARK: - Focus Helpers
 
     private func seedInitialHighlightIfNeeded() {
-        if let first = editor.visibleRows.first {
-            if case .footer = highlighted {
-                highlighted = .row(first.id)
-            }
+        guard !hasSeededHighlight, let first = editor.visibleRows.first else { return }
+        hasSeededHighlight = true
+        if case .footer = highlighted {
+            highlighted = .row(first.id)
         }
     }
 

@@ -36,9 +36,14 @@ enum ProfileHomeLayout {
             savedIndex[matchKey(override)] = index
         }
 
+        // Matches the web client's `buildSectionOverrides`: positions follow the
+        // list only once the profile orders the page. Until then admin rows keep
+        // the admin's positions and user-added rows keep their own, which may
+        // sit between sparse admin positions (0, 10, 20…), so rewriting them to
+        // list indices would move them past admin rows.
         let ordered = sharedOrder(rows, baseline) != sharedOrder(baseline, rows)
             || saved.contains { !$0.sectionId.isEmpty && $0.position != nil }
-        let rowListChanged = rows.map(\.id) != baseline.map(\.id)
+            || movedNewRow(rows, baseline)
 
         var used = Set<Int>()
         var result: [APIv2SectionOverride] = []
@@ -50,7 +55,7 @@ enum ProfileHomeLayout {
                     result.append(APIv2SectionOverride(
                         id: row.id.isEmpty ? newID() : row.id,
                         sectionId: "",
-                        position: position,
+                        position: ordered ? position : row.position,
                         hidden: row.hidden,
                         featured: row.featured ? true : nil,
                         itemLimit: row.itemLimit > 0 ? row.itemLimit : nil,
@@ -73,8 +78,10 @@ enum ProfileHomeLayout {
             used.insert(index)
             var override = saved[index]
             if override.id.isEmpty { override.id = newID() }
-            if ordered || (row.isCustom && (rowListChanged || override.position == nil)) {
+            if ordered {
                 override.position = position
+            } else if row.isCustom && override.position == nil {
+                override.position = row.position
             }
             override.hidden = row.hidden
             result.append(override)
@@ -87,6 +94,14 @@ enum ProfileHomeLayout {
             result.append(override)
         }
         return result
+    }
+
+    /// The position for a row appended at the bottom of the page: one past the
+    /// highest position on it, like the web client's `nextAppendPosition`.
+    /// Admin positions can be sparse, so the row count would land the new row
+    /// above existing rows.
+    static func nextAppendPosition(after rows: [APIv2ProfileSectionSetting]) -> Int {
+        (rows.map(\.position).max() ?? -1) + 1
     }
 
     /// Finds an active (non-hidden) collection row matching `collectionId`.
@@ -150,6 +165,24 @@ enum ProfileHomeLayout {
             position: position,
             config: [key: .string(collectionId)]
         )
+    }
+
+    /// Whether a row added since `baseline` was read has moved: rows are added
+    /// at the bottom with rising positions, so any other placement is the
+    /// profile's own ordering (the web client's `movedNewRow`).
+    private static func movedNewRow(
+        _ rows: [APIv2ProfileSectionSetting],
+        _ baseline: [APIv2ProfileSectionSetting]
+    ) -> Bool {
+        let known = Set(baseline.map(\.id))
+        guard let firstNew = rows.firstIndex(where: { !known.contains($0.id) }) else { return false }
+        var previous: Int?
+        for row in rows[firstNew...] {
+            if known.contains(row.id) { return true }
+            if let previous, row.position < previous { return true }
+            previous = row.position
+        }
+        return false
     }
 
     /// The ids of `a` in order, keeping only the ids `b` also has.
