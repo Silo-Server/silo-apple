@@ -189,7 +189,9 @@ struct TVSkylineSectionFeed: View {
                                 featuredRow(section, index: index)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                                        rowHeights[section.id] = height
+                                        if rowHeights[section.id] != height {
+                                            rowHeights[section.id] = height
+                                        }
                                     }
                             } else {
                                 Color.clear

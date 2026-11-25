@@ -461,13 +461,17 @@ struct MediaRow: View {
                 ForEach(items.prefix(Self.eagerLeadingCardCount)) { item in
                     mediaCard(for: item)
                 }
-                if items.count > Self.eagerLeadingCardCount || (onExploreAll != nil && !items.isEmpty) {
+                if items.count > Self.eagerLeadingCardCount {
                     LazyHStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: cardSpacing) {
                         ForEach(items.dropFirst(Self.eagerLeadingCardCount)) { item in
                             mediaCard(for: item)
                         }
                         exploreAllCard
                     }
+                } else {
+                    // A short row's Explore all card sits among the leading
+                    // cards, so it is built with them.
+                    exploreAllCard
                 }
             }
             .padding(.vertical, verticalCardPadding)
