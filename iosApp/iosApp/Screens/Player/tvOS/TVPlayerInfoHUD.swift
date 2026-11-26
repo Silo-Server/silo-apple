@@ -196,18 +196,37 @@ struct TVPlayerInfoHUD: View {
         // with few rows) keep their headers pinned to the top instead of
         // floating mid-panel.
         .frame(maxWidth: panelWidth, minHeight: 380, maxHeight: 380, alignment: .top)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: panelWidth)
-        // Glass carries enough light that the panel lifts off the video
-        // without extra dark tint; the stroke + shadow still define the
-        // edge over a fully-black frame. Low-power TVs draw a flat
-        // translucent fill instead (see siloPlayerGlass).
-        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.5), radius: 20, y: 10)
+        // The width change animates on the glass behind and on a mask, never
+        // on the rows or the strips. Focus resolves from layout frames, and
+        // while those animated a second Left or Right within a third of a
+        // second landed on the wrong strip and undid the first.
+        .mask {
+            Rectangle()
+                .frame(width: panelWidth)
+                .frame(maxHeight: .infinity)
+                .padding(.vertical, -1000)
+                .animation(widthAnimation, value: panelWidth)
+        }
+        .background {
+            // Glass carries enough light that the panel lifts off the video
+            // without extra dark tint; the stroke + shadow still define the
+            // edge over a fully-black frame. Low-power TVs draw a flat
+            // translucent fill instead (see siloPlayerGlass).
+            Color.clear
+                .frame(width: panelWidth, height: 380)
+                .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.5), radius: 20, y: 10)
+                .animation(widthAnimation, value: panelWidth)
+        }
         .focusSection()
+    }
+
+    private var widthAnimation: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: 0.25)
     }
 
     private var panelWidth: CGFloat {
