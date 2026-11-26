@@ -184,8 +184,11 @@ private struct PhoneDetailSplitPage<PaneArtwork: View, PaneSidebar: View, PaneCo
         // when the marked lead section would otherwise end below the window.
         let fadeTop = artworkHeight * 0.66
         let leadTop = leadEnd.map { page.size.height - Self.contentPaneBottomInset - $0 } ?? fadeTop
-        let paneTop = topSafeArea + Self.contentPaneTopInset
-        let contentTop = max(paneTop, min(fadeTop, leadTop))
+        let paneTop = (topSafeArea + Self.contentPaneTopInset).rounded(.up)
+        // Align to whole points so the top padding moves by whole pixels at
+        // every display scale instead of oscillating against subpixel-rounded
+        // coordinate-space measurements from `splitPaneLeadEnd()`.
+        let contentTop = max(paneTop, min(fadeTop, leadTop).rounded(.down))
         return HStack(alignment: .top, spacing: 0) {
             ScrollView(.vertical, showsIndicators: false) {
                 paneSidebar()
@@ -207,6 +210,11 @@ private struct PhoneDetailSplitPage<PaneArtwork: View, PaneSidebar: View, PaneCo
                     .padding(.top, contentTop)
             }
             .onPreferenceChange(SplitPaneLeadEndKey.self) { end in
+                guard let end, end.isFinite else {
+                    if leadEnd != nil { leadEnd = nil }
+                    return
+                }
+                if let current = leadEnd, abs(end - current) < 1 { return }
                 leadEnd = end
             }
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
