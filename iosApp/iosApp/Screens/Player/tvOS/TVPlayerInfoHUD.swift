@@ -704,23 +704,24 @@ private struct InfoPane: View {
     @Environment(\.locale) private var locale
 
     private static let topAnchor = "info.top"
-    private static let nowPlayingAnchor = "info.nowPlaying"
     private static let bottomAnchor = "info.bottom"
 
     var body: some View {
         HUDScrollablePane(
             accessibilityLabel: .playerHudInfoDetails,
-            // Down pages to the Now playing rows, then to the end of a long
-            // overview; Up returns to the top, then to the tabs. Without any
-            // targets the pane was a dead focus stop that couldn't scroll.
-            scrollTargetIDs: [Self.topAnchor, Self.nowPlayingAnchor, Self.bottomAnchor],
+            // Top/bottom anchors so Down can page a long overview to its end
+            // and Up returns to the top, then to the tabs. Without any targets
+            // the pane was a dead focus stop that couldn't scroll at all.
+            scrollTargetIDs: [Self.topAnchor, Self.bottomAnchor],
             isAtTop: $isAtTop,
             entryPending: $entryPending,
             onMoveToTabs: onMoveToTabs
         ) {
             VStack(alignment: .leading, spacing: 0) {
                 Color.clear.frame(height: 0).id(Self.topAnchor)
-                VStack(alignment: .leading, spacing: 20) {
+                // Read-only, so the pane is one focus stop and its two
+                // columns give Left and Right nothing to land on.
+                HStack(alignment: .top, spacing: 48) {
                 PaneColumn(.playerHudTitle) {
                     if let series = viewModel.metadata.seriesTitle, !series.isEmpty {
                         Text(series.uppercased())
@@ -754,7 +755,6 @@ private struct InfoPane: View {
 
                 // What is reaching the screen, in a row each. The exact
                 // figures are the Stats tab's.
-                Color.clear.frame(height: 0).id(Self.nowPlayingAnchor)
                 PaneColumn(.playerHudNowPlayingHeading) {
                     InfoNowPlayingRows(viewModel: viewModel)
                     InfoCurrentChapterRow(viewModel: viewModel)
@@ -865,25 +865,23 @@ private struct StatsPane: View {
                 Color.clear.frame(height: 0).id(Self.topAnchor)
                 PlaybackStatsPanel(
                     stats: viewModel.playbackStats,
-                    usesTVTypography: true
+                    usesTVTypography: true,
+                    usesTwoColumnLayout: true
                 )
                 Color.clear.frame(height: 0).id(Self.bottomAnchor)
             }
         }
     }
 
-    /// Paging targets, one per section of the single column. The pane opens
-    /// scrolled to the top, so the list must start with a top anchor —
-    /// without it the index nominally sits on the first section while the
-    /// view shows the top, making the first Down skip a section and, worse,
-    /// Up exit to the tab bar while Playback is still scrolled off above.
-    /// The bottom anchor makes the tail of the last section reachable when
-    /// it is taller than the viewport.
+    /// Paging targets. The pane opens scrolled to the top (Playback beside
+    /// Stream), so the target list must start with a top anchor — without
+    /// it the index nominally sits on the first section while the view
+    /// shows the top, making the first Down skip a section and, worse, Up
+    /// exit to the tab bar while Playback and Stream are still scrolled off
+    /// above. The bottom anchor makes the tail of the last section
+    /// reachable when it is taller than the viewport.
     private var scrollTargetIDs: [String] {
         var ids: [String] = [Self.topAnchor]
-        if !viewModel.playbackStats.streamRows.isEmpty {
-            ids.append(PlaybackStatsPanel.streamSectionID)
-        }
         if !viewModel.playbackStats.engineRows.isEmpty {
             ids.append(PlaybackStatsPanel.engineSectionID)
         }
