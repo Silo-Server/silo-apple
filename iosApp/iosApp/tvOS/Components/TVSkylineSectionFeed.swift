@@ -59,6 +59,12 @@ struct TVSkylineSectionFeed: View {
     /// Each built row's last measured height, so a row that leaves the built
     /// range keeps its exact place as an empty spacer.
     @State private var rowHeights: [String: CGFloat] = [:]
+    /// The row a run of focus moves started from, kept built until the moves
+    /// stop. A held direction press stays bound to the view it began on, and
+    /// UIKit cancels the press when that view leaves, so holding Up or Down
+    /// would stop once the starting row fell out of the built range.
+    @State private var moveRunOriginId: String?
+    @State private var moveRunGeneration = 0
     /// Bumped when the row that owned focus leaves while the feed is on
     /// screen. It rides on the detail-return request, so the row that took its
     /// place claims focus the way it does after Back.
@@ -182,10 +188,11 @@ struct TVSkylineSectionFeed: View {
                 // row with nothing loaded above it: the last press landed on
                 // the top bar, and the first row stayed unloaded (#1152).
                 let builtCenter = builtRowCenterIndex
+                let keptRowId = moveRunOriginId
                 VStack(alignment: .leading, spacing: SiloTheme.Skyline.rowBandPreviewSpacing) {
                     ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
                         Group {
-                            if isRowBuilt(index, center: builtCenter) {
+                            if isRowBuilt(index, center: builtCenter) || section.id == keptRowId {
                                 featuredRow(section, index: index)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
@@ -335,6 +342,9 @@ struct TVSkylineSectionFeed: View {
     /// Leading rows that stay built, so a page entry that scrolls to the top
     /// finds the first row there.
     private static let alwaysBuiltLeadingRows = 1
+    /// A pause in row changes this long ends a run of moves. Longer than a
+    /// held press's repeat interval, including its first repeat.
+    private static let moveRunGap = Duration.milliseconds(1500)
 
     private struct BuiltRowCenter: Equatable {
         var id: String
@@ -348,7 +358,23 @@ struct TVSkylineSectionFeed: View {
     /// rows center on it.
     private func noteRowFocus(_ sectionId: String) {
         focusRestorationOwnerSectionId = sectionId
+        if let previousId = builtRowCenter?.id, previousId != sectionId {
+            noteRowMove(from: previousId)
+        }
         centerBuiltRows(on: sectionId)
+    }
+
+    /// Focus changed rows: keep the row this run of moves started from built
+    /// until the run ends.
+    private func noteRowMove(from previousId: String) {
+        if moveRunOriginId == nil { moveRunOriginId = previousId }
+        moveRunGeneration += 1
+        let generation = moveRunGeneration
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.moveRunGap)
+            guard generation == moveRunGeneration else { return }
+            moveRunOriginId = nil
+        }
     }
 
     private func centerBuiltRows(on sectionId: String) {
