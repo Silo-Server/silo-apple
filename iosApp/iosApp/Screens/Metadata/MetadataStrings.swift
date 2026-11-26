@@ -1,17 +1,11 @@
+#if os(iOS)
 import SwiftUI
 
 /// Monochrome palette tokens shared across metadata management sheets on
-/// iOS, iPadOS, macOS, and tvOS so every sheet matches Silo's native chrome.
+/// iOS and iPadOS so every sheet matches Silo's native chrome.
 enum MetadataPalette {
     static var sheetCanvas: Color { Color.siloPageCanvas }
-
-    static var sidebarCanvas: Color {
-        #if os(macOS)
-        Color.siloSidebarCanvas
-        #else
-        Color(hex: "#121214")
-        #endif
-    }
+    static var sidebarCanvas: Color { Color(hex: "#121214") }
 
     static var cellSurface: Color { Color.siloGroupedCell }
     static var elevatedSurface: Color { Color.siloSurfaceElevated }
@@ -324,3 +318,4 @@ enum MetadataStrings {
         return error.localizedDescription
     }
 }
+#endif

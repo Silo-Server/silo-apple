@@ -1,4 +1,5 @@
 import Foundation
+#if os(iOS)
 import XCTest
 @testable import Silo
 
@@ -302,7 +303,6 @@ final class MetadataCurationTests: XCTestCase {
 
     // MARK: - Edit Metadata Locks, Precision & Validation
 
-    #if !os(tvOS)
     @MainActor
     func testEditMetadataPreservesUnknownLocksAndLosslessRatings() throws {
         let detailJSON = Data("""
@@ -377,7 +377,6 @@ final class MetadataCurationTests: XCTestCase {
         XCTAssertNotNil(epVM.validationError)
         XCTAssertNil(epVM.buildPatch().episodeNumber)
     }
-    #endif
 
     // MARK: - Fix Match Scope Isolation & Target Allow-Lists
 
@@ -423,7 +422,7 @@ final class MetadataCurationTests: XCTestCase {
         XCTAssertTrue(vm.candidates.isEmpty)
         XCTAssertFalse(vm.canApply)
 
-        // Manual tvOS Edit Search clears stale filename-hint provider IDs.
+        // Clearing external IDs on manual search drops stale filename-hint provider IDs.
         vm.imdbIdText = "tt1160419"
         vm.tmdbIdText = "438631"
         vm.tvdbIdText = "999"
@@ -489,3 +488,4 @@ final class MetadataCurationTests: XCTestCase {
         )
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(iOS)
 import SwiftUI
 
 /// Non-blocking status toast shown after metadata curation actions and while
@@ -222,43 +223,6 @@ struct MetadataStatusToastPill: View {
     let state: MetadataToastState
 
     var body: some View {
-        #if os(tvOS)
-        HStack(spacing: 14) {
-            Group {
-                switch state.style {
-                case .running:
-                    ProgressView()
-                        .scaleEffect(0.62)
-                        .frame(width: 24, height: 24)
-                        .tint(Color.siloPrimary)
-                case .success:
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(Color.siloPrimary)
-                case .info:
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(MetadataPalette.lockedAmber)
-                case .error:
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(MetadataPalette.destructiveRed)
-                }
-            }
-
-            Text(state.message)
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(Color.siloOnSurface)
-                .lineLimit(2)
-        }
-        .padding(.horizontal, 26)
-        .padding(.vertical, 14)
-        .siloGlass(in: Capsule(), tint: Color.black.opacity(0.62))
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 1))
-        .shadow(color: .black.opacity(0.45), radius: 22, y: 12)
-        .accessibilityElement(children: .combine)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
-        #else
         HStack(spacing: 10) {
             Group {
                 switch state.style {
@@ -293,6 +257,6 @@ struct MetadataStatusToastPill: View {
         .shadow(color: .black.opacity(0.4), radius: 18, y: 10)
         .accessibilityElement(children: .combine)
         .transition(.move(edge: .bottom).combined(with: .opacity))
-        #endif
     }
 }
+#endif

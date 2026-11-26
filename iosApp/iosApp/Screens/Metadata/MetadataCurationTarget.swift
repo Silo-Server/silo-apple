@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 
 /// Identifies a catalog item targeted by a metadata management flow (movie,
@@ -223,3 +224,4 @@ enum MetadataSheetPresentation: Identifiable, Hashable {
         }
     }
 }
+#endif

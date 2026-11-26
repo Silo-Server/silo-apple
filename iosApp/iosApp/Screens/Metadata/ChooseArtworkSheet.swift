@@ -1,9 +1,7 @@
-#if !os(tvOS)
+#if os(iOS)
 import SwiftUI
 import UniformTypeIdentifiers
-#if os(iOS)
 import PhotosUI
-#endif
 
 struct ChooseArtworkSheet: View {
     let target: MetadataCurationTarget
@@ -16,10 +14,8 @@ struct ChooseArtworkSheet: View {
     /// Slot captured at the moment the user opened Photos or Files so switching
     /// tabs during a slow download never uploads into a different slot.
     @State private var pendingUploadSlot: MetadataImageSlot
-    #if os(iOS)
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var isShowingPhotosPicker = false
-    #endif
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -38,11 +34,7 @@ struct ChooseArtworkSheet: View {
     }
 
     private var usesSplitLayout: Bool {
-        #if os(macOS)
-        return true
-        #else
-        return horizontalSizeClass == .regular
-        #endif
+        horizontalSizeClass == .regular
     }
 
     var body: some View {
@@ -65,7 +57,6 @@ struct ChooseArtworkSheet: View {
         ) { result in
             handleFileImport(result, slot: pendingUploadSlot)
         }
-        #if os(iOS)
         .photosPicker(
             isPresented: $isShowingPhotosPicker,
             selection: $selectedPhotoItem,
@@ -86,7 +77,6 @@ struct ChooseArtworkSheet: View {
                 }
             }
         }
-        #endif
     }
 
     // MARK: - Compact (iPhone) Layout
@@ -123,9 +113,7 @@ struct ChooseArtworkSheet: View {
                 }
             }
             .navigationTitle(MetadataStrings.chooseArtworkTitle)
-            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
-            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(.commonDone) { dismiss() }
@@ -137,13 +125,11 @@ struct ChooseArtworkSheet: View {
                 }
             }
         }
-        #if os(iOS)
         .presentationDetents([.large])
         .presentationBackground(MetadataPalette.sheetCanvas)
-        #endif
     }
 
-    // MARK: - Split (iPadOS Regular & macOS) Layout
+    // MARK: - Split (iPadOS Regular) Layout
 
     private var splitLayout: some View {
         VStack(spacing: 0) {
@@ -201,9 +187,6 @@ struct ChooseArtworkSheet: View {
                 }
             }
         }
-        #if os(macOS)
-        .frame(minWidth: 820, idealWidth: 940, minHeight: 580, idealHeight: 680)
-        #endif
     }
 
     // MARK: - Controls
@@ -266,14 +249,12 @@ struct ChooseArtworkSheet: View {
 
     private var uploadMenu: some View {
         Menu {
-            #if os(iOS)
             Button {
                 pendingUploadSlot = viewModel.activeSlot
                 isShowingPhotosPicker = true
             } label: {
                 Label(MetadataStrings.uploadFromPhotos, systemImage: "photo.on.rectangle")
             }
-            #endif
             Button {
                 pendingUploadSlot = viewModel.activeSlot
                 isShowingFileImporter = true

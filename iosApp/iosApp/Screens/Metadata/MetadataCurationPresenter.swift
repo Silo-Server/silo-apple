@@ -1,6 +1,7 @@
+#if os(iOS)
 import SwiftUI
 
-// MARK: - Shared Detail Reload & Route-Replacement Observer (All Apple Platforms)
+// MARK: - Detail Reload & Route-Replacement Observer (iOS & iPadOS)
 
 private struct MetadataDetailReloadModifier: ViewModifier {
     let contentId: String
@@ -55,16 +56,15 @@ extension View {
     }
 }
 
-#if !os(tvOS)
 /// Coordinates sheets and refresh confirmation dialogs for a detail page or
-/// the shared root card-triage host on iOS, iPadOS, and macOS.
+/// the shared root card-triage host on iOS and iPadOS.
 ///
 /// Refresh jobs and status toasts live on `MetadataRefreshCenter.shared` so
 /// they survive detail navigation, card recycling, and `contentId` swaps.
 @MainActor
 @Observable
 final class MetadataCurationController {
-    /// Single app-level host used by `MediaCard` context menus on iOS/iPadOS/macOS
+    /// Single app-level host used by `MediaCard` context menus on iOS and iPadOS
     /// so cards never mount per-card sheets, dialogs, or toast overlays.
     static let sharedCardHost = MetadataCurationController()
 
@@ -374,10 +374,8 @@ private struct MetadataCurationHostModifier: ViewModifier {
     var showsRefreshDialog: Bool
     var showsStatusToast: Bool
 
-    #if os(iOS)
     @Environment(AppRouter.self) private var router: AppRouter?
     @State private var hasDeferredRefit = false
-    #endif
 
     private var refreshCenter: MetadataRefreshCenter { .shared }
 
@@ -417,7 +415,6 @@ private struct MetadataCurationHostModifier: ViewModifier {
                 }
             }
             .animation(.easeInOut(duration: 0.22), value: refreshCenter.toast)
-            #if os(iOS)
             .onChange(of: controller.presentedSheet != nil) { _, isPresented in
                 guard coordinatesDetailSheetRefit, let router else { return }
                 if isPresented, !hasDeferredRefit {
@@ -437,7 +434,6 @@ private struct MetadataCurationHostModifier: ViewModifier {
                     }
                 }
             }
-            #endif
     }
 
     private func handleSheetDismiss() {

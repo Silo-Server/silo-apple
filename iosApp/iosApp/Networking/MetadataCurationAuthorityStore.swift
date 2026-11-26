@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 
 /// Pure client-side mirror of `web/src/lib/permissions.ts` and `MediaItemMenu.tsx`.
@@ -167,17 +168,6 @@ enum MetadataCurationCache {
         cache.remove(CacheKey.recommendations)
         cache.removeAll(withPrefix: "library:")
         cache.removeAll(withPrefix: "browse:")
-        cache.removeAll(withPrefix: "tvlibrary:")
-
-        #if os(tvOS)
-        ItemDetailCache.shared.markStaleFamily(contentId: contentId)
-        if let replacedByContentId, replacedByContentId != contentId {
-            ItemDetailCache.shared.markStaleFamily(contentId: replacedByContentId)
-        }
-        if let effectiveSeriesId {
-            ItemDetailCache.shared.markStaleFamily(contentId: effectiveSeriesId)
-        }
-        #endif
 
         let event = MetadataItemChangeEvent(
             contentId: contentId,
@@ -188,3 +178,4 @@ enum MetadataCurationCache {
         NotificationCenter.default.post(name: .homeSectionsShouldRefresh, object: nil)
     }
 }
+#endif

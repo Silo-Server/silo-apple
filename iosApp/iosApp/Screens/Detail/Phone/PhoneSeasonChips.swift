@@ -11,9 +11,11 @@ struct PhoneSeasonChips: View {
     let onSelect: (Season) -> Void
     var onSetWatched: ((Season, Bool) -> Void)? = nil
     var isUpdatingWatched = false
+    #if os(iOS)
     var seriesDetail: ItemDetail? = nil
     var libraryId: Int? = nil
     var curationController: MetadataCurationController? = nil
+    #endif
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.locale) private var locale
@@ -91,6 +93,7 @@ struct PhoneSeasonChips: View {
             }
             .disabled(isUpdatingWatched || season.episodeCount == 0)
         }
+        #if os(iOS)
         if let seriesDetail, let curationController {
             MetadataSeasonContextMenuSection(
                 season: season,
@@ -99,6 +102,7 @@ struct PhoneSeasonChips: View {
                 controller: curationController
             )
         }
+        #endif
     }
 
     #if os(macOS)

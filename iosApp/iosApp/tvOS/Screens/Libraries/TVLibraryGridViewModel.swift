@@ -130,14 +130,9 @@ final class TVLibraryGridViewModel {
         } else if showsCachedFirstPage {
             // Not `reload()`: it empties the grid when the cache entry has
             // been invalidated since this page was shown.
-            await refreshInPlace()
+            generation += 1
+            await fetchPage(reset: true)
         }
-    }
-
-    /// Refetches page 1 in place without blanking the visible grid or dropping focus.
-    func refreshInPlace() async {
-        generation += 1
-        await fetchPage(reset: true)
     }
 
     func loadMoreIfNeeded() async {

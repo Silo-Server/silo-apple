@@ -184,22 +184,12 @@ struct ContentView: View {
             isEnabled: router.authState == .authenticated && !isShowingStartupSplash
         ))
         #endif
-        #if os(tvOS)
-        .environment(\.tvMetadataCurationController, TVMetadataCurationController.sharedCardHost)
-        .tvMetadataCurationHost(TVMetadataCurationController.sharedCardHost)
-        #elseif os(iOS)
+        #if os(iOS)
         .environment(\.metadataCurationController, MetadataCurationController.sharedCardHost)
         .metadataCurationHost(
             MetadataCurationController.sharedCardHost,
             showsRefreshDialog: true,
             showsStatusToast: router.presentedItemDetail == nil
-        )
-        #else
-        .environment(\.metadataCurationController, MetadataCurationController.sharedCardHost)
-        .metadataCurationHost(
-            MetadataCurationController.sharedCardHost,
-            showsRefreshDialog: true,
-            showsStatusToast: true
         )
         #endif
     }
@@ -649,15 +639,22 @@ struct ContentView: View {
         async let subtitles: Void = SubtitleProvidersStore.shared.refresh()
         async let sectionItemLimit: Void = SectionItemLimitSupport.shared.refresh()
         async let profile: Void = CurrentProfileStore.shared.refresh()
+        #if os(iOS)
         async let curation: Void = MetadataCurationAuthorityStore.shared.refresh()
+        #endif
         async let customization: Void = uiCustomization.refresh()
         async let seek: Void = SeekIntervalPreferences.shared.refresh()
         async let titleArt: Void = TitleArtPreferences.shared.refresh()
         async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
         async let themeMusic: Void = ThemeMusicPreferences.shared.refresh()
         async let appLanguage: Void = AppLanguagePreferences.shared.refresh()
+        #if os(iOS)
         _ = await (overlay, ai, imageSize, requests, shuffle, ratingSources, subtitles, sectionItemLimit, profile,
                    curation, customization, seek, titleArt, spoilers, themeMusic, appLanguage)
+        #else
+        _ = await (overlay, ai, imageSize, requests, shuffle, ratingSources, subtitles, sectionItemLimit, profile,
+                   customization, seek, titleArt, spoilers, themeMusic, appLanguage)
+        #endif
     }
 
     @MainActor

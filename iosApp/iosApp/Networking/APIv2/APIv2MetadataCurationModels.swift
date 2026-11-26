@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 
 // MARK: - Field Locks
@@ -607,3 +608,4 @@ struct AdminMetadataTranslationJob: Decodable, Equatable, Sendable, Identifiable
 struct AdminMetadataTranslationJobsResponse: Decodable, Equatable, Sendable {
     let jobs: [AdminMetadataTranslationJob]
 }
+#endif

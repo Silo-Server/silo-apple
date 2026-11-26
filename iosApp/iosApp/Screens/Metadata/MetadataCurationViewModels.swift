@@ -1,11 +1,8 @@
+#if os(iOS)
 import Foundation
-#if canImport(UIKit)
 import UIKit
-#elseif canImport(AppKit)
-import AppKit
-#endif
 
-// MARK: - Shared Fix Match ViewModel (iOS, iPadOS, macOS, tvOS)
+// MARK: - Fix Match ViewModel (iOS & iPadOS)
 
 @MainActor
 @Observable
@@ -256,21 +253,14 @@ final class FixMatchViewModel {
         return await applyCandidate(candidate)
     }
 
-    #if !os(tvOS)
     func copyPath(_ path: String) {
-        #if canImport(UIKit)
         UIPasteboard.general.string = path
-        #elseif canImport(AppKit)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(path, forType: .string)
-        #endif
         copiedPath = path
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(1.5))
             if self?.copiedPath == path { self?.copiedPath = nil }
         }
     }
-    #endif
 
     func addCustomProvider() {
         customProviders.append(CustomProviderEntry(key: "", value: ""))
@@ -380,7 +370,7 @@ final class FixMatchViewModel {
     }
 }
 
-// MARK: - Shared Choose Artwork ViewModel (iOS, iPadOS, macOS, tvOS)
+// MARK: - Choose Artwork ViewModel (iOS & iPadOS)
 
 @MainActor
 @Observable
@@ -545,7 +535,6 @@ final class ChooseArtworkViewModel {
         return await applyImage(image)
     }
 
-    #if !os(tvOS)
     /// Marks an upload active before an async Photos download starts so
     /// controls stay disabled while image bytes load.
     func setUploadBusy(_ busy: Bool) {
@@ -591,18 +580,8 @@ final class ChooseArtworkViewModel {
     }
 
     private static func transcodeToJPEG(_ data: Data) -> Data? {
-        #if os(iOS)
-        return UIImage(data: data)?.jpegData(compressionQuality: 0.92)
-        #elseif canImport(AppKit)
-        guard let image = NSImage(data: data),
-              let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
-        return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.92])
-        #else
-        return nil
-        #endif
+        UIImage(data: data)?.jpegData(compressionQuality: 0.92)
     }
-    #endif
 
     private func refreshSilently() async {
         if let response = try? await SiloAPI.shared.apiV2Client.adminItemImages(id: target.contentId) {
@@ -612,3 +591,4 @@ final class ChooseArtworkViewModel {
         }
     }
 }
+#endif

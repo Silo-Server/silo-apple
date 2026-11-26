@@ -736,11 +736,9 @@ final class ServerRegistry {
             ShuffleFeatureStore.shared.reset()
             RatingSourcesStore.shared.reset()
             CurrentProfileStore.shared.reset()
+            #if os(iOS)
             MetadataCurationAuthorityStore.shared.reset()
             MetadataRefreshCenter.shared.reset()
-            #if os(tvOS)
-            TVMetadataCurationController.sharedCardHost.reset()
-            #else
             MetadataCurationController.sharedCardHost.reset()
             #endif
             SubtitleProvidersStore.shared.reset()
@@ -755,7 +753,9 @@ final class ServerRegistry {
             Task { await RatingSourcesStore.shared.refresh() }
             Task { await SectionItemLimitSupport.shared.refresh() }
             Task { await CurrentProfileStore.shared.refresh() }
+            #if os(iOS)
             Task { await MetadataCurationAuthorityStore.shared.refresh() }
+            #endif
             // Same shape: without a re-probe the destination server's
             // image-size support would stay unknown, and TV requests would
             // silently fall back to the server's default image variants.

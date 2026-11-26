@@ -13,11 +13,9 @@ struct ItemDetailView: View {
 
     @State private var resolvedSeries: SeriesDetailContext?
     @State private var resolvedSourceID: String?
+    #if os(iOS)
     @State private var replacedContentId: String?
     @State private var replacedSourceID: String?
-    #if os(tvOS)
-    @Environment(\.tvMetadataCurationController) private var envCurationController
-    #else
     @Environment(\.metadataCurationController) private var envCurationController
     #endif
 
@@ -25,19 +23,35 @@ struct ItemDetailView: View {
         resolvedSourceID == contentId ? resolvedSeries : nil
     }
 
+    #if os(iOS)
     private var activeReplacedID: String? {
         replacedSourceID == contentId ? replacedContentId : nil
     }
+    #endif
 
     var body: some View {
+        #if os(iOS)
         let destinationID = activeReplacedID ?? seriesContext?.seriesContentId ?? contentId
         let context = activeReplacedID == nil ? (seriesContext ?? resumeContext) : nil
+        #else
+        let destinationID = seriesContext?.seriesContentId ?? contentId
+        let context = seriesContext ?? resumeContext
+        #endif
         // Only the original leaf may redirect. Malformed parent metadata must
         // show a recoverable error rather than cycle between catalog entries.
         let resolve: ((SeriesDetailContext) -> Void)? = seriesContext == nil ? { context in
             resolvedSourceID = contentId
             resolvedSeries = context
         } : nil
+        #if os(tvOS)
+        TVItemDetailView(
+            contentId: destinationID, libraryId: libraryId,
+            seed: seriesContext == nil ? tvSeed : nil,
+            navigationContext: context, onResolveSeries: resolve
+        )
+        .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
+        .environment(\.browseLibraryId, libraryId)
+        #elseif os(iOS)
         let replaceContentId: (String) -> Void = { newId in
             guard !newId.isEmpty, newId != destinationID else { return }
             replacedSourceID = contentId
@@ -45,24 +59,19 @@ struct ItemDetailView: View {
             resolvedSourceID = nil
             resolvedSeries = nil
         }
-        #if os(tvOS)
-        let activeCurationController = envCurationController ?? TVMetadataCurationController.sharedCardHost
-        TVItemDetailView(
-            contentId: destinationID, libraryId: libraryId,
-            seed: seriesContext == nil && activeReplacedID == nil ? tvSeed : nil,
-            navigationContext: context, onResolveSeries: resolve,
-            onContentIdReplaced: replaceContentId,
-            curationController: activeCurationController
-        )
-        .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
-        .environment(\.browseLibraryId, libraryId)
-        #else
         let activeCurationController = envCurationController ?? MetadataCurationController.sharedCardHost
         ItemDetailPhoneContent(
             contentId: destinationID, libraryId: libraryId, onClose: onClose,
             resumeContext: context, onResolveSeries: resolve, onSeriesSelection: onSeriesSelection,
-            onContentIdReplaced: replaceContentId,
-            curationController: activeCurationController
+            onContentIdReplaced: replaceContentId
+        )
+        .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
+        .environment(\.browseLibraryId, libraryId)
+        .environment(\.metadataCurationController, activeCurationController)
+        #else
+        ItemDetailPhoneContent(
+            contentId: destinationID, libraryId: libraryId, onClose: onClose,
+            resumeContext: context, onResolveSeries: resolve, onSeriesSelection: onSeriesSelection
         )
         .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
         .environment(\.browseLibraryId, libraryId)
@@ -478,14 +487,14 @@ private struct ItemDetailPhoneContent: View {
 
     let onResolveSeries: ((SeriesDetailContext) -> Void)?
     let onSeriesSelection: ((SeriesDetailContext) -> Void)?
+    #if os(iOS)
     let onContentIdReplaced: ((String) -> Void)?
-    let curationController: MetadataCurationController
+    #endif
 
     init(
         contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: SeriesDetailContext?,
         onResolveSeries: ((SeriesDetailContext) -> Void)?, onSeriesSelection: ((SeriesDetailContext) -> Void)?,
-        onContentIdReplaced: ((String) -> Void)? = nil,
-        curationController: MetadataCurationController
+        onContentIdReplaced: ((String) -> Void)? = nil
     ) {
         self.contentId = contentId
         self.libraryId = libraryId
@@ -493,8 +502,9 @@ private struct ItemDetailPhoneContent: View {
         self.resumeContext = resumeContext
         self.onResolveSeries = onResolveSeries
         self.onSeriesSelection = onSeriesSelection
+        #if os(iOS)
         self.onContentIdReplaced = onContentIdReplaced
-        self.curationController = curationController
+        #endif
         // Paint cached content on the first frame, so a warm visit pushes a
         // filled page rather than an empty one that fills in from `.task`.
         let viewModel = ItemDetailViewModel(libraryId: libraryId)
@@ -761,6 +771,7 @@ private struct ItemDetailPhoneContent: View {
             guard hasStartedDetailLoad else { return }
             viewModel.reloadItemCollections()
         }
+        #if os(iOS)
         .metadataDetailReload(
             contentId: contentId,
             seriesId: viewModel.detail?.seriesId,
@@ -773,6 +784,7 @@ private struct ItemDetailPhoneContent: View {
                 await viewModel.loadDetail(contentId: contentId)
             }
         }
+        #endif
         .alert(
             Text(.detailOfflineChoiceTitle),
             isPresented: Binding(
@@ -1177,8 +1189,6 @@ private struct ItemDetailPhoneContent: View {
                 isProvisional: viewModel.isDetailProvisional,
                 seedArtwork: viewModel.seedArtwork,
                 ratingSlot: ratingSlot,
-                libraryId: libraryId,
-                curationController: curationController,
                 belowOverview: { translationView(for: detail) }
             )
             .task(id: playbackEpisode(for: detail)?.contentId) {
@@ -1266,8 +1276,6 @@ private struct ItemDetailPhoneContent: View {
                 isProvisional: viewModel.isDetailProvisional,
                 seedArtwork: viewModel.seedArtwork,
                 ratingSlot: ratingSlot,
-                libraryId: libraryId,
-                curationController: curationController,
                 belowOverview: { translationView(for: detail) }
             )
         }

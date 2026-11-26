@@ -148,10 +148,10 @@ struct MediaCard: View {
 
     @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
-    @Environment(\.browseLibraryId) private var browseLibraryId
     #if !os(tvOS)
     @State private var isShowingAddToCollection = false
     @Environment(AppRouter.self) private var router
+    @Environment(\.browseLibraryId) private var browseLibraryId
     #endif
     @Environment(\.locale) private var locale
 
@@ -173,7 +173,7 @@ struct MediaCard: View {
         }
     }
 
-    #if !os(tvOS)
+    #if os(iOS)
     @Environment(\.metadataCurationController) private var envCurationController
     #endif
 
@@ -205,8 +205,7 @@ struct MediaCard: View {
             contextDetailTitle: contextDetailTitle,
             onOpenContextDetail: onOpenContextDetail,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-            stateMenu: hasStateActions ? stateMenu : nil,
-            curationTarget: allowedCardCuration?.target
+            stateMenu: hasStateActions ? stateMenu : nil
         ) {
             posterImage
         }
@@ -277,7 +276,11 @@ struct MediaCard: View {
     }
 
     private var hasIOSContextActions: Bool {
+        #if os(iOS)
         hasStateActions || onRemoveFromContinueWatching != nil || allowedCardCuration != nil
+        #else
+        hasStateActions || onRemoveFromContinueWatching != nil
+        #endif
     }
 
     /// Same action set (and ordering) as the tvOS `FocusableMediaCard` menu:
@@ -286,11 +289,13 @@ struct MediaCard: View {
     private var iosContextActions: some View {
         stateMenu
 
+        #if os(iOS)
         if let curation = allowedCardCuration {
             MetadataCardManageMenu(target: curation.target, capabilities: curation.capabilities) { presentation in
                 (envCurationController ?? MetadataCurationController.sharedCardHost).open(presentation)
             }
         }
+        #endif
 
         if let onRemoveFromContinueWatching {
             Button(role: .destructive) {
@@ -302,6 +307,7 @@ struct MediaCard: View {
     }
     #endif
 
+    #if os(iOS)
     private var allowedCardCuration: (target: MetadataCurationTarget, capabilities: MetadataCurationTarget.CardCapabilities)? {
         guard boxSet == nil, seriesContext == nil, let contentId else { return nil }
         guard let target = MetadataCurationTarget.fromCard(
@@ -315,6 +321,7 @@ struct MediaCard: View {
         let capabilities = target.cardCapabilities()
         return capabilities.hasAny ? (target, capabilities) : nil
     }
+    #endif
 
     // MARK: - Favorite / watchlist context actions
 
@@ -569,7 +576,6 @@ private struct FocusableMediaCard<Content: View>: View {
     let onOpenContextDetail: (() -> Void)?
     let onRemoveFromContinueWatching: (() -> Void)?
     let stateMenu: MediaStateMenuItems?
-    let curationTarget: MetadataCurationTarget?
     @ViewBuilder var content: () -> Content
     @Environment(\.locale) private var locale
 
@@ -647,7 +653,6 @@ private struct FocusableMediaCard<Content: View>: View {
             || onOpenContextDetail != nil
             || onRemoveFromContinueWatching != nil
             || stateMenu != nil
-            || curationTarget != nil
     }
 
     private var accessibilityDescription: String {
@@ -676,10 +681,6 @@ private struct FocusableMediaCard<Content: View>: View {
         }
 
         if let stateMenu { stateMenu }
-
-        if let curationTarget {
-            TVMetadataCardManageMenu(target: curationTarget)
-        }
 
         if let onRemoveFromContinueWatching {
             Button(role: .destructive) {

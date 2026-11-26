@@ -1,4 +1,4 @@
-#if !os(tvOS)
+#if os(iOS)
 import SwiftUI
 
 // MARK: - ViewModel
@@ -649,11 +649,7 @@ struct EditMetadataSheet: View {
     }
 
     private var usesSidebarLayout: Bool {
-        #if os(macOS)
-        return true
-        #else
-        return horizontalSizeClass == .regular
-        #endif
+        horizontalSizeClass == .regular
     }
 
     var body: some View {
@@ -773,9 +769,7 @@ struct EditMetadataSheet: View {
                 }
             }
             .navigationTitle(MetadataStrings.editMetadataTitle)
-            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
-            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(MetadataStrings.cancelButton) {
@@ -792,13 +786,11 @@ struct EditMetadataSheet: View {
                 }
             }
         }
-        #if os(iOS)
         .presentationDetents([.large])
         .presentationBackground(MetadataPalette.sheetCanvas)
-        #endif
     }
 
-    // MARK: - Split Sidebar (iPadOS Regular & macOS)
+    // MARK: - Split Sidebar (iPadOS Regular)
 
     private var sidebarLayout: some View {
         VStack(spacing: 0) {
@@ -909,9 +901,6 @@ struct EditMetadataSheet: View {
             .padding(.vertical, 12)
             .background(MetadataPalette.sidebarCanvas)
         }
-        #if os(macOS)
-        .frame(minWidth: 740, idealWidth: 820, minHeight: 540, idealHeight: 620)
-        #endif
     }
 
     private func sidebarRow(_ section: EditMetadataViewModel.SidebarSection) -> some View {

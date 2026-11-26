@@ -1,4 +1,4 @@
-#if !os(tvOS)
+#if os(iOS)
 import SwiftUI
 
 struct FixMatchSheet: View {
@@ -26,11 +26,7 @@ struct FixMatchSheet: View {
     }
 
     private var usesSplitLayout: Bool {
-        #if os(macOS)
-        return true
-        #else
-        return horizontalSizeClass == .regular
-        #endif
+        horizontalSizeClass == .regular
     }
 
     var body: some View {
@@ -88,9 +84,7 @@ struct FixMatchSheet: View {
                 bottomApplyBar
             }
             .navigationTitle(MetadataStrings.fixMatchTitle)
-            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
-            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(.commonCancel) { dismiss() }
@@ -98,13 +92,11 @@ struct FixMatchSheet: View {
                 }
             }
         }
-        #if os(iOS)
         .presentationDetents([.large])
         .presentationBackground(MetadataPalette.sheetCanvas)
-        #endif
     }
 
-    // MARK: - Split (iPadOS Regular & macOS) Layout
+    // MARK: - Split (iPadOS Regular) Layout
 
     private var splitLayout: some View {
         VStack(spacing: 0) {
@@ -163,9 +155,6 @@ struct FixMatchSheet: View {
             .padding(.vertical, 12)
             .background(MetadataPalette.sidebarCanvas)
         }
-        #if os(macOS)
-        .frame(minWidth: 780, idealWidth: 880, minHeight: 560, idealHeight: 640)
-        #endif
     }
 
     // MARK: - Shared Sections
@@ -304,10 +293,8 @@ struct FixMatchSheet: View {
                     TextField(MetadataStrings.searchTitlePlaceholder, text: $viewModel.queryText)
                         .textFieldStyle(.plain)
                         .autocorrectionDisabled()
-                        #if os(iOS)
                         .textInputAutocapitalization(.never)
                         .submitLabel(.search)
-                        #endif
                         .onSubmit { viewModel.triggerSearch() }
                     if !viewModel.queryText.isEmpty {
                         Button {
@@ -325,9 +312,7 @@ struct FixMatchSheet: View {
 
                 TextField(MetadataStrings.yearPlaceholder, text: $viewModel.yearText)
                     .textFieldStyle(.plain)
-                    #if os(iOS)
                     .keyboardType(.numberPad)
-                    #endif
                     .multilineTextAlignment(.center)
                     .frame(width: 68)
                     .padding(.vertical, 9)
@@ -434,9 +419,7 @@ struct FixMatchSheet: View {
             TextField(placeholder, text: text)
                 .textFieldStyle(.plain)
                 .autocorrectionDisabled()
-                #if os(iOS)
                 .textInputAutocapitalization(.never)
-                #endif
                 .font(.subheadline.monospaced())
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)

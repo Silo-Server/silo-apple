@@ -86,11 +86,14 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// The viewer's own rating of the whole series, never an episode; nil
     /// draws no rating control.
     var ratingSlot: PhoneRatingSlot? = nil
-    var libraryId: Int? = nil
-    var curationController: MetadataCurationController? = nil
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
+
+    #if os(iOS)
+    @Environment(\.browseLibraryId) private var libraryId
+    @Environment(\.metadataCurationController) private var curationController
+    #endif
 
     @Environment(\.locale) private var locale
     @Environment(AppRouter.self) private var router
@@ -463,6 +466,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }
         .disabled(isFindingTrailers)
         NotInterestedMenuButton(isNotInterested: isNotInterested, action: onToggleNotInterested)
+        #if os(iOS)
         if let curationController {
             MetadataManageMenu(
                 detail: detail,
@@ -472,6 +476,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 controller: curationController
             )
         }
+        #endif
     }
 
     private var canShuffleSeries: Bool {
@@ -735,6 +740,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                 .accessibilityHidden(!isLoadingEpisodes)
                 .accessibilityLabel(Text(.detailSeasonsLoading))
             } else {
+                #if os(iOS)
                 PhoneSeasonChips(
                     seasons: seasons,
                     selected: selectedSeason,
@@ -745,6 +751,15 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     libraryId: libraryId,
                     curationController: curationController
                 )
+                #else
+                PhoneSeasonChips(
+                    seasons: seasons,
+                    selected: selectedSeason,
+                    onSelect: handleSeasonSelection,
+                    onSetWatched: setSeasonWatched,
+                    isUpdatingWatched: isUpdatingWatched
+                )
+                #endif
             }
 
             PhoneSectionHeader(
@@ -774,6 +789,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, SiloTheme.safePadding)
                     } else if hierarchyError == nil || !episodes.isEmpty {
+                        #if os(iOS)
                         PhoneEpisodeCarousel(
                             episodes: episodes,
                             isLoading: isLoadingEpisodes,
@@ -797,6 +813,28 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                             libraryId: libraryId,
                             curationController: curationController
                         )
+                        #else
+                        PhoneEpisodeCarousel(
+                            episodes: episodes,
+                            isLoading: isLoadingEpisodes,
+                            onSelect: handleEpisodeSelection,
+                            onPlay: { contentId in
+                                guard let episode = episodes.first(where: {
+                                    $0.contentId == contentId
+                                }) else { return }
+                                handlePlayTap(for: episode)
+                            },
+                            currentContentId: nextUpEpisode?.contentId,
+                            episodeLabels: detail.episodeLabels,
+                            selectsCenteredEpisode: true,
+                            onSetWatched: setEpisodeWatched,
+                            isUpdatingWatched: isUpdatingWatched,
+                            favoriteStates: episodeFavoriteStates,
+                            watchlistStates: episodeWatchlistStates,
+                            onSetFavorite: onSetEpisodeFavorite,
+                            onSetWatchlist: onSetEpisodeWatchlist
+                        )
+                        #endif
                     }
                 }
             }

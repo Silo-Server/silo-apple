@@ -1,3 +1,4 @@
+#if os(iOS)
 import Foundation
 
 /// Admin and metadata-curator operations backed exclusively by `/api/v2/admin/...`.
@@ -306,3 +307,4 @@ extension APIv2Client {
         )
     }
 }
+#endif
