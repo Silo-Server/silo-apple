@@ -160,6 +160,10 @@ targets:
           - "**/*.xcworkspace"
           - "Info.plist"
           - "macOS/**"
+          - "Screens/Metadata/**"
+          - "Networking/MetadataCurationAuthorityStore.swift"
+          - "Networking/APIv2/APIv2Client+MetadataCuration.swift"
+          - "Networking/APIv2/APIv2MetadataCurationModels.swift"
       - path: Resources
         buildPhase: resources
       # This app's permission prompt text (docs/i18n.md).
@@ -220,6 +224,10 @@ targets:
           - "Screens/Player/tvOS/**"
           - "Screens/Player/PlayerView.swift"
           - "Screens/WatchParty/**"
+          - "Screens/Metadata/**"
+          - "Networking/MetadataCurationAuthorityStore.swift"
+          - "Networking/APIv2/APIv2Client+MetadataCuration.swift"
+          - "Networking/APIv2/APIv2MetadataCurationModels.swift"
       - path: Resources
         buildPhase: resources
       # This app's permission prompt text (docs/i18n.md).
@@ -436,6 +444,8 @@ targets:
           - "TrackpadScrubTests.swift"
           # HomeFeedMeta is declared under #if !os(tvOS).
           - "CardYearsTests.swift"
+          # Metadata curation is iOS/iPadOS-only (excluded from SiloTV and SiloMac).
+          - "MetadataCurationTests.swift"
           # Same non-fixture files as SiloTests, re-added below with no phase.
           - "Fixtures/ASS/README.md"
           - "Fixtures/ASS/generate-font.py"

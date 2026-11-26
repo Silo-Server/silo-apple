@@ -10,6 +10,8 @@ enum APIv2CatalogRead {
         let posterIsEpisodeStill: Bool?
         let backdropIsEpisodeStill: Bool?
         let airDate: String?
+        let airTime: String?
+        let airTimezone: String?
         let audiobook: AudiobookDetailExtension?
         let backdropThumbhash: String?
         @ArtworkURL var backdropUrl: String?
@@ -30,11 +32,13 @@ enum APIv2CatalogRead {
         let episodeLabels: String?
         let extras: [ItemExtraInfo]?
         let firstAirDate: String?
+        let folderPaths: [String]?
         let genres: [String]
         let imdbId: String?
         let intro: Marker?
         let isSpecials: Bool?
         let lastAirDate: String?
+        let lockedFields: [Int]?
         @ArtworkURL var logoUrl: String?
         /// Localized fields ("overview", "tagline") machine-translated by AI.
         let machineTranslatedFields: [String]?

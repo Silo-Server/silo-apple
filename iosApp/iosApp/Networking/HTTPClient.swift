@@ -1294,10 +1294,19 @@ actor HTTPClient {
         var body = Data()
         for part in parts {
             body.append(Data("--\(boundary)\r\n".utf8))
-            body.append(Data(
-                "Content-Disposition: form-data; name=\"\(part.name)\"; filename=\"\(part.filename)\"\r\n".utf8
-            ))
-            body.append(Data("Content-Type: \(part.contentType)\r\n\r\n".utf8))
+            if let filename = part.filename {
+                body.append(Data(
+                    "Content-Disposition: form-data; name=\"\(part.name)\"; filename=\"\(filename)\"\r\n".utf8
+                ))
+            } else {
+                body.append(Data(
+                    "Content-Disposition: form-data; name=\"\(part.name)\"\r\n".utf8
+                ))
+            }
+            if let contentType = part.contentType {
+                body.append(Data("Content-Type: \(contentType)\r\n".utf8))
+            }
+            body.append(Data("\r\n".utf8))
             body.append(part.data)
             body.append(Data("\r\n".utf8))
         }
@@ -2617,9 +2626,16 @@ enum HTTPTimeout {
 
 struct HTTPMultipartPart {
     let name: String
-    let filename: String
-    let contentType: String
+    let filename: String?
+    let contentType: String?
     let data: Data
+
+    init(name: String, filename: String? = nil, contentType: String? = nil, data: Data) {
+        self.name = name
+        self.filename = filename
+        self.contentType = contentType
+        self.data = data
+    }
 }
 
 // MARK: - Dispatch record

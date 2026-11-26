@@ -60,6 +60,10 @@ extension ItemDetail {
         self.episodeNumber = try value.episodeNumber.map { try catalogLegacyInt($0) }
         self.episodeCount = try value.episodeCount.map { try catalogLegacyInt($0) }
         self.airDate = value.airDate
+        self.airTime = value.airTime
+        self.airTimezone = value.airTimezone
+        self.folderPaths = value.folderPaths
+        self.lockedFields = value.lockedFields
         self.episodeLabels = value.episodeLabels
         self.isSpecials = value.isSpecials
         self.userData = try value.userData.map { try LeafItemUserData(catalog: $0) }

@@ -17,6 +17,11 @@ struct PhoneEpisodeRail: View {
     var watchlistStates: [String: Bool] = [:]
     var onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)? = nil
     var onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)? = nil
+    #if os(iOS)
+    var seriesDetail: ItemDetail? = nil
+    var libraryId: Int? = nil
+    var curationController: MetadataCurationController? = nil
+    #endif
 
     private var uiCustomization: UICustomizationPreferences { .shared }
     @State private var visibleEpisodeId: String?
@@ -34,6 +39,30 @@ struct PhoneEpisodeRail: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(alignment: .top, spacing: cardSpacing) {
                 ForEach(episodes) { episode in
+                    #if os(iOS)
+                    PhoneEpisodeCard(
+                        episode: episode,
+                        isCurrent: currentContentId == episode.contentId,
+                        episodeLabels: episodeLabels,
+                        cardWidth: cardWidth,
+                        stillHeight: stillHeight,
+                        stillCornerRadius: stillCornerRadius,
+                        onSelect: { onSelect(episode.contentId) },
+                        onPlay: onPlay.map { play in
+                            { play(episode.contentId) }
+                        },
+                        onSetWatched: onSetWatched,
+                        isUpdatingWatched: isUpdatingWatched,
+                        isFavorite: favoriteStates[episode.contentId] ?? false,
+                        inWatchlist: watchlistStates[episode.contentId] ?? false,
+                        onSetFavorite: onSetFavorite,
+                        onSetWatchlist: onSetWatchlist,
+                        seriesDetail: seriesDetail,
+                        libraryId: libraryId,
+                        curationController: curationController
+                    )
+                    .id(episode.contentId)
+                    #else
                     PhoneEpisodeCard(
                         episode: episode,
                         isCurrent: currentContentId == episode.contentId,
@@ -53,6 +82,7 @@ struct PhoneEpisodeRail: View {
                         onSetWatchlist: onSetWatchlist
                     )
                     .id(episode.contentId)
+                    #endif
                 }
             }
             .scrollTargetLayout()
@@ -161,6 +191,11 @@ private struct PhoneEpisodeCard: View {
     let inWatchlist: Bool
     let onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)?
     let onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)?
+    #if os(iOS)
+    let seriesDetail: ItemDetail?
+    let libraryId: Int?
+    let curationController: MetadataCurationController?
+    #endif
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var actionFeedback = MediaActionFeedback()
@@ -225,6 +260,16 @@ private struct PhoneEpisodeCard: View {
                     { actionFeedback.perform { await update(episode.contentId, !inWatchlist) } }
                 }
             )
+            #if os(iOS)
+            if let seriesDetail, let curationController {
+                MetadataEpisodeContextMenuSection(
+                    episode: episode,
+                    seriesDetail: seriesDetail,
+                    libraryId: libraryId,
+                    controller: curationController
+                )
+            }
+            #endif
         }
     }
 

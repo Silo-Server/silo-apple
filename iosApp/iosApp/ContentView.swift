@@ -184,6 +184,14 @@ struct ContentView: View {
             isEnabled: router.authState == .authenticated && !isShowingStartupSplash
         ))
         #endif
+        #if os(iOS)
+        .environment(\.metadataCurationController, MetadataCurationController.sharedCardHost)
+        .metadataCurationHost(
+            MetadataCurationController.sharedCardHost,
+            showsRefreshDialog: true,
+            showsStatusToast: router.presentedItemDetail == nil
+        )
+        #endif
     }
 
     private var appEventContent: some View {
@@ -631,14 +639,22 @@ struct ContentView: View {
         async let subtitles: Void = SubtitleProvidersStore.shared.refresh()
         async let sectionItemLimit: Void = SectionItemLimitSupport.shared.refresh()
         async let profile: Void = CurrentProfileStore.shared.refresh()
+        #if os(iOS)
+        async let curation: Void = MetadataCurationAuthorityStore.shared.refresh()
+        #endif
         async let customization: Void = uiCustomization.refresh()
         async let seek: Void = SeekIntervalPreferences.shared.refresh()
         async let titleArt: Void = TitleArtPreferences.shared.refresh()
         async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
         async let themeMusic: Void = ThemeMusicPreferences.shared.refresh()
         async let appLanguage: Void = AppLanguagePreferences.shared.refresh()
+        #if os(iOS)
+        _ = await (overlay, ai, imageSize, requests, shuffle, ratingSources, subtitles, sectionItemLimit, profile,
+                   curation, customization, seek, titleArt, spoilers, themeMusic, appLanguage)
+        #else
         _ = await (overlay, ai, imageSize, requests, shuffle, ratingSources, subtitles, sectionItemLimit, profile,
                    customization, seek, titleArt, spoilers, themeMusic, appLanguage)
+        #endif
     }
 
     @MainActor
@@ -3436,6 +3452,7 @@ private struct ItemDetailSheet: View {
     @Bindable var router: AppRouter
     /// Set for the iPhone's full-screen cover, nil for a sheet.
     let zoomNamespace: Namespace.ID?
+    @State private var curationController = MetadataCurationController()
 
     var body: some View {
         sheetContent
@@ -3486,6 +3503,13 @@ private struct ItemDetailSheet: View {
         .modifier(PlayerPresentationModifier(router: router, detailPresentationID: presentation.id))
         .modifier(AudioPlayerPresentationModifier(router: router, detailPresentationID: presentation.id))
         .modifier(ItemDetailRemotePlaybackPresentation(router: router))
+        .environment(\.metadataCurationController, curationController)
+        .metadataCurationHost(
+            curationController,
+            coordinatesDetailSheetRefit: true,
+            showsRefreshDialog: true,
+            showsStatusToast: true
+        )
     }
 
     /// The page's frame: the sheet's container, down through the home

@@ -461,6 +461,17 @@ struct LibrariesTabView: View {
                 // is switched to. A page not yet built reads afresh anyway.
                 if mountedTabs.contains(.library) { browseIsStale = true }
             }
+            #if os(iOS)
+            .onReceive(NotificationCenter.default.publisher(for: .metadataItemDidChange)) { _ in
+                guard mountedTabs.contains(.library) else { return }
+                if selectedTab == .library {
+                    browseIsStale = false
+                    browseReloadRequests += 1
+                } else {
+                    browseIsStale = true
+                }
+            }
+            #endif
             .onChange(of: id) {
                 // The new library's pages start at their tops, read afresh.
                 browseIsStale = false

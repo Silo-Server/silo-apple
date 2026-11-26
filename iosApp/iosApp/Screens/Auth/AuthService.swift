@@ -531,6 +531,9 @@ final class AuthService: @unchecked Sendable {
             await ShuffleFeatureStore.shared.refresh()
             await RatingSourcesStore.shared.refresh()
             await CurrentProfileStore.shared.refresh(force: true)
+            #if os(iOS)
+            await MetadataCurationAuthorityStore.shared.refresh(force: true)
+            #endif
             // Unlike the two above, this one gates *enablement* of an entry
             // point that stays visible either way, and it defaults to
             // available — so a slow or failing probe never hides anything.
@@ -990,6 +993,11 @@ final class AuthService: @unchecked Sendable {
         ThemeMusicCenter.shared.reset()
         ThemeMusicPreferences.shared.reset()
         CurrentProfileStore.shared.reset()
+        #if os(iOS)
+        MetadataCurationAuthorityStore.shared.reset()
+        MetadataRefreshCenter.shared.reset()
+        MetadataCurationController.sharedCardHost.reset()
+        #endif
         SubtitleProvidersStore.shared.reset()
         RequestsEventBus.shared.reset()
         #if os(tvOS)

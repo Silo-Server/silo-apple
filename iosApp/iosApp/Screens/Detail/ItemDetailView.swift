@@ -13,14 +13,30 @@ struct ItemDetailView: View {
 
     @State private var resolvedSeries: SeriesDetailContext?
     @State private var resolvedSourceID: String?
+    #if os(iOS)
+    @State private var replacedContentId: String?
+    @State private var replacedSourceID: String?
+    @Environment(\.metadataCurationController) private var envCurationController
+    #endif
 
     private var seriesContext: SeriesDetailContext? {
         resolvedSourceID == contentId ? resolvedSeries : nil
     }
 
+    #if os(iOS)
+    private var activeReplacedID: String? {
+        replacedSourceID == contentId ? replacedContentId : nil
+    }
+    #endif
+
     var body: some View {
+        #if os(iOS)
+        let destinationID = activeReplacedID ?? seriesContext?.seriesContentId ?? contentId
+        let context = activeReplacedID == nil ? (seriesContext ?? resumeContext) : nil
+        #else
         let destinationID = seriesContext?.seriesContentId ?? contentId
         let context = seriesContext ?? resumeContext
+        #endif
         // Only the original leaf may redirect. Malformed parent metadata must
         // show a recoverable error rather than cycle between catalog entries.
         let resolve: ((SeriesDetailContext) -> Void)? = seriesContext == nil ? { context in
@@ -35,6 +51,23 @@ struct ItemDetailView: View {
         )
         .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
         .environment(\.browseLibraryId, libraryId)
+        #elseif os(iOS)
+        let replaceContentId: (String) -> Void = { newId in
+            guard !newId.isEmpty, newId != destinationID else { return }
+            replacedSourceID = contentId
+            replacedContentId = newId
+            resolvedSourceID = nil
+            resolvedSeries = nil
+        }
+        let activeCurationController = envCurationController ?? MetadataCurationController.sharedCardHost
+        ItemDetailPhoneContent(
+            contentId: destinationID, libraryId: libraryId, onClose: onClose,
+            resumeContext: context, onResolveSeries: resolve, onSeriesSelection: onSeriesSelection,
+            onContentIdReplaced: replaceContentId
+        )
+        .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
+        .environment(\.browseLibraryId, libraryId)
+        .environment(\.metadataCurationController, activeCurationController)
         #else
         ItemDetailPhoneContent(
             contentId: destinationID, libraryId: libraryId, onClose: onClose,
@@ -454,10 +487,14 @@ private struct ItemDetailPhoneContent: View {
 
     let onResolveSeries: ((SeriesDetailContext) -> Void)?
     let onSeriesSelection: ((SeriesDetailContext) -> Void)?
+    #if os(iOS)
+    let onContentIdReplaced: ((String) -> Void)?
+    #endif
 
     init(
         contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: SeriesDetailContext?,
-        onResolveSeries: ((SeriesDetailContext) -> Void)?, onSeriesSelection: ((SeriesDetailContext) -> Void)?
+        onResolveSeries: ((SeriesDetailContext) -> Void)?, onSeriesSelection: ((SeriesDetailContext) -> Void)?,
+        onContentIdReplaced: ((String) -> Void)? = nil
     ) {
         self.contentId = contentId
         self.libraryId = libraryId
@@ -465,6 +502,9 @@ private struct ItemDetailPhoneContent: View {
         self.resumeContext = resumeContext
         self.onResolveSeries = onResolveSeries
         self.onSeriesSelection = onSeriesSelection
+        #if os(iOS)
+        self.onContentIdReplaced = onContentIdReplaced
+        #endif
         // Paint cached content on the first frame, so a warm visit pushes a
         // filled page rather than an empty one that fills in from `.task`.
         let viewModel = ItemDetailViewModel(libraryId: libraryId)
@@ -731,6 +771,20 @@ private struct ItemDetailPhoneContent: View {
             guard hasStartedDetailLoad else { return }
             viewModel.reloadItemCollections()
         }
+        #if os(iOS)
+        .metadataDetailReload(
+            contentId: contentId,
+            seriesId: viewModel.detail?.seriesId,
+            isEnabled: hasStartedDetailLoad,
+            onReplaceContentId: onContentIdReplaced
+        ) {
+            Task {
+                viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
+                    ?? viewModel.initialResumeSeasonNumber
+                await viewModel.loadDetail(contentId: contentId)
+            }
+        }
+        #endif
         .alert(
             Text(.detailOfflineChoiceTitle),
             isPresented: Binding(

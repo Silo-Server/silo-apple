@@ -173,6 +173,10 @@ struct MediaCard: View {
         }
     }
 
+    #if os(iOS)
+    @Environment(\.metadataCurationController) private var envCurationController
+    #endif
+
     /// This card's own artwork, so the detail zooms from the card that was
     /// tapped even when the same title is in two rows.
     @State private var zoomSourceID = UUID()
@@ -272,7 +276,11 @@ struct MediaCard: View {
     }
 
     private var hasIOSContextActions: Bool {
+        #if os(iOS)
+        hasStateActions || onRemoveFromContinueWatching != nil || allowedCardCuration != nil
+        #else
         hasStateActions || onRemoveFromContinueWatching != nil
+        #endif
     }
 
     /// Same action set (and ordering) as the tvOS `FocusableMediaCard` menu:
@@ -281,6 +289,14 @@ struct MediaCard: View {
     private var iosContextActions: some View {
         stateMenu
 
+        #if os(iOS)
+        if let curation = allowedCardCuration {
+            MetadataCardManageMenu(target: curation.target, capabilities: curation.capabilities) { presentation in
+                (envCurationController ?? MetadataCurationController.sharedCardHost).open(presentation)
+            }
+        }
+        #endif
+
         if let onRemoveFromContinueWatching {
             Button(role: .destructive) {
                 onRemoveFromContinueWatching()
@@ -288,6 +304,22 @@ struct MediaCard: View {
                 Label(.cardMenuRemoveContinueWatching, systemImage: "xmark.circle")
             }
         }
+    }
+    #endif
+
+    #if os(iOS)
+    private var allowedCardCuration: (target: MetadataCurationTarget, capabilities: MetadataCurationTarget.CardCapabilities)? {
+        guard boxSet == nil, seriesContext == nil, let contentId else { return nil }
+        guard let target = MetadataCurationTarget.fromCard(
+            contentId: contentId,
+            mediaType: mediaType,
+            title: title,
+            year: year,
+            libraryId: browseLibraryId,
+            posterUrl: posterUrl
+        ) else { return nil }
+        let capabilities = target.cardCapabilities()
+        return capabilities.hasAny ? (target, capabilities) : nil
     }
     #endif
 

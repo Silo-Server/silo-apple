@@ -833,6 +833,13 @@ struct ItemDetail: Codable {
     let episodeNumber: Int?
     let episodeCount: Int?
     let airDate: String?
+    /// Series broadcast time and IANA timezone from v2 detail reads.
+    var airTime: String? = nil
+    var airTimezone: String? = nil
+    /// Local folder paths on the server for a series (curators/admins).
+    var folderPaths: [String]? = nil
+    /// `MetadataField` enum values locked against automatic provider refreshes.
+    var lockedFields: [Int]? = nil
     /// The series' episode labels, on a series, season or episode detail:
     /// "air_date" when its numbers are synthetic (see `EpisodeLabel`).
     var episodeLabels: String? = nil

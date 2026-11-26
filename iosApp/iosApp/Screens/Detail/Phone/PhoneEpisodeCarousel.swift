@@ -17,6 +17,11 @@ struct PhoneEpisodeCarousel: View {
     var watchlistStates: [String: Bool] = [:]
     var onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)? = nil
     var onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)? = nil
+    #if os(iOS)
+    var seriesDetail: ItemDetail? = nil
+    var libraryId: Int? = nil
+    var curationController: MetadataCurationController? = nil
+    #endif
 
     /// The last real page height is retained while a new season is loading.
     /// Without this, replacing the carousel with a small spinner collapses the
@@ -35,6 +40,25 @@ struct PhoneEpisodeCarousel: View {
                     .padding(.horizontal, SiloTheme.safePadding)
                     .padding(.vertical, 12)
             } else {
+                #if os(iOS)
+                PhoneEpisodeRail(
+                    episodes: episodes,
+                    onSelect: onSelect,
+                    onPlay: onPlay,
+                    currentContentId: currentContentId,
+                    episodeLabels: episodeLabels,
+                    selectsCenteredEpisode: selectsCenteredEpisode,
+                    onSetWatched: onSetWatched,
+                    isUpdatingWatched: isUpdatingWatched,
+                    favoriteStates: favoriteStates,
+                    watchlistStates: watchlistStates,
+                    onSetFavorite: onSetFavorite,
+                    onSetWatchlist: onSetWatchlist,
+                    seriesDetail: seriesDetail,
+                    libraryId: libraryId,
+                    curationController: curationController
+                )
+                #else
                 PhoneEpisodeRail(
                     episodes: episodes,
                     onSelect: onSelect,
@@ -49,6 +73,7 @@ struct PhoneEpisodeCarousel: View {
                     onSetFavorite: onSetFavorite,
                     onSetWatchlist: onSetWatchlist
                 )
+                #endif
             }
         }
         .frame(
