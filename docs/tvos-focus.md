@@ -54,18 +54,15 @@ actionable item can be a real focus target.
   outside its scroll view's bounds, so a row that pins the focused card to its
   leading edge must extend the scroll view one card past the visible edge
   (and mask the overflow) or the previous card is unreachable.
-- A vertical feed that pins the focused row to its top edge, like
-  `TVSkylineSectionFeed`, can't use a `LazyVStack`. The row above the resting
-  one sits outside the scroll view's bounds and unloads, and a quick run of Up
-  presses outruns its reload: the last press finds no row and lands on the top
-  bar. That feed keeps its rows in a `VStack` and builds only the first row and
-  those next to the focused one; the rest are empty spacers of their last
-  measured height, or the average when never built. Building every row fixes
-  focus too, but its memory grows with the row count.
-- A row built outside the visible band needs its leading cards built too. A
-  `LazyHStack` there builds none, and Up or Down into the row then lands on its
-  middle card instead of the one under focus, so `MediaRow` and
-  `TVCollectionsRow` build their first ten cards eagerly on tvOS.
+- A vertical feed in a lazy stack, like `TVSkylineSectionFeed`, can't keep
+  the rows above loaded through a quick run of Up presses: loading follows the
+  scroll animation, which falls behind presses about 230 ms apart. An Up from
+  a row below the first can then reach the top bar. This is the one place the
+  shell moves focus after a native move: the page publishes
+  `TVPageFocusBelowFirstRowKey`, and the shell hands such an arrival back to
+  the page's first row. A non-lazy stack keeps the rows above loaded too, but
+  every scroll frame then updates every row, which made navigation noticeably
+  slower on older Apple TVs.
 
 Good local examples:
 

@@ -278,6 +278,9 @@ struct TVMainTabView: View {
     /// (`TVPagePanelOpenKey`), so Up from the panel's first row stays in the
     /// panel. An explicit bar claim (`focusTopMenuIfVisible`) lifts it.
     @State private var isBarLockedByPagePanel = false
+    /// The page's card focus was last on a row below its first
+    /// (`TVPageFocusBelowFirstRowKey`).
+    @State private var isPageFocusBelowFirstRow = false
     /// True while a route pushed *from the bar* (search, profile/For You
     /// panel items) is on the stack. When the stack pops back to root,
     /// focus returns to the bar — the explicit "next owner" choice
@@ -342,6 +345,9 @@ struct TVMainTabView: View {
                     .prefersDefaultFocus(router.path.isEmpty, in: shellFocusNamespace)
                     .onPreferenceChange(TVPagePanelOpenKey.self) { isOpen in
                         isBarLockedByPagePanel = isOpen
+                    }
+                    .onPreferenceChange(TVPageFocusBelowFirstRowKey.self) { isBelow in
+                        isPageFocusBelowFirstRow = isBelow
                     }
                     .navigationDestination(for: Route.self) { route in
                         routeContent(for: route)
@@ -520,6 +526,12 @@ struct TVMainTabView: View {
             guard isFocused, isTopMenuFocusSuppressed else { return }
             unlockBar()
             isTopMenuFocusSuppressed = false
+            // Up from a row below the first should have landed on the row
+            // above. Reaching the bar means a quick run of presses outran the
+            // rows loading above it (#1152): hand focus back to the page.
+            if isPageFocusBelowFirstRow, router.path.isEmpty {
+                enterContentFromBar()
+            }
         }
         .onChange(of: topMenuFocusRelay.request) { _, _ in
             focusTopMenuIfVisible()
