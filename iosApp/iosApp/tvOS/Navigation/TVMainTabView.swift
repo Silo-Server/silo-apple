@@ -524,14 +524,16 @@ struct TVMainTabView: View {
         // stop entry claims, and Menu/Back and dwell work from the bar.
         .onChange(of: isTopMenuFocused) { _, isFocused in
             guard isFocused, isTopMenuFocusSuppressed else { return }
-            unlockBar()
-            isTopMenuFocusSuppressed = false
             // Up from a row below the first should have landed on the row
             // above. Reaching the bar means a quick run of presses outran the
-            // rows loading above it (#1152): hand focus back to the page.
+            // rows loading above it (#1152): hand focus back to the page,
+            // which keeps the bar suppressed.
             if isPageFocusBelowFirstRow, router.path.isEmpty {
                 enterContentFromBar()
+                return
             }
+            unlockBar()
+            isTopMenuFocusSuppressed = false
         }
         .onChange(of: topMenuFocusRelay.request) { _, _ in
             focusTopMenuIfVisible()

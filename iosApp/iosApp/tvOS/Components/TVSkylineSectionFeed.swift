@@ -51,9 +51,10 @@ struct TVSkylineSectionFeed: View {
     /// The row that owns card focus or its context-menu dismissal flow. Unlike
     /// the marquee preview, this is cleared when focus moves into chrome.
     @State private var focusRestorationOwnerSectionId: String?
-    /// Card focus was last on a row below the first. Written only when it
-    /// flips, so moving between rows doesn't re-evaluate this body.
-    @State private var isFocusBelowFirstRow = false
+    /// The row whose card last took focus. Unlike the restoration owner, it
+    /// holds while the menu has focus, so the shell can tell where an Up
+    /// that reached the bar came from.
+    @State private var focusedRowSectionId: String?
     /// The card the marquee content was last built from, kept so a spoiler
     /// settings change can rebuild it. The settings load after sign-in and
     /// can land after Home has already seeded the marquee.
@@ -223,17 +224,17 @@ struct TVSkylineSectionFeed: View {
             // Every other vertical move remains native.
             onMoveUp: isFirstRow ? onTopMenuFocusRequest : nil,
             onItemFocus: { item in
-                noteCardFocus(rowIndex: index)
+                noteCardFocus(in: section.id)
                 focusRestorationOwnerSectionId = section.id
                 previewFocusedItem(item, in: section)
             },
             // The marquee keeps the last card it previewed.
             onExploreAllFocus: {
-                noteCardFocus(rowIndex: index)
+                noteCardFocus(in: section.id)
                 focusRestorationOwnerSectionId = section.id
             },
             onCollectionFocus: { card in
-                noteCardFocus(rowIndex: index)
+                noteCardFocus(in: section.id)
                 focusRestorationOwnerSectionId = section.id
                 previewFocusedCollection(card, in: section)
             },
@@ -294,9 +295,16 @@ struct TVSkylineSectionFeed: View {
         lastAppliedRequest = request
     }
 
-    private func noteCardFocus(rowIndex: Int) {
-        let isBelow = rowIndex > 0
-        if isFocusBelowFirstRow != isBelow { isFocusBelowFirstRow = isBelow }
+    private func noteCardFocus(in sectionId: String) {
+        if focusedRowSectionId != sectionId { focusedRowSectionId = sectionId }
+    }
+
+    /// Read against the current rows, so a refresh that removes the rows above
+    /// the focused one doesn't leave it marked as below the first.
+    private var isFocusBelowFirstRow: Bool {
+        guard let focusedRowSectionId,
+              let index = sections.firstIndex(where: { $0.id == focusedRowSectionId }) else { return false }
+        return index > 0
     }
 
     private func claimEntryFocus(_ request: Int) {
@@ -304,7 +312,7 @@ struct TVSkylineSectionFeed: View {
               lastAppliedRequest == request,
               let firstSectionId = sections.first?.id else { return }
         focusRestorationOwnerSectionId = firstSectionId
-        noteCardFocus(rowIndex: 0)
+        noteCardFocus(in: firstSectionId)
         contentFocusToken += 1
     }
 

@@ -57,8 +57,8 @@ actionable item can be a real focus target.
 - A vertical feed in a lazy stack, like `TVSkylineSectionFeed`, can't keep
   the rows above loaded through a quick run of Up presses: loading follows the
   scroll animation, which falls behind presses about 230 ms apart. An Up from
-  a row below the first can then reach the top bar. This is the one place the
-  shell moves focus after a native move: the page publishes
+  a row below the first can then reach the top bar. As an exception to the
+  rule against moving focus after a native move, the page publishes
   `TVPageFocusBelowFirstRowKey`, and the shell hands such an arrival back to
   the page's first row. A non-lazy stack keeps the rows above loaded too, but
   every scroll frame then updates every row, which made navigation noticeably

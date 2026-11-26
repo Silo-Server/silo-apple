@@ -224,6 +224,16 @@ struct TVRequestsPage: View {
             lastFocusedKey = key
             preview(key)
         }
+        .preference(key: TVPageFocusBelowFirstRowKey.self, value: isFocusBelowFirstRow(rows))
+    }
+
+    /// The last focused card sits on a row below the first, read against the
+    /// current rows. Up that reaches the bar from there is handed back to the
+    /// first row (#1152), as on Home.
+    private func isFocusBelowFirstRow(_ rows: [TVRequestRow]) -> Bool {
+        guard let lastFocusedKey,
+              let index = rows.firstIndex(where: { $0.contains(key: lastFocusedKey) }) else { return false }
+        return index > 0
     }
 
     /// The Skyline row band: native vertical scrolling clipped to the lower
