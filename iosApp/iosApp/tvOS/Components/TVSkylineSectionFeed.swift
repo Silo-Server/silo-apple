@@ -53,8 +53,11 @@ struct TVSkylineSectionFeed: View {
     @State private var focusRestorationOwnerSectionId: String?
     /// The row whose card last took focus. Unlike the restoration owner, it
     /// holds while the menu has focus, so the shell can tell where an Up
-    /// that reached the bar came from.
+    /// that reached the bar came from. The body never reads it.
     @State private var focusedRowSectionId: String?
+    /// That row sits below the first of the current rows. Written only when
+    /// it flips, so moving between rows doesn't re-evaluate this body.
+    @State private var isFocusBelowFirstRow = false
     /// The card the marquee content was last built from, kept so a spoiler
     /// settings change can rebuild it. The settings load after sign-in and
     /// can land after Home has already seeded the marquee.
@@ -120,6 +123,7 @@ struct TVSkylineSectionFeed: View {
         // token re-fires once they exist.
         .onChange(of: sections.map(\.id)) { oldIds, newIds in
             handOffFocusRestoration(from: oldIds, to: newIds)
+            updateFocusBelowFirstRow()
             seedMarqueeFromFirstItem()
             if let pending = pendingFocusRequest { requestEntryFocus(pending) }
         }
@@ -297,14 +301,15 @@ struct TVSkylineSectionFeed: View {
 
     private func noteCardFocus(in sectionId: String) {
         if focusedRowSectionId != sectionId { focusedRowSectionId = sectionId }
+        updateFocusBelowFirstRow()
     }
 
     /// Read against the current rows, so a refresh that removes the rows above
     /// the focused one doesn't leave it marked as below the first.
-    private var isFocusBelowFirstRow: Bool {
-        guard let focusedRowSectionId,
-              let index = sections.firstIndex(where: { $0.id == focusedRowSectionId }) else { return false }
-        return index > 0
+    private func updateFocusBelowFirstRow() {
+        let index = focusedRowSectionId.flatMap { id in sections.firstIndex { $0.id == id } }
+        let isBelow = (index ?? 0) > 0
+        if isFocusBelowFirstRow != isBelow { isFocusBelowFirstRow = isBelow }
     }
 
     private func claimEntryFocus(_ request: Int) {
