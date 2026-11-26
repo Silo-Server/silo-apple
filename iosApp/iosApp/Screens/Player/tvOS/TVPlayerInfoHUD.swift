@@ -186,12 +186,15 @@ struct TVPlayerInfoHUD: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             edgeStrip(.next)
         }
-        // Width sits at ~60% of a 1920pt tvOS frame. Height is fixed at the
-        // tallest pane's needs — content-hugging here would resize the panel
-        // on every tab swap, which cascades into a SwiftUI relayout pass.
-        // Top-aligned so short panes (Video with few rows) keep their column
-        // headers pinned to the top instead of floating mid-panel.
-        .frame(maxWidth: 1100, minHeight: 380, maxHeight: 380, alignment: .top)
+        // Two widths, not one per tab: the two-column pages (Info, Stats)
+        // sit at ~60% of a 1920pt tvOS frame, and the one-column pages at
+        // about the tab row's width so a row's label and value stay close.
+        // Height is fixed at the tallest pane's needs — content-hugging
+        // here would resize the panel on every tab swap, which cascades
+        // into a SwiftUI relayout pass. Top-aligned so short panes (Video
+        // with few rows) keep their headers pinned to the top instead of
+        // floating mid-panel.
+        .frame(maxWidth: panelWidth, minHeight: 380, maxHeight: 380, alignment: .top)
         // Glass carries enough light that the panel lifts off the video
         // without extra dark tint; the stroke + shadow still define the
         // edge over a fully-black frame. Low-power TVs draw a flat
@@ -203,6 +206,13 @@ struct TVPlayerInfoHUD: View {
         )
         .shadow(color: .black.opacity(0.5), radius: 20, y: 10)
         .focusSection()
+    }
+
+    private var panelWidth: CGFloat {
+        switch activeTab {
+        case .info, .stats: 1100
+        default: 780
+        }
     }
 
     @ViewBuilder
