@@ -631,6 +631,11 @@ private struct ItemDetailPhoneContent: View {
         .onChange(of: PlaybackConnection.shared.tier) { previousTier, _ in
             reconcileTracksAfterConnectionChange(previousTier: previousTier)
         }
+        #if !os(tvOS)
+        // A launch that couldn't read the download capability shows Download
+        // here instead of after a relaunch. Android reads it the same way.
+        .task(id: contentId) { await DownloadManager.shared.refreshCapabilityIfStale() }
+        #endif
         .task(id: contentId) {
             // Returning from the player restarts this task. Keep the episode
             // and season the page was showing instead of the entry context.
