@@ -877,8 +877,11 @@ private struct VideoPane: View {
                         }
                         .focused($focusedField, equals: .speed)
 
-                        HUDToggleRow(label: .optionsAutoplayNext, isOn: viewModel.settings.autoPlayNextEpisode) {
-                            viewModel.settings.setAutoPlayNextEpisode($0)
+                        // Hidden while Show Next Up Off keeps anything from playing on.
+                        if viewModel.nextUpOffersAutoPlay {
+                            HUDToggleRow(label: .optionsAutoplayNext, isOn: viewModel.settings.autoPlayNextEpisode) {
+                                viewModel.settings.setAutoPlayNextEpisode($0)
+                            }
                         }
                     }
                 }

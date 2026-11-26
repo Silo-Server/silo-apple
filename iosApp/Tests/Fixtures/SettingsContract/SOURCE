@@ -1,6 +1,6 @@
 repository=https://github.com/Silo-Server/silo-server
 path=contracts/settings/v1
-manifest_revision=28
+manifest_revision=31
 fixture_version=1
 
 Both files are byte-identical copies of the server's canonical settings
@@ -14,10 +14,15 @@ vendored manifest's revision, and the generated SettingKey.revision stop
 agreeing, which is the whole point of carrying the pair rather than the
 fixture alone.
 
-conformance.json commit=f5d61bb2b0dc33fedd2e1b6752a9827b838ecae8
-manifest.json    commit=f5d61bb2b0dc33fedd2e1b6752a9827b838ecae8
-copied from      commit=f5d61bb2b0dc33fedd2e1b6752a9827b838ecae8 (Silo-Server/silo-server#3723)
-generated with   commit=f5d61bb2b0dc33fedd2e1b6752a9827b838ecae8 (cmd/settingsgen -lang swift)
+conformance.json commit=e812b87fa99733d36585b53aae4091f992375a1d
+manifest.json    commit=e812b87fa99733d36585b53aae4091f992375a1d
+copied from      commit=e812b87fa99733d36585b53aae4091f992375a1d (Silo-Server/silo-server#4501, unmerged)
+generated with   commit=e812b87fa99733d36585b53aae4091f992375a1d (cmd/settingsgen -lang swift)
+
+Revision 31 adds playback.next_up_enabled (boolean, default true, profile
+and profile_device scopes): false turns Next Up off. Revision 30 raised the
+cellular quality default to (auto, 10000) (Silo-Server/silo-server#5135).
+Revision 29 changed the card overlay schema (an availability badge).
 
 Revision 28 adds ui.app_language (nullable language_tag, profile and
 profile_device scopes, null follows the device) and the advisory
@@ -39,4 +44,4 @@ contract rather than by a hand-copied table.
 
 Android vendors the same pair at
 shared/src/commonTest/resources/settings/v1/ in silo-android; the two SOURCE
-notes are meant to stay in step. This copy is revision 28.
+notes are meant to stay in step. This copy is revision 31.

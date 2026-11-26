@@ -284,9 +284,9 @@ struct PlaybackSettingsView: View {
             choiceRow(
                 .settingsNextUpTitle,
                 .nextUpPrompt,
-                value: nextUpPromptOptions.first { $0.0 == viewModel.nextUpPromptSeconds }?.1
+                value: nextUpChoices.first { $0.id == viewModel.nextUpChoiceTag }?.label
                     ?? .settingsNextUpSecondsBeforeEnd(viewModel.nextUpPromptSeconds),
-                options: nextUpPromptOptions.map { SettingsChoice(id: String($0.0), label: $0.1) }
+                options: nextUpChoices
             )
 
             // Three-way (labels fixed by the contract).
@@ -423,14 +423,18 @@ struct PlaybackSettingsView: View {
         ]
     }
 
-    private var nextUpPromptOptions: [(Int, LocalizedStringResource)] {
-        [
-            (0, .settingsNextUpAtEnd),
+    /// Off first where the server stores it, then the timings.
+    private var nextUpChoices: [SettingsChoice] {
+        let off = viewModel.offersNextUpOff
+            ? [SettingsChoice(id: SettingsViewModel.offTag, label: .settingsOff)]
+            : []
+        return off + [
+            (0, LocalizedStringResource.settingsNextUpAtEnd),
             (10, .settingsNextUpSecondsBeforeEnd(10)),
             (30, .settingsNextUpSecondsBeforeEnd(30)),
             (60, .settingsNextUpMinutesBeforeEnd(1)),
             (120, .settingsNextUpMinutesBeforeEnd(2)),
-        ]
+        ].map { SettingsChoice(id: String($0.0), label: $0.1) }
     }
 }
 

@@ -1290,13 +1290,22 @@ struct PlayerNextUpScreen: View {
     }
 
     /// The auto-play toggle, with Stop shuffling beside it during a shuffle.
+    /// Hidden while Show Next Up Off keeps Next Up from auto-playing.
+    @ViewBuilder
     private var autoPlayFooter: some View {
-        HStack(spacing: isTV ? 12 : 4) {
-            autoPlayToggle
-            if viewModel.shuffleState != nil {
-                stopShufflingButton
+        if viewModel.nextUpOffersAutoPlay {
+            HStack(spacing: isTV ? 12 : 4) {
+                autoPlayToggle
+                if viewModel.shuffleState != nil {
+                    stopShufflingButton
+                }
             }
         }
+    }
+
+    /// Whether the panel shows the auto-play toggle, which tvOS focus moves to.
+    private var showsAutoPlayToggle: Bool {
+        viewModel.nextUpEpisode != nil && viewModel.nextUpOffersAutoPlay
     }
 
     private var stopShufflingButton: some View {
@@ -1528,7 +1537,7 @@ struct PlayerNextUpScreen: View {
                 }
                 .siloSecondaryButton()
                 .frame(minHeight: 44)
-                if compact && hasNextEpisode && viewModel.shuffleState == nil {
+                if compact && hasNextEpisode && viewModel.shuffleState == nil && viewModel.nextUpOffersAutoPlay {
                     // Keep Watching stretches, so the toggle claims its width
                     // first; a longer translation would otherwise truncate it.
                     autoPlayToggle.layoutPriority(1)
@@ -1643,12 +1652,12 @@ struct PlayerNextUpScreen: View {
 
     private func focusBelowActions() {
         // Without the Auto-play toggle, Down enters On Deck natively.
-        guard viewModel.nextUpEpisode != nil else { return }
+        guard showsAutoPlayToggle else { return }
         focusedTarget = .autoPlay
     }
 
     private func focusAboveOnDeck() {
-        if viewModel.nextUpEpisode != nil {
+        if showsAutoPlayToggle {
             focusedTarget = .autoPlay
             return
         }

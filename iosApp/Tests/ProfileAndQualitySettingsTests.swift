@@ -431,6 +431,61 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertFalse(SiloQualityPresets.resolutionChoices.contains("original"))
     }
 
+    // MARK: - Show Next Up
+
+    /// Off is one more Show Next Up choice. It is offered, read and sent only
+    /// where the server defines `playback.next_up_enabled`, and going back to
+    /// the profile clears it with the timing.
+    func testNextUpOffIsOfferedOnlyWhereTheServerHasIt() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.nextUpEnabledRevision - 1
+        await harness.settings.refreshFromServer()
+        XCTAssertFalse(harness.settings.offersNextUpOff)
+        XCTAssertFalse(harness.transport.effectiveCalls().contains { $0.contains(.playbackNextUpEnabled) })
+        harness.settings.setNextUpEnabled(false)
+        XCTAssertTrue(harness.settings.showsNextUp, "an older server keeps Next Up on")
+
+        harness.transport.revision = SettingKey.nextUpEnabledRevision
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.offersNextUpOff)
+        harness.settings.setNextUpEnabled(false)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertFalse(harness.settings.showsNextUp)
+        XCTAssertEqual(harness.transport.writesByKey()[.playbackNextUpEnabled]?.value, .bool(false))
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.nextUpPrompt))
+
+        // Relaunched before any read: the saved Off still applies, stays on
+        // offer, and choosing a time can turn Next Up back on.
+        let relaunched = PlayerSettings(
+            defaults: harness.defaults,
+            flusher: PlayerSettingsFlusher(transport: harness.transport)
+        )
+        XCTAssertFalse(relaunched.showsNextUp)
+        XCTAssertTrue(relaunched.offersNextUpOff)
+        relaunched.setNextUpEnabled(true)
+        XCTAssertTrue(relaunched.showsNextUp)
+
+        await harness.settings.useProfileSetting(.nextUpPrompt)
+        XCTAssertTrue(harness.transport.deletes().contains(.playbackNextUpEnabled))
+        XCTAssertTrue(harness.transport.deletes().contains(.playbackNextUpPromptSeconds))
+    }
+
+    /// Off saved on a server that stores it isn't left behind as this
+    /// device's own value once the server no longer defines the key.
+    func testNextUpOffIsNoDeviceValueWhereTheServerLacksTheKey() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.nextUpEnabledRevision
+        await harness.settings.refreshFromServer()
+        harness.settings.setNextUpEnabled(false)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.nextUpPrompt))
+
+        harness.transport.revision = SettingKey.nextUpEnabledRevision - 1
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.showsNextUp)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.nextUpPrompt))
+    }
+
     // MARK: - Cellular quality
 
     private static func cellularRows(
@@ -547,17 +602,17 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     }
 
     #if os(iOS)
-    /// A current server's cellular pair comes from a batch of its own, so the
-    /// player batch stays readable on servers that predate the pair.
-    func testACurrentServersCellularPairIsReadInItsOwnBatch() async throws {
+    /// A current server's cellular pair comes from the revision-gated batch,
+    /// so the player batch stays readable on servers that predate the pair.
+    func testACurrentServersCellularPairIsReadApartFromThePlayerBatch() async throws {
         let harness = try PlayerSettingsHarness()
         harness.transport.effective = Self.cellularRows(resolution: "480p", bitrateKbps: 1_500)
         await harness.settings.refreshFromServer()
 
         let calls = harness.transport.effectiveCalls()
-        XCTAssertEqual(calls.count, 3, "the player batch, the cellular pair and the buffering mode")
+        XCTAssertEqual(calls.count, 3, "the player batch, the revision-gated keys and the buffering mode")
         XCTAssertFalse(calls[0].contains(.playbackCellularPreferredQuality))
-        XCTAssertEqual(calls[1], SettingKey.playerCellularQualitySettings)
+        XCTAssertEqual(calls[1], SettingKey.playerCellularQualitySettings + SettingKey.playerNextUpSettings)
         XCTAssertEqual(harness.settings.cellularQualityAxes, AppleQualityAxes(resolution: "480p", bitrateKbps: 1_500))
         XCTAssertFalse(harness.settings.hasDeviceOverride(.cellularQuality), "the profile's value")
     }
@@ -598,7 +653,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(settings.cellularQualityAxes, edited)
 
         transport.onEffectiveValues = { [unowned transport] keys in
-            transport.effectiveError = keys == SettingKey.playerCellularQualitySettings
+            transport.effectiveError = keys == SettingKey.playerCellularQualitySettings + SettingKey.playerNextUpSettings
                 ? .transport(description: "offline")
                 : nil
         }
@@ -610,7 +665,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         // Any failure of the cellular read keeps the holds, including one
         // that would mean "no settings at all" if the player batch said it.
         transport.onEffectiveValues = { [unowned transport] keys in
-            transport.effectiveError = keys == SettingKey.playerCellularQualitySettings
+            transport.effectiveError = keys == SettingKey.playerCellularQualitySettings + SettingKey.playerNextUpSettings
                 ? .serverUpgradeRequired
                 : nil
         }

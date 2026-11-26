@@ -71,6 +71,8 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case playbackIntroSkipMode = "playback.intro_skip_mode"
     /// Maximum bitrate
     case playbackMaxBitrateKbps = "playback.max_bitrate_kbps"
+    /// Show Next Up
+    case playbackNextUpEnabled = "playback.next_up_enabled"
     /// Next up prompt
     case playbackNextUpPromptSeconds = "playback.next_up_prompt_seconds"
     /// Preferred quality
@@ -182,7 +184,7 @@ public enum SettingKey: String, CaseIterable, Sendable {
 }
 
 public extension SettingKey {
-    static let revision = 30
+    static let revision = 31
 
     /// Keys the server stores. The rest never leave the device.
     static let remote: [SettingKey] = [
@@ -205,6 +207,7 @@ public extension SettingKey {
         .playbackCellularPreferredQuality,
         .playbackIntroSkipMode,
         .playbackMaxBitrateKbps,
+        .playbackNextUpEnabled,
         .playbackNextUpPromptSeconds,
         .playbackPreferredQuality,
         .playbackShowForcedSubtitles,

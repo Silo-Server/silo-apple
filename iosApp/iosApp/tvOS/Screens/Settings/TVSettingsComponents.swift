@@ -76,6 +76,9 @@ enum TVSettingsOptions {
     static let deinterlaceFieldRate: [TVSettingsOption] =
         DeinterlaceFieldRatePreference.allCases.map { .init(id: $0.rawValue, label: .verbatim($0.label)) }
 
+    /// Show Next Up's Off, listed first where the server stores it.
+    static let nextUpOff = TVSettingsOption(id: SettingsViewModel.offTag, label: .settingsOff)
+
     static let nextUpPrompt: [TVSettingsOption] = [
         .init(id: "0", label: .settingsNextUpAtEnd),
         .init(id: "10", label: .settingsNextUpSecondsBeforeEnd(10)),

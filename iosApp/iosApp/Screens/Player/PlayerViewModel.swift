@@ -4078,6 +4078,7 @@ class PlayerViewModel {
 
     private func shouldShowNextUpBeforeEnd(at movieTime: Double) -> Bool {
         canShowNextUpScreen
+            && closesAtEndInsteadOfNextUp == false
             && nextShufflePart == nil
             && PlayerNextUpCompletionPolicy.isInPromptWindow(
                 currentTime: movieTime,
@@ -4091,6 +4092,21 @@ class PlayerViewModel {
         guard canShowNextUpScreen else { return }
         stillWatchingGuard.recordViewerAction()
         beginNextUpPostroll(videoEnded: false, source: .hud)
+    }
+
+    /// Show Next Up is off: no Next Up before or at the end, and the player
+    /// closes when the item ends. A shuffle still moves on, and a Watch
+    /// Together room decides for everyone.
+    private var closesAtEndInsteadOfNextUp: Bool {
+        !settings.showsNextUp && shuffleState == nil && !isWatchPartyPlayback
+    }
+
+    /// The prompt window that counts an item as finished. With Show Next Up
+    /// off there is no prompt, so only the end (or a credits skip) finishes
+    /// it, as with Next Up at the end; a Next Up the viewer opens by hand
+    /// doesn't.
+    private var completionPromptSeconds: Int {
+        closesAtEndInsteadOfNextUp ? 0 : settings.nextUpPromptSeconds
     }
 
     private func beginNextUpPostroll(
@@ -4124,11 +4140,18 @@ class PlayerViewModel {
         startNextUpCountdownIfNeeded()
     }
 
+    /// Whether Next Up can auto-play at all, and so shows its Auto-play
+    /// toggle. With Show Next Up off nothing plays on by itself; a Next Up
+    /// the viewer opened waits for Play Now. A shuffle still moves on.
+    var nextUpOffersAutoPlay: Bool {
+        settings.showsNextUp || shuffleState != nil
+    }
+
     /// Auto-play is on and the pick is the next episode or a shuffle's pick.
     /// An On Deck pick is another title the viewer didn't ask to continue
     /// into, so it waits for Play Now.
     private var nextUpPickAutoPlays: Bool {
-        guard settings.autoPlayNextEpisode, let pick = nextUpEpisode else { return false }
+        guard nextUpOffersAutoPlay, settings.autoPlayNextEpisode, let pick = nextUpEpisode else { return false }
         #if !os(macOS)
         // The Mac player has no Next Up screen to wait on, so it never gates.
         guard !stillWatchingGuard.shouldGate(threshold: settings.stillWatchingThreshold) else { return false }
@@ -4646,7 +4669,7 @@ class PlayerViewModel {
             hasReachedEndOfFile: finishedAtEndOfFile,
             currentTime: progressReportPosition,
             duration: duration,
-            promptSeconds: settings.nextUpPromptSeconds,
+            promptSeconds: completionPromptSeconds,
             skippedCredits: skippedCreditsToEnd,
             endedPrematurely: endedPrematurely
         )
@@ -5915,6 +5938,19 @@ class PlayerViewModel {
 
         if !isPremature, let nextPart = nextShufflePart {
             playShufflePart(nextPart)
+            return
+        }
+        // A Next Up the viewer opened stays up, without a countdown. The Mac
+        // player draws no Next Up screen, so there it always closes.
+        #if os(macOS)
+        let keepsOpenNextUp = false
+        #else
+        let keepsOpenNextUp = showNextUpScreen
+        #endif
+        if !isPremature, closesAtEndInsteadOfNextUp, !keepsOpenNextUp {
+            // Ends the session here and closes however the player is shown,
+            // picture in picture included.
+            stopAndClose()
             return
         }
         beginNextUpPostroll(videoEnded: true)
@@ -8492,8 +8528,10 @@ class PlayerViewModel {
     /// Returns false when the caller should finish the item at EOF instead.
     private func presentNextUpOverCredits() -> Bool {
         // A shuffle plays every part of a multi-part item first: skipping
-        // credits finishes the part at EOF, which starts the next one.
+        // credits finishes the part at EOF, which starts the next one. With
+        // Next Up off, finishing at EOF closes the player.
         guard !isWatchPartyPlayback,
+              !closesAtEndInsteadOfNextUp,
               canShowNextUpScreen,
               nextShufflePart == nil,
               !hasReachedEndOfFile,
@@ -9830,7 +9868,7 @@ class PlayerViewModel {
             hasReachedEndOfFile: finishedAtEndOfFile,
             currentTime: reportedPosition,
             duration: duration,
-            promptSeconds: settings.nextUpPromptSeconds,
+            promptSeconds: completionPromptSeconds,
             skippedCredits: skippedCreditsToEnd,
             endedPrematurely: endedPrematurely
         )
@@ -9962,7 +10000,7 @@ class PlayerViewModel {
                 hasReachedEndOfFile: finishedAtEndOfFile,
                 currentTime: currentTime,
                 duration: duration,
-                promptSeconds: settings.nextUpPromptSeconds,
+                promptSeconds: completionPromptSeconds,
                 skippedCredits: skippedCreditsToEnd,
                 endedPrematurely: endedPrematurely
             )

@@ -67,6 +67,8 @@ extension SettingKey {
             return 27
         case .uiAppLanguage:
             return 28
+        case .playbackNextUpEnabled:
+            return Self.nextUpEnabledRevision
         case .catalogMetadataLanguage, .downloadsDefaultQuality, .downloadsKeepWatched,
              .downloadsWifiOnly, .navShowAudiobooks, .playbackAudioLanguage,
              .playbackAutoPlayNext, .playbackAutoPlayNextPreview, .playbackAutoSkipCredits,
@@ -104,6 +106,10 @@ extension SettingKey {
     /// (`playback.cellular_preferred_quality` and
     /// `playback.cellular_max_bitrate_kbps`).
     static let cellularQualityRevision = 20
+
+    /// The manifest revision that added `playback.next_up_enabled` (Show Next
+    /// Up Off).
+    static let nextUpEnabledRevision = 31
 
     /// Whether sending this key depends on the server's manifest revision
     /// because the key is newer than ``minimumServerRevision``: an older
