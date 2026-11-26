@@ -24,6 +24,7 @@ import SwiftUI
 struct TVPlayerInfoHUD: View {
     let viewModel: PlayerViewModel
     @Binding var activeTab: Tab
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var readOnlyPaneIsAtTop = true
     @State private var subtitleOverlayActive = false
     @State private var videoOverlayActive = false
@@ -195,6 +196,7 @@ struct TVPlayerInfoHUD: View {
         // with few rows) keep their headers pinned to the top instead of
         // floating mid-panel.
         .frame(maxWidth: panelWidth, minHeight: 380, maxHeight: 380, alignment: .top)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: panelWidth)
         // Glass carries enough light that the panel lifts off the video
         // without extra dark tint; the stroke + shadow still define the
         // edge over a fully-black frame. Low-power TVs draw a flat
