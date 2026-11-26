@@ -2364,7 +2364,9 @@ private struct HUDTrackRowLabel: View {
                     Text(attributes)
                         .font(.system(size: 17))
                         .foregroundStyle(isFocused ? .black.opacity(0.62) : .white.opacity(0.55))
-                        .lineLimit(1)
+                        // Two lines: a commentary track's title fills the
+                        // narrow panel and would cut off its format.
+                        .lineLimit(2)
                 }
             }
             Spacer(minLength: 8)
