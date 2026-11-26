@@ -54,6 +54,8 @@ struct TVMovieDetailView: View {
     var canRate = false
     /// Nil removes the rating. Nil hides the star button.
     var onSetRating: ((Int?) -> Void)? = nil
+    var libraryId: Int? = nil
+    var curationController: TVMetadataCurationController? = nil
 
     @Namespace private var detailFocusNamespace
     @FocusState private var focusedAction: TVDetailAction?
@@ -376,6 +378,10 @@ struct TVMovieDetailView: View {
                         startsSection: !startedUtilitySection
                     ))
                 }
+                if curationController != nil,
+                   let manageItem = TVMetadataManageMenuBuilder.menuItem(for: detail) {
+                    items.append(manageItem)
+                }
                 return items
             },
             onOpen: {
@@ -402,6 +408,15 @@ struct TVMovieDetailView: View {
                     if let model = collectionsModel {
                         Task { await model.toggle(collectionId: colId) }
                     }
+                    return
+                }
+                if let curationController,
+                   TVMetadataManageMenuBuilder.handleSelection(
+                       item.id,
+                       detail: detail,
+                       libraryId: libraryId,
+                       controller: curationController
+                   ) {
                     return
                 }
                 switch MoreAction(rawValue: item.id) {

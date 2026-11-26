@@ -1592,7 +1592,8 @@ struct APIv2Client: Sendable {
     /// dispatch gate and owner checks), and `HTTPError.requestIdentityChanged`
     /// or `.authorityChanged` when the request was sent and its outcome
     /// discarded.
-    func ownedRequest(method: String, path: String, body: Data? = nil, contentType: String = "application/json",
+    func ownedRequest(method: String, path: String, query: [String: String] = [:], body: Data? = nil,
+                      contentType: String = "application/json",
                       timeout: HTTPTimeout = .standard,
                       auth: CapturedOrdinaryRequestAuth) async throws -> HTTPRawResponse {
         try await gate()
@@ -1602,7 +1603,7 @@ struct APIv2Client: Sendable {
             let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
             return try await tokenStore.withOwnerFence(auth) {
                 try await mapErrors {
-                    try await http.requestData(method: method, path: path, body: body, contentType: contentType,
+                    try await http.requestData(method: method, path: path, query: query, body: body, contentType: contentType,
                         headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:], timeout: timeout,
                         requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth,
                         dispatchRecord: dispatch)

@@ -17,6 +17,9 @@ struct PhoneEpisodeRail: View {
     var watchlistStates: [String: Bool] = [:]
     var onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)? = nil
     var onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)? = nil
+    var seriesDetail: ItemDetail? = nil
+    var libraryId: Int? = nil
+    var curationController: MetadataCurationController? = nil
 
     private var uiCustomization: UICustomizationPreferences { .shared }
     @State private var visibleEpisodeId: String?
@@ -50,7 +53,10 @@ struct PhoneEpisodeRail: View {
                         isFavorite: favoriteStates[episode.contentId] ?? false,
                         inWatchlist: watchlistStates[episode.contentId] ?? false,
                         onSetFavorite: onSetFavorite,
-                        onSetWatchlist: onSetWatchlist
+                        onSetWatchlist: onSetWatchlist,
+                        seriesDetail: seriesDetail,
+                        libraryId: libraryId,
+                        curationController: curationController
                     )
                     .id(episode.contentId)
                 }
@@ -161,6 +167,9 @@ private struct PhoneEpisodeCard: View {
     let inWatchlist: Bool
     let onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)?
     let onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)?
+    let seriesDetail: ItemDetail?
+    let libraryId: Int?
+    let curationController: MetadataCurationController?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var actionFeedback = MediaActionFeedback()
@@ -225,6 +234,14 @@ private struct PhoneEpisodeCard: View {
                     { actionFeedback.perform { await update(episode.contentId, !inWatchlist) } }
                 }
             )
+            if let seriesDetail, let curationController {
+                MetadataEpisodeContextMenuSection(
+                    episode: episode,
+                    seriesDetail: seriesDetail,
+                    libraryId: libraryId,
+                    controller: curationController
+                )
+            }
         }
     }
 

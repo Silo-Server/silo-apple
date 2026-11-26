@@ -86,6 +86,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// The viewer's own rating of the whole series, never an episode; nil
     /// draws no rating control.
     var ratingSlot: PhoneRatingSlot? = nil
+    var libraryId: Int? = nil
+    var curationController: MetadataCurationController? = nil
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
@@ -461,6 +463,15 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }
         .disabled(isFindingTrailers)
         NotInterestedMenuButton(isNotInterested: isNotInterested, action: onToggleNotInterested)
+        if let curationController {
+            MetadataManageMenu(
+                detail: detail,
+                libraryId: libraryId,
+                selectedSeason: selectedSeason,
+                selectedEpisode: nextUpEpisode,
+                controller: curationController
+            )
+        }
     }
 
     private var canShuffleSeries: Bool {
@@ -729,7 +740,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     selected: selectedSeason,
                     onSelect: handleSeasonSelection,
                     onSetWatched: setSeasonWatched,
-                    isUpdatingWatched: isUpdatingWatched
+                    isUpdatingWatched: isUpdatingWatched,
+                    seriesDetail: detail,
+                    libraryId: libraryId,
+                    curationController: curationController
                 )
             }
 
@@ -778,7 +792,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                             favoriteStates: episodeFavoriteStates,
                             watchlistStates: episodeWatchlistStates,
                             onSetFavorite: onSetEpisodeFavorite,
-                            onSetWatchlist: onSetEpisodeWatchlist
+                            onSetWatchlist: onSetEpisodeWatchlist,
+                            seriesDetail: detail,
+                            libraryId: libraryId,
+                            curationController: curationController
                         )
                     }
                 }

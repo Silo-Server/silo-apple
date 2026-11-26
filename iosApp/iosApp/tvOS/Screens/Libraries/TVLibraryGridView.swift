@@ -129,6 +129,9 @@ struct TVLibraryGridView: View {
             await viewModel.loadInitial()
             await viewModel.loadFacetsIfNeeded()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .metadataItemDidChange)) { _ in
+            Task { await viewModel.refreshInPlace() }
+        }
         .onDisappear { viewModel.cancelPosterPrefetch() }
     }
 

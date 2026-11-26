@@ -210,6 +210,14 @@ enum APIv2MutationCatalog {
         .init("POST", "/api/v2/diagnostics/reports", .nonRetryable),
         .init("POST", "/api/v2/diagnostics/reports/uploads", .nonRetryable),
         .init("POST", "/api/v2/diagnostics/reports/uploads/{upload_id}/complete", .nonRetryable),
+        // Metadata curation
+        .init("PATCH", "/api/v2/admin/items/{id}/metadata", .nonRetryable),
+        .init("POST", "/api/v2/admin/items/{id}/refresh-metadata", .nonRetryable),
+        .init("POST", "/api/v2/admin/items/{id}/match/search", .nonRetryable),
+        .init("POST", "/api/v2/admin/items/{id}/match/apply", .nonRetryable),
+        .init("POST", "/api/v2/admin/items/{id}/images/apply", .nonRetryable),
+        .init("POST", "/api/v2/admin/items/{id}/images/upload", .nonRetryable),
+        .init("POST", "/api/v2/admin/items/{id}/metadata-translation", .nonRetryable),
     ]
 
     /// The contract permits a replay; the client sends these once.

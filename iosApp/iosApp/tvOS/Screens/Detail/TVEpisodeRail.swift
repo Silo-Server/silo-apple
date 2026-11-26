@@ -45,6 +45,8 @@ struct TVEpisodeRail: View {
     var isSelectingSeason = false
     var onRequestPrevious: (() -> Void)? = nil
     var onRequestNext: (() -> Void)? = nil
+    var seriesDetail: ItemDetail? = nil
+    var libraryId: Int? = nil
 
     private struct SeasonScrollUpdate: Equatable {
         let request: Int
@@ -237,7 +239,9 @@ struct TVEpisodeRail: View {
             onSetWatchlist: onSetWatchlist,
             initialInWatchlist: watchlistStates[episode.contentId] ?? false,
             cardHeightRatio: cardHeightRatio,
-            usesAnchoredStyle: anchorsFocusedCard
+            usesAnchoredStyle: anchorsFocusedCard,
+            seriesDetail: seriesDetail,
+            libraryId: libraryId
         )
     }
 
@@ -537,6 +541,8 @@ struct TVEpisodeCard: View {
     /// The Series carousel's look: compact caption and Home's artwork-only
     /// lift.
     var usesAnchoredStyle = false
+    var seriesDetail: ItemDetail? = nil
+    var libraryId: Int? = nil
 
     @State private var actionFeedback = MediaActionFeedback()
     @State private var playedOverride: Bool?
@@ -567,7 +573,8 @@ struct TVEpisodeCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
 
-        let hasContextMenu = onSetWatched != nil || onSetFavorite != nil || onSetWatchlist != nil
+        let canManageEpisode = seriesDetail != nil && MetadataCurationAuthorityStore.shared.canCurateMetadata
+        let hasContextMenu = onSetWatched != nil || onSetFavorite != nil || onSetWatchlist != nil || canManageEpisode
         Group {
             if hasContextMenu {
                 button.contextMenu { contextActions }
@@ -692,6 +699,14 @@ struct TVEpisodeCard: View {
                     .disabled(actionFeedback.isUpdating)
                 }
             }
+        }
+
+        if let seriesDetail {
+            TVEpisodeManageContextMenuSection(
+                episode: episode,
+                seriesDetail: seriesDetail,
+                libraryId: libraryId
+            )
         }
     }
 }

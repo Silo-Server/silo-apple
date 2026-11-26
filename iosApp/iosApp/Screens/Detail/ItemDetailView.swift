@@ -13,32 +13,56 @@ struct ItemDetailView: View {
 
     @State private var resolvedSeries: SeriesDetailContext?
     @State private var resolvedSourceID: String?
+    @State private var replacedContentId: String?
+    @State private var replacedSourceID: String?
+    #if os(tvOS)
+    @Environment(\.tvMetadataCurationController) private var envCurationController
+    #else
+    @Environment(\.metadataCurationController) private var envCurationController
+    #endif
 
     private var seriesContext: SeriesDetailContext? {
         resolvedSourceID == contentId ? resolvedSeries : nil
     }
 
+    private var activeReplacedID: String? {
+        replacedSourceID == contentId ? replacedContentId : nil
+    }
+
     var body: some View {
-        let destinationID = seriesContext?.seriesContentId ?? contentId
-        let context = seriesContext ?? resumeContext
+        let destinationID = activeReplacedID ?? seriesContext?.seriesContentId ?? contentId
+        let context = activeReplacedID == nil ? (seriesContext ?? resumeContext) : nil
         // Only the original leaf may redirect. Malformed parent metadata must
         // show a recoverable error rather than cycle between catalog entries.
         let resolve: ((SeriesDetailContext) -> Void)? = seriesContext == nil ? { context in
             resolvedSourceID = contentId
             resolvedSeries = context
         } : nil
+        let replaceContentId: (String) -> Void = { newId in
+            guard !newId.isEmpty, newId != destinationID else { return }
+            replacedSourceID = contentId
+            replacedContentId = newId
+            resolvedSourceID = nil
+            resolvedSeries = nil
+        }
         #if os(tvOS)
+        let activeCurationController = envCurationController ?? TVMetadataCurationController.sharedCardHost
         TVItemDetailView(
             contentId: destinationID, libraryId: libraryId,
-            seed: seriesContext == nil ? tvSeed : nil,
-            navigationContext: context, onResolveSeries: resolve
+            seed: seriesContext == nil && activeReplacedID == nil ? tvSeed : nil,
+            navigationContext: context, onResolveSeries: resolve,
+            onContentIdReplaced: replaceContentId,
+            curationController: activeCurationController
         )
         .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
         .environment(\.browseLibraryId, libraryId)
         #else
+        let activeCurationController = envCurationController ?? MetadataCurationController.sharedCardHost
         ItemDetailPhoneContent(
             contentId: destinationID, libraryId: libraryId, onClose: onClose,
-            resumeContext: context, onResolveSeries: resolve, onSeriesSelection: onSeriesSelection
+            resumeContext: context, onResolveSeries: resolve, onSeriesSelection: onSeriesSelection,
+            onContentIdReplaced: replaceContentId,
+            curationController: activeCurationController
         )
         .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
         .environment(\.browseLibraryId, libraryId)
@@ -454,10 +478,14 @@ private struct ItemDetailPhoneContent: View {
 
     let onResolveSeries: ((SeriesDetailContext) -> Void)?
     let onSeriesSelection: ((SeriesDetailContext) -> Void)?
+    let onContentIdReplaced: ((String) -> Void)?
+    let curationController: MetadataCurationController
 
     init(
         contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: SeriesDetailContext?,
-        onResolveSeries: ((SeriesDetailContext) -> Void)?, onSeriesSelection: ((SeriesDetailContext) -> Void)?
+        onResolveSeries: ((SeriesDetailContext) -> Void)?, onSeriesSelection: ((SeriesDetailContext) -> Void)?,
+        onContentIdReplaced: ((String) -> Void)? = nil,
+        curationController: MetadataCurationController
     ) {
         self.contentId = contentId
         self.libraryId = libraryId
@@ -465,6 +493,8 @@ private struct ItemDetailPhoneContent: View {
         self.resumeContext = resumeContext
         self.onResolveSeries = onResolveSeries
         self.onSeriesSelection = onSeriesSelection
+        self.onContentIdReplaced = onContentIdReplaced
+        self.curationController = curationController
         // Paint cached content on the first frame, so a warm visit pushes a
         // filled page rather than an empty one that fills in from `.task`.
         let viewModel = ItemDetailViewModel(libraryId: libraryId)
@@ -730,6 +760,18 @@ private struct ItemDetailPhoneContent: View {
         .onReceive(NotificationCenter.default.publisher(for: .collectionItemsDidChange)) { _ in
             guard hasStartedDetailLoad else { return }
             viewModel.reloadItemCollections()
+        }
+        .metadataDetailReload(
+            contentId: contentId,
+            seriesId: viewModel.detail?.seriesId,
+            isEnabled: hasStartedDetailLoad,
+            onReplaceContentId: onContentIdReplaced
+        ) {
+            Task {
+                viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
+                    ?? viewModel.initialResumeSeasonNumber
+                await viewModel.loadDetail(contentId: contentId)
+            }
         }
         .alert(
             Text(.detailOfflineChoiceTitle),
@@ -1135,6 +1177,8 @@ private struct ItemDetailPhoneContent: View {
                 isProvisional: viewModel.isDetailProvisional,
                 seedArtwork: viewModel.seedArtwork,
                 ratingSlot: ratingSlot,
+                libraryId: libraryId,
+                curationController: curationController,
                 belowOverview: { translationView(for: detail) }
             )
             .task(id: playbackEpisode(for: detail)?.contentId) {
@@ -1222,6 +1266,8 @@ private struct ItemDetailPhoneContent: View {
                 isProvisional: viewModel.isDetailProvisional,
                 seedArtwork: viewModel.seedArtwork,
                 ratingSlot: ratingSlot,
+                libraryId: libraryId,
+                curationController: curationController,
                 belowOverview: { translationView(for: detail) }
             )
         }

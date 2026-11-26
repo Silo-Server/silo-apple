@@ -62,6 +62,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     var seedArtwork: DetailSeedArtwork? = nil
     /// The viewer's own rating of this movie; nil draws no rating control.
     var ratingSlot: PhoneRatingSlot? = nil
+    var libraryId: Int? = nil
+    var curationController: MetadataCurationController? = nil
     /// On-view description-translation affordance, built at the detail call
     /// site (which owns the view model) and rendered under the overview.
     @ViewBuilder let belowOverview: () -> BelowOverview
@@ -324,6 +326,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// downloads on, the download options sheet.
     private var hasOverflowMenu: Bool {
         detail.type == "movie"
+            || (curationController != nil && MetadataManageMenu.hasActions(for: detail))
     }
     /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
@@ -357,6 +360,13 @@ struct MovieDetailContent<BelowOverview: View>: View {
             .disabled(isFindingTrailers)
         }
         NotInterestedMenuButton(isNotInterested: isNotInterested, action: onToggleNotInterested)
+        if let curationController {
+            MetadataManageMenu(
+                detail: detail,
+                libraryId: libraryId,
+                controller: curationController
+            )
+        }
     }
 
     // MARK: - Below the fold

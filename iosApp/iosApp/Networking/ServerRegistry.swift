@@ -736,6 +736,13 @@ final class ServerRegistry {
             ShuffleFeatureStore.shared.reset()
             RatingSourcesStore.shared.reset()
             CurrentProfileStore.shared.reset()
+            MetadataCurationAuthorityStore.shared.reset()
+            MetadataRefreshCenter.shared.reset()
+            #if os(tvOS)
+            TVMetadataCurationController.sharedCardHost.reset()
+            #else
+            MetadataCurationController.sharedCardHost.reset()
+            #endif
             SubtitleProvidersStore.shared.reset()
             RequestsEventBus.shared.reset()
             // Re-probe against the just-activated server: a switch between
@@ -748,6 +755,7 @@ final class ServerRegistry {
             Task { await RatingSourcesStore.shared.refresh() }
             Task { await SectionItemLimitSupport.shared.refresh() }
             Task { await CurrentProfileStore.shared.refresh() }
+            Task { await MetadataCurationAuthorityStore.shared.refresh() }
             // Same shape: without a re-probe the destination server's
             // image-size support would stay unknown, and TV requests would
             // silently fall back to the server's default image variants.

@@ -15,6 +15,8 @@ struct TVItemDetailView: View {
     let seed: TVItemDetailRouteSeed?
     let navigationContext: SeriesDetailContext?
     let onResolveSeries: ((SeriesDetailContext) -> Void)?
+    let onContentIdReplaced: ((String) -> Void)?
+    let curationController: TVMetadataCurationController
 
     @State private var viewModel: ItemDetailViewModel
     /// Season and episode routes resolve to their series, so this is the
@@ -66,12 +68,14 @@ struct TVItemDetailView: View {
         category: "TVFocus"
     )
 
-    init(contentId: String, libraryId: Int? = nil, seed: TVItemDetailRouteSeed? = nil, navigationContext: SeriesDetailContext? = nil, onResolveSeries: ((SeriesDetailContext) -> Void)? = nil) {
+    init(contentId: String, libraryId: Int? = nil, seed: TVItemDetailRouteSeed? = nil, navigationContext: SeriesDetailContext? = nil, onResolveSeries: ((SeriesDetailContext) -> Void)? = nil, onContentIdReplaced: ((String) -> Void)? = nil, curationController: TVMetadataCurationController) {
         self.contentId = contentId
         self.libraryId = libraryId
         self.seed = seed
         self.navigationContext = navigationContext
         self.onResolveSeries = onResolveSeries
+        self.onContentIdReplaced = onContentIdReplaced
+        self.curationController = curationController
         // Resolve the cached view model eagerly so the first `body`
         // evaluation can render cached content without a blank frame.
         _viewModel = State(initialValue: ItemDetailCache.shared.viewModel(for: contentId, libraryId: libraryId))
@@ -193,6 +197,19 @@ struct TVItemDetailView: View {
             guard hasStartedDetailLoad else { return }
             viewModel.reloadItemCollections()
         }
+        .metadataDetailReload(
+            contentId: contentId,
+            seriesId: viewModel.detail?.seriesId,
+            isEnabled: hasStartedDetailLoad,
+            onReplaceContentId: onContentIdReplaced,
+            onReload: {
+                Task {
+                    viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
+                        ?? viewModel.initialResumeSeasonNumber
+                    await viewModel.loadDetail(contentId: contentId)
+                }
+            }
+        )
     }
 
     // Selection state lives on the cached view model so a pushed player route
@@ -468,7 +485,9 @@ struct TVItemDetailView: View {
                 onTranslateDescription: translateDescriptionAction,
                 userRating: viewModel.userRating,
                 canRate: viewModel.canRate,
-                onSetRating: { score in Task { await viewModel.setRating(score) } }
+                onSetRating: { score in Task { await viewModel.setRating(score) } },
+                libraryId: libraryId,
+                curationController: curationController
             )
             .task(id: activeSeriesEpisodeContentId) {
                 guard let id = activeSeriesEpisodeContentId else { return }
@@ -582,7 +601,9 @@ struct TVItemDetailView: View {
                 onTranslateDescription: translateDescriptionAction,
                 userRating: viewModel.userRating,
                 canRate: viewModel.canRate,
-                onSetRating: { score in Task { await viewModel.setRating(score) } }
+                onSetRating: { score in Task { await viewModel.setRating(score) } },
+                libraryId: libraryId,
+                curationController: curationController
             )
         }
     }

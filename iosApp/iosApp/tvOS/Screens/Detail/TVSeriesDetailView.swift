@@ -250,6 +250,8 @@ struct TVSeriesDetailView: View {
     var canRate = false
     /// Nil removes the rating. Nil hides the star button.
     var onSetRating: ((Int?) -> Void)? = nil
+    var libraryId: Int? = nil
+    var curationController: TVMetadataCurationController? = nil
 
     @Namespace private var detailFocusNamespace
     @Namespace private var modeFocusNamespace
@@ -708,6 +710,15 @@ struct TVSeriesDetailView: View {
                                 )
                             }
                             .disabled(isUpdatingWatched || season.episodeCount == 0)
+
+                            if let curationController {
+                                TVSeasonManageContextMenuSection(
+                                    season: season,
+                                    seriesDetail: detail,
+                                    libraryId: libraryId,
+                                    controller: curationController
+                                )
+                            }
                         }
                         // The episode row is entered natively and lands on its
                         // anchored card. Only a row with nothing focusable
@@ -936,7 +947,9 @@ struct TVSeriesDetailView: View {
                 selectionTargetContentId: activeEpisodeContentId,
                 isSelectingSeason: primaryFocusRegion == .mode,
                 onRequestPrevious: episodeWindow.previousSeason == nil ? nil : onLoadMoreEpisodes,
-                onRequestNext: episodeWindow.nextSeason == nil ? nil : onLoadMoreEpisodes
+                onRequestNext: episodeWindow.nextSeason == nil ? nil : onLoadMoreEpisodes,
+                seriesDetail: detail,
+                libraryId: libraryId
             )
             .padding(.trailing, -TVDetailLayout.horizontalInset)
         }
@@ -1256,6 +1269,15 @@ struct TVSeriesDetailView: View {
                         systemImage: isNotInterested ? "hand.thumbsup" : "hand.thumbsdown"
                     ))
                 }
+                if curationController != nil,
+                   let manageItem = TVMetadataManageMenuBuilder.menuItem(
+                       for: detail,
+                       selectedSeason: selectedSeason,
+                       selectedEpisode: displayedEpisode,
+                       locale: locale
+                   ) {
+                    items.append(manageItem)
+                }
                 return items
             },
             onOpen: {
@@ -1283,6 +1305,18 @@ struct TVSeriesDetailView: View {
                     if let model = collectionsModel {
                         Task { await model.toggle(collectionId: colId) }
                     }
+                    return
+                }
+                if let curationController,
+                   TVMetadataManageMenuBuilder.handleSelection(
+                       item.id,
+                       detail: detail,
+                       libraryId: libraryId,
+                       selectedSeason: selectedSeason,
+                       selectedEpisode: displayedEpisode,
+                       locale: locale,
+                       controller: curationController
+                   ) {
                     return
                 }
                 switch MoreAction(rawValue: item.id) {

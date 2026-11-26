@@ -148,10 +148,10 @@ struct MediaCard: View {
 
     @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
+    @Environment(\.browseLibraryId) private var browseLibraryId
     #if !os(tvOS)
     @State private var isShowingAddToCollection = false
     @Environment(AppRouter.self) private var router
-    @Environment(\.browseLibraryId) private var browseLibraryId
     #endif
     @Environment(\.locale) private var locale
 
@@ -172,6 +172,10 @@ struct MediaCard: View {
             return CGSize(width: width, height: width)
         }
     }
+
+    #if !os(tvOS)
+    @Environment(\.metadataCurationController) private var envCurationController
+    #endif
 
     /// This card's own artwork, so the detail zooms from the card that was
     /// tapped even when the same title is in two rows.
@@ -201,7 +205,8 @@ struct MediaCard: View {
             contextDetailTitle: contextDetailTitle,
             onOpenContextDetail: onOpenContextDetail,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-            stateMenu: hasStateActions ? stateMenu : nil
+            stateMenu: hasStateActions ? stateMenu : nil,
+            curationTarget: allowedCardCuration?.target
         ) {
             posterImage
         }
@@ -272,7 +277,7 @@ struct MediaCard: View {
     }
 
     private var hasIOSContextActions: Bool {
-        hasStateActions || onRemoveFromContinueWatching != nil
+        hasStateActions || onRemoveFromContinueWatching != nil || allowedCardCuration != nil
     }
 
     /// Same action set (and ordering) as the tvOS `FocusableMediaCard` menu:
@@ -280,6 +285,12 @@ struct MediaCard: View {
     @ViewBuilder
     private var iosContextActions: some View {
         stateMenu
+
+        if let curation = allowedCardCuration {
+            MetadataCardManageMenu(target: curation.target, capabilities: curation.capabilities) { presentation in
+                (envCurationController ?? MetadataCurationController.sharedCardHost).open(presentation)
+            }
+        }
 
         if let onRemoveFromContinueWatching {
             Button(role: .destructive) {
@@ -290,6 +301,20 @@ struct MediaCard: View {
         }
     }
     #endif
+
+    private var allowedCardCuration: (target: MetadataCurationTarget, capabilities: MetadataCurationTarget.CardCapabilities)? {
+        guard boxSet == nil, seriesContext == nil, let contentId else { return nil }
+        guard let target = MetadataCurationTarget.fromCard(
+            contentId: contentId,
+            mediaType: mediaType,
+            title: title,
+            year: year,
+            libraryId: browseLibraryId,
+            posterUrl: posterUrl
+        ) else { return nil }
+        let capabilities = target.cardCapabilities()
+        return capabilities.hasAny ? (target, capabilities) : nil
+    }
 
     // MARK: - Favorite / watchlist context actions
 
@@ -544,6 +569,7 @@ private struct FocusableMediaCard<Content: View>: View {
     let onOpenContextDetail: (() -> Void)?
     let onRemoveFromContinueWatching: (() -> Void)?
     let stateMenu: MediaStateMenuItems?
+    let curationTarget: MetadataCurationTarget?
     @ViewBuilder var content: () -> Content
     @Environment(\.locale) private var locale
 
@@ -621,6 +647,7 @@ private struct FocusableMediaCard<Content: View>: View {
             || onOpenContextDetail != nil
             || onRemoveFromContinueWatching != nil
             || stateMenu != nil
+            || curationTarget != nil
     }
 
     private var accessibilityDescription: String {
@@ -649,6 +676,10 @@ private struct FocusableMediaCard<Content: View>: View {
         }
 
         if let stateMenu { stateMenu }
+
+        if let curationTarget {
+            TVMetadataCardManageMenu(target: curationTarget)
+        }
 
         if let onRemoveFromContinueWatching {
             Button(role: .destructive) {
