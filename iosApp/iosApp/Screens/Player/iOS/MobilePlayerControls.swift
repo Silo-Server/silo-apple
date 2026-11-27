@@ -35,6 +35,9 @@ struct MobilePlayerControls: View {
     /// it is purely presentation, and kept outside the `showControls` gate
     /// below so the auto-hide takes the transport away without it.
     @State private var showsStats = false
+    /// Height of the time row, scrubber and action row while the controls
+    /// show, so the skip pill can sit clear of them; 0 until first measured.
+    @State private var bottomStackHeight: CGFloat = 0
     @Environment(\.playerTabletopLayout) private var tabletopLayout
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -95,10 +98,7 @@ struct MobilePlayerControls: View {
                 }
                 .transition(.opacity)
             }
-            introSkipPill
-            if viewModel.showSegmentSkip {
-                segmentSkipPill
-            }
+            skipPill
             if showsStats {
                 MobilePlaybackStatsOverlay(stats: viewModel.playbackStats)
                     .transition(.opacity)
@@ -109,8 +109,8 @@ struct MobilePlayerControls: View {
         .animation(.easeOut(duration: 0.18), value: viewModel.showControls)
         .animation(.easeOut(duration: 0.18), value: showsStats)
         // Fades in, and out when its timer runs out. Tap takes it down at once
-        // (see `PlayerViewModel.selectIntroSkipPrompt`).
-        .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
+        // (see `PlayerViewModel.activateIntroSkipPrompt` and `skipCurrentSegment`).
+        .animation(.easeOut(duration: 0.2), value: viewModel.skipPill?.segment)
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .tracks:
@@ -401,6 +401,9 @@ struct MobilePlayerControls: View {
             actionRow
                 .opacity(recedingOpacity)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+            bottomStackHeight = $0
+        }
     }
 
     // MARK: - Action row
@@ -627,18 +630,23 @@ struct MobilePlayerControls: View {
         .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
-    // MARK: - Intro skip
+    // MARK: - Skip pills
 
-    /// The intro-skip pill: "Skip Intro" for `ask`, and a small "Intro
-    /// skipped" caption over "Watch Intro" for `always`'s undo. The same state
-    /// machine and copy as the TV, web and Android pills, with pointer rules: a
-    /// tap is Select, and a tap elsewhere is not a dismissal.
+    /// The skip pill: "Skip Intro", "Skip Recap" or "Skip Credits" for `ask`,
+    /// and a small "Intro skipped" caption over "Watch Intro" for `always`'s
+    /// undo. The same state machine and copy as the TV, web and Android pills,
+    /// with pointer rules: a tap is Select, and a tap elsewhere is not a
+    /// dismissal. The untimed pill that returns with the controls draws no
+    /// fill.
     @ViewBuilder
-    private var introSkipPill: some View {
-        if let pill = viewModel.introSkipPrompt.pill {
+    private var skipPill: some View {
+        if let pill = viewModel.skipPill {
+            // The untimed pill stays hidden while the viewer drags the
+            // scrubber, where it would sit over the scrub preview.
+            let hidesForScrub = !pill.isTimed && viewModel.showsScrubPreview
             VStack(alignment: .trailing, spacing: 4) {
                 Spacer()
-                if let caption = pill.kind.caption {
+                if let caption = pill.caption {
                     Text(caption)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white.opacity(0.75))
@@ -647,52 +655,42 @@ struct MobilePlayerControls: View {
                         .accessibilityHidden(true)
                 }
                 Button {
-                    viewModel.selectIntroSkipPrompt()
+                    if pill.segment == .intro {
+                        viewModel.activateIntroSkipPrompt()
+                    } else {
+                        viewModel.skipCurrentSegment()
+                    }
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: pill.kind == .skip ? "forward.end.fill" : "arrow.counterclockwise")
-                        Text(pill.kind.actionTitle)
+                        Text(pill.actionTitle)
                     }
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 16)
                     .frame(height: SiloTheme.topBarIconHitSize)
                 }
-                .buttonStyle(MobilePlayerPillButtonStyle(pill: pill))
-                .accessibilityLabel(pill.kind.accessibilityLabel)
+                .buttonStyle(MobilePlayerPillButtonStyle(pill: pill.countdown))
+                .accessibilityLabel(pill.accessibilityLabel)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, 24)
-            // Clear the bottom stack while the controls are up; hug the
-            // bottom edge when the pill is floating alone.
-            .padding(.bottom, viewModel.showControls ? 88 : 24)
+            // Clear the bottom stack, time row included, while the controls
+            // are up; hug the bottom edge when the pill is floating alone.
+            .padding(.bottom, viewModel.showControls ? skipPillBottomInsetWithControls : 24)
+            .opacity(hidesForScrub ? 0 : 1)
+            .accessibilityHidden(hidesForScrub)
             .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
             .transition(.opacity)
         }
     }
 
-    private var segmentSkipPill: some View {
-        VStack {
-            Spacer()
-            HStack {
-                Spacer()
-                Button {
-                    viewModel.skipCurrentSegment()
-                } label: {
-                    Label(viewModel.segmentSkipLabel, systemImage: "forward.end.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.black.opacity(0.85))
-                        .padding(.horizontal, 16)
-                        .frame(height: SiloTheme.topBarIconHitSize)
-                }
-                .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
-                .accessibilityLabel(viewModel.segmentSkipLabel)
-            }
-            .padding(.horizontal, 24)
-            .padding(.bottom, viewModel.showControls ? 88 : 24)
-        }
-        .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
-        .transition(.opacity)
+    /// Above the measured bottom stack, which sits 2 pt off the bottom edge
+    /// (see `body`), with a gap so the pill never touches the remaining-time
+    /// label at the right end of the time row. The old fixed inset stands in
+    /// until the stack has been measured.
+    private var skipPillBottomInsetWithControls: CGFloat {
+        bottomStackHeight > 0 ? bottomStackHeight + 2 + 12 : 88
     }
 
     // MARK: - Helpers

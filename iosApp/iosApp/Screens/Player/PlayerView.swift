@@ -436,7 +436,7 @@ struct PlayerView: View {
             }
         }
         // Menu button: step seek-session → HUD → buffering pill → (starting:
-        // dismiss) → intro pill → overlay → dismiss.
+        // dismiss) → timed skip pill → overlay → dismiss.
         // Matches the Infuse / Apple TV pattern. Runs at the shell level
         // so it fires even if focus has drifted — the HUD's own
         // `onExitCommand` handles the common case where focus is inside
@@ -460,12 +460,13 @@ struct PlayerView: View {
                 // press ends there; the next Menu behaves normally.
             } else if viewModel.isStartingPlayback {
                 dismissPlayer()
-            } else if viewModel.dismissIntroSkipPrompt() {
-                // The intro pill is the most transient thing on screen: Menu
-                // takes it down and the press ends there, so it can neither
-                // hide the controls nor exit. The next Menu behaves normally.
-                // Below the starting escape because the controls, pill
-                // included, are not drawn while a load starts.
+            } else if viewModel.dismissIntroSkipPrompt() || viewModel.dismissSegmentSkipPrompt() {
+                // A timed skip pill is the most transient thing on screen:
+                // Menu takes it down and the press ends there, so it can
+                // neither hide the controls nor exit. The next Menu behaves
+                // normally, and so does Menu over the untimed pill. Below the
+                // starting escape because the controls, pill included, are not
+                // drawn while a load starts.
             } else if !viewModel.isPlaying {
                 // While paused, Menu exits the player instead of hiding the
                 // controls over a frozen frame.

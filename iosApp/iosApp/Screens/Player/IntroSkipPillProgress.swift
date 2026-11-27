@@ -1,28 +1,30 @@
 import SwiftUI
 
-extension IntroSkipPrompt.Kind {
+extension IntroSkipPrompt.Pill {
     /// The pill's action, fixed by the cross-platform spec.
     var actionTitle: String {
-        switch self {
-        case .skip: return AppLanguage.string(.introSkipPillSkip)
-        case .undo: return AppLanguage.string(.introSkipPillUndo)
+        switch (segment, kind) {
+        case (.recap, _): return AppLanguage.string(.markerSkipRecap)
+        case (.credits, _): return AppLanguage.string(.markerSkipCredits)
+        case (.intro, .skip): return AppLanguage.string(.introSkipPillSkip)
+        case (.intro, .undo): return AppLanguage.string(.introSkipPillUndo)
         }
     }
 
     /// The muted confirmation above `always`'s undo. It stays a separate line
     /// so the confirmation and the action never read as one instruction.
     var caption: String? {
-        switch self {
-        case .skip: return nil
-        case .undo: return AppLanguage.string(.introSkipPillUndoCaption)
-        }
+        kind == .undo ? AppLanguage.string(.introSkipPillUndoCaption) : nil
     }
 
     var accessibilityLabel: String {
-        switch self {
-        case .skip: return AppLanguage.string(.introSkipPillSkip)
-        case .undo: return AppLanguage.string(.playerIntroSkipUndoAccessibility)
-        }
+        kind == .undo ? AppLanguage.string(.playerIntroSkipUndoAccessibility) : actionTitle
+    }
+
+    /// The pill's timer for the countdown fill; nil for the untimed pill that
+    /// returns with the controls, which draws none.
+    var countdown: (any PlayerTimedPill)? {
+        isTimed ? self : nil
     }
 }
 
