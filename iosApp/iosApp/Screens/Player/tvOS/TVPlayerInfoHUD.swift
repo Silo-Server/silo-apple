@@ -807,6 +807,7 @@ private struct VideoPane: View {
         case quality
         case speed
         case aspect
+        case sleepTimer
     }
 
     var body: some View {
@@ -855,37 +856,54 @@ private struct VideoPane: View {
                 }
                 .focusSection()
 
-                // A Watch Party sets the speed and what plays next for the
-                // room, so the column has nothing to offer there. It keeps
-                // its width so the Picture column does not stretch.
                 PaneColumn(.playerHudPlayback) {
                     VStack(spacing: 2) {
-                        HUDSettingRow(label: .playerSettingsSpeed, value: Self.speedLabel(viewModel.settings.playbackSpeed)) {
+                        // A Watch Party sets the speed and what plays next
+                        // for the room. The sleep timer stays: it is this
+                        // viewer's own, and at zero it leaves the party.
+                        if !viewModel.isWatchPartyPlayback {
+                            HUDSettingRow(label: .playerSettingsSpeed, value: Self.speedLabel(viewModel.settings.playbackSpeed)) {
+                                presentPicker(
+                                    for: .speed,
+                                    HUDPickerPresentation(
+                                        title: .playerHudPickerPlaybackSpeed,
+                                        options: Self.speedOptions,
+                                        selection: speedID(viewModel.settings.playbackSpeed),
+                                        onSelect: { value in
+                                            if let speed = Double(value) {
+                                                viewModel.setPlaybackSpeed(speed)
+                                            }
+                                        }
+                                    )
+                                )
+                            }
+                            .focused($focusedField, equals: .speed)
+
+                            HUDToggleRow(label: .optionsAutoplayNext, isOn: viewModel.settings.autoPlayNextEpisode) {
+                                viewModel.settings.setAutoPlayNextEpisode($0)
+                            }
+                        }
+
+                        SleepTimerRow(timer: viewModel.sleepTimer) {
                             presentPicker(
-                                for: .speed,
+                                for: .sleepTimer,
                                 HUDPickerPresentation(
-                                    title: .playerHudPickerPlaybackSpeed,
-                                    options: Self.speedOptions,
-                                    selection: speedID(viewModel.settings.playbackSpeed),
+                                    title: .playerSleepTimerPickerTitle,
+                                    options: sleepTimerOptions,
+                                    selection: String(viewModel.sleepTimer.selectedDurationOption),
                                     onSelect: { value in
-                                        if let speed = Double(value) {
-                                            viewModel.setPlaybackSpeed(speed)
+                                        // Off is 0, which cancels.
+                                        if let minutes = Int(value) {
+                                            viewModel.sleepTimer.start(minutes: minutes)
                                         }
                                     }
                                 )
                             )
                         }
-                        .focused($focusedField, equals: .speed)
-
-                        HUDToggleRow(label: .optionsAutoplayNext, isOn: viewModel.settings.autoPlayNextEpisode) {
-                            viewModel.settings.setAutoPlayNextEpisode($0)
-                        }
+                        .focused($focusedField, equals: .sleepTimer)
                     }
                 }
                 .focusSection()
-                .opacity(viewModel.isWatchPartyPlayback ? 0 : 1)
-                .disabled(viewModel.isWatchPartyPlayback)
-                .accessibilityHidden(viewModel.isWatchPartyPlayback)
             }
             .disabled(activePicker != nil)
             .opacity(activePicker != nil ? 0.28 : 1)
@@ -918,6 +936,16 @@ private struct VideoPane: View {
 
     private var qualityOptions: [HUDDropdownOption] {
         viewModel.qualityOptions.map { .init(id: $0.id, label: $0.labelWithBitrate) }
+    }
+
+    /// Computed on each read, so the labels follow the app's language.
+    private var sleepTimerOptions: [HUDDropdownOption] {
+        SleepTimer.durationOptions.map { minutes in
+            HUDDropdownOption(
+                id: String(minutes),
+                label: AppLanguage.string(SleepTimer.durationLabel(minutes: minutes), locale: locale)
+            )
+        }
     }
 
     private func presentPicker(for field: Field, _ presentation: HUDPickerPresentation) {
@@ -953,6 +981,30 @@ private struct VideoPane: View {
     /// Computed on each read, so the labels follow the app's language.
     private static var aspectOptions: [HUDDropdownOption] {
         VideoGravity.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+    }
+}
+
+/// Reads the timer in its own body, so only this row redraws each second
+/// while the countdown runs, not the whole pane.
+private struct SleepTimerRow: View {
+    let timer: SleepTimer
+    let action: () -> Void
+
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        HUDSettingRow(
+            label: .playerSleepTimerPickerTitle,
+            value: value,
+            systemImage: "moon.zzz.fill",
+            action: action
+        )
+    }
+
+    private var value: String {
+        timer.isActive
+            ? PlayerTimeFormatter.formatCountdown(timer.remainingSeconds, locale: locale)
+            : AppLanguage.string(.playerSleepTimerOff, locale: locale)
     }
 }
 
