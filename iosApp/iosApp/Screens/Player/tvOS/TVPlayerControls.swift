@@ -3,7 +3,7 @@ import CoreGraphics
 import SwiftUI
 
 /// tvOS player overlay. The idle state is minimal: no hero strip, a thin
-/// scrubber, and an icon-only transport row along the bottom.
+/// scrubber, and a transport row along the bottom.
 /// When the user opens the options panel, the idle overlay steps aside and
 /// `TVPlayerInfoHUD` takes over as a floating top-center HUD (Infuse idiom).
 /// Controls auto-hide after 5 s of no focus movement while playing; Menu
