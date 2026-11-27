@@ -86,20 +86,20 @@ final class BufferingQualityControllerTests: XCTestCase {
         h.at(125_000) { $0.waiting() }
         h.clock.advance(to: 131_000)
         XCTAssertEqual(h.controller.pill?.kind, .prompt)
-        XCTAssertEqual(h.controller.pill?.deadline, h.date(146_000))
+        XCTAssertEqual(h.controller.pill?.deadline, h.date(141_000))
 
         h.at(136_000) { $0.paused() }
         XCTAssertNil(h.controller.pill?.deadline, "a pause freezes the timer")
-        XCTAssertEqual(h.controller.pill?.remaining, 10)
+        XCTAssertEqual(h.controller.pill?.remaining, 5)
 
         h.clock.advance(to: 600_000)
         XCTAssertEqual(h.controller.pill?.kind, .prompt, "frozen time never runs out")
 
         h.at(600_000) { $0.playing() }
-        XCTAssertEqual(h.controller.pill?.deadline, h.date(610_000), "play resumes from what was left")
-        h.clock.advance(to: 609_999)
+        XCTAssertEqual(h.controller.pill?.deadline, h.date(605_000), "play resumes from what was left")
+        h.clock.advance(to: 604_999)
         XCTAssertNotNil(h.controller.pill)
-        h.clock.advance(to: 610_000)
+        h.clock.advance(to: 605_000)
         XCTAssertNil(h.controller.pill)
         XCTAssertEqual(h.shown, [.init(131_000, .pillShown(.prompt))])
     }
@@ -118,7 +118,7 @@ final class BufferingQualityControllerTests: XCTestCase {
 
         h.at(140_000) { $0.setCompetingPillVisible(false) }
         XCTAssertEqual(h.controller.pill?.kind, .prompt)
-        XCTAssertEqual(h.controller.pill?.deadline, h.date(155_000), "it shows with a full timer")
+        XCTAssertEqual(h.controller.pill?.deadline, h.date(150_000), "it shows with a full timer")
         XCTAssertEqual(h.shown, [.init(140_000, .pillShown(.prompt))])
     }
 
@@ -143,11 +143,11 @@ final class BufferingQualityControllerTests: XCTestCase {
         XCTAssertNil(h.controller.pill)
         h.at(200_000) { $0.setCompetingPillVisible(false) }
         XCTAssertEqual(h.controller.pill?.kind, .undo)
-        XCTAssertEqual(h.controller.pill?.remaining, 10, "its timer was frozen while hidden")
-        XCTAssertEqual(h.controller.pill?.deadline, h.date(210_000))
-        h.clock.advance(to: 209_999)
+        XCTAssertEqual(h.controller.pill?.remaining, 5, "its timer was frozen while hidden")
+        XCTAssertEqual(h.controller.pill?.deadline, h.date(205_000))
+        h.clock.advance(to: 204_999)
         XCTAssertNotNil(h.controller.pill)
-        h.clock.advance(to: 210_000)
+        h.clock.advance(to: 205_000)
         XCTAssertNil(h.controller.pill)
         XCTAssertEqual(h.shown, [
             .init(131_000, .replan(Self.unsourcedLowering(44_100))),
@@ -441,7 +441,7 @@ final class BufferingQualityControllerTests: XCTestCase {
         let cascade: [(measured: Int?, expected: [Harness.Recorded])] = [
             (nil, []),
             (10_000, []),
-            (3_000, [.init(38_000, .replan(Self.autoLowering(7_000, observed: 3_000)))]),
+            (3_000, [.init(33_000, .replan(Self.autoLowering(7_000, observed: 3_000)))]),
         ]
         for (measured, expected) in cascade {
             let h = Harness(mode: .always)

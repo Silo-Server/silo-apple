@@ -3,13 +3,13 @@ import SwiftUI
 
 /// The tvOS buffering pill: "Playback keeps buffering" over **Lower quality**
 /// and **Keep quality**, or "Quality lowered to stop buffering" over **Restore
-/// quality**, in a notice card at the top-trailing corner.
+/// quality**, in a small notice card at the top-trailing corner.
 ///
-/// The buttons are the intro pill's capsules without its fill; the countdown
-/// runs along the card's bottom edge. Positioning, focus, Select and Menu
-/// belong to the player shell and ``TVPlayerControls``, which apply the intro
-/// pill's rules; this view only draws the pill, binds its buttons' focus and
-/// forwards their actions.
+/// The buttons are the intro pill's capsules, smaller and without its fill;
+/// the countdown runs along the card's bottom edge. Positioning, focus, Select
+/// and Menu belong to the player shell and ``TVPlayerControls``, which apply
+/// the intro pill's rules; this view only draws the pill, binds its buttons'
+/// focus and forwards their actions.
 struct TVBufferingQualityPill: View {
     enum Action: Hashable {
         /// **Lower quality** or **Restore quality**.
@@ -31,7 +31,7 @@ struct TVBufferingQualityPill: View {
 
     var body: some View {
         PlayerBufferingPillCard(pill: pill, title: title) {
-            HStack(spacing: SiloTheme.spacing) {
+            HStack(spacing: SiloTheme.smallPadding) {
                 Button(action: onPrimary) {
                     Text(pill.kind.primaryAction)
                 }
@@ -50,7 +50,12 @@ struct TVBufferingQualityPill: View {
     }
 
     private func buttonStyle(_ action: Action) -> TVPlayerPillButtonStyle {
-        TVPlayerPillButtonStyle(pill: nil, isSelectTarget: selectTarget == action, unfocusedLabelOpacity: 0.85)
+        TVPlayerPillButtonStyle(
+            pill: nil,
+            isSelectTarget: selectTarget == action,
+            unfocusedLabelOpacity: 0.85,
+            size: .compact
+        )
     }
 }
 

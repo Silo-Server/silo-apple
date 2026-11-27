@@ -41,17 +41,30 @@ struct TVIntroSkipPill: View {
 /// pills. `pill` draws its countdown behind the label; a button without one,
 /// such as the buffering card's, gets the same capsule with no fill.
 struct TVPlayerPillButtonStyle: ButtonStyle {
+    enum Size {
+        /// The skip pills' capsule.
+        case regular
+        /// The buffering card's smaller capsule.
+        case compact
+
+        var fontSize: CGFloat { self == .compact ? 22 : 28 }
+        var horizontalPadding: CGFloat { self == .compact ? 26 : 40 }
+        var height: CGFloat { self == .compact ? 54 : 72 }
+    }
+
     let pill: (any PlayerTimedPill)?
     var isSelectTarget = false
     /// The label's white while unfocused.
     var unfocusedLabelOpacity = 0.62
+    var size = Size.regular
 
     func makeBody(configuration: Configuration) -> some View {
         TVPlayerPillBody(
             configuration: configuration,
             pill: pill,
             isSelectTarget: isSelectTarget,
-            unfocusedLabelOpacity: unfocusedLabelOpacity
+            unfocusedLabelOpacity: unfocusedLabelOpacity,
+            size: size
         )
     }
 }
@@ -61,6 +74,7 @@ private struct TVPlayerPillBody: View {
     let pill: (any PlayerTimedPill)?
     let isSelectTarget: Bool
     let unfocusedLabelOpacity: Double
+    let size: TVPlayerPillButtonStyle.Size
 
     @Environment(\.isFocused) private var hasFocus
 
@@ -70,10 +84,10 @@ private struct TVPlayerPillBody: View {
         configuration.label
             .lineLimit(1)
             .fixedSize()
-            .font(.system(size: 28, weight: .semibold))
+            .font(.system(size: size.fontSize, weight: .semibold))
             .foregroundStyle(isFocused ? Color.white : Color.white.opacity(unfocusedLabelOpacity))
-            .padding(.horizontal, 40)
-            .frame(height: 72)
+            .padding(.horizontal, size.horizontalPadding)
+            .frame(height: size.height)
             .background {
                 ZStack {
                     Capsule().fill(Color.black.opacity(0.65))

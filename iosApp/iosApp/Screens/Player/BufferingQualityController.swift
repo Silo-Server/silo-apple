@@ -67,7 +67,7 @@ final class BufferingQualityController {
     /// `LONG_STALL_MS`: one stall this long triggers on its own.
     nonisolated static let longStallMs = 6_000
     /// `PROMPT_SECONDS`, for both pills.
-    nonisolated static let promptSeconds: TimeInterval = 15
+    nonisolated static let promptSeconds: TimeInterval = 10
     nonisolated static let reofferMinMs = 120_000
     nonisolated static let noLowerCooldownMs = 300_000
     nonisolated static let rearmAfterUnadoptedMs = 60_000

@@ -64,34 +64,68 @@ struct PlayerNoticeOverlay: View {
 /// The player's notice card: neutral dark glass, like the player's other
 /// controls, that hugs its content up to a cap. Tone shows only in the
 /// header's symbol.
-private enum PlayerNoticeCardMetrics {
-    #if os(tvOS)
-    static let maxWidth: CGFloat = 760
-    static let horizontalPadding: CGFloat = 32
-    static let verticalPadding: CGFloat = 26
-    static let spacing: CGFloat = 22
-    static let iconSpacing: CGFloat = 18
-    static let lineSpacing: CGFloat = 4
-    static let cornerRadius: CGFloat = 28
-    static let trackHeight: CGFloat = 4
-    static let titleFont: Font = .system(size: 30, weight: .semibold)
-    static let detailFont: Font = .system(size: 24)
-    #else
-    static let maxWidth: CGFloat = 600
-    static let horizontalPadding: CGFloat = 14
-    static let verticalPadding: CGFloat = 12
-    static let spacing: CGFloat = 12
-    static let iconSpacing: CGFloat = 10
-    static let lineSpacing: CGFloat = 2
-    static let cornerRadius: CGFloat = 16
-    static let trackHeight: CGFloat = 3
-    static let titleFont: Font = .subheadline.weight(.semibold)
-    static let detailFont: Font = .footnote
-    #endif
+private struct PlayerNoticeCardMetrics {
+    var maxWidth: CGFloat
+    var horizontalPadding: CGFloat
+    var verticalPadding: CGFloat
+    var spacing: CGFloat
+    var iconSpacing: CGFloat
+    var lineSpacing: CGFloat
+    var cornerRadius: CGFloat
+    var trackHeight: CGFloat
+    var titleFont: Font
+    var detailFont: Font
+    /// Keeps the title to one line, shrinking a long translation a little
+    /// before it truncates; otherwise the title wraps at the cap.
+    var singleLineTitle = false
 
-    static var shape: RoundedRectangle {
+    var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
+
+    #if os(tvOS)
+    static let standard = Self(
+        maxWidth: 760,
+        horizontalPadding: 32,
+        verticalPadding: 26,
+        spacing: 22,
+        iconSpacing: 18,
+        lineSpacing: 4,
+        cornerRadius: 28,
+        trackHeight: 4,
+        titleFont: .system(size: 30, weight: .semibold),
+        detailFont: .system(size: 24)
+    )
+
+    /// The buffering pill's card on the TV: smaller and quieter than a
+    /// notice, with its title on one line.
+    static let compact = Self(
+        maxWidth: 760,
+        horizontalPadding: 20,
+        verticalPadding: 16,
+        spacing: 14,
+        iconSpacing: 12,
+        lineSpacing: 4,
+        cornerRadius: 22,
+        trackHeight: 3,
+        titleFont: .system(size: 24, weight: .semibold),
+        detailFont: .system(size: 20),
+        singleLineTitle: true
+    )
+    #else
+    static let standard = Self(
+        maxWidth: 600,
+        horizontalPadding: 14,
+        verticalPadding: 12,
+        spacing: 12,
+        iconSpacing: 10,
+        lineSpacing: 2,
+        cornerRadius: 16,
+        trackHeight: 3,
+        titleFont: .subheadline.weight(.semibold),
+        detailFont: .footnote
+    )
+    #endif
 }
 
 /// A notice card's symbol, title and optional second line.
@@ -100,28 +134,41 @@ private struct PlayerNoticeCardHeader: View {
     let tone: PlayerNoticeTone
     let title: String
     var detail: String? = nil
+    var metrics = PlayerNoticeCardMetrics.standard
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: PlayerNoticeCardMetrics.iconSpacing) {
+        HStack(alignment: .firstTextBaseline, spacing: metrics.iconSpacing) {
             Image(systemName: symbol)
-                .font(PlayerNoticeCardMetrics.titleFont)
+                .font(metrics.titleFont)
                 .foregroundStyle(tone.accentColor)
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: PlayerNoticeCardMetrics.lineSpacing) {
-                Text(title)
-                    .font(PlayerNoticeCardMetrics.titleFont)
-                    .foregroundStyle(Color.siloOnSurface)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: metrics.lineSpacing) {
+                titleText
                 if let detail {
                     Text(detail)
-                        .font(PlayerNoticeCardMetrics.detailFont)
+                        .font(metrics.detailFont)
                         .foregroundStyle(Color.white.opacity(0.72))
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
         .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private var titleText: some View {
+        let text = Text(title)
+            .font(metrics.titleFont)
+            .foregroundStyle(Color.siloOnSurface)
+        if metrics.singleLineTitle {
+            text
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        } else {
+            text
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
@@ -131,19 +178,26 @@ extension View {
     /// the cap, rather than the whole proposal. With `countdown`, a thin
     /// track along the card's bottom edge drains as that timer runs out.
     func playerNoticeCard(countdown: (any PlayerTimedPill)? = nil) -> some View {
-        PlayerNoticeCardWidth(maxWidth: PlayerNoticeCardMetrics.maxWidth) {
-            padding(.horizontal, PlayerNoticeCardMetrics.horizontalPadding)
-                .padding(.vertical, PlayerNoticeCardMetrics.verticalPadding)
+        playerNoticeCard(countdown: countdown, metrics: .standard)
+    }
+
+    fileprivate func playerNoticeCard(
+        countdown: (any PlayerTimedPill)?,
+        metrics: PlayerNoticeCardMetrics
+    ) -> some View {
+        PlayerNoticeCardWidth(maxWidth: metrics.maxWidth) {
+            padding(.horizontal, metrics.horizontalPadding)
+                .padding(.vertical, metrics.verticalPadding)
                 .background {
                     Color.clear
-                        .siloPlayerGlass(in: PlayerNoticeCardMetrics.shape, tint: .black.opacity(0.5))
+                        .siloPlayerGlass(in: metrics.shape, tint: .black.opacity(0.5))
                         .overlay(alignment: .bottom) {
                             if let countdown {
                                 PlayerPillCountdownTrack(pill: countdown)
-                                    .frame(height: PlayerNoticeCardMetrics.trackHeight)
+                                    .frame(height: metrics.trackHeight)
                             }
                         }
-                        .clipShape(PlayerNoticeCardMetrics.shape)
+                        .clipShape(metrics.shape)
                         .allowsHitTesting(false)
                 }
                 .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
@@ -179,7 +233,8 @@ extension BufferingQualityController.PillKind {
         }
     }
 
-    /// The prompt's second line, under its title.
+    /// The prompt's second line, under its title. The TV's smaller card
+    /// leaves it out.
     var detail: String? {
         switch self {
         case .prompt: return AppLanguage.string(.bufferingPromptMessage)
@@ -242,8 +297,18 @@ struct PlayerBufferingPillCard<Actions: View>: View {
 
     var body: some View {
         layout
-            .playerNoticeCard(countdown: pill)
+            .playerNoticeCard(countdown: pill, metrics: Self.metrics)
             .accessibilityElement(children: .contain)
+    }
+
+    /// The TV draws the pill smaller than a notice, which keeps the full
+    /// size there.
+    private static var metrics: PlayerNoticeCardMetrics {
+        #if os(tvOS)
+        return .compact
+        #else
+        return .standard
+        #endif
     }
 
     @ViewBuilder
@@ -251,7 +316,7 @@ struct PlayerBufferingPillCard<Actions: View>: View {
         #if os(tvOS)
         // One arrangement on the TV: swapping between two would rebuild the
         // buttons under the focus engine.
-        VStack(alignment: .leading, spacing: PlayerNoticeCardMetrics.spacing) {
+        VStack(alignment: .leading, spacing: Self.metrics.spacing) {
             message
             actions()
         }
@@ -259,11 +324,11 @@ struct PlayerBufferingPillCard<Actions: View>: View {
         // Side by side where they fit; the actions drop below the message on
         // a portrait iPhone or a narrow window.
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: PlayerNoticeCardMetrics.spacing * 2) {
+            HStack(spacing: Self.metrics.spacing * 2) {
                 message
                 actions()
             }
-            VStack(alignment: .leading, spacing: PlayerNoticeCardMetrics.spacing) {
+            VStack(alignment: .leading, spacing: Self.metrics.spacing) {
                 message
                 actions()
             }
@@ -276,9 +341,18 @@ struct PlayerBufferingPillCard<Actions: View>: View {
             symbol: pill.kind.symbol,
             tone: pill.kind.tone,
             title: title ?? pill.kind.message,
-            detail: pill.kind.detail
+            detail: detail,
+            metrics: Self.metrics
         )
         .accessibilityElement(children: .combine)
+    }
+
+    private var detail: String? {
+        #if os(tvOS)
+        return nil
+        #else
+        return pill.kind.detail
+        #endif
     }
 }
 
