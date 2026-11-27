@@ -58,6 +58,9 @@ struct PlayerView: View {
     @State private var isTimelinePreviewVisible = false
     @State private var timelineSelectionRequest: UUID?
     @State private var timelinePreviewHideTask: Task<Void, Never>?
+    /// A finger rests on the clickpad. The passive timeline stays up until
+    /// it lifts.
+    @State private var isTouchSurfaceContactActive = false
     /// The buffering pill's buttons. Owned here because the pill is drawn at
     /// the notice position; `TVPlayerControls` applies its focus rules.
     @FocusState private var focusedBufferingAction: TVBufferingQualityPill.Action?
@@ -169,7 +172,8 @@ struct PlayerView: View {
                         //
                         // Two modes:
                         //   • Not in seek mode: Tap Left/Right = quick skip,
-                        //     Tap Down = open the player menu, Tap Up = reveal the
+                        //     shown on the passive timeline with a preview
+                        //     card, Tap Down = open the player menu, Tap Up = reveal the
                         //     full transport HUD, Tap Select = pause and
                         //     enter the focused timeline,
                         //     Hold Left/Right = enter seek mode.
@@ -201,8 +205,10 @@ struct PlayerView: View {
                                         }
                                     } else if !moveBufferingSelectTarget(direction) {
                                         switch direction {
-                                        case .left:  viewModel.skipBackward()
-                                        case .right: viewModel.skipForward()
+                                        case .left, .right:
+                                            if viewModel.quickSkip(forward: direction == .right) {
+                                                showQuickSkipTimeline()
+                                            }
                                         case .down:  viewModel.openInfoHUD()
                                         case .up:    viewModel.revealControls()
                                         }
@@ -219,12 +225,15 @@ struct PlayerView: View {
                                     }
                                 },
                                 onTouchSurfaceContactBegan: {
+                                    isTouchSurfaceContactActive = true
                                     handleTimelinePreviewContactBegan()
                                 },
                                 onTouchSurfaceContactEnded: {
+                                    isTouchSurfaceContactActive = false
                                     scheduleTimelinePreviewHide()
                                 },
                                 onTouchSurfaceContactCancelled: {
+                                    isTouchSurfaceContactActive = false
                                     scheduleTimelinePreviewHide()
                                 },
                                 onSelect: {
@@ -346,6 +355,9 @@ struct PlayerView: View {
                                 .transition(.opacity)
                         } else if let notice = viewModel.presentedNotice {
                             PlayerNoticeOverlay(notice: notice)
+                        } else if viewModel.playbackMenuHint.isVisible {
+                            // Gives way to any notice, which ends it.
+                            PlaybackMenuHintView()
                         }
                         tvBufferingPill
                     }
@@ -353,6 +365,7 @@ struct PlayerView: View {
                     // takes it down at once (see `selectBufferingPrimary`).
                     .animation(.easeOut(duration: 0.2), value: viewModel.showBufferingPill)
                     .animation(.easeOut(duration: SiloTheme.fastDuration), value: viewModel.isHUDPresented)
+                    .animation(.easeInOut(duration: 0.3), value: viewModel.playbackMenuHint.isVisible)
                     #else
                     // Below the top bar while it shows (two rows in portrait,
                     // one in landscape), so the pill never covers its buttons.
@@ -488,6 +501,9 @@ struct PlayerView: View {
             if visible {
                 hideTimelinePreview()
             }
+        }
+        .onChange(of: playbackMenuHintConditions, initial: true) { _, conditions in
+            viewModel.playbackMenuHint.update(conditions)
         }
         // Up Next replaces the controls, so the preview must not carry over
         // to the next episode's first frame.
@@ -710,6 +726,25 @@ struct PlayerView: View {
         }
     }
 
+    /// A quick skip with the controls hidden: the passive timeline shows the
+    /// landing position, with the preview card, and hides 3 s after the last
+    /// tap, or after the finger lifts if it still rests on the clickpad. Not
+    /// gated on playing, unlike the finger's own preview: the skip happened
+    /// either way. Every later tap reaches the press capture again, so taps
+    /// keep summing on this timeline.
+    private func showQuickSkipTimeline() {
+        timelinePreviewHideTask?.cancel()
+        timelinePreviewHideTask = nil
+        withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
+            if !isTimelinePreviewVisible {
+                isTimelinePreviewVisible = true
+            }
+        }
+        if !isTouchSurfaceContactActive {
+            scheduleTimelinePreviewHide()
+        }
+    }
+
     private func scheduleTimelinePreviewHide() {
         guard isTimelinePreviewVisible else { return }
         timelinePreviewHideTask?.cancel()
@@ -723,6 +758,8 @@ struct PlayerView: View {
     private func hideTimelinePreview(immediately: Bool = false) {
         timelinePreviewHideTask?.cancel()
         timelinePreviewHideTask = nil
+        // The quick skip's card goes with the timeline it sits on.
+        viewModel.endQuickSkipPreview()
         guard isTimelinePreviewVisible else { return }
         if immediately {
             isTimelinePreviewVisible = false
@@ -748,6 +785,19 @@ struct PlayerView: View {
     }
 
     #if os(tvOS)
+    /// What the start hint needs to know. A notice in the top-centre slot,
+    /// the remote's identity included, ends it or holds it back.
+    private var playbackMenuHintConditions: PlaybackMenuHint.Conditions {
+        PlaybackMenuHint.Conditions(
+            isPlaybackOnScreen: viewModel.hasStartedPlayback && viewModel.error == nil &&
+                !viewModel.showNextUpScreen,
+            isPlaying: viewModel.isPlaying,
+            areControlsUp: viewModel.showControls || viewModel.isHUDPresented,
+            isHoldSeeking: viewModel.isHoldSeeking,
+            isSlotTaken: remoteIdentityNotice != nil || viewModel.presentedNotice != nil
+        )
+    }
+
     /// The sync capsule is drawn in the top-trailing corner; the buffering
     /// pill takes that corner while it shows.
     private var showsWatchPartySyncCapsule: Bool {
