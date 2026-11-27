@@ -7974,13 +7974,20 @@ class PlayerViewModel {
     /// The first ask for the card's still usually comes before the landing
     /// point is buffered, and the player's cache answers only for frames it
     /// holds. Once playback has run past the landing time after the skip's
-    /// seek, those frames are there: ask once more.
+    /// seek, those frames are there: ask once more. A still kept from an
+    /// earlier skip in the same burst counts as missing, or the card would
+    /// show the previous landing's picture beside the new time.
     private func askAgainForQuickSkipStillIfNeeded() {
         guard let landing = quickSkipLandingTime, !askedAgainForQuickSkipStill,
-              !isScrubbing, scrubPreviewImage == nil,
+              !isScrubbing, !hasScrubPreviewStill(for: landing),
               currentTime >= landing + 0.5 else { return }
         askedAgainForQuickSkipStill = true
         scrubPreviewProvider.request(atSourceTime: landing)
+    }
+
+    private func hasScrubPreviewStill(for landing: Double) -> Bool {
+        guard scrubPreviewImage != nil, let shown = scrubPreviewImageSourceTime else { return false }
+        return abs(shown - landing) < 0.5
     }
 
     /// The passive timeline hid: the card goes with it, and so does the
