@@ -9,19 +9,35 @@ import SwiftUI
 ///
 /// Focus model (see docs/tvos-focus.md): every interactive row is a real
 /// `Button` and movement is owned entirely by the tvOS focus engine —
-/// columns are `.focusSection()`s and the tab bar routes entry to the
-/// active pill with `defaultFocus(priority: .userInitiated)`. `@FocusState`
-/// is used only to seed focus (HUD open, dialog open) and to restore it
+/// every pane is one column, and the tab bar routes entry to the active
+/// pill with `defaultFocus(priority: .userInitiated)`. `@FocusState` is used
+/// only to seed focus (HUD open, tab change, dialog open) and to restore it
 /// (dialog close), never to drive per-press movement. The two read-only
 /// panes (Info / Stats) are single composite focusables that page their
 /// scroll content, which is the sanctioned exception.
+///
+/// Left and Right from inside a pane change the tab through native focus:
+/// with one column nothing lies beside a row, so the focus engine moves
+/// focus onto an invisible strip at the panel's edge, and the strip taking
+/// focus selects the neighbouring tab. No `onMoveCommand` is involved, so a
+/// touch-surface swipe works the same as a click.
 struct TVPlayerInfoHUD: View {
     let viewModel: PlayerViewModel
     @Binding var activeTab: Tab
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var readOnlyPaneIsAtTop = true
     @State private var subtitleOverlayActive = false
+    @State private var videoOverlayActive = false
     @State private var showSubtitleSearchMenu = false
     @State private var showAITranslateMenu = false
+    /// Set when an edge strip changes the tab, for the new pane to claim
+    /// focus on its first row once it has appeared.
+    @State private var paneEntryPending = false
+    @FocusState private var focusedEdge: EdgeStrip?
+
+    /// The panel's two edge strips. Leading is the previous tab in every
+    /// layout direction, because the strips and the tab bar mirror together.
+    enum EdgeStrip: Hashable { case previous, next }
 
     private var subtitleMenuPresented: Bool {
         showSubtitleSearchMenu || showAITranslateMenu
@@ -96,6 +112,12 @@ struct TVPlayerInfoHUD: View {
         .onChange(of: activeTab) { _, _ in
             readOnlyPaneIsAtTop = true
         }
+        .onChange(of: focusedEdge) { _, edge in
+            guard let edge,
+                  let target = Self.neighbour(of: activeTab, in: availableTabs, toward: edge) else { return }
+            paneEntryPending = true
+            activeTab = target
+        }
         .onExitCommand(perform: onDismiss)
         .disabled(subtitleMenuPresented)
         // Keep the HUD mounted for focus restoration, but show only the
@@ -144,7 +166,7 @@ struct TVPlayerInfoHUD: View {
         // paged below its top anchor, remove the rail from the focus graph so
         // an Up press cannot both page the pane and escape to the active tab.
         // The pane re-enables the rail when it reaches the top again.
-        .disabled(isReadOnlyPaneScrolled || subtitleOverlayActive)
+        .disabled(isReadOnlyPaneScrolled || subtitleOverlayActive || videoOverlayActive)
         // Rail: moving Up from the panel must land on the *active* pill, not
         // the geometrically nearest one — with focus-driven selection a
         // nearest-pill landing would switch panes as a side effect.
@@ -154,51 +176,138 @@ struct TVPlayerInfoHUD: View {
     // MARK: - Panel
 
     private var panel: some View {
-        Group {
-            switch activeTab {
-            case .info:
-                InfoPane(
-                    viewModel: viewModel,
-                    isAtTop: $readOnlyPaneIsAtTop,
-                    onMoveToTabs: focusActiveTab
-                )
-            case .stats:
-                StatsPane(
-                    viewModel: viewModel,
-                    isAtTop: $readOnlyPaneIsAtTop,
-                    onMoveToTabs: focusActiveTab
-                )
-            case .video:     VideoPane(viewModel: viewModel)
-            case .audio:     AudioPane(viewModel: viewModel)
-            case .subtitles:
-                SubtitlesPane(
-                    viewModel: viewModel,
-                    overlayActive: $subtitleOverlayActive,
-                    showSubtitleSearchMenu: $showSubtitleSearchMenu,
-                    showAITranslateMenu: $showAITranslateMenu
-                )
-            case .chapters:  ChaptersPane(viewModel: viewModel, onSelect: onDismiss)
-            }
+        // The strips sit in the panel's side padding (20 + 8 = 28 pt), laid
+        // out rather than offset because focus resolves from layout frames,
+        // and run the full panel height so a row at any height has one
+        // straight beside it.
+        HStack(spacing: 8) {
+            edgeStrip(.previous)
+            paneContent
+                .padding(.vertical, 22)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            edgeStrip(.next)
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 22)
-        // Width sits at ~60% of a 1920pt tvOS frame. Height is fixed at the
-        // tallest pane's needs — content-hugging here would resize the panel
-        // on every tab swap, which cascades into a SwiftUI relayout pass.
-        // Top-aligned so short panes (Video with few rows) keep their column
-        // headers pinned to the top instead of floating mid-panel.
-        .frame(maxWidth: 1100, minHeight: 380, maxHeight: 380, alignment: .top)
-        // Glass carries enough light that the panel lifts off the video
-        // without extra dark tint; the stroke + shadow still define the
-        // edge over a fully-black frame. Low-power TVs draw a flat
-        // translucent fill instead (see siloPlayerGlass).
-        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.5), radius: 20, y: 10)
+        // Two widths, not one per tab: the two-column pages (Info, Stats)
+        // sit at ~60% of a 1920pt tvOS frame, and the one-column pages at
+        // about the tab row's width so a row's label and value stay close.
+        // Height is fixed at the tallest pane's needs — content-hugging
+        // here would resize the panel on every tab swap, which cascades
+        // into a SwiftUI relayout pass. Top-aligned so short panes (Video
+        // with few rows) keep their headers pinned to the top instead of
+        // floating mid-panel.
+        .frame(maxWidth: panelWidth, minHeight: 380, maxHeight: 380, alignment: .top)
+        // The width change animates on the glass behind and on a mask, never
+        // on the rows or the strips. Focus resolves from layout frames, and
+        // while those animated a second Left or Right within a third of a
+        // second landed on the wrong strip and undid the first.
+        .mask {
+            Rectangle()
+                .frame(width: panelWidth)
+                .frame(maxHeight: .infinity)
+                .padding(.vertical, -1000)
+                .animation(widthAnimation, value: panelWidth)
+        }
+        .background {
+            // Glass carries enough light that the panel lifts off the video
+            // without extra dark tint; the stroke + shadow still define the
+            // edge over a fully-black frame. Low-power TVs draw a flat
+            // translucent fill instead (see siloPlayerGlass).
+            Color.clear
+                .frame(width: panelWidth, height: 380)
+                .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.5), radius: 20, y: 10)
+                .animation(widthAnimation, value: panelWidth)
+        }
         .focusSection()
+    }
+
+    private var widthAnimation: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: 0.25)
+    }
+
+    private var panelWidth: CGFloat {
+        switch activeTab {
+        case .info, .stats: 1100
+        default: 780
+        }
+    }
+
+    @ViewBuilder
+    private var paneContent: some View {
+        switch activeTab {
+        case .info:
+            InfoPane(
+                viewModel: viewModel,
+                isAtTop: $readOnlyPaneIsAtTop,
+                entryPending: $paneEntryPending,
+                onMoveToTabs: focusActiveTab
+            )
+        case .stats:
+            StatsPane(
+                viewModel: viewModel,
+                isAtTop: $readOnlyPaneIsAtTop,
+                entryPending: $paneEntryPending,
+                onMoveToTabs: focusActiveTab
+            )
+        case .video:
+            VideoPane(
+                viewModel: viewModel,
+                overlayActive: $videoOverlayActive,
+                entryPending: $paneEntryPending
+            )
+        case .audio:
+            AudioPane(viewModel: viewModel, entryPending: $paneEntryPending)
+        case .subtitles:
+            SubtitlesPane(
+                viewModel: viewModel,
+                overlayActive: $subtitleOverlayActive,
+                entryPending: $paneEntryPending,
+                showSubtitleSearchMenu: $showSubtitleSearchMenu,
+                showAITranslateMenu: $showAITranslateMenu
+            )
+        case .chapters:
+            ChaptersPane(viewModel: viewModel, entryPending: $paneEntryPending, onSelect: onDismiss)
+        }
+    }
+
+    /// A picker, dialog or menu owns the remote, so Left and Right stay inert.
+    private var tabStepBlocked: Bool {
+        subtitleOverlayActive || videoOverlayActive || subtitleMenuPresented
+    }
+
+    /// The tab one step from `tab` toward `edge` in the tabs this session
+    /// shows, or nil past the first or last.
+    private static func neighbour(of tab: Tab, in tabs: [Tab], toward edge: EdgeStrip) -> Tab? {
+        guard let index = tabs.firstIndex(of: tab) else { return nil }
+        let target = index + (edge == .previous ? -1 : 1)
+        return tabs.indices.contains(target) ? tabs[target] : nil
+    }
+
+    /// An invisible focus target at one side of the panel. With every pane
+    /// one column nothing else lies beside a row, so a click or a swipe
+    /// toward the edge lands here through the focus engine itself.
+    ///
+    /// It is not focusable past the first or last tab or while an overlay
+    /// owns the remote. It stays focusable while it holds focus, so the tab
+    /// change cannot leave focus on a view that just stopped accepting it;
+    /// `.focusable(false)` is used instead of `.disabled` because a disabled
+    /// view that holds focus swallows presses until the next move. It is
+    /// hidden from accessibility; the tab bar names every tab.
+    private func edgeStrip(_ edge: EdgeStrip) -> some View {
+        let live = !tabStepBlocked
+            && Self.neighbour(of: activeTab, in: availableTabs, toward: edge) != nil
+        return Color.clear
+            .frame(width: 20)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .focusable(live || focusedEdge == edge)
+            .focused($focusedEdge, equals: edge)
+            .focusEffectDisabled()
+            .accessibilityHidden(true)
     }
 
     private var isReadOnlyPaneScrolled: Bool {
@@ -234,6 +343,22 @@ struct TVPlayerInfoHUD: View {
             return
         }
         focusedTab = activeTab
+    }
+}
+
+/// Puts focus on a pane's first row once, after an edge strip changed the
+/// tab. A focus claim in the same update as the structural change is
+/// dropped, so it waits one turn.
+private struct PaneEntryClaim: ViewModifier {
+    @Binding var pending: Bool
+    let claim: () -> Void
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            guard pending else { return }
+            pending = false
+            DispatchQueue.main.async(execute: claim)
+        }
     }
 }
 
@@ -337,6 +462,7 @@ private struct HUDScrollablePane<Content: View>: View {
     let accessibilityLabel: LocalizedStringResource
     let scrollTargetIDs: [String]
     @Binding var isAtTop: Bool
+    @Binding var entryPending: Bool
     let onMoveToTabs: () -> Void
     let content: () -> Content
 
@@ -347,12 +473,14 @@ private struct HUDScrollablePane<Content: View>: View {
         accessibilityLabel: LocalizedStringResource,
         scrollTargetIDs: [String] = [],
         isAtTop: Binding<Bool>,
+        entryPending: Binding<Bool>,
         onMoveToTabs: @escaping () -> Void,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.accessibilityLabel = accessibilityLabel
         self.scrollTargetIDs = scrollTargetIDs
         self._isAtTop = isAtTop
+        self._entryPending = entryPending
         self.onMoveToTabs = onMoveToTabs
         self.content = content
     }
@@ -378,6 +506,7 @@ private struct HUDScrollablePane<Content: View>: View {
             .onMoveCommand { direction in
                 handleMove(direction, proxy: proxy)
             }
+            .modifier(PaneEntryClaim(pending: $entryPending) { isFocused = true })
             .onChange(of: scrollTargetIDs) { _, targets in
                 scrollTargetIndex = min(scrollTargetIndex, max(targets.count - 1, 0))
             }
@@ -600,6 +729,7 @@ private struct HUDSettingRowLabel: View {
 private struct InfoPane: View {
     let viewModel: PlayerViewModel
     @Binding var isAtTop: Bool
+    @Binding var entryPending: Bool
     let onMoveToTabs: () -> Void
 
     @Environment(\.locale) private var locale
@@ -615,10 +745,13 @@ private struct InfoPane: View {
             // the pane was a dead focus stop that couldn't scroll at all.
             scrollTargetIDs: [Self.topAnchor, Self.bottomAnchor],
             isAtTop: $isAtTop,
+            entryPending: $entryPending,
             onMoveToTabs: onMoveToTabs
         ) {
             VStack(alignment: .leading, spacing: 0) {
                 Color.clear.frame(height: 0).id(Self.topAnchor)
+                // Read-only, so the pane is one focus stop and its two
+                // columns give Left and Right nothing to land on.
                 HStack(alignment: .top, spacing: 48) {
                 PaneColumn(.playerHudTitle) {
                     if let series = viewModel.metadata.seriesTitle, !series.isEmpty {
@@ -745,6 +878,7 @@ private struct InfoCurrentChapterRow: View {
 private struct StatsPane: View {
     let viewModel: PlayerViewModel
     @Binding var isAtTop: Bool
+    @Binding var entryPending: Bool
     let onMoveToTabs: () -> Void
 
     private static let topAnchor = "stats.top"
@@ -755,6 +889,7 @@ private struct StatsPane: View {
             accessibilityLabel: .playerStatsTitle,
             scrollTargetIDs: scrollTargetIDs,
             isAtTop: $isAtTop,
+            entryPending: $entryPending,
             onMoveToTabs: onMoveToTabs
         ) {
             VStack(alignment: .leading, spacing: 0) {
@@ -788,12 +923,14 @@ private struct StatsPane: View {
 
 // MARK: - Video pane
 
-/// Picture and playback controls: what the video looks like on the left, how
-/// it plays on the right. Multi-option settings open the shared picker
-/// dialog; booleans toggle in place. Focus movement between rows and across
-/// the two columns is native. Subtitle timing lives in the Subtitles pane.
+/// Picture and playback controls in one column: what the video looks like,
+/// then how it plays. Multi-option settings open the shared picker dialog;
+/// booleans toggle in place. Focus movement between rows is native.
+/// Subtitle timing lives in the Subtitles pane.
 private struct VideoPane: View {
     let viewModel: PlayerViewModel
+    @Binding var overlayActive: Bool
+    @Binding var entryPending: Bool
 
     @Environment(\.locale) private var locale
 
@@ -811,99 +948,101 @@ private struct VideoPane: View {
     }
 
     var body: some View {
-        ZStack {
-            HStack(alignment: .top, spacing: 48) {
-                PaneColumn(.playerHudPicture) {
-                    VStack(spacing: 2) {
-                        if viewModel.hasQualityChoice {
-                            HUDSettingRow(label: .optionsQuality, value: qualityValue) {
-                                // The row stays focusable (disabling a focused
-                                // row would move focus); it reads "Switching..."
-                                // and opens nothing until the switch lands.
-                                guard !viewModel.isQualitySwitching else { return }
-                                presentPicker(
-                                    for: .quality,
-                                    HUDPickerPresentation(
-                                        title: .optionsQuality,
-                                        options: qualityOptions,
-                                        // No row is checked while a fixed saved
-                                        // resolution sets the quality.
-                                        selection: viewModel.highlightedQualityOptionId ?? "",
-                                        onSelect: { viewModel.switchQuality($0) }
+        ZStack(alignment: .top) {
+            // Scrolls: Picture and Playback outgrow the panel with every row
+            // present, and focus brings a row below the edge into view.
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 20) {
+                    PaneColumn(.playerHudPicture) {
+                        VStack(spacing: 2) {
+                            if viewModel.hasQualityChoice {
+                                HUDSettingRow(label: .optionsQuality, value: qualityValue) {
+                                    // The row stays focusable (disabling a focused
+                                    // row would move focus); it reads "Switching..."
+                                    // and opens nothing until the switch lands.
+                                    guard !viewModel.isQualitySwitching else { return }
+                                    presentPicker(
+                                        for: .quality,
+                                        HUDPickerPresentation(
+                                            title: .optionsQuality,
+                                            options: qualityOptions,
+                                            // No row is checked while a fixed saved
+                                            // resolution sets the quality.
+                                            selection: viewModel.highlightedQualityOptionId ?? "",
+                                            onSelect: { viewModel.switchQuality($0) }
+                                        )
                                     )
-                                )
+                                }
+                                .focused($focusedField, equals: .quality)
                             }
-                            .focused($focusedField, equals: .quality)
-                        }
 
-                        HUDSettingRow(label: .playerHudAspect, value: viewModel.settings.videoGravity.label) {
-                            presentPicker(
-                                for: .aspect,
-                                HUDPickerPresentation(
-                                    title: .playerHudAspect,
-                                    options: Self.aspectOptions,
-                                    selection: viewModel.settings.videoGravity.rawValue,
-                                    onSelect: { value in
-                                        if let gravity = VideoGravity(rawValue: value) {
-                                            viewModel.setVideoGravity(gravity)
-                                        }
-                                    }
-                                )
-                            )
-                        }
-                        .focused($focusedField, equals: .aspect)
-                    }
-                }
-                .focusSection()
-
-                PaneColumn(.playerHudPlayback) {
-                    VStack(spacing: 2) {
-                        // A Watch Party sets the speed and what plays next
-                        // for the room. The sleep timer stays: it is this
-                        // viewer's own, and at zero it leaves the party.
-                        if !viewModel.isWatchPartyPlayback {
-                            HUDSettingRow(label: .playerSettingsSpeed, value: Self.speedLabel(viewModel.settings.playbackSpeed)) {
+                            HUDSettingRow(label: .playerHudAspect, value: viewModel.settings.videoGravity.label) {
                                 presentPicker(
-                                    for: .speed,
+                                    for: .aspect,
                                     HUDPickerPresentation(
-                                        title: .playerHudPickerPlaybackSpeed,
-                                        options: Self.speedOptions,
-                                        selection: speedID(viewModel.settings.playbackSpeed),
+                                        title: .playerHudAspect,
+                                        options: Self.aspectOptions,
+                                        selection: viewModel.settings.videoGravity.rawValue,
                                         onSelect: { value in
-                                            if let speed = Double(value) {
-                                                viewModel.setPlaybackSpeed(speed)
+                                            if let gravity = VideoGravity(rawValue: value) {
+                                                viewModel.setVideoGravity(gravity)
                                             }
                                         }
                                     )
                                 )
                             }
-                            .focused($focusedField, equals: .speed)
+                            .focused($focusedField, equals: .aspect)
+                        }
+                    }
 
-                            HUDToggleRow(label: .optionsAutoplayNext, isOn: viewModel.settings.autoPlayNextEpisode) {
-                                viewModel.settings.setAutoPlayNextEpisode($0)
+                    PaneColumn(.playerHudPlayback) {
+                        VStack(spacing: 2) {
+                            // A Watch Party sets the speed and what plays next
+                            // for the room. The sleep timer stays: it is this
+                            // viewer's own, and at zero it leaves the party.
+                            if !viewModel.isWatchPartyPlayback {
+                                HUDSettingRow(label: .playerSettingsSpeed, value: Self.speedLabel(viewModel.settings.playbackSpeed)) {
+                                    presentPicker(
+                                        for: .speed,
+                                        HUDPickerPresentation(
+                                            title: .playerHudPickerPlaybackSpeed,
+                                            options: Self.speedOptions,
+                                            selection: speedID(viewModel.settings.playbackSpeed),
+                                            onSelect: { value in
+                                                if let speed = Double(value) {
+                                                    viewModel.setPlaybackSpeed(speed)
+                                                }
+                                            }
+                                        )
+                                    )
+                                }
+                                .focused($focusedField, equals: .speed)
+
+                                HUDToggleRow(label: .optionsAutoplayNext, isOn: viewModel.settings.autoPlayNextEpisode) {
+                                    viewModel.settings.setAutoPlayNextEpisode($0)
+                                }
                             }
-                        }
 
-                        SleepTimerRow(timer: viewModel.sleepTimer) {
-                            presentPicker(
-                                for: .sleepTimer,
-                                HUDPickerPresentation(
-                                    title: .playerSleepTimerPickerTitle,
-                                    options: sleepTimerOptions,
-                                    selection: String(viewModel.sleepTimer.selectedDurationOption),
-                                    onSelect: { value in
-                                        // Off is 0, which cancels.
-                                        if let minutes = Int(value) {
-                                            viewModel.sleepTimer.start(minutes: minutes)
+                            SleepTimerRow(timer: viewModel.sleepTimer) {
+                                presentPicker(
+                                    for: .sleepTimer,
+                                    HUDPickerPresentation(
+                                        title: .playerSleepTimerPickerTitle,
+                                        options: sleepTimerOptions,
+                                        selection: String(viewModel.sleepTimer.selectedDurationOption),
+                                        onSelect: { value in
+                                            // Off is 0, which cancels.
+                                            if let minutes = Int(value) {
+                                                viewModel.sleepTimer.start(minutes: minutes)
+                                            }
                                         }
-                                    }
+                                    )
                                 )
-                            )
+                            }
+                            .focused($focusedField, equals: .sleepTimer)
                         }
-                        .focused($focusedField, equals: .sleepTimer)
                     }
                 }
-                .focusSection()
             }
             .disabled(activePicker != nil)
             .opacity(activePicker != nil ? 0.28 : 1)
@@ -916,9 +1055,22 @@ private struct VideoPane: View {
                     onSelect: activePicker.onSelect,
                     onClose: closePicker
                 )
+                // Its own height, up to the dialog's cap, from the top of the
+                // pane down past the panel: held to the panel's height, the
+                // Sleep Timer and Speed lists showed only their first options.
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: activePicker?.id)
+        // The menu keeps Left and Right and the tab bar inert while a picker
+        // is open, as it does for the Subtitles dialogs.
+        .onChange(of: activePicker != nil, initial: true) { _, presented in
+            overlayActive = presented
+        }
+        .onDisappear { overlayActive = false }
+        .modifier(PaneEntryClaim(pending: $entryPending) {
+            focusedField = viewModel.hasQualityChoice ? .quality : .aspect
+        })
     }
 
     private var qualityValue: String {
@@ -1593,6 +1745,10 @@ private struct HUDCloseButtonLabel: View {
 
 private struct AudioPane: View {
     let viewModel: PlayerViewModel
+    @Binding var entryPending: Bool
+
+    /// Seeds focus after a tab change only; movement stays native.
+    @FocusState private var focusedTrack: Int64?
 
     var body: some View {
         HStack(alignment: .top, spacing: 48) {
@@ -1609,12 +1765,16 @@ private struct AudioPane: View {
                             ) {
                                 viewModel.selectAudio(track)
                             }
+                            .focused($focusedTrack, equals: track.trackId)
                         }
                     }
                 }
             }
             .focusSection()
         }
+        .modifier(PaneEntryClaim(pending: $entryPending) {
+            focusedTrack = viewModel.audioTracks.first?.trackId
+        })
     }
 }
 
@@ -1623,6 +1783,7 @@ private struct AudioPane: View {
 private struct SubtitlesPane: View {
     let viewModel: PlayerViewModel
     @Binding var overlayActive: Bool
+    @Binding var entryPending: Bool
     @Binding var showSubtitleSearchMenu: Bool
     @Binding var showAITranslateMenu: Bool
     @State private var showAppearanceDialog = false
@@ -1632,7 +1793,7 @@ private struct SubtitlesPane: View {
     @FocusState private var entryTrackFocused: Bool
     @Environment(\.locale) private var locale
 
-    /// Identity for the options-column rows, used only to restore focus when
+    /// Identity for the option rows, used only to restore focus when
     /// a picker dialog, the appearance dialog, or the AI/search menu closes.
     private enum Option: Hashable {
         case translate
@@ -1651,17 +1812,17 @@ private struct SubtitlesPane: View {
 
     var body: some View {
         ZStack {
-            HStack(alignment: .top, spacing: 58) {
-                PaneColumn(.playerHudTracks) { trackRows }
-                    .frame(width: 470, alignment: .topLeading)
-                    .focusSection()
-                optionRows
-                    .frame(width: 440, alignment: .topLeading)
-                    .focusSection()
+            // One column: the tracks, then the option groups. Eager by
+            // design: every native Button stays in one stable focus graph,
+            // and the ScrollView performs its own keep-visible motion.
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 20) {
+                    PaneColumn(.playerHudTracks) { trackRows }
+                    optionGroups
+                }
             }
-            // The Subtitles pill is geometrically closest to the Options
-            // column. Explicitly route Down into the leftmost Tracks column
-            // so entering this pane is consistent with the other track panes.
+            // Down from the tab bar enters on the Off row, whatever row lies
+            // nearest the Subtitles pill.
             .defaultFocus($entryTrackFocused, true, priority: .userInitiated)
             .disabled(hasPresentedOverlay)
             .opacity(hasPresentedOverlay ? 0.28 : 1)
@@ -1696,6 +1857,7 @@ private struct SubtitlesPane: View {
         }
         .onDisappear { overlayActive = false }
         .onAppear { viewModel.refreshSubtitleSync() }
+        .modifier(PaneEntryClaim(pending: $entryPending) { entryTrackFocused = true })
         // A refusal (403) swaps the Sync row for its unfocusable variant, and
         // a reset removes the Reset row; hand focus to a neighbour then.
         .onChange(of: timingFocusTargets) { _, targets in
@@ -1736,7 +1898,7 @@ private struct SubtitlesPane: View {
     /// probe answered "unavailable" while the menu was open, which removes
     /// that row.
     /// Returning focus to an unreachable target would leave the pane with
-    /// nothing focused, so fall back to the Tracks column's "Off" row, which
+    /// nothing focused, so fall back to the Tracks group's "Off" row, which
     /// is always present (docs/tvos-focus.md).
     private func restoreSubtitleSearchFocus() {
         if viewModel.subtitleSearchEnabled {
@@ -1778,57 +1940,52 @@ private struct SubtitlesPane: View {
         focusedOption = .appearance
     }
 
-    @ViewBuilder
     private var trackRows: some View {
-        ScrollView(showsIndicators: false) {
-            // Eager by design: every native Button stays in one stable focus
-            // graph, and the ScrollView performs its own keep-visible motion.
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 2) {
+            HUDTrackRow(
+                name: AppLanguage.string(.playerTracksSubtitlesOff, locale: locale),
+                attributes: nil,
+                isSelected: viewModel.selectedSubtitleId == nil
+            ) {
+                viewModel.disableSubtitles()
+            }
+            .focused($entryTrackFocused)
+            ForEach(viewModel.orderedSubtitleTracks) { track in
+                HUDTrackRow(
+                    name: track.primaryLabel,
+                    attributes: attributes(for: track),
+                    isSelected: viewModel.selectedSubtitleId == track.trackId,
+                    isDisabled: track.hasUnsupportedFormat
+                ) {
+                    viewModel.selectSubtitle(track)
+                }
+            }
+
+            if viewModel.supportsSecondarySubtitles,
+               viewModel.selectedSubtitleId != nil,
+               !viewModel.availableSecondarySubtitleTracks.isEmpty {
+                Text(.playerHudSecondaryHeading)
+                    .font(.system(size: 14, weight: .semibold))
+                    .tracking(1.6)
+                    .foregroundStyle(.white.opacity(0.45))
+                    .padding(.top, 20)
+                    .padding(.bottom, 4)
+                    .padding(.leading, 14)
                 HUDTrackRow(
                     name: AppLanguage.string(.playerTracksSubtitlesOff, locale: locale),
                     attributes: nil,
-                    isSelected: viewModel.selectedSubtitleId == nil
+                    isSelected: viewModel.selectedSecondarySubtitleId == nil
                 ) {
-                    viewModel.disableSubtitles()
+                    viewModel.disableSecondarySubtitles()
                 }
-                .focused($entryTrackFocused)
-                ForEach(viewModel.orderedSubtitleTracks) { track in
+                ForEach(viewModel.availableSecondarySubtitleTracks) { track in
                     HUDTrackRow(
                         name: track.primaryLabel,
-                        attributes: attributes(for: track),
-                        isSelected: viewModel.selectedSubtitleId == track.trackId,
-                        isDisabled: track.hasUnsupportedFormat
+                        attributes: track.attributesLabel,
+                        isSelected: viewModel.selectedSecondarySubtitleId == track.trackId,
+                        isDisabled: track.trackId == viewModel.selectedSubtitleId
                     ) {
-                        viewModel.selectSubtitle(track)
-                    }
-                }
-
-                if viewModel.supportsSecondarySubtitles,
-                   viewModel.selectedSubtitleId != nil,
-                   !viewModel.availableSecondarySubtitleTracks.isEmpty {
-                    Text(.playerHudSecondaryHeading)
-                        .font(.system(size: 14, weight: .semibold))
-                        .tracking(1.6)
-                        .foregroundStyle(.white.opacity(0.45))
-                        .padding(.top, 20)
-                        .padding(.bottom, 4)
-                        .padding(.leading, 14)
-                    HUDTrackRow(
-                        name: AppLanguage.string(.playerTracksSubtitlesOff, locale: locale),
-                        attributes: nil,
-                        isSelected: viewModel.selectedSecondarySubtitleId == nil
-                    ) {
-                        viewModel.disableSecondarySubtitles()
-                    }
-                    ForEach(viewModel.availableSecondarySubtitleTracks) { track in
-                        HUDTrackRow(
-                            name: track.primaryLabel,
-                            attributes: track.attributesLabel,
-                            isSelected: viewModel.selectedSecondarySubtitleId == track.trackId,
-                            isDisabled: track.trackId == viewModel.selectedSubtitleId
-                        ) {
-                            viewModel.selectSecondarySubtitle(track)
-                        }
+                        viewModel.selectSecondarySubtitle(track)
                     }
                 }
             }
@@ -1951,35 +2108,28 @@ private struct SubtitlesPane: View {
         return nil
     }
 
-    /// The right-hand column, in three groups that each carry their own
-    /// heading and appear only when they have a row: getting subtitles,
-    /// their timing, and their style. One group per job keeps a row where a
-    /// viewer looks for it, whichever capabilities the server offers.
-    ///
-    /// Scrollable: with every capability present the column outgrows the
-    /// fixed panel height; without a ScrollView the last row clips at the
-    /// panel edge and focus can't bring it fully into view.
-    private var optionRows: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 20) {
-                if aiSubtitlesAvailable || viewModel.subtitleSearchEnabled {
-                    PaneColumn(.playerHudOptions) {
-                        VStack(spacing: 2) { sourceRows }
-                    }
+    /// The groups under the tracks, each with its own heading and shown only
+    /// when it has a row: getting subtitles, their timing, and their style.
+    /// One group per job keeps a row where a viewer looks for it, whichever
+    /// capabilities the server offers.
+    @ViewBuilder
+    private var optionGroups: some View {
+        if aiSubtitlesAvailable || viewModel.subtitleSearchEnabled {
+            PaneColumn(.playerHudOptions) {
+                VStack(spacing: 2) { sourceRows }
+            }
+        }
+        if viewModel.backendCapabilities.supportsSubtitleDelay || selectedTiming != nil {
+            PaneColumn(.playerTracksTiming) {
+                VStack(spacing: 2) {
+                    delayRow
+                    timingRows
                 }
-                if viewModel.backendCapabilities.supportsSubtitleDelay || selectedTiming != nil {
-                    PaneColumn(.playerTracksTiming) {
-                        VStack(spacing: 2) {
-                            delayRow
-                            timingRows
-                        }
-                    }
-                }
-                if viewModel.backendCapabilities.supportsSubtitleStyling {
-                    PaneColumn(.playerHudStyle) {
-                        VStack(spacing: 2) { styleRows }
-                    }
-                }
+            }
+        }
+        if viewModel.backendCapabilities.supportsSubtitleStyling {
+            PaneColumn(.playerHudStyle) {
+                VStack(spacing: 2) { styleRows }
             }
         }
     }
@@ -2078,7 +2228,11 @@ private struct SubtitlesPane: View {
 
 private struct ChaptersPane: View {
     let viewModel: PlayerViewModel
+    @Binding var entryPending: Bool
     let onSelect: () -> Void
+
+    /// Seeds focus after a tab change only; movement stays native.
+    @FocusState private var focusedChapter: Int?
 
     @Environment(\.locale) private var locale
 
@@ -2100,6 +2254,7 @@ private struct ChaptersPane: View {
                             viewModel.jumpToChapter(at: chapter.time)
                             onSelect()
                         }
+                        .focused($focusedChapter, equals: index)
                     }
                 }
             }
@@ -2108,6 +2263,7 @@ private struct ChaptersPane: View {
         .background {
             CurrentChapterIndexReader(viewModel: viewModel, index: $currentIndex)
         }
+        .modifier(PaneEntryClaim(pending: $entryPending) { focusedChapter = 0 })
     }
 }
 
@@ -2227,7 +2383,9 @@ private struct HUDTrackRowLabel: View {
                     Text(attributes)
                         .font(.system(size: 17))
                         .foregroundStyle(isFocused ? .black.opacity(0.62) : .white.opacity(0.55))
-                        .lineLimit(1)
+                        // Two lines: a commentary track's title fills the
+                        // narrow panel and would cut off its format.
+                        .lineLimit(2)
                 }
             }
             Spacer(minLength: 8)
